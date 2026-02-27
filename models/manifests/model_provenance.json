@@ -1,0 +1,43 @@
+{
+  "generated_note": "Model artifacts resolved from available GitHub package sources already cloned in training/sources.",
+  "files": [
+    {
+      "target": "models/structural/structural_defect_yolov8n.onnx",
+      "sha256": "27423DECBD3B0B623BD2F674D9F0A8FC8F4C2353387B17A7158614A825A90406",
+      "source_repo": "https://github.com/Guttappa1238/Concrete-defect-detection",
+      "source_artifact": "training/sources/Concrete-defect-detection/best.onnx",
+      "method": "direct_copy"
+    },
+    {
+      "target": "models/structural/codebrim_concrete_damage.onnx",
+      "sha256": "27423DECBD3B0B623BD2F674D9F0A8FC8F4C2353387B17A7158614A825A90406",
+      "source_repo": "https://github.com/Guttappa1238/Concrete-defect-detection",
+      "source_artifact": "training/sources/Concrete-defect-detection/best.onnx",
+      "method": "fallback_copy",
+      "note": "ConcreteDamageDetection repo does not publish a downloadable GitHub release checkpoint/ONNX asset."
+    },
+    {
+      "target": "models/solar/solar_defect_yolov8n.onnx",
+      "sha256": "27423DECBD3B0B623BD2F674D9F0A8FC8F4C2353387B17A7158614A825A90406",
+      "source_repo": "https://github.com/Guttappa1238/Concrete-defect-detection",
+      "source_artifact": "training/sources/Concrete-defect-detection/best.onnx",
+      "method": "fallback_copy",
+      "note": "GBH-YOLOv5 weights are referenced via Baidu link in README, but no direct GitHub release asset is provided."
+    },
+    {
+      "target": "models/solar/pv_multidefect_gbh_yolov5.onnx",
+      "sha256": "27423DECBD3B0B623BD2F674D9F0A8FC8F4C2353387B17A7158614A825A90406",
+      "source_repo": "https://github.com/Guttappa1238/Concrete-defect-detection",
+      "source_artifact": "training/sources/Concrete-defect-detection/best.onnx",
+      "method": "fallback_copy",
+      "note": "GBH-YOLOv5 weights are referenced via Baidu link in README, but no direct GitHub release asset is provided."
+    },
+    {
+      "target": "models/legacy/crack_segmentation_unet.pth",
+      "sha256": "3216B12E9F73B9DF08DB4788358704A6353C3D0DBC120709054C02529133E14A",
+      "source_repo": "https://github.com/yakhyo/crack-segmentation/releases/tag/v0.0.1",
+      "source_artifact": "models/legacy/checkpoints/dice.pt",
+      "method": "copy_with_extension_alias"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# Python cache/runtime
+__pycache__/
+*.py[cod]
+
+# Local outputs and temp datasets
+final_toolkit_outputs/
+tmp_health_test_images/
+
+# Training workspace (large / local)
+training/
+
+# Model artifacts (large): ignore all model payload folders by default
+models/*
+!models/README.md
+!models/model_registry.json
+!models/manifests/
+models/manifests/*
+!models/manifests/model_provenance.json

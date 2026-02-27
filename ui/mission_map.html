@@ -1,0 +1,245 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Mission Planner</title>
+  <link rel="stylesheet" href="./vendor/leaflet/leaflet.css">
+  <script src="./vendor/leaflet/leaflet.js"></script>
+  <link rel="stylesheet" href="./vendor/leaflet-draw/leaflet.draw.css">
+  <script src="./vendor/leaflet-draw/leaflet.draw.js"></script>
+  <link rel="stylesheet" href="./vendor/leaflet-control-geocoder/Control.Geocoder.css">
+  <script src="./vendor/leaflet-control-geocoder/Control.Geocoder.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    .leaflet-control-attribution { font-size: 11px; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+if (typeof L === "undefined") {
+  document.body.innerHTML = "<div style='padding:16px;font-family:sans-serif;'>Map engine failed to load. Check local vendor assets.</div>";
+  throw new Error("Leaflet not loaded");
+}
+
+const map = L.map("map").setView([20.5937, 78.9629], 4);
+
+const offline = L.gridLayer({
+  attribution: "Offline base",
+  tileSize: 256
+});
+offline.createTile = function(coords) {
+  const tile = document.createElement("canvas");
+  tile.width = 256;
+  tile.height = 256;
+  const ctx = tile.getContext("2d");
+  ctx.fillStyle = "#1f1f1f";
+  ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = "#3a3a3a";
+  ctx.strokeRect(0, 0, 256, 256);
+  ctx.fillStyle = "#8c8c8c";
+  ctx.font = "12px sans-serif";
+  ctx.fillText("Offline", 8, 18);
+  ctx.fillText("z" + coords.z + " x" + coords.x + " y" + coords.y, 8, 36);
+  return tile;
+};
+offline.addTo(map);
+
+const esri = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 20, attribution: "Tiles (c) Esri" }
+);
+const osm = L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { maxZoom: 20, attribution: "(c) OpenStreetMap" }
+);
+L.control.layers({ "Offline": offline, "Satellite": esri, "Street": osm }, null, { collapsed: true }).addTo(map);
+
+if (L.Control && typeof L.Control.geocoder === "function") {
+  L.Control.geocoder({ defaultMarkGeocode: false, placeholder: "Search area..." })
+    .on("markgeocode", e => map.fitBounds(e.geocode.bbox))
+    .addTo(map);
+}
+
+const drawn = new L.FeatureGroup().addTo(map);
+const missionLayer = new L.FeatureGroup().addTo(map);
+const drawCtl = new L.Control.Draw({
+  edit: { featureGroup: drawn, remove: true },
+  draw: {
+    polygon: { allowIntersection: false, showArea: true },
+    polyline: { metric: true, shapeOptions: { color: "#03A9F4", weight: 3 } },
+    marker: true, rectangle: false, circle: false, circlemarker: false
+  }
+});
+map.addControl(drawCtl);
+
+let py = null;
+new QWebChannel(qt.webChannelTransport, channel => {
+  py = channel.objects.bridge;
+});
+
+function polygonCoords(layer) {
+  const gj = layer.toGeoJSON();
+  const coords = gj.geometry.coordinates[0];
+  return coords;
+}
+
+function lineCoords(layer) {
+  const gj = layer.toGeoJSON();
+  const coords = gj.geometry.coordinates;
+  return coords;
+}
+
+function sendPolygon(coords) {
+  if (py && py.receivePolygon) {
+    py.receivePolygon(JSON.stringify(coords));
+  }
+}
+
+function sendLine(coords) {
+  if (py && py.receiveLine) {
+    py.receiveLine(JSON.stringify(coords));
+  }
+}
+
+function sendRows(lines) {
+  if (py && py.receiveRows) {
+    py.receiveRows(JSON.stringify(lines));
+  }
+}
+
+function sendPoint(coords) {
+  if (py && py.receivePoint) {
+    py.receivePoint(JSON.stringify(coords));
+  }
+}
+
+function sendNoFly(polygons) {
+  if (py && py.receiveNoFly) {
+    py.receiveNoFly(JSON.stringify(polygons));
+  }
+}
+
+function _isPolyline(layer) {
+  return (layer instanceof L.Polyline) && !(layer instanceof L.Polygon);
+}
+
+function _removeLayersByType(type) {
+  const toRemove = [];
+  drawn.eachLayer(layer => {
+    if (type === "polygon" && (layer instanceof L.Polygon)) toRemove.push(layer);
+    if (type === "polyline" && _isPolyline(layer)) toRemove.push(layer);
+    if (type === "marker" && (layer instanceof L.Marker)) toRemove.push(layer);
+  });
+  toRemove.forEach(layer => drawn.removeLayer(layer));
+}
+
+function _syncGeometry() {
+  const polygons = [];
+  let point = null;
+  const lines = [];
+  drawn.eachLayer(layer => {
+    if (layer instanceof L.Polygon) {
+      polygons.push(polygonCoords(layer));
+      return;
+    }
+    if (_isPolyline(layer)) {
+      lines.push(lineCoords(layer));
+      return;
+    }
+    if (!point && (layer instanceof L.Marker)) {
+      const ll = layer.getLatLng();
+      point = [ll.lng, ll.lat];
+    }
+  });
+
+  if (polygons.length > 0) {
+    sendPolygon(polygons[0]);
+  } else if (py && py.clearArea) {
+    py.clearArea();
+  }
+  if (polygons.length > 1) {
+    sendNoFly(polygons.slice(1));
+  } else if (py && py.clearNoFly) {
+    py.clearNoFly();
+  }
+  sendRows(lines);
+  if (point) {
+    sendPoint(point);
+  }
+  if (polygons.length === 0 && lines.length === 0 && !point) {
+    if (py && py.clearPolygon) {
+      py.clearPolygon();
+    }
+    missionLayer.clearLayers();
+  }
+}
+
+map.on(L.Draw.Event.CREATED, e => {
+  if (e.layer instanceof L.Marker) {
+    _removeLayersByType("marker");
+  }
+  drawn.addLayer(e.layer);
+  _syncGeometry();
+});
+
+map.on(L.Draw.Event.EDITED, e => {
+  _syncGeometry();
+});
+
+map.on(L.Draw.Event.DELETED, () => {
+  _syncGeometry();
+});
+
+function _styleFeature(feature) {
+  const role = (feature.properties || {}).role || "";
+  if (role === "survey_polygon") {
+    return { color: "#00BFA5", weight: 2, fillOpacity: 0.08 };
+  }
+  if (role === "no_fly_polygon") {
+    return { color: "#D32F2F", weight: 2, fillOpacity: 0.18 };
+  }
+  if (role === "flight_path") {
+    return { color: "#FFC107", weight: 3 };
+  }
+  return { color: "#FF5722", weight: 2 };
+}
+
+function showMission(geojson) {
+  missionLayer.clearLayers();
+  const layer = L.geoJSON(geojson, {
+    style: _styleFeature,
+    pointToLayer: function(feature, latlng) {
+      const role = (feature.properties || {}).role || "";
+      if (role === "waypoint") {
+        return L.circleMarker(latlng, {
+          radius: 4,
+          color: "#F44336",
+          fillColor: "#F44336",
+          fillOpacity: 0.9
+        });
+      }
+      return L.circleMarker(latlng);
+    }
+  });
+  missionLayer.addLayer(layer);
+  try {
+    const bounds = missionLayer.getBounds();
+    if (bounds.isValid()) {
+      map.fitBounds(bounds.pad(0.2));
+    }
+  } catch (_) {}
+}
+
+function focusSurvey() {
+  try {
+    const bounds = drawn.getBounds();
+    if (bounds.isValid()) {
+      map.fitBounds(bounds.pad(0.2));
+    }
+  } catch (_) {}
+}
+</script>
+</body>
+</html>

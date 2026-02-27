@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "models": {
+    "structural_multiclass_detector": {
+      "kind": "onnx_yolo",
+      "path": "structural/structural_defect_yolov8n.onnx",
+      "labels": [
+        "crack",
+        "spalling",
+        "corrosion",
+        "delamination",
+        "rebar_exposure",
+        "efflorescence",
+        "moisture_intrusion"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 640,
+      "description": "Primary multi-class structural defect detector."
+    },
+    "structural_codebrim_detector": {
+      "kind": "onnx_yolo",
+      "path": "structural/codebrim_concrete_damage.onnx",
+      "labels": [
+        "crack",
+        "spalling",
+        "corrosion",
+        "efflorescence",
+        "rebar_exposure"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 640,
+      "description": "CODEBRIM-style structural defects baseline (no delamination/moisture classes)."
+    },
+    "structural_concrete_yolov8_baseline": {
+      "kind": "onnx_yolo",
+      "path": "structural/concrete_defects_yolov8.onnx",
+      "labels": [
+        "crack",
+        "spalling",
+        "rebar_exposure"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 640,
+      "description": "YOLOv8 concrete defects quick-start baseline."
+    },
+    "solar_defect_detector": {
+      "kind": "onnx_yolo",
+      "path": "solar/solar_defect_yolov8n.onnx",
+      "labels": [
+        "hotspot",
+        "cell_crack",
+        "soiling",
+        "delamination",
+        "string_fault"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 640,
+      "description": "Primary solar defect detector for panel inspections."
+    },
+    "solar_pv_multidefect_detector": {
+      "kind": "onnx_yolo",
+      "path": "solar/pv_multidefect_gbh_yolov5.onnx",
+      "labels": [
+        "hotspot",
+        "cell_crack",
+        "soiling",
+        "delamination",
+        "string_fault"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 640,
+      "description": "PV-Multi-Defect baseline mapped to toolkit solar label schema."
+    },
+    "legacy_swin_unet": {
+      "kind": "pytorch_checkpoint",
+      "path": "legacy/swin_unet_best_model.pth",
+      "labels": [
+        "crack"
+      ],
+      "score_threshold": 0.5,
+      "iou_threshold": 0.0,
+      "input_size": 512,
+      "description": "Legacy Swin-UNet crack segmentation checkpoint."
+    },
+    "legacy_crack_segmentation_unet": {
+      "kind": "pytorch_checkpoint",
+      "path": "legacy/crack_segmentation_unet.pth",
+      "labels": [
+        "crack"
+      ],
+      "score_threshold": 0.5,
+      "iou_threshold": 0.0,
+      "input_size": 512,
+      "description": "Alternative crack segmentation checkpoint slot."
+    }
+  }
+}
