@@ -178,7 +178,17 @@ class ProjectStore:
         return [self._row_to_dict(row) or {} for row in rows]
 
     def get_project(self, project_id: int) -> dict[str, Any] | None:
-        row = self._conn.execute("SELECT * FROM projects WHERE id = ?", (int(project_id),)).fetchone()
+        row = self._conn.execute(
+            """
+            SELECT p.*,
+                   (SELECT COUNT(1) FROM mission_versions mv WHERE mv.project_id = p.id) AS mission_versions_count,
+                   (SELECT COUNT(1) FROM datasets d WHERE d.project_id = p.id) AS datasets_count,
+                   (SELECT COUNT(1) FROM reports r WHERE r.project_id = p.id) AS reports_count
+            FROM projects p
+            WHERE p.id = ?
+            """,
+            (int(project_id),),
+        ).fetchone()
         return self._row_to_dict(row)
 
     def set_active_project(self, project_id: int) -> None:
@@ -353,6 +363,10 @@ class ProjectStore:
                 now,
             ),
         )
+        self._conn.execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            (now, int(project_id)),
+        )
         self._conn.commit()
         dataset_id = int(cur.lastrowid)
         self.append_audit_event(
@@ -401,6 +415,10 @@ class ProjectStore:
                 json.dumps(metadata or {}, ensure_ascii=True),
                 now,
             ),
+        )
+        self._conn.execute(
+            "UPDATE projects SET updated_at = ? WHERE id = ?",
+            (now, int(project_id)),
         )
         self._conn.commit()
         report_id = int(cur.lastrowid)

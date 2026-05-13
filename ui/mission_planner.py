@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
-from PyQt6.QtCore import QObject, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtWebChannel import QWebChannel
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -16,19 +16,22 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from final_toolkit.mission import (
+from mission import (
     AssetReferenceFrame,
     FlightRecipe,
     MissionConstraints,
@@ -145,7 +148,8 @@ class MissionPlannerTab(QWidget):
 
         html_path = Path(__file__).with_name("mission_map.html")
         self.map.load(QUrl.fromLocalFile(str(html_path)))
-        self.map.setMinimumWidth(640)
+        self.map.setMinimumSize(520, 360)
+        self.map.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         self.channel = QWebChannel(self.map.page())
         self.bridge = _MapBridge(self)
@@ -153,6 +157,8 @@ class MissionPlannerTab(QWidget):
         self.map.page().setWebChannel(self.channel)
 
         panel = QWidget()
+        panel.setMinimumWidth(360)
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.MinimumExpanding)
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.setSpacing(10)
@@ -699,10 +705,20 @@ class MissionPlannerTab(QWidget):
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMinimumHeight(130)
+        self.log.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         panel_layout.addWidget(self.log, stretch=1)
 
+        panel_scroll = QScrollArea()
+        panel_scroll.setWidget(panel)
+        panel_scroll.setWidgetResizable(True)
+        panel_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        panel_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        panel_scroll.setMinimumWidth(380)
+        panel_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
         root.addWidget(self.map, stretch=3)
-        root.addWidget(panel, stretch=2)
+        root.addWidget(panel_scroll, stretch=2)
 
         for widget in (
             self.camera,

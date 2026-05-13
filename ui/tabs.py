@@ -54,20 +54,51 @@ for _backend in (
     except Exception as exc:  # pragma: no cover - optional UI dependency
         MATPLOTLIB_ERROR = str(exc)
 
-from final_toolkit.legacy_bridge import legacy_summary
-from final_toolkit.core.detection import (
+from legacy_bridge import legacy_summary
+from core.detection import (
     detect_cracks,
     detect_metal_defects,
     detect_solar_defects,
     detect_structural_defects,
     load_image,
 )
-from final_toolkit.core.pipeline import PipelineConfig, run_pipeline
-from final_toolkit.core.propagation import CrackPropagationForecaster, PropagationPhysicsConfig
-from final_toolkit.core.reconstruction import CustomDroneReconstructor, available_reconstruction_profiles
+from core.pipeline import PipelineConfig, run_pipeline
+from core.propagation import CrackPropagationForecaster, PropagationPhysicsConfig
+from core.reconstruction import CustomDroneReconstructor, available_reconstruction_profiles
 from .theme import standard_icon
+from .components import (
+    Banner,
+    EmptyState,
+    PipelineStageCard,
+    ReadinessCard,
+    StatusChip,
+    TelemetryLabel,
+    h_separator,
+    make_label,
+)
 
 SUPPORTED_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+
+# ── Local button helpers ──────────────────────────────────────────────────────
+
+def _primary_btn(text: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setObjectName("primary")
+    btn.setMinimumHeight(34)
+    return btn
+
+
+def _ghost_btn(text: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setObjectName("ghost")
+    btn.setMinimumHeight(32)
+    return btn
+
+
+def _section_lbl(text: str) -> QLabel:
+    lbl = QLabel(text.upper())
+    lbl.setObjectName("sectionTitle")
+    return lbl
 
 
 def _pixmap_from_bgr(image_bgr):
@@ -204,105 +235,184 @@ class CrackAnalysisTab(QWidget):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        controls = QGroupBox("Crack Analysis")
-        form = QFormLayout(controls)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setContentsMargins(12, 10, 12, 10)
 
+        # Left: setup panel (scrollable)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(10)
+
+        left_layout.addWidget(_section_lbl("Crack Analysis Setup"))
+
+        # Input section
+        input_card = QGroupBox("Input Image")
+        input_form = QFormLayout(input_card)
+        input_form.setSpacing(10)
         image_row = QHBoxLayout()
         self.image_path = QLineEdit()
+        self.image_path.setPlaceholderText("Select drone image...")
+        self.image_path.setMinimumHeight(32)
         browse = QPushButton("Browse")
+        browse.setObjectName("ghost")
+        browse.setFixedWidth(72)
+        browse.setMinimumHeight(32)
         browse.clicked.connect(self._browse_image)
         image_row.addWidget(self.image_path)
         image_row.addWidget(browse)
-        form.addRow("Image:", image_row)
+        input_form.addRow("Image:", image_row)
+        left_layout.addWidget(input_card)
+
+        # Propagation model
+        model_card = QGroupBox("Propagation Model")
+        model_form = QFormLayout(model_card)
+        model_form.setSpacing(10)
 
         self.steps = QSpinBox()
         self.steps.setRange(1, 30)
         self.steps.setValue(6)
-        form.addRow("Forecast Steps:", self.steps)
+        self.steps.setMinimumHeight(32)
+        model_form.addRow("Forecast steps:", self.steps)
 
         self.propagation_mode = QComboBox()
-        self.propagation_mode.addItem("Geometric", "geometric")
-        self.propagation_mode.addItem("Physics Informed", "physics_informed")
-        form.addRow("Propagation Mode:", self.propagation_mode)
+        self.propagation_mode.addItem("Geometric (fast)", "geometric")
+        self.propagation_mode.addItem("Physics Informed (detailed)", "physics_informed")
+        self.propagation_mode.setMinimumHeight(32)
+        model_form.addRow("Propagation mode:", self.propagation_mode)
+        left_layout.addWidget(model_card)
 
-        self.prop_pixel_size_mm = QDoubleSpinBox()
-        self.prop_pixel_size_mm.setRange(0.01, 20.0)
-        self.prop_pixel_size_mm.setDecimals(3)
-        self.prop_pixel_size_mm.setValue(0.5)
-        self.prop_pixel_size_mm.setSingleStep(0.05)
-        form.addRow("Pixel Size (mm/px):", self.prop_pixel_size_mm)
+        # Stress profile
+        stress_card = QGroupBox("Stress Profile")
+        stress_form = QFormLayout(stress_card)
+        stress_form.setSpacing(10)
 
         self.prop_sigma = QDoubleSpinBox()
         self.prop_sigma.setRange(0.1, 2000.0)
-        self.prop_sigma.setDecimals(3)
+        self.prop_sigma.setDecimals(2)
         self.prop_sigma.setValue(35.0)
-        self.prop_sigma.setSingleStep(1.0)
-        form.addRow("Sigma Nominal (MPa):", self.prop_sigma)
+        self.prop_sigma.setSuffix(" MPa")
+        self.prop_sigma.setMinimumHeight(32)
+        stress_form.addRow("Nominal stress σ:", self.prop_sigma)
 
         self.prop_delta_sigma = QDoubleSpinBox()
         self.prop_delta_sigma.setRange(0.01, 2000.0)
-        self.prop_delta_sigma.setDecimals(3)
+        self.prop_delta_sigma.setDecimals(2)
         self.prop_delta_sigma.setValue(12.0)
-        self.prop_delta_sigma.setSingleStep(0.5)
-        form.addRow("Delta Sigma (MPa):", self.prop_delta_sigma)
+        self.prop_delta_sigma.setSuffix(" MPa")
+        self.prop_delta_sigma.setMinimumHeight(32)
+        stress_form.addRow("Stress range Δσ:", self.prop_delta_sigma)
+
+        self.prop_horizon_years = QDoubleSpinBox()
+        self.prop_horizon_years.setRange(0.01, 20.0)
+        self.prop_horizon_years.setDecimals(1)
+        self.prop_horizon_years.setValue(1.0)
+        self.prop_horizon_years.setSuffix(" years")
+        self.prop_horizon_years.setMinimumHeight(32)
+        stress_form.addRow("Forecast horizon:", self.prop_horizon_years)
 
         self.prop_cycles_year = QDoubleSpinBox()
         self.prop_cycles_year.setRange(1.0, 1.0e9)
         self.prop_cycles_year.setDecimals(0)
         self.prop_cycles_year.setValue(1_000_000.0)
         self.prop_cycles_year.setSingleStep(10000.0)
-        form.addRow("Cycles / Year:", self.prop_cycles_year)
+        self.prop_cycles_year.setMinimumHeight(32)
+        stress_form.addRow("Cycles per year:", self.prop_cycles_year)
+        left_layout.addWidget(stress_card)
 
-        self.prop_horizon_years = QDoubleSpinBox()
-        self.prop_horizon_years.setRange(0.01, 20.0)
-        self.prop_horizon_years.setDecimals(3)
-        self.prop_horizon_years.setValue(1.0)
-        self.prop_horizon_years.setSingleStep(0.1)
-        form.addRow("Propagation Horizon (years):", self.prop_horizon_years)
+        # Advanced (collapsed visual grouping)
+        adv_card = QGroupBox("Advanced Parameters (0 = use defaults)")
+        adv_form = QFormLayout(adv_card)
+        adv_form.setSpacing(8)
+
+        self.prop_pixel_size_mm = QDoubleSpinBox()
+        self.prop_pixel_size_mm.setRange(0.01, 20.0)
+        self.prop_pixel_size_mm.setDecimals(3)
+        self.prop_pixel_size_mm.setValue(0.5)
+        self.prop_pixel_size_mm.setSingleStep(0.05)
+        self.prop_pixel_size_mm.setSuffix(" mm/px")
+        self.prop_pixel_size_mm.setMinimumHeight(32)
+        adv_form.addRow("Pixel size:", self.prop_pixel_size_mm)
 
         self.prop_cycles_step = QDoubleSpinBox()
         self.prop_cycles_step.setRange(0.0, 1.0e12)
         self.prop_cycles_step.setDecimals(0)
         self.prop_cycles_step.setValue(0.0)
         self.prop_cycles_step.setSingleStep(10000.0)
-        form.addRow("Cycles / Step (0=auto):", self.prop_cycles_step)
+        self.prop_cycles_step.setMinimumHeight(32)
+        adv_form.addRow("Cycles per step (0=auto):", self.prop_cycles_step)
 
         self.prop_kic = QDoubleSpinBox()
         self.prop_kic.setRange(0.0, 500.0)
-        self.prop_kic.setDecimals(3)
+        self.prop_kic.setDecimals(2)
         self.prop_kic.setValue(0.0)
-        self.prop_kic.setSingleStep(1.0)
-        form.addRow("Fracture Toughness KIC (0=default):", self.prop_kic)
+        self.prop_kic.setMinimumHeight(32)
+        adv_form.addRow("Fracture toughness KIC:", self.prop_kic)
 
         self.prop_paris_c = QDoubleSpinBox()
         self.prop_paris_c.setRange(0.0, 1.0)
         self.prop_paris_c.setDecimals(16)
         self.prop_paris_c.setValue(0.0)
         self.prop_paris_c.setSingleStep(1e-11)
-        form.addRow("Paris C (0=default):", self.prop_paris_c)
+        self.prop_paris_c.setMinimumHeight(32)
+        adv_form.addRow("Paris law C:", self.prop_paris_c)
 
         self.prop_paris_m = QDoubleSpinBox()
         self.prop_paris_m.setRange(0.0, 10.0)
         self.prop_paris_m.setDecimals(3)
         self.prop_paris_m.setValue(0.0)
-        self.prop_paris_m.setSingleStep(0.1)
-        form.addRow("Paris m (0=default):", self.prop_paris_m)
+        self.prop_paris_m.setMinimumHeight(32)
+        adv_form.addRow("Paris law m:", self.prop_paris_m)
+        left_layout.addWidget(adv_card)
 
-        run = QPushButton("Run Crack Analysis")
-        run.clicked.connect(self._run)
-        form.addRow("", run)
+        left_layout.addStretch(1)
 
-        root.addWidget(controls)
+        run_btn = _primary_btn("Run Crack Analysis")
+        run_btn.setMinimumHeight(40)
+        run_btn.clicked.connect(self._run)
+        left_layout.addWidget(run_btn)
 
-        self.preview = QLabel("No result yet")
+        from PyQt6.QtWidgets import QScrollArea, QFrame
+        left_sa = QScrollArea()
+        left_sa.setWidget(left_content)
+        left_sa.setWidgetResizable(True)
+        left_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_sa.setFrameShape(QFrame.Shape.NoFrame)
+        left_sa.setMinimumWidth(280)
+        left_sa.setMaximumWidth(360)
+        splitter.addWidget(left_sa)
+
+        # Right: results
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        right_layout.addWidget(_section_lbl("Results"))
+
+        self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(360)
-        root.addWidget(self.preview)
+        self.preview.setMinimumHeight(300)
+        self.preview.setStyleSheet(
+            "QLabel { background: #0f1c2e; border: 1px solid #192535; border-radius: 6px; color: #5a7898; }"
+        )
+        self.preview.setText("Run analysis to see crack overlay and propagation forecast")
+        self.preview.setWordWrap(True)
+        right_layout.addWidget(self.preview, stretch=2)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        root.addWidget(self.log)
+        self.log.setMinimumHeight(120)
+        self.log.setPlaceholderText("Analysis metrics will appear here after running.")
+        right_layout.addWidget(self.log, stretch=1)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        root.addWidget(splitter, stretch=1)
 
     def _browse_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -414,45 +524,106 @@ class MetalDefectTab(QWidget):
             self.image_path.setText(p)
 
     def _build_ui(self):
+        from PyQt6.QtWidgets import QScrollArea, QFrame
         root = QVBoxLayout(self)
-        controls = QGroupBox("Defect Analysis")
-        form = QFormLayout(controls)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setContentsMargins(12, 10, 12, 10)
+
+        # Left: config panel (scrollable)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(10)
+
+        left_layout.addWidget(_section_lbl("Defect Detection Setup"))
+
+        # Input card
+        input_card = QGroupBox("Input Image")
+        input_form = QFormLayout(input_card)
+        input_form.setSpacing(10)
         image_row = QHBoxLayout()
         self.image_path = QLineEdit()
+        self.image_path.setPlaceholderText("Select drone image...")
+        self.image_path.setMinimumHeight(32)
         browse = QPushButton("Browse")
+        browse.setObjectName("ghost")
+        browse.setFixedWidth(72)
+        browse.setMinimumHeight(32)
         browse.clicked.connect(self._browse_image)
         image_row.addWidget(self.image_path)
         image_row.addWidget(browse)
-        form.addRow("Image:", image_row)
+        input_form.addRow("Image:", image_row)
+        left_layout.addWidget(input_card)
+
+        # Analysis type card
+        type_card = QGroupBox("Analysis Settings")
+        type_form = QFormLayout(type_card)
+        type_form.setSpacing(10)
 
         self.analysis_type = QComboBox()
         self.analysis_type.addItem("Metal Defects (Classical)", "metal")
-        self.analysis_type.addItem("Structural Defects (Model + Fallback)", "structural")
-        self.analysis_type.addItem("Solar Defects (Model + Fallback)", "solar")
+        self.analysis_type.addItem("Structural Defects (AI Model)", "structural")
+        self.analysis_type.addItem("Solar Defects (AI Model)", "solar")
+        self.analysis_type.setMinimumHeight(32)
         self.analysis_type.currentIndexChanged.connect(self._sync_analysis_controls)
-        form.addRow("Analysis Type:", self.analysis_type)
+        type_form.addRow("Analysis type:", self.analysis_type)
 
-        self.use_model = QCheckBox("Use model when available")
+        self.use_model = QCheckBox("Use AI model when available")
         self.use_model.setChecked(True)
-        form.addRow("", self.use_model)
+        type_form.addRow("", self.use_model)
 
         self.model_key = QLineEdit("structural_multiclass_detector")
-        form.addRow("Model Key:", self.model_key)
+        self.model_key.setMinimumHeight(32)
+        type_form.addRow("Model key:", self.model_key)
+        left_layout.addWidget(type_card)
 
-        run = QPushButton("Run Defect Detection")
-        run.clicked.connect(self._run)
-        form.addRow("", run)
-        root.addWidget(controls)
+        left_layout.addStretch(1)
 
-        self.preview = QLabel("No result yet")
+        run_btn = _primary_btn("Run Defect Detection")
+        run_btn.setMinimumHeight(40)
+        run_btn.clicked.connect(self._run)
+        left_layout.addWidget(run_btn)
+
+        left_sa = QScrollArea()
+        left_sa.setWidget(left_content)
+        left_sa.setWidgetResizable(True)
+        left_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_sa.setFrameShape(QFrame.Shape.NoFrame)
+        left_sa.setMinimumWidth(260)
+        left_sa.setMaximumWidth(340)
+        splitter.addWidget(left_sa)
+
+        # Right: results
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        right_layout.addWidget(_section_lbl("Detection Results"))
+
+        self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumHeight(360)
-        root.addWidget(self.preview)
+        self.preview.setMinimumHeight(300)
+        self.preview.setStyleSheet(
+            "QLabel { background: #0f1c2e; border: 1px solid #192535; border-radius: 6px; color: #5a7898; }"
+        )
+        self.preview.setText("Run detection to see defect overlay")
+        self.preview.setWordWrap(True)
+        right_layout.addWidget(self.preview, stretch=2)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        root.addWidget(self.log)
+        self.log.setMinimumHeight(120)
+        self.log.setPlaceholderText("Detection metrics will appear here after running.")
+        right_layout.addWidget(self.log, stretch=1)
+
+        splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        root.addWidget(splitter, stretch=1)
         self._sync_analysis_controls()
 
     def _sync_analysis_controls(self):
@@ -637,90 +808,157 @@ class ReconstructionTab(QWidget):
             self._load_point_link_artifacts(point_link_path=point_link, critical_points_path=critical)
 
     def _build_ui(self):
+        from PyQt6.QtWidgets import QScrollArea, QFrame
         root = QVBoxLayout(self)
-        controls = QGroupBox("Custom 3D Reconstruction (No COLMAP)")
-        form = QFormLayout(controls)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        main_split = QSplitter(Qt.Orientation.Horizontal)
+        main_split.setContentsMargins(12, 10, 12, 10)
+
+        # Left: config + controls (scrollable)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(10)
+
+        left_layout.addWidget(_section_lbl("3D Reconstruction Setup"))
+
+        # Paths card
+        paths_card = QGroupBox("Source & Output")
+        paths_form = QFormLayout(paths_card)
+        paths_form.setSpacing(10)
 
         img_row = QHBoxLayout()
         self.image_dir = QLineEdit()
+        self.image_dir.setPlaceholderText("Folder with drone images...")
+        self.image_dir.setMinimumHeight(32)
         img_browse = QPushButton("Browse")
+        img_browse.setObjectName("ghost")
+        img_browse.setFixedWidth(72)
+        img_browse.setMinimumHeight(32)
         img_browse.clicked.connect(self._browse_images)
         img_row.addWidget(self.image_dir)
         img_row.addWidget(img_browse)
-        form.addRow("Image Folder:", img_row)
+        paths_form.addRow("Images:", img_row)
 
         mask_row = QHBoxLayout()
         self.mask_dir = QLineEdit()
+        self.mask_dir.setPlaceholderText("Optional crack mask folder...")
+        self.mask_dir.setMinimumHeight(32)
         mask_browse = QPushButton("Browse")
+        mask_browse.setObjectName("ghost")
+        mask_browse.setFixedWidth(72)
+        mask_browse.setMinimumHeight(32)
         mask_browse.clicked.connect(self._browse_masks)
         mask_row.addWidget(self.mask_dir)
         mask_row.addWidget(mask_browse)
-        form.addRow("Mask Folder (Optional):", mask_row)
+        paths_form.addRow("Masks (opt.):", mask_row)
 
         out_row = QHBoxLayout()
         self.output_dir = QLineEdit("final_toolkit_outputs/ui_reconstruction")
+        self.output_dir.setMinimumHeight(32)
         out_browse = QPushButton("Browse")
+        out_browse.setObjectName("ghost")
+        out_browse.setFixedWidth(72)
+        out_browse.setMinimumHeight(32)
         out_browse.clicked.connect(self._browse_output)
         out_row.addWidget(self.output_dir)
         out_row.addWidget(out_browse)
-        form.addRow("Output Folder:", out_row)
+        paths_form.addRow("Output:", out_row)
+        left_layout.addWidget(paths_card)
+
+        # Reconstruction settings card
+        recon_card = QGroupBox("Reconstruction Settings")
+        recon_form = QFormLayout(recon_card)
+        recon_form.setSpacing(10)
 
         self.profile = QComboBox()
+        self.profile.setMinimumHeight(32)
         for name in available_reconstruction_profiles():
             label = {
                 "fast_preview": "Fast Preview",
                 "standard": "Standard",
-                "inspection_high_accuracy": "Inspection High Accuracy",
+                "inspection_high_accuracy": "Inspection — High Accuracy",
             }.get(name, name)
             self.profile.addItem(label, name)
         self.profile.setCurrentIndex(max(0, self.profile.findData("standard")))
-        form.addRow("Reconstruction Profile:", self.profile)
+        recon_form.addRow("Profile:", self.profile)
 
         self.execution_mode = QComboBox()
+        self.execution_mode.setMinimumHeight(32)
         self.execution_mode.addItem("Local", "local")
-        self.execution_mode.addItem("Cloud (Fallback Local)", "cloud")
-        form.addRow("Execution Mode:", self.execution_mode)
+        self.execution_mode.addItem("Cloud (fallback local)", "cloud")
+        recon_form.addRow("Execution:", self.execution_mode)
 
         self.use_cache = QCheckBox("Reuse cached features and matches")
         self.use_cache.setChecked(True)
-        form.addRow("", self.use_cache)
+        recon_form.addRow("", self.use_cache)
+        left_layout.addWidget(recon_card)
+
+        # Propagation card
+        prop_card = QGroupBox("Crack Propagation")
+        prop_form = QFormLayout(prop_card)
+        prop_form.setSpacing(10)
 
         self.propagation_steps = QSpinBox()
         self.propagation_steps.setRange(1, 30)
         self.propagation_steps.setValue(6)
-        form.addRow("Propagation Steps:", self.propagation_steps)
+        self.propagation_steps.setMinimumHeight(32)
+        prop_form.addRow("Forecast steps:", self.propagation_steps)
 
         self.propagation_mode = QComboBox()
-        self.propagation_mode.addItem("Geometric", "geometric")
+        self.propagation_mode.setMinimumHeight(32)
+        self.propagation_mode.addItem("Geometric (fast)", "geometric")
         self.propagation_mode.addItem("Physics Informed", "physics_informed")
-        form.addRow("Propagation Mode:", self.propagation_mode)
+        prop_form.addRow("Mode:", self.propagation_mode)
+        left_layout.addWidget(prop_card)
 
-        progress_row = QHBoxLayout()
+        # Progress card
+        prog_card = QGroupBox("Progress")
+        prog_layout = QVBoxLayout(prog_card)
         self.recon_progress = QProgressBar()
         self.recon_progress.setRange(0, 100)
         self.recon_progress.setValue(0)
         self.recon_progress.setFormat("%p%")
+        self.recon_progress.setMinimumHeight(20)
         self.recon_progress_label = QLabel("Idle")
-        self.recon_progress_label.setMinimumWidth(220)
-        progress_row.addWidget(self.recon_progress, stretch=1)
-        progress_row.addWidget(self.recon_progress_label)
-        form.addRow("Progress:", progress_row)
+        self.recon_progress_label.setObjectName("muted")
+        prog_layout.addWidget(self.recon_progress)
+        prog_layout.addWidget(self.recon_progress_label)
+        left_layout.addWidget(prog_card)
 
-        run_row = QHBoxLayout()
-        self.run_btn = QPushButton("Run Reconstruction")
-        self.run_btn.setIcon(standard_icon(self, "SP_MediaPlay", "SP_ArrowForward"))
+        left_layout.addStretch(1)
+
+        # Action buttons
+        self.run_btn = _primary_btn("Run Reconstruction")
+        self.run_btn.setMinimumHeight(40)
         self.run_btn.clicked.connect(self._run)
-        load = QPushButton("Import Reconstruction Folder")
-        load.setIcon(standard_icon(self, "SP_DirOpenIcon", "SP_DialogOpenButton"))
+        left_layout.addWidget(self.run_btn)
+
+        import_row = QHBoxLayout()
+        load = _ghost_btn("Import Folder")
         load.clicked.connect(self._load_reconstruction_folder)
-        load_file = QPushButton("Import Artifact File")
-        load_file.setIcon(standard_icon(self, "SP_FileIcon", "SP_DialogOpenButton"))
+        load_file = _ghost_btn("Import File")
         load_file.clicked.connect(self._load_reconstruction_artifact)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(load)
-        run_row.addWidget(load_file)
-        form.addRow("", run_row)
-        root.addWidget(controls)
+        import_row.addWidget(load)
+        import_row.addWidget(load_file)
+        left_layout.addLayout(import_row)
+
+        left_sa = QScrollArea()
+        left_sa.setWidget(left_content)
+        left_sa.setWidgetResizable(True)
+        left_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_sa.setFrameShape(QFrame.Shape.NoFrame)
+        left_sa.setMinimumWidth(280)
+        left_sa.setMaximumWidth(360)
+        main_split.addWidget(left_sa)
+
+        # Right side: 3D viewer + point panel (keep existing splitter)
+        right_host = QWidget()
+        right_host_layout = QVBoxLayout(right_host)
+        right_host_layout.setContentsMargins(0, 0, 0, 0)
+        right_host_layout.setSpacing(6)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -795,11 +1033,19 @@ class ReconstructionTab(QWidget):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 1)
-        root.addWidget(splitter, stretch=1)
+        right_host_layout.addWidget(splitter, stretch=2)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        root.addWidget(self.log)
+        self.log.setMinimumHeight(90)
+        self.log.setMaximumHeight(150)
+        self.log.setPlaceholderText("Reconstruction log will appear here.")
+        right_host_layout.addWidget(self.log)
+
+        main_split.addWidget(right_host)
+        main_split.setStretchFactor(0, 1)
+        main_split.setStretchFactor(1, 3)
+        root.addWidget(main_split, stretch=1)
 
     def _browse_images(self):
         path = QFileDialog.getExistingDirectory(self, "Select image folder")
@@ -2186,201 +2432,301 @@ class FullPipelineTab(QWidget):
         self.output_dir.setText(str(pipeline_root))
 
     def _build_ui(self):
+        from PyQt6.QtWidgets import QScrollArea, QFrame
         root = QVBoxLayout(self)
-        controls = QGroupBox("End-to-End Pipeline")
-        form = QFormLayout(controls)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        outer = QSplitter(Qt.Orientation.Horizontal)
+        outer.setContentsMargins(12, 10, 12, 10)
+
+        # Left: grouped config (scrollable)
+        left_content = QWidget()
+        left_layout = QVBoxLayout(left_content)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        left_layout.setSpacing(10)
+
+        left_layout.addWidget(_section_lbl("Full Inspection Pipeline"))
+
+        # Input & target card
+        input_card = QGroupBox("Input & Target")
+        input_form = QFormLayout(input_card)
+        input_form.setSpacing(10)
 
         img_row = QHBoxLayout()
         self.image_dir = QLineEdit()
+        self.image_dir.setPlaceholderText("Folder with drone images...")
+        self.image_dir.setMinimumHeight(32)
         img_btn = QPushButton("Browse")
+        img_btn.setObjectName("ghost")
+        img_btn.setFixedWidth(72)
+        img_btn.setMinimumHeight(32)
         img_btn.clicked.connect(self._browse_images)
         img_row.addWidget(self.image_dir)
         img_row.addWidget(img_btn)
-        form.addRow("Image Folder:", img_row)
+        input_form.addRow("Images:", img_row)
 
         out_row = QHBoxLayout()
         self.output_dir = QLineEdit("final_toolkit_outputs")
+        self.output_dir.setMinimumHeight(32)
         out_btn = QPushButton("Browse")
+        out_btn.setObjectName("ghost")
+        out_btn.setFixedWidth(72)
+        out_btn.setMinimumHeight(32)
         out_btn.clicked.connect(self._browse_output)
         out_row.addWidget(self.output_dir)
         out_row.addWidget(out_btn)
-        form.addRow("Output Root:", out_row)
+        input_form.addRow("Output:", out_row)
 
         self.asset_id = QLineEdit()
-        self.asset_id.setPlaceholderText("Optional; defaults to dataset folder name")
-        form.addRow("Asset ID:", self.asset_id)
+        self.asset_id.setPlaceholderText("Defaults to dataset folder name")
+        self.asset_id.setMinimumHeight(32)
+        input_form.addRow("Asset ID:", self.asset_id)
 
         self.structure_type = QComboBox()
+        self.structure_type.setMinimumHeight(32)
         for label, value in (
-            ("Generic", "generic"),
-            ("Bridge", "bridge"),
-            ("Building", "building"),
-            ("Tower", "tower"),
-            ("Pipeline", "pipeline"),
-            ("Solar", "solar"),
+            ("Generic", "generic"), ("Bridge", "bridge"), ("Building", "building"),
+            ("Tower", "tower"), ("Pipeline", "pipeline"), ("Solar", "solar"),
         ):
             self.structure_type.addItem(label, value)
-        form.addRow("Structure Type:", self.structure_type)
+        input_form.addRow("Structure:", self.structure_type)
 
         self.material_type = QComboBox()
+        self.material_type.setMinimumHeight(32)
         for label, value in (
-            ("Concrete", "concrete"),
-            ("Steel", "steel"),
-            ("Masonry", "masonry"),
-            ("Composite", "composite"),
-            ("Mixed", "mixed"),
+            ("Concrete", "concrete"), ("Steel", "steel"), ("Masonry", "masonry"),
+            ("Composite", "composite"), ("Mixed", "mixed"),
         ):
             self.material_type.addItem(label, value)
-        form.addRow("Material Type:", self.material_type)
+        input_form.addRow("Material:", self.material_type)
 
         bundle_row = QHBoxLayout()
         self.capture_bundle_path = QLineEdit()
+        self.capture_bundle_path.setPlaceholderText("Optional multi-sensor bundle JSON")
+        self.capture_bundle_path.setMinimumHeight(32)
         bundle_btn = QPushButton("Browse")
+        bundle_btn.setObjectName("ghost")
+        bundle_btn.setFixedWidth(72)
+        bundle_btn.setMinimumHeight(32)
         bundle_btn.clicked.connect(self._browse_capture_bundle)
         bundle_row.addWidget(self.capture_bundle_path)
         bundle_row.addWidget(bundle_btn)
-        form.addRow("Capture Bundle (Optional):", bundle_row)
+        input_form.addRow("Bundle (opt.):", bundle_row)
 
         calib_row = QHBoxLayout()
         self.calibration_profile_path = QLineEdit()
+        self.calibration_profile_path.setPlaceholderText("Optional calibration JSON")
+        self.calibration_profile_path.setMinimumHeight(32)
         calib_btn = QPushButton("Browse")
+        calib_btn.setObjectName("ghost")
+        calib_btn.setFixedWidth(72)
+        calib_btn.setMinimumHeight(32)
         calib_btn.clicked.connect(self._browse_calibration_profile)
         calib_row.addWidget(self.calibration_profile_path)
         calib_row.addWidget(calib_btn)
-        form.addRow("Calibration Profile (Optional):", calib_row)
+        input_form.addRow("Calibration (opt.):", calib_row)
+        left_layout.addWidget(input_card)
+
+        # Propagation card
+        prop_card = QGroupBox("Crack Propagation")
+        prop_form = QFormLayout(prop_card)
+        prop_form.setSpacing(10)
 
         self.steps = QSpinBox()
         self.steps.setRange(1, 30)
         self.steps.setValue(6)
-        form.addRow("Forecast Steps:", self.steps)
+        self.steps.setMinimumHeight(32)
+        prop_form.addRow("Forecast steps:", self.steps)
 
         self.propagation_mode = QComboBox()
-        self.propagation_mode.addItem("Geometric", "geometric")
+        self.propagation_mode.setMinimumHeight(32)
+        self.propagation_mode.addItem("Geometric (fast)", "geometric")
         self.propagation_mode.addItem("Physics Informed", "physics_informed")
-        form.addRow("Propagation Mode:", self.propagation_mode)
+        prop_form.addRow("Mode:", self.propagation_mode)
 
         self.prop_pixel_size_mm = QDoubleSpinBox()
         self.prop_pixel_size_mm.setRange(0.01, 20.0)
         self.prop_pixel_size_mm.setDecimals(3)
         self.prop_pixel_size_mm.setValue(0.5)
         self.prop_pixel_size_mm.setSingleStep(0.05)
-        form.addRow("Pixel Size (mm/px):", self.prop_pixel_size_mm)
+        self.prop_pixel_size_mm.setSuffix(" mm/px")
+        self.prop_pixel_size_mm.setMinimumHeight(32)
+        prop_form.addRow("Pixel size:", self.prop_pixel_size_mm)
 
         self.prop_sigma = QDoubleSpinBox()
         self.prop_sigma.setRange(0.1, 2000.0)
-        self.prop_sigma.setDecimals(3)
+        self.prop_sigma.setDecimals(2)
         self.prop_sigma.setValue(35.0)
-        self.prop_sigma.setSingleStep(1.0)
-        form.addRow("Sigma Nominal (MPa):", self.prop_sigma)
+        self.prop_sigma.setSuffix(" MPa")
+        self.prop_sigma.setMinimumHeight(32)
+        prop_form.addRow("Nominal stress σ:", self.prop_sigma)
 
         self.prop_delta_sigma = QDoubleSpinBox()
         self.prop_delta_sigma.setRange(0.01, 2000.0)
-        self.prop_delta_sigma.setDecimals(3)
+        self.prop_delta_sigma.setDecimals(2)
         self.prop_delta_sigma.setValue(12.0)
-        self.prop_delta_sigma.setSingleStep(0.5)
-        form.addRow("Delta Sigma (MPa):", self.prop_delta_sigma)
+        self.prop_delta_sigma.setSuffix(" MPa")
+        self.prop_delta_sigma.setMinimumHeight(32)
+        prop_form.addRow("Stress range Δσ:", self.prop_delta_sigma)
 
         self.prop_cycles_year = QDoubleSpinBox()
         self.prop_cycles_year.setRange(1.0, 1.0e9)
         self.prop_cycles_year.setDecimals(0)
         self.prop_cycles_year.setValue(1_000_000.0)
         self.prop_cycles_year.setSingleStep(10000.0)
-        form.addRow("Cycles / Year:", self.prop_cycles_year)
+        self.prop_cycles_year.setMinimumHeight(32)
+        prop_form.addRow("Cycles / year:", self.prop_cycles_year)
 
         self.prop_horizon_years = QDoubleSpinBox()
         self.prop_horizon_years.setRange(0.01, 20.0)
-        self.prop_horizon_years.setDecimals(3)
+        self.prop_horizon_years.setDecimals(1)
         self.prop_horizon_years.setValue(1.0)
-        self.prop_horizon_years.setSingleStep(0.1)
-        form.addRow("Propagation Horizon (years):", self.prop_horizon_years)
+        self.prop_horizon_years.setSuffix(" years")
+        self.prop_horizon_years.setMinimumHeight(32)
+        prop_form.addRow("Forecast horizon:", self.prop_horizon_years)
 
         self.prop_cycles_step = QDoubleSpinBox()
         self.prop_cycles_step.setRange(0.0, 1.0e12)
         self.prop_cycles_step.setDecimals(0)
         self.prop_cycles_step.setValue(0.0)
         self.prop_cycles_step.setSingleStep(10000.0)
-        form.addRow("Cycles / Step (0=auto):", self.prop_cycles_step)
+        self.prop_cycles_step.setMinimumHeight(32)
+        prop_form.addRow("Cycles/step (0=auto):", self.prop_cycles_step)
 
         self.prop_kic = QDoubleSpinBox()
         self.prop_kic.setRange(0.0, 500.0)
-        self.prop_kic.setDecimals(3)
+        self.prop_kic.setDecimals(2)
         self.prop_kic.setValue(0.0)
-        self.prop_kic.setSingleStep(1.0)
-        form.addRow("Fracture Toughness KIC (0=default):", self.prop_kic)
+        self.prop_kic.setMinimumHeight(32)
+        prop_form.addRow("Fracture toughness KIC:", self.prop_kic)
 
         self.prop_paris_c = QDoubleSpinBox()
         self.prop_paris_c.setRange(0.0, 1.0)
         self.prop_paris_c.setDecimals(16)
         self.prop_paris_c.setValue(0.0)
         self.prop_paris_c.setSingleStep(1e-11)
-        form.addRow("Paris C (0=default):", self.prop_paris_c)
+        self.prop_paris_c.setMinimumHeight(32)
+        prop_form.addRow("Paris law C (0=default):", self.prop_paris_c)
 
         self.prop_paris_m = QDoubleSpinBox()
         self.prop_paris_m.setRange(0.0, 10.0)
         self.prop_paris_m.setDecimals(3)
         self.prop_paris_m.setValue(0.0)
-        self.prop_paris_m.setSingleStep(0.1)
-        form.addRow("Paris m (0=default):", self.prop_paris_m)
+        self.prop_paris_m.setMinimumHeight(32)
+        prop_form.addRow("Paris law m (0=default):", self.prop_paris_m)
+        left_layout.addWidget(prop_card)
+
+        # 3D Reconstruction card
+        recon_card = QGroupBox("3D Reconstruction")
+        recon_form = QFormLayout(recon_card)
+        recon_form.setSpacing(10)
 
         self.recon_profile = QComboBox()
+        self.recon_profile.setMinimumHeight(32)
         for name in available_reconstruction_profiles():
             label = {
                 "fast_preview": "Fast Preview",
                 "standard": "Standard",
-                "inspection_high_accuracy": "Inspection High Accuracy",
+                "inspection_high_accuracy": "Inspection — High Accuracy",
             }.get(name, name)
             self.recon_profile.addItem(label, name)
         self.recon_profile.setCurrentIndex(max(0, self.recon_profile.findData("standard")))
-        form.addRow("Recon Profile:", self.recon_profile)
+        recon_form.addRow("Profile:", self.recon_profile)
 
         self.recon_mode = QComboBox()
+        self.recon_mode.setMinimumHeight(32)
         self.recon_mode.addItem("Local", "local")
-        self.recon_mode.addItem("Cloud (Fallback Local)", "cloud")
-        form.addRow("Recon Mode:", self.recon_mode)
+        self.recon_mode.addItem("Cloud (fallback local)", "cloud")
+        recon_form.addRow("Execution:", self.recon_mode)
 
-        self.recon_use_cache = QCheckBox("Use reconstruction cache")
+        self.recon_use_cache = QCheckBox("Reuse cached features and matches")
         self.recon_use_cache.setChecked(True)
-        form.addRow("", self.recon_use_cache)
+        recon_form.addRow("", self.recon_use_cache)
+        left_layout.addWidget(recon_card)
 
-        self.use_fenicsx = QCheckBox("Use legacy FEniCSx bridge (cracksim.py)")
-        form.addRow("", self.use_fenicsx)
+        # Models & options card
+        models_card = QGroupBox("Detection Models & Options")
+        models_form = QFormLayout(models_card)
+        models_form.setSpacing(10)
+
         self.use_multisensor = QCheckBox("Enable multi-sensor bundle processing")
         self.use_multisensor.setChecked(True)
-        form.addRow("", self.use_multisensor)
+        models_form.addRow("", self.use_multisensor)
+
         self.use_structural_models = QCheckBox("Enable structural defect model")
         self.use_structural_models.setChecked(True)
-        form.addRow("", self.use_structural_models)
+        models_form.addRow("", self.use_structural_models)
+
         self.structural_model_key = QLineEdit("structural_multiclass_detector")
-        form.addRow("Structural Model Key:", self.structural_model_key)
+        self.structural_model_key.setMinimumHeight(32)
+        models_form.addRow("Structural model:", self.structural_model_key)
+
         self.use_solar_models = QCheckBox("Enable solar defect model")
         self.use_solar_models.setChecked(True)
-        form.addRow("", self.use_solar_models)
+        models_form.addRow("", self.use_solar_models)
+
         self.solar_model_key = QLineEdit("solar_defect_detector")
-        form.addRow("Solar Model Key:", self.solar_model_key)
+        self.solar_model_key.setMinimumHeight(32)
+        models_form.addRow("Solar model:", self.solar_model_key)
 
-        self.run_btn = QPushButton("Run Full Pipeline")
-        self.run_btn.setIcon(standard_icon(self, "SP_MediaPlay", "SP_ArrowForward"))
+        self.use_fenicsx = QCheckBox("Use legacy FEniCSx bridge (cracksim.py)")
+        models_form.addRow("", self.use_fenicsx)
+        left_layout.addWidget(models_card)
+
+        left_layout.addStretch(1)
+
+        self.run_btn = _primary_btn("Run Full Inspection Pipeline")
+        self.run_btn.setMinimumHeight(40)
         self.run_btn.clicked.connect(self._run)
-        form.addRow("", self.run_btn)
+        left_layout.addWidget(self.run_btn)
 
-        status_row = QHBoxLayout()
+        left_sa = QScrollArea()
+        left_sa.setWidget(left_content)
+        left_sa.setWidgetResizable(True)
+        left_sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_sa.setFrameShape(QFrame.Shape.NoFrame)
+        left_sa.setMinimumWidth(300)
+        left_sa.setMaximumWidth(400)
+        outer.addWidget(left_sa)
+
+        # Right: progress + log
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
+
+        right_layout.addWidget(_section_lbl("Pipeline Status"))
+
+        status_card = QGroupBox("Progress")
+        status_layout = QVBoxLayout(status_card)
+        progress_row = QHBoxLayout()
         self.pipeline_status_label = QLabel("Ready")
+        self.pipeline_status_label.setObjectName("muted")
         self.pipeline_progress = QProgressBar()
         self.pipeline_progress.setRange(0, 100)
         self.pipeline_progress.setValue(0)
-        status_row.addWidget(self.pipeline_status_label)
-        status_row.addWidget(self.pipeline_progress)
-        form.addRow("Status:", status_row)
-
-        root.addWidget(controls)
+        self.pipeline_progress.setMinimumHeight(20)
+        progress_row.addWidget(self.pipeline_status_label, stretch=1)
+        progress_row.addWidget(self.pipeline_progress, stretch=2)
+        status_layout.addLayout(progress_row)
+        right_layout.addWidget(status_card)
 
         self.legacy_info = QTextEdit()
         self.legacy_info.setReadOnly(True)
-        root.addWidget(self.legacy_info)
+        self.legacy_info.setMaximumHeight(80)
+        self.legacy_info.setPlaceholderText("System asset info...")
+        right_layout.addWidget(self.legacy_info)
 
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        root.addWidget(self.log)
+        self.log.setPlaceholderText("Pipeline output will appear here after running.")
+        right_layout.addWidget(self.log, stretch=1)
+
+        outer.addWidget(right)
+        outer.setStretchFactor(0, 1)
+        outer.setStretchFactor(1, 2)
+        root.addWidget(outer, stretch=1)
 
     def _load_legacy_info(self):
         summary = legacy_summary()
@@ -2609,216 +2955,182 @@ class OperationsCenterTab(QWidget):
         self.output_dir.setText(str(output_root))
 
     def _build_ui(self):
+        from PyQt6.QtWidgets import QScrollArea, QFrame
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        controls = QGroupBox("Operations Center")
-        form = QFormLayout(controls)
+        # ── Top toolbar ──────────────────────────────────────────────────────
+        toolbar = QFrame()
+        toolbar.setObjectName("appBar")
+        toolbar.setFixedHeight(54)
+        toolbar_row = QHBoxLayout(toolbar)
+        toolbar_row.setContentsMargins(14, 0, 14, 0)
+        toolbar_row.setSpacing(8)
 
-        dataset_row = QHBoxLayout()
         self.image_dir = QLineEdit()
-        self.image_dir.setPlaceholderText("Select a dataset folder with drone images")
-        img_btn = QPushButton("Browse Dataset")
-        img_btn.clicked.connect(self._browse_images)
-        import_btn = QPushButton("Import Dataset")
-        import_btn.clicked.connect(self._import_dataset)
-        dataset_row.addWidget(self.image_dir)
-        dataset_row.addWidget(img_btn)
-        dataset_row.addWidget(import_btn)
-        form.addRow("Dataset:", dataset_row)
+        self.image_dir.setPlaceholderText("Dataset folder with drone images...")
+        self.image_dir.setMinimumHeight(32)
+        toolbar_row.addWidget(self.image_dir, stretch=2)
 
-        out_row = QHBoxLayout()
+        browse_btn = _ghost_btn("Browse")
+        browse_btn.setFixedWidth(72)
+        browse_btn.clicked.connect(self._browse_images)
+        toolbar_row.addWidget(browse_btn)
+
+        import_btn = _ghost_btn("Import")
+        import_btn.setFixedWidth(72)
+        import_btn.clicked.connect(self._import_dataset)
+        toolbar_row.addWidget(import_btn)
+
+        toolbar_row.addSpacing(8)
+
+        self.run_btn = _primary_btn("Run Inspection")
+        self.run_btn.setMinimumWidth(140)
+        self.run_btn.clicked.connect(self._run)
+        toolbar_row.addWidget(self.run_btn)
+
+        self.load_run_btn = _ghost_btn("Load Run")
+        self.load_run_btn.clicked.connect(self._load_existing_run)
+        toolbar_row.addWidget(self.load_run_btn)
+
+        self.open_run_btn = _ghost_btn("Open Folder")
+        self.open_run_btn.clicked.connect(self._open_run_folder)
+        toolbar_row.addWidget(self.open_run_btn)
+
+        self.open_report_btn = _ghost_btn("Open Report")
+        self.open_report_btn.clicked.connect(self._open_report_file)
+        toolbar_row.addWidget(self.open_report_btn)
+
+        toolbar_row.addSpacing(16)
+        self.status_label = QLabel("Ready")
+        self.status_label.setObjectName("muted")
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFixedWidth(120)
+        self.progress.setFixedHeight(16)
+        toolbar_row.addWidget(self.status_label)
+        toolbar_row.addWidget(self.progress)
+        root.addWidget(toolbar)
+
+        # ── Config strip (compact, collapsible feel) ──────────────────────────
+        from PyQt6.QtWidgets import QScrollArea as _QSA
+        cfg_widget = QWidget()
+        cfg_widget.setFixedHeight(54)
+        cfg_row = QHBoxLayout(cfg_widget)
+        cfg_row.setContentsMargins(14, 6, 14, 6)
+        cfg_row.setSpacing(10)
+
         self.output_dir = QLineEdit("final_toolkit_outputs")
-        out_btn = QPushButton("Browse Output")
-        out_btn.clicked.connect(self._browse_output)
-        out_row.addWidget(self.output_dir)
-        out_row.addWidget(out_btn)
-        form.addRow("Output Root:", out_row)
+        self.output_dir.setPlaceholderText("Output root...")
+        self.output_dir.setMinimumHeight(32)
+        out_browse = _ghost_btn("…")
+        out_browse.setFixedWidth(36)
+        out_browse.clicked.connect(self._browse_output)
 
         self.asset_id = QLineEdit()
-        self.asset_id.setPlaceholderText("Optional; defaults to dataset folder name")
-        form.addRow("Asset ID:", self.asset_id)
+        self.asset_id.setPlaceholderText("Asset ID (opt.)")
+        self.asset_id.setMinimumHeight(32)
+        self.asset_id.setMaximumWidth(160)
 
         self.structure_type = QComboBox()
+        self.structure_type.setMinimumHeight(32)
         for label, value in (
-            ("Generic", "generic"),
-            ("Bridge", "bridge"),
-            ("Building", "building"),
-            ("Tower", "tower"),
-            ("Pipeline", "pipeline"),
-            ("Solar", "solar"),
+            ("Generic", "generic"), ("Bridge", "bridge"), ("Building", "building"),
+            ("Tower", "tower"), ("Pipeline", "pipeline"), ("Solar", "solar"),
         ):
             self.structure_type.addItem(label, value)
-        form.addRow("Structure Type:", self.structure_type)
 
         self.material_type = QComboBox()
+        self.material_type.setMinimumHeight(32)
         for label, value in (
-            ("Concrete", "concrete"),
-            ("Steel", "steel"),
-            ("Masonry", "masonry"),
-            ("Composite", "composite"),
-            ("Mixed", "mixed"),
+            ("Concrete", "concrete"), ("Steel", "steel"), ("Masonry", "masonry"),
+            ("Composite", "composite"), ("Mixed", "mixed"),
         ):
             self.material_type.addItem(label, value)
-        form.addRow("Material Type:", self.material_type)
 
-        bundle_row = QHBoxLayout()
+        cfg_row.addWidget(QLabel("Output:"))
+        cfg_row.addWidget(self.output_dir, stretch=1)
+        cfg_row.addWidget(out_browse)
+        cfg_row.addWidget(QLabel("Asset ID:"))
+        cfg_row.addWidget(self.asset_id)
+        cfg_row.addWidget(QLabel("Structure:"))
+        cfg_row.addWidget(self.structure_type)
+        cfg_row.addWidget(QLabel("Material:"))
+        cfg_row.addWidget(self.material_type)
+        root.addWidget(cfg_widget)
+
+        # Hidden advanced params (preserved as attributes for _run())
         self.capture_bundle_path = QLineEdit()
-        bundle_btn = QPushButton("Browse Bundle")
-        bundle_btn.clicked.connect(self._browse_capture_bundle)
-        bundle_row.addWidget(self.capture_bundle_path)
-        bundle_row.addWidget(bundle_btn)
-        form.addRow("Capture Bundle (Optional):", bundle_row)
-
-        calib_row = QHBoxLayout()
         self.calibration_profile_path = QLineEdit()
-        calib_btn = QPushButton("Browse Profile")
-        calib_btn.clicked.connect(self._browse_calibration_profile)
-        calib_row.addWidget(self.calibration_profile_path)
-        calib_row.addWidget(calib_btn)
-        form.addRow("Calibration Profile (Optional):", calib_row)
-
         self.steps = QSpinBox()
         self.steps.setRange(1, 30)
         self.steps.setValue(6)
-        form.addRow("Forecast Steps:", self.steps)
-
         self.propagation_mode = QComboBox()
         self.propagation_mode.addItem("Geometric", "geometric")
         self.propagation_mode.addItem("Physics Informed", "physics_informed")
-        form.addRow("Propagation Mode:", self.propagation_mode)
-
         self.prop_pixel_size_mm = QDoubleSpinBox()
         self.prop_pixel_size_mm.setRange(0.01, 20.0)
         self.prop_pixel_size_mm.setDecimals(3)
         self.prop_pixel_size_mm.setValue(0.5)
         self.prop_pixel_size_mm.setSingleStep(0.05)
-        form.addRow("Pixel Size (mm/px):", self.prop_pixel_size_mm)
-
         self.prop_sigma = QDoubleSpinBox()
         self.prop_sigma.setRange(0.1, 2000.0)
         self.prop_sigma.setDecimals(3)
         self.prop_sigma.setValue(35.0)
-        self.prop_sigma.setSingleStep(1.0)
-        form.addRow("Sigma Nominal (MPa):", self.prop_sigma)
-
         self.prop_delta_sigma = QDoubleSpinBox()
         self.prop_delta_sigma.setRange(0.01, 2000.0)
         self.prop_delta_sigma.setDecimals(3)
         self.prop_delta_sigma.setValue(12.0)
-        self.prop_delta_sigma.setSingleStep(0.5)
-        form.addRow("Delta Sigma (MPa):", self.prop_delta_sigma)
-
         self.prop_cycles_year = QDoubleSpinBox()
         self.prop_cycles_year.setRange(1.0, 1.0e9)
         self.prop_cycles_year.setDecimals(0)
         self.prop_cycles_year.setValue(1_000_000.0)
-        self.prop_cycles_year.setSingleStep(10000.0)
-        form.addRow("Cycles / Year:", self.prop_cycles_year)
-
         self.prop_horizon_years = QDoubleSpinBox()
         self.prop_horizon_years.setRange(0.01, 20.0)
         self.prop_horizon_years.setDecimals(3)
         self.prop_horizon_years.setValue(1.0)
-        self.prop_horizon_years.setSingleStep(0.1)
-        form.addRow("Propagation Horizon (years):", self.prop_horizon_years)
-
         self.prop_cycles_step = QDoubleSpinBox()
         self.prop_cycles_step.setRange(0.0, 1.0e12)
         self.prop_cycles_step.setDecimals(0)
         self.prop_cycles_step.setValue(0.0)
-        self.prop_cycles_step.setSingleStep(10000.0)
-        form.addRow("Cycles / Step (0=auto):", self.prop_cycles_step)
-
         self.prop_kic = QDoubleSpinBox()
         self.prop_kic.setRange(0.0, 500.0)
         self.prop_kic.setDecimals(3)
         self.prop_kic.setValue(0.0)
-        self.prop_kic.setSingleStep(1.0)
-        form.addRow("Fracture Toughness KIC (0=default):", self.prop_kic)
-
         self.prop_paris_c = QDoubleSpinBox()
         self.prop_paris_c.setRange(0.0, 1.0)
         self.prop_paris_c.setDecimals(16)
         self.prop_paris_c.setValue(0.0)
-        self.prop_paris_c.setSingleStep(1e-11)
-        form.addRow("Paris C (0=default):", self.prop_paris_c)
-
         self.prop_paris_m = QDoubleSpinBox()
         self.prop_paris_m.setRange(0.0, 10.0)
         self.prop_paris_m.setDecimals(3)
         self.prop_paris_m.setValue(0.0)
-        self.prop_paris_m.setSingleStep(0.1)
-        form.addRow("Paris m (0=default):", self.prop_paris_m)
-
         self.recon_profile = QComboBox()
         for name in available_reconstruction_profiles():
-            label = {
-                "fast_preview": "Fast Preview",
-                "standard": "Standard",
-                "inspection_high_accuracy": "Inspection High Accuracy",
-            }.get(name, name)
+            label = {"fast_preview": "Fast Preview", "standard": "Standard",
+                     "inspection_high_accuracy": "Inspection High Accuracy"}.get(name, name)
             self.recon_profile.addItem(label, name)
         self.recon_profile.setCurrentIndex(max(0, self.recon_profile.findData("standard")))
-        form.addRow("Recon Profile:", self.recon_profile)
-
         self.recon_mode = QComboBox()
         self.recon_mode.addItem("Local", "local")
         self.recon_mode.addItem("Cloud (Fallback Local)", "cloud")
-        form.addRow("Recon Mode:", self.recon_mode)
-
-        self.recon_use_cache = QCheckBox("Use reconstruction cache")
+        self.recon_use_cache = QCheckBox()
         self.recon_use_cache.setChecked(True)
-        form.addRow("", self.recon_use_cache)
-
-        self.use_fenicsx = QCheckBox("Use FEniCSx bridge (if cracksim.py works in env)")
-        form.addRow("", self.use_fenicsx)
-        self.use_multisensor = QCheckBox("Enable multi-sensor bundle processing")
+        self.use_fenicsx = QCheckBox()
+        self.use_multisensor = QCheckBox()
         self.use_multisensor.setChecked(True)
-        form.addRow("", self.use_multisensor)
-        self.use_structural_models = QCheckBox("Enable structural defect model")
+        self.use_structural_models = QCheckBox()
         self.use_structural_models.setChecked(True)
-        form.addRow("", self.use_structural_models)
         self.structural_model_key = QLineEdit("structural_multiclass_detector")
-        form.addRow("Structural Model Key:", self.structural_model_key)
-        self.use_solar_models = QCheckBox("Enable solar defect model")
+        self.use_solar_models = QCheckBox()
         self.use_solar_models.setChecked(True)
-        form.addRow("", self.use_solar_models)
         self.solar_model_key = QLineEdit("solar_defect_detector")
-        form.addRow("Solar Model Key:", self.solar_model_key)
 
-        run_row = QHBoxLayout()
-        self.run_btn = QPushButton("Run Full Inspection Pipeline")
-        self.run_btn.setIcon(standard_icon(self, "SP_MediaPlay", "SP_ArrowForward"))
-        self.run_btn.clicked.connect(self._run)
-        self.load_run_btn = QPushButton("Load Existing Run")
-        self.load_run_btn.setIcon(standard_icon(self, "SP_DialogOpenButton", "SP_DirOpenIcon"))
-        self.load_run_btn.clicked.connect(self._load_existing_run)
-        self.open_run_btn = QPushButton("Open Run Folder")
-        self.open_run_btn.setIcon(standard_icon(self, "SP_DirOpenIcon", "SP_DialogOpenButton"))
-        self.open_run_btn.clicked.connect(self._open_run_folder)
-        self.open_report_btn = QPushButton("Open Report File")
-        self.open_report_btn.setIcon(standard_icon(self, "SP_FileIcon", "SP_DialogOpenButton"))
-        self.open_report_btn.clicked.connect(self._open_report_file)
-        run_row.addWidget(self.run_btn)
-        run_row.addWidget(self.load_run_btn)
-        run_row.addWidget(self.open_run_btn)
-        run_row.addWidget(self.open_report_btn)
-        form.addRow("", run_row)
-
-        status_row = QHBoxLayout()
-        self.status_label = QLabel("Ready")
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
-        status_row.addWidget(self.status_label)
-        status_row.addWidget(self.progress)
-        form.addRow("Status:", status_row)
-
-        root.addWidget(controls)
-
+        # ── Main splitter: dataset inspector | results ─────────────────────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setContentsMargins(12, 6, 12, 10)
 
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
@@ -2827,20 +3139,26 @@ class OperationsCenterTab(QWidget):
         dataset_group = QGroupBox("Dataset Inspector")
         dataset_layout = QVBoxLayout(dataset_group)
         self.dataset_count_label = QLabel("0 images loaded")
+        self.dataset_count_label.setObjectName("muted")
         dataset_layout.addWidget(self.dataset_count_label)
         self.dataset_list = QListWidget()
         self.dataset_list.currentTextChanged.connect(self._on_dataset_image_selected)
         dataset_layout.addWidget(self.dataset_list)
-        self.raw_preview = QLabel("Dataset preview")
+        self.raw_preview = QLabel()
         self.raw_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.raw_preview.setMinimumHeight(220)
+        self.raw_preview.setMinimumHeight(200)
+        self.raw_preview.setText("Select a dataset to preview images")
+        self.raw_preview.setStyleSheet(
+            "QLabel { background: #0f1c2e; border: 1px solid #192535; border-radius: 6px; color: #5a7898; }"
+        )
         dataset_layout.addWidget(self.raw_preview)
         left_layout.addWidget(dataset_group)
 
-        legacy_group = QGroupBox("System Info")
+        legacy_group = QGroupBox("Environment")
         legacy_layout = QVBoxLayout(legacy_group)
         self.legacy_info = QPlainTextEdit()
         self.legacy_info.setReadOnly(True)
+        self.legacy_info.setMaximumHeight(90)
         legacy_layout.addWidget(self.legacy_info)
         left_layout.addWidget(legacy_group)
 
@@ -2852,28 +3170,39 @@ class OperationsCenterTab(QWidget):
         inspection_layout = QVBoxLayout(inspection_group)
         top = QHBoxLayout()
         self.result_image_combo = QComboBox()
+        self.result_image_combo.setMinimumHeight(30)
         self.result_image_combo.currentIndexChanged.connect(self._on_result_image_changed)
-        top.addWidget(QLabel("Result Image:"))
-        top.addWidget(self.result_image_combo)
+        top.addWidget(QLabel("Result image:"))
+        top.addWidget(self.result_image_combo, stretch=1)
         inspection_layout.addLayout(top)
 
         preview_row = QHBoxLayout()
-        self.crack_preview = QLabel("Crack Overlay")
+        self.crack_preview = QLabel()
         self.crack_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.crack_preview.setMinimumHeight(220)
-        self.metal_preview = QLabel("Metal Overlay")
+        self.crack_preview.setMinimumHeight(200)
+        self.crack_preview.setText("Crack overlay")
+        self.crack_preview.setStyleSheet(
+            "QLabel { background: #0f1c2e; border: 1px solid #192535; border-radius: 6px; color: #5a7898; }"
+        )
+        self.metal_preview = QLabel()
         self.metal_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.metal_preview.setMinimumHeight(220)
+        self.metal_preview.setMinimumHeight(200)
+        self.metal_preview.setText("Metal/defect overlay")
+        self.metal_preview.setStyleSheet(
+            "QLabel { background: #0f1c2e; border: 1px solid #192535; border-radius: 6px; color: #5a7898; }"
+        )
         preview_row.addWidget(self.crack_preview)
         preview_row.addWidget(self.metal_preview)
         inspection_layout.addLayout(preview_row)
 
         self.image_metrics = QPlainTextEdit()
         self.image_metrics.setReadOnly(True)
+        self.image_metrics.setMaximumHeight(100)
+        self.image_metrics.setPlaceholderText("Per-image metrics after run.")
         inspection_layout.addWidget(self.image_metrics)
-        right_layout.addWidget(inspection_group)
+        right_layout.addWidget(inspection_group, stretch=2)
 
-        report_group = QGroupBox("Report and Summary")
+        report_group = QGroupBox("Report & Summary")
         report_layout = QVBoxLayout(report_group)
         self.report_box = QPlainTextEdit()
         self.report_box.setReadOnly(True)
@@ -2881,9 +3210,10 @@ class OperationsCenterTab(QWidget):
         report_layout.addWidget(self.report_box)
         self.summary_box = QPlainTextEdit()
         self.summary_box.setReadOnly(True)
+        self.summary_box.setMaximumHeight(100)
         self.summary_box.setPlaceholderText("Summary JSON will appear here after a run.")
         report_layout.addWidget(self.summary_box)
-        right_layout.addWidget(report_group)
+        right_layout.addWidget(report_group, stretch=1)
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)

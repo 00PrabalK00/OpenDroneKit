@@ -24,7 +24,6 @@ if (typeof L === "undefined") {
 }
 
 const map = L.map("map").setView([20.5937, 78.9629], 4);
-
 const offline = L.gridLayer({
   attribution: "Offline base",
   tileSize: 256
@@ -44,18 +43,18 @@ offline.createTile = function(coords) {
   ctx.fillText("z" + coords.z + " x" + coords.x + " y" + coords.y, 8, 36);
   return tile;
 };
-offline.addTo(map);
 
 const esri = L.tileLayer(
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
   { maxZoom: 20, attribution: "Tiles (c) Esri" }
 );
+esri.addTo(map);
+
 const osm = L.tileLayer(
   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
   { maxZoom: 20, attribution: "(c) OpenStreetMap" }
 );
-L.control.layers({ "Offline": offline, "Satellite": esri, "Street": osm }, null, { collapsed: true }).addTo(map);
-
+L.control.layers({ "Satellite": esri, "Street": osm, "Offline": offline }, null, { collapsed: true }).addTo(map);
 if (L.Control && typeof L.Control.geocoder === "function") {
   L.Control.geocoder({ defaultMarkGeocode: false, placeholder: "Search area..." })
     .on("markgeocode", e => map.fitBounds(e.geocode.bbox))

@@ -11,7 +11,7 @@ from typing import Iterable
 import cv2
 import numpy as np
 
-from final_toolkit.mission import (
+from mission import (
     AssetReferenceFrame,
     MissionConstraints,
     MissionPlanner,

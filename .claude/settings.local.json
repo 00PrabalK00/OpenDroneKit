@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir *)",
+      "Bash(powershell -Command \"Get-ChildItem -Name\")",
+      "Bash(python *)",
+      "Bash(awk '{print $2}')"
+    ]
+  }
+}

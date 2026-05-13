@@ -10,9 +10,9 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from final_toolkit.core.multisensor import build_capture_bundle_from_folders
-from final_toolkit.core.pipeline import PipelineConfig, run_pipeline
-from final_toolkit.core.reconstruction import available_reconstruction_profiles
+from core.multisensor import build_capture_bundle_from_folders
+from core.pipeline import PipelineConfig, run_pipeline
+from core.reconstruction import available_reconstruction_profiles
 
 
 def build_parser() -> argparse.ArgumentParser:

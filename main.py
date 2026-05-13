@@ -137,15 +137,15 @@ def _bootstrap_modules(
     app: QApplication,
 ) -> type:
     steps: list[tuple[str, str | None]] = [
-        ("Loading core model registry", "final_toolkit.core.models"),
-        ("Loading defect detection module", "final_toolkit.core.detection"),
-        ("Loading crack propagation module", "final_toolkit.core.propagation"),
-        ("Loading reconstruction pipeline", "final_toolkit.core.reconstruction"),
-        ("Loading end-to-end pipeline", "final_toolkit.core.pipeline"),
-        ("Loading mission planner", "final_toolkit.mission.planner"),
-        ("Loading workspace UI", "final_toolkit.ui.workspace"),
-        ("Loading analysis tabs", "final_toolkit.ui.tabs"),
-        ("Loading main window", "final_toolkit.ui.main_window"),
+        ("Loading core model registry", "core.models"),
+        ("Loading defect detection module", "core.detection"),
+        ("Loading crack propagation module", "core.propagation"),
+        ("Loading reconstruction pipeline", "core.reconstruction"),
+        ("Loading end-to-end pipeline", "core.pipeline"),
+        ("Loading mission planner", "mission.planner"),
+        ("Loading workspace UI", "ui.workspace"),
+        ("Loading analysis tabs", "ui.tabs"),
+        ("Loading main window", "ui.main_window"),
     ]
 
     main_window_cls = None
@@ -155,7 +155,7 @@ def _bootstrap_modules(
         app.processEvents()
         if module_name:
             module = importlib.import_module(module_name)
-            if module_name == "final_toolkit.ui.main_window":
+            if module_name == "ui.main_window":
                 main_window_cls = getattr(module, "MainWindow", None)
         time.sleep(0.07)
 
@@ -186,7 +186,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     try:
-        from final_toolkit.ui.theme import app_stylesheet
+        from ui.theme import app_stylesheet
 
         app.setStyleSheet(app_stylesheet())
     except Exception:
