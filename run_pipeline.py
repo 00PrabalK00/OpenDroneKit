@@ -92,6 +92,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Reconstruction profile: fast preview vs inspection-grade.",
     )
     parser.add_argument(
+        "--engine",
+        choices=["auto", "colmap", "custom"],
+        default="auto",
+        help=(
+            "Reconstruction engine. 'colmap' gives bundle-adjusted SfM and georeferenced "
+            "GeoTIFF outputs (needs pycolmap); 'custom' is the dependency-free fallback; "
+            "'auto' picks colmap when available."
+        ),
+    )
+    parser.add_argument(
+        "--dense",
+        dest="dense",
+        action="store_true",
+        default=None,
+        help="Force dense MVS (requires a native COLMAP binary).",
+    )
+    parser.add_argument(
+        "--no-dense",
+        dest="dense",
+        action="store_false",
+        help="Skip dense MVS and derive products from the sparse cloud.",
+    )
+    parser.add_argument(
+        "--epsg",
+        type=int,
+        default=None,
+        help="Force an output CRS by EPSG code. Defaults to the UTM zone of the imagery.",
+    )
+    parser.add_argument(
         "--recon-mode",
         choices=["local", "cloud"],
         default="local",
@@ -242,6 +271,9 @@ def main() -> None:
         reconstruction_execution_mode=str(args.recon_mode or "local"),
         reconstruction_use_cache=not bool(args.recon_no_cache),
         reconstruction_cloud_endpoint=str(args.recon_cloud_endpoint or ""),
+        reconstruction_engine=str(args.engine or "auto"),
+        reconstruction_dense=args.dense,
+        reconstruction_target_epsg=args.epsg,
         run_structural_models=not bool(args.disable_structural_models),
         run_solar_models=not bool(args.disable_solar_models),
         structural_model_key=str(args.structural_model_key or "structural_multiclass_detector"),

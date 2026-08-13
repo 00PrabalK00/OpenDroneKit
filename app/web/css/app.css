@@ -1,0 +1,275 @@
+/* OpenDroneKit desktop UI.
+   Dense, tool-oriented layout: docks around a map canvas, no decorative chrome. */
+
+:root {
+  --bg: #12161c;
+  --bg-panel: #171d25;
+  --bg-raised: #1e2632;
+  --bg-input: #0e1218;
+  --border: #2a3441;
+  --text: #dce3ec;
+  --text-dim: #8b98a9;
+  --accent: #3d9df6;
+  --accent-dim: #24618f;
+  --good: #35c98b;
+  --warn: #e7b04a;
+  --bad: #e5645f;
+  --row: 26px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+#app {
+  display: grid;
+  grid-template-columns: 268px 1fr 268px;
+  height: calc(100% - 24px);
+  min-height: 0;
+}
+
+/* ---------- docks ---------- */
+
+.dock {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+}
+
+#right-dock { border-right: none; border-left: 1px solid var(--border); }
+
+.dock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* ---------- layer tree ---------- */
+
+.layer-tree { list-style: none; margin: 0; padding: 2px 0; }
+
+.layer-tree li {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  min-height: var(--row);
+}
+
+.layer-tree li:hover { background: var(--bg-raised); }
+
+.layer-tree .layer-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.layer-tree .layer-meta { font-size: 10px; color: var(--text-dim); }
+.layer-tree input[type="range"] { width: 54px; }
+.layer-tree .layer-warn { color: var(--warn); cursor: help; }
+
+/* ---------- forms ---------- */
+
+.form { padding: 8px 10px; display: flex; flex-direction: column; gap: 7px; }
+.form .row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+input, select, button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  min-height: var(--row);
+}
+
+input:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+input[readonly] { color: var(--text-dim); }
+
+button { cursor: pointer; background: var(--bg-raised); }
+button:hover { background: #26313f; }
+button:active { background: var(--accent-dim); }
+button.primary { background: var(--accent-dim); border-color: var(--accent); font-weight: 600; }
+button.primary:hover { background: var(--accent); color: #06121d; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.icon-btn, .mini-btn { padding: 0 8px; min-width: 26px; }
+.file-row { display: grid; grid-template-columns: 1fr auto; gap: 4px; }
+
+/* ---------- centre ---------- */
+
+#centre { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; min-width: 0; }
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.tool-group { display: flex; align-items: center; gap: 4px; }
+.tool-group.right { margin-left: auto; }
+
+.tool { padding: 3px 9px; }
+.tool.active { background: var(--accent-dim); border-color: var(--accent); color: #eaf4ff; }
+
+#map { width: 100%; height: 100%; min-height: 0; background: #0b0e13; }
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+
+.chip-muted { color: var(--text-dim); }
+.chip-live { color: #06121d; background: var(--good); border-color: var(--good); font-weight: 600; }
+.chip-sim { color: #241a04; background: var(--warn); border-color: var(--warn); font-weight: 600; }
+
+/* ---------- bottom dock ---------- */
+
+#bottom-dock {
+  height: 190px;
+  border-top: 1px solid var(--border);
+  border-right: none;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.tabs { display: flex; gap: 0; background: var(--bg-raised); border-bottom: 1px solid var(--border); }
+
+.tab {
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 4px 14px;
+}
+
+.tab.active { color: var(--text); background: var(--bg-panel); box-shadow: inset 0 -2px 0 var(--accent); }
+
+.tab-body { overflow: auto; min-height: 0; }
+.tab-panel { display: none; padding: 6px 10px; }
+.tab-panel.active { display: block; }
+
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th, td { text-align: left; padding: 3px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th { color: var(--text-dim); font-weight: 600; position: sticky; top: 0; background: var(--bg-panel); }
+tbody tr:hover { background: var(--bg-raised); cursor: pointer; }
+tbody tr.selected { background: var(--accent-dim); }
+
+.kv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 14px; }
+.kv-grid div { display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); padding: 2px 0; }
+.kv-grid span:first-child { color: var(--text-dim); }
+
+#console-log { margin: 0; font: 11px/1.5 Consolas, monospace; color: var(--text-dim); white-space: pre-wrap; }
+
+/* ---------- jobs ---------- */
+
+.job { border: 1px solid var(--border); border-radius: 3px; padding: 6px 8px; margin-bottom: 6px; }
+.job-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.job-bar { height: 4px; background: var(--bg-input); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.job-bar > div { height: 100%; background: var(--accent); transition: width 0.25s; }
+.job-msg { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
+.job.failed { border-color: var(--bad); }
+.job.done { border-color: var(--good); }
+
+/* ---------- info blocks ---------- */
+
+.info { padding: 6px 10px; font-size: 11px; color: var(--text-dim); }
+.info div { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+.info b { color: var(--text); font-weight: 500; }
+.info .yes { color: var(--good); }
+.info .no { color: var(--bad); }
+
+.summary { font-size: 11px; color: var(--text-dim); }
+.summary div { display: flex; justify-content: space-between; padding: 1px 0; }
+.summary b { color: var(--text); font-weight: 600; }
+.summary .warn { color: var(--warn); display: block; margin-top: 4px; }
+
+/* ---------- status bar ---------- */
+
+#status-bar {
+  height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 10px;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+#status-bar .spacer { flex: 1; }
+#status-message { color: var(--text); }
+
+/* ---------- modal ---------- */
+
+#modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 8, 12, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+#modal-backdrop.hidden { display: none; }
+
+#modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  min-width: 380px;
+  max-width: 720px;
+  max-height: 78vh;
+  overflow: auto;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+#modal-title { padding: 10px 14px; border-bottom: 1px solid var(--border); font-weight: 600; }
+#modal-body { padding: 12px 14px; }
+#modal-actions { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+
+/* MapLibre control restyle so it matches the app rather than the library default. */
+.maplibregl-ctrl-group { background: var(--bg-panel); border: 1px solid var(--border); }
+.maplibregl-ctrl-group button + button { border-top: 1px solid var(--border); }
+.maplibregl-ctrl-attrib { background: rgba(18, 22, 28, 0.8) !important; }
+.maplibregl-ctrl-attrib a { color: var(--text-dim) !important; }

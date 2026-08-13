@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>OpenDroneKit</title>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl-draw.css" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Left dock: GIS layer tree -->
+    <aside id="left-dock" class="dock">
+      <div class="dock-header">
+        <span>Layers</span>
+        <button class="icon-btn" id="btn-add-layer" title="Add layer from file">+</button>
+      </div>
+      <ul id="layer-tree" class="layer-tree"></ul>
+
+      <div class="dock-header"><span>Mission</span></div>
+      <div id="mission-form" class="form">
+        <label>Template
+          <select id="mission-template">
+            <option value="grid">Grid survey</option>
+            <option value="double_grid">Double grid</option>
+            <option value="corridor">Corridor</option>
+            <option value="facade">Facade</option>
+            <option value="tower_mapping">Tower</option>
+            <option value="solar_inspection">Solar</option>
+            <option value="orbit">Orbit</option>
+            <option value="panorama">Panorama</option>
+            <option value="bubble_360">360 bubble</option>
+            <option value="roof_inspection">Roof</option>
+            <option value="linear_inspection">Linear</option>
+            <option value="magnetic_mapping">Magnetic</option>
+          </select>
+        </label>
+        <div class="row">
+          <label>Altitude m<input type="number" id="mission-altitude" value="55" min="5" max="400" step="1" /></label>
+          <label>Speed m/s<input type="number" id="mission-speed" value="8" min="1" max="25" step="0.5" /></label>
+        </div>
+        <div class="row">
+          <label>Front %<input type="number" id="mission-front" value="75" min="20" max="95" step="1" /></label>
+          <label>Side %<input type="number" id="mission-side" value="65" min="20" max="95" step="1" /></label>
+        </div>
+        <div class="row">
+          <label>Gimbal&deg;<input type="number" id="mission-gimbal" value="-90" min="-120" max="30" step="1" /></label>
+          <label>Dwell s<input type="number" id="mission-dwell" value="0" min="0" max="30" step="0.5" /></label>
+        </div>
+        <div class="row">
+          <label>Min alt m<input type="number" id="mission-minalt" value="20" step="1" /></label>
+          <label>Max alt m<input type="number" id="mission-maxalt" value="120" step="1" /></label>
+        </div>
+        <div class="row">
+          <label>RTH alt m<input type="number" id="mission-rthalt" value="80" step="1" /></label>
+          <label>Wind m/s<input type="number" id="mission-wind" value="0" min="0" step="0.5" /></label>
+        </div>
+        <label>Terrain source
+          <span class="file-row">
+            <input type="text" id="mission-terrain" placeholder="none (flat earth)" readonly />
+            <button class="mini-btn" id="btn-terrain">...</button>
+          </span>
+        </label>
+        <button class="primary" id="btn-plan">Plan Mission</button>
+        <div id="mission-summary" class="summary"></div>
+      </div>
+    </aside>
+
+    <!-- Centre: map + bottom dock -->
+    <main id="centre">
+      <div id="toolbar">
+        <div class="tool-group">
+          <button class="tool" data-tool="pan" title="Pan (Esc)">Pan</button>
+          <button class="tool" data-tool="aoi" title="Draw area of interest">Draw AOI</button>
+          <button class="tool" data-tool="nofly" title="Draw no-fly zone">No-Fly</button>
+          <button class="tool" data-tool="measure-distance" title="Measure distance">Distance</button>
+          <button class="tool" data-tool="measure-area" title="Measure area">Area</button>
+          <button class="tool" data-tool="delete" title="Delete selected geometry">Delete</button>
+        </div>
+        <div class="tool-group">
+          <select id="basemap-select" title="Basemap">
+            <option value="satellite">Satellite</option>
+            <option value="street">Street</option>
+            <option value="topo">Topographic</option>
+            <option value="offline">Offline grid</option>
+          </select>
+          <button class="tool" id="btn-zoom-aoi">Zoom AOI</button>
+          <button class="tool" id="btn-zoom-mission">Zoom Mission</button>
+        </div>
+        <div class="tool-group right">
+          <span id="vehicle-chip" class="chip chip-muted">No vehicle</span>
+          <button class="tool" id="btn-connect">Connect</button>
+          <button class="tool" id="btn-upload">Upload</button>
+        </div>
+      </div>
+
+      <div id="map"></div>
+
+      <div id="bottom-dock" class="dock">
+        <div class="tabs">
+          <button class="tab active" data-tab="attributes">Attributes</button>
+          <button class="tab" data-tab="telemetry">Telemetry</button>
+          <button class="tab" data-tab="jobs">Jobs</button>
+          <button class="tab" data-tab="console">Console</button>
+        </div>
+        <div class="tab-body">
+          <div class="tab-panel active" id="tab-attributes"><table id="attr-table"><thead></thead><tbody></tbody></table></div>
+          <div class="tab-panel" id="tab-telemetry"><div id="telemetry-grid" class="kv-grid"></div></div>
+          <div class="tab-panel" id="tab-jobs"><div id="jobs-list"></div></div>
+          <div class="tab-panel" id="tab-console"><pre id="console-log"></pre></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right dock: data + processing -->
+    <aside id="right-dock" class="dock">
+      <div class="dock-header"><span>Project</span></div>
+      <div id="project-info" class="info"></div>
+
+      <div class="dock-header"><span>Dataset</span></div>
+      <div class="form">
+        <span class="file-row">
+          <input type="text" id="dataset-path" placeholder="no dataset selected" readonly />
+          <button class="mini-btn" id="btn-dataset">...</button>
+        </span>
+        <div id="dataset-info" class="info"></div>
+      </div>
+
+      <div class="dock-header"><span>Reconstruction</span></div>
+      <div class="form">
+        <label>Engine
+          <select id="recon-engine">
+            <option value="auto">Auto</option>
+            <option value="colmap">COLMAP (georeferenced)</option>
+            <option value="custom">Fallback (no dependencies)</option>
+          </select>
+        </label>
+        <label>Profile
+          <select id="recon-profile">
+            <option value="fast_preview">Fast preview</option>
+            <option value="standard" selected>Standard</option>
+            <option value="inspection_high_accuracy">High accuracy</option>
+          </select>
+        </label>
+        <button class="primary" id="btn-recon">Run Reconstruction</button>
+        <button id="btn-pipeline">Run Full Pipeline</button>
+      </div>
+
+      <div class="dock-header"><span>Environment</span></div>
+      <div id="capabilities" class="info"></div>
+    </aside>
+  </div>
+
+  <!-- Status bar -->
+  <footer id="status-bar">
+    <span id="status-message">Ready</span>
+    <span class="spacer"></span>
+    <span id="status-scale"></span>
+    <span id="status-crs">EPSG:4326</span>
+    <span id="status-coords">--</span>
+  </footer>
+
+  <!-- Modal -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal">
+      <div id="modal-title"></div>
+      <div id="modal-body"></div>
+      <div id="modal-actions"></div>
+    </div>
+  </div>
+
+  <script src="vendor/maplibre/maplibre-gl.js"></script>
+  <script src="vendor/maplibre/maplibre-gl-draw.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

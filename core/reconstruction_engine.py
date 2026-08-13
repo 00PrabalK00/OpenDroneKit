@@ -288,12 +288,16 @@ def project_defects_to_3d(
     reconstruction_summary_path: Path | str,
     output_path: Path | str,
 ) -> DefectProjectionResult:
-    """Link 2D defects to 3D points when camera pose data is available.
+    """Locate 2-D defects on the reconstructed surface and write a georeferenced layer.
 
-    This is a placeholder implementation: it reads the defect run summary,
-    pairs defects by image filename to per-image point links in the
-    reconstruction (when the reconstructor wrote them), and emits a JSON
-    side-car listing the linked points.
+    When the reconstruction came from the COLMAP engine and is georeferenced, each
+    defect is ray-cast from its recovering camera onto the DSM, merged across views,
+    and emitted as GeoJSON with real coordinates and square-metre areas alongside the
+    JSON side-car.
+
+    For a reconstruction that is not georeferenced (no geotags, or the custom engine)
+    this falls back to the image-name point linking that was previously the only
+    behaviour, and records why in the payload rather than implying a 3-D fix.
     """
     defects_path = Path(defect_summary_path)
     recon_path = Path(reconstruction_summary_path)
@@ -306,13 +310,49 @@ def project_defects_to_3d(
     defects = json.loads(defects_path.read_text(encoding="utf-8")).get("defects", [])
     recon = json.loads(recon_path.read_text(encoding="utf-8"))
 
-    point_link_path = recon.get("raw", {}).get("point_link_path") or recon.get("point_link_path")
+    raw = recon.get("raw", {}) if isinstance(recon.get("raw"), dict) else {}
+    reconstruction_dir = (
+        raw.get("reconstruction_dir")
+        or recon.get("reconstruction_dir")
+        or (Path(raw.get("point_cloud_path") or recon.get("point_cloud_path") or ".").parent)
+    )
+
+    geo_result: dict[str, Any] = {"status": "skipped", "reason": "Reconstruction directory not resolvable."}
+    if reconstruction_dir:
+        from .defect_projection import project_run_defects
+
+        detections = [
+            {
+                "image": d.get("image_path") or d.get("image") or "",
+                "mask": d.get("mask_path") or d.get("mask") or "",
+                "bbox": d.get("bbox"),
+                "defect_type": d.get("defect_type") or d.get("type") or "defect",
+                "severity": d.get("severity"),
+                "confidence": d.get("confidence") or d.get("score"),
+            }
+            for d in defects
+        ]
+        try:
+            geo_result = project_run_defects(
+                reconstruction_dir=reconstruction_dir,
+                detections=detections,
+                output_path=out_path.with_name(f"{out_path.stem}.geojson"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            geo_result = {"status": "error", "reason": f"3-D projection failed: {exc}"}
+
+    point_link_path = raw.get("point_link_path") or recon.get("point_link_path")
     point_index: dict[str, list[dict[str, Any]]] = {}
     if point_link_path and Path(point_link_path).exists():
         try:
             links = json.loads(Path(point_link_path).read_text(encoding="utf-8"))
             for entry in (links if isinstance(links, list) else []):
-                image_name = Path(entry.get("image", "")).name
+                # The reconstructor writes `source_image_name`; older payloads used
+                # `image`. Accepting both is what makes this linking work at all.
+                raw_name = entry.get("source_image_name") or entry.get("image") or entry.get("image_path") or ""
+                image_name = Path(str(raw_name)).name
+                if not image_name:
+                    continue
                 point_index.setdefault(image_name, []).append(entry)
         except Exception:
             pass
@@ -330,18 +370,21 @@ def project_defects_to_3d(
             "linked_points": linked[:50],
         })
 
+    georeferenced = geo_result.get("status") == "ok"
     payload = {
         "defect_count": len(defects),
-        "projected_count": len(projected),
+        "projected_count": int(geo_result.get("defect_count", 0)) if georeferenced else len(projected),
         "projections": projected,
+        "georeferenced": georeferenced,
+        "geo_projection": geo_result,
         "created_at": _now_iso(),
     }
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return DefectProjectionResult(
         id=str(uuid.uuid4()),
         defect_count=len(defects),
-        projected_count=len(projected),
-        output_path=str(out_path),
+        projected_count=int(payload["projected_count"]),
+        output_path=str(geo_result["path"]) if georeferenced else str(out_path),
     )
 
 

@@ -6,8 +6,22 @@ __pycache__/
 final_toolkit_outputs/
 tmp_health_test_images/
 
-# Training workspace (large / local)
-training/
+# Training workspace: keep the code, ignore the data and run artifacts.
+training/data/
+training/runs/
+training/checkpoints/
+training/sources/
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# Credentials — never commit. Keys live in the user profile or environment.
+.env
+*.key
+kaggle.json
+access_token
+secrets.json
 
 # Model artifacts (large): ignore all model payload folders by default
 models/*

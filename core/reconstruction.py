@@ -142,6 +142,27 @@ class ReconstructionResult:
     critical_points_path: str = ""
     warnings: list[str] = field(default_factory=list)
 
+    # Engine identity and georeferencing. Populated by the COLMAP engine; the custom
+    # engine leaves them empty, which is how callers tell an unreferenced run apart
+    # from a real-world-anchored one.
+    engine: str = "custom"
+    crs_epsg: int | None = None
+    geo_anchor_path: str = ""
+    geo_rmse_m: float | None = None
+    geo_inlier_cameras: int = 0
+    geotagged_images: int = 0
+    intrinsics_method: str = "heuristic_0.9_max_dim"
+    reprojection_error_px: float | None = None
+    registered_images: int = 0
+    dense_point_count: int = 0
+    orthomosaic_cog_path: str = ""
+    dsm_cog_path: str = ""
+    dtm_cog_path: str = ""
+    hillshade_path: str = ""
+    defects_geojson_path: str = ""
+    camera_track_geojson_path: str = ""
+    ground_sample_distance_m: float | None = None
+
     def to_dict(self) -> dict:
         return asdict(self)
 

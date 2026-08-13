@@ -1,0 +1,11 @@
+# Training-only dependencies.
+# Install CUDA torch first, matched to your GPU. For Blackwell (RTX 50-series, sm_120):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch>=2.4
+torchvision>=0.19
+ultralytics>=8.3
+transformers>=4.44
+albumentations>=1.4
+onnx>=1.16
+kagglehub>=0.4.1
+roboflow>=1.1

@@ -63,6 +63,10 @@ class PipelineConfig:
     reconstruction_execution_mode: str = "local"
     reconstruction_use_cache: bool = True
     reconstruction_cloud_endpoint: str = ""
+    # "auto" prefers COLMAP when pycolmap is importable, else the dependency-free engine.
+    reconstruction_engine: str = "auto"
+    reconstruction_dense: bool | None = None
+    reconstruction_target_epsg: int | None = None
     run_structural_models: bool = True
     run_solar_models: bool = True
     structural_model_key: str = "structural_multiclass_detector"
@@ -100,13 +104,34 @@ class StructuralFaultPipeline:
             growth_px_per_step=self.config.forecast_growth_px_per_step,
             lateral_growth=self.config.forecast_lateral_growth,
         )
-        self.reconstructor = CustomDroneReconstructor(
-            max_points=self.config.reconstruction_max_points,
-            profile=self.config.reconstruction_profile,
-            execution_mode=self.config.reconstruction_execution_mode,
-            use_cache=self.config.reconstruction_use_cache,
-            cloud_endpoint=self.config.reconstruction_cloud_endpoint,
-        )
+        self.reconstructor = self._build_reconstructor()
+
+    def _build_reconstructor(self):
+        """Select the reconstruction engine, falling back with a clear reason if needed."""
+        from .reconstruction_colmap import build_reconstructor
+
+        try:
+            return build_reconstructor(
+                self.config.reconstruction_engine,
+                profile=self.config.reconstruction_profile,
+                execution_mode=self.config.reconstruction_execution_mode,
+                use_cache=self.config.reconstruction_use_cache,
+                cloud_endpoint=self.config.reconstruction_cloud_endpoint,
+                dense=self.config.reconstruction_dense,
+                target_epsg=self.config.reconstruction_target_epsg,
+            )
+        except RuntimeError:
+            # Only reachable when COLMAP was explicitly requested but is not installed.
+            # `auto` never lands here, so this preserves the old behaviour on bare installs.
+            if str(self.config.reconstruction_engine).lower() == "colmap":
+                raise
+            return CustomDroneReconstructor(
+                max_points=self.config.reconstruction_max_points,
+                profile=self.config.reconstruction_profile,
+                execution_mode=self.config.reconstruction_execution_mode,
+                use_cache=self.config.reconstruction_use_cache,
+                cloud_endpoint=self.config.reconstruction_cloud_endpoint,
+            )
 
     @staticmethod
     def _images_in_dir(image_dir: str | Path) -> list[Path]:
