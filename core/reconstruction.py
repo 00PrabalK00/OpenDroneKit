@@ -8,8 +8,6 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Callable
-import urllib.error
-import urllib.request
 
 import cv2
 import numpy as np
@@ -545,46 +543,43 @@ class CustomDroneReconstructor:
         output_dir: Path,
         image_count: int,
     ) -> tuple[str, str, list[str]]:
-        warnings: list[str] = []
+        """Record that cloud processing was requested. Nothing is transmitted.
+
+        Cloud reconstruction is not implemented in this build. The previous version
+        POSTed the absolute path of the operator's imagery, the image count, and the
+        processing profile to a configured endpoint, saved whatever came back, and
+        then discarded it and reconstructed locally regardless. That transmitted
+        information about the survey off the machine while delivering nothing, and it
+        contradicted this toolkit's offline-first guarantee.
+
+        The request is now written locally as a record of intent, and the caller
+        reports that the run executed locally.
+        """
         request_payload = {
             "submitted_utc": datetime.now(timezone.utc).isoformat(),
             "image_dir": str(Path(image_dir).resolve()),
             "image_count": int(image_count),
             "processing_profile": self.profile,
-            "execution_mode": "cloud",
+            "execution_mode": "cloud_requested",
             "max_points": int(self.max_points),
+            "status": "not_submitted",
+            "reason": (
+                "Cloud reconstruction is not implemented in this build. This file is a "
+                "local record only; no data was sent anywhere."
+            ),
         }
         request_path = output_dir / "cloud_request.json"
         _save_json(request_path, request_payload)
 
-        response_path = ""
-        if not self.cloud_endpoint:
-            warnings.append("Cloud mode requested but no cloud endpoint provided; running local fallback.")
-            return str(request_path), response_path, warnings
-
-        try:
-            req = urllib.request.Request(
-                self.cloud_endpoint,
-                data=json.dumps(request_payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="POST",
+        warnings = [
+            "Cloud reconstruction is not implemented in this build. The run executed "
+            "locally and no data left this machine."
+        ]
+        if self.cloud_endpoint:
+            warnings.append(
+                f"The configured cloud endpoint ({self.cloud_endpoint}) was not contacted."
             )
-            with urllib.request.urlopen(req, timeout=self.cloud_timeout_s) as resp:
-                body = resp.read().decode("utf-8", errors="ignore")
-            try:
-                parsed = json.loads(body)
-            except Exception:
-                parsed = {"raw_response": body}
-            response_file = output_dir / "cloud_response.json"
-            _save_json(response_file, parsed if isinstance(parsed, dict) else {"response": parsed})
-            response_path = str(response_file)
-            warnings.append("Cloud response received; local fallback still used in this toolkit build.")
-        except urllib.error.URLError as exc:
-            warnings.append(f"Cloud request failed ({exc}); running local fallback.")
-        except Exception as exc:
-            warnings.append(f"Cloud request error ({exc}); running local fallback.")
-
-        return str(request_path), response_path, warnings
+        return str(request_path), "", warnings
 
     def _densify_point_cloud(self, points: np.ndarray, colors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Return the cloud unchanged. Retained so callers and profiles keep working.
@@ -952,14 +947,14 @@ class CustomDroneReconstructor:
         warnings: list[str] = []
 
         if execution_requested == "cloud":
-            _emit_progress(4, "Submitting cloud request (local fallback)")
+            _emit_progress(4, "Cloud requested; running locally (cloud not implemented)")
             cloud_request_path, cloud_response_path, cloud_warnings = self._request_cloud_run(
                 image_dir=image_dir,
                 output_dir=out_dir,
                 image_count=len(images),
             )
             warnings.extend(cloud_warnings)
-            execution_used = "cloud_fallback_local"
+            execution_used = "local_cloud_unavailable"
         else:
             execution_used = "local"
 
