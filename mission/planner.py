@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from math import cos, pi, radians, sin, sqrt
 from pathlib import Path
 from typing import Any, Iterable
@@ -300,6 +301,13 @@ def _normalize_template(mode: str) -> str:
         "smart": "smart_adaptive",
         "adaptive": "smart_adaptive",
         "smart_adaptive": "smart_adaptive",
+        "multi_facade": "multi_facade",
+        "multi_facade_inspection": "multi_facade",
+        "closed_loop": "closed_loop",
+        "closed_loop_facade": "closed_loop",
+        "wind_turbine": "wind_turbine",
+        "turbine": "wind_turbine",
+        "turbine_inspection": "wind_turbine",
     }
     return table.get(value, "grid")
 
@@ -1879,6 +1887,15 @@ class MissionPlanner:
         adaptive_prior_defects_lonlat: Iterable[Iterable[float]] | None = None,
         adaptive_density_factor: float = 2.5,
         adaptive_region_radius_m: float = 12.0,
+        facade_face_overrides: dict | None = None,
+        closed_loop_radii_m: list[float] | None = None,
+        closed_loop_points: int = 24,
+        closed_loop_clockwise: bool = True,
+        turbine_hub_height_m: float | None = None,
+        turbine_blade_length_m: float = 55.0,
+        turbine_blade_angles_deg: list[float] | None = None,
+        turbine_tower_levels: int = 6,
+        turbine_blade_stations: int = 8,
     ) -> FlightRecipe:
         raw_vertices = [list(p) for p in (polygon_lonlat or [])]
         linear_path_world: list[list[float]] | None = None
@@ -2428,6 +2445,15 @@ class MissionPlanner:
             adaptive_prior_defects_local=adaptive_defects_local,
             adaptive_density_factor=adaptive_density_factor,
             adaptive_region_radius_m=adaptive_region_radius_m,
+            facade_face_overrides=facade_face_overrides,
+            closed_loop_radii_m=closed_loop_radii_m,
+            closed_loop_points=closed_loop_points,
+            closed_loop_clockwise=closed_loop_clockwise,
+            turbine_hub_height_m=turbine_hub_height_m,
+            turbine_blade_length_m=turbine_blade_length_m,
+            turbine_blade_angles_deg=turbine_blade_angles_deg,
+            turbine_tower_levels=turbine_tower_levels,
+            turbine_blade_stations=turbine_blade_stations,
         )
 
         coverage = CoverageExpectation(
@@ -3030,6 +3056,15 @@ class MissionPlanner:
         adaptive_prior_defects_lonlat: Iterable[Iterable[float]] | None = None,
         adaptive_density_factor: float = 2.5,
         adaptive_region_radius_m: float = 12.0,
+        facade_face_overrides: dict | None = None,
+        closed_loop_radii_m: list[float] | None = None,
+        closed_loop_points: int = 24,
+        closed_loop_clockwise: bool = True,
+        turbine_hub_height_m: float | None = None,
+        turbine_blade_length_m: float = 55.0,
+        turbine_blade_angles_deg: list[float] | None = None,
+        turbine_tower_levels: int = 6,
+        turbine_blade_stations: int = 8,
     ) -> MissionPlan:
         if repeat_recipe is not None:
             recipe_obj = self._coerce_recipe(repeat_recipe)
@@ -3051,6 +3086,15 @@ class MissionPlanner:
             raise ValueError("polygon_lonlat is required for this mission mode.")
 
         recipe = self.build_flight_recipe(
+            facade_face_overrides=facade_face_overrides,
+            closed_loop_radii_m=closed_loop_radii_m,
+            closed_loop_points=closed_loop_points,
+            closed_loop_clockwise=closed_loop_clockwise,
+            turbine_hub_height_m=turbine_hub_height_m,
+            turbine_blade_length_m=turbine_blade_length_m,
+            turbine_blade_angles_deg=turbine_blade_angles_deg,
+            turbine_tower_levels=turbine_tower_levels,
+            turbine_blade_stations=turbine_blade_stations,
             adaptive_interest_regions_lonlat=adaptive_interest_regions_lonlat,
             adaptive_prior_defects_lonlat=adaptive_prior_defects_lonlat,
             adaptive_density_factor=adaptive_density_factor,
@@ -3972,6 +4016,15 @@ class MissionPlanner:
         adaptive_prior_defects_local: list[list[float]] | None = None,
         adaptive_density_factor: float = 2.5,
         adaptive_region_radius_m: float = 12.0,
+        facade_face_overrides: dict | None = None,
+        closed_loop_radii_m: list[float] | None = None,
+        closed_loop_points: int = 24,
+        closed_loop_clockwise: bool = True,
+        turbine_hub_height_m: float | None = None,
+        turbine_blade_length_m: float = 55.0,
+        turbine_blade_angles_deg: list[float] | None = None,
+        turbine_tower_levels: int = 6,
+        turbine_blade_stations: int = 8,
     ) -> list[MissionPrimitive]:
         template = _normalize_template(template)
         polygon_arr = np.asarray(local_polygon[:-1], dtype=np.float64)
@@ -4449,6 +4502,74 @@ class MissionPlanner:
                 )
             ]
 
+        if template == "multi_facade":
+            return [
+                MissionPrimitive(
+                    kind="multi_facade",
+                    params={
+                        "polygon_local": local_polygon,
+                        "standoff_m": float(
+                            facade_standoff_m if facade_standoff_m is not None
+                            else constraints.standoff_m
+                        ),
+                        "top_altitude_m": float(
+                            facade_top_altitude_m if facade_top_altitude_m is not None
+                            else altitude_m + 10.0
+                        ),
+                        "bottom_altitude_m": float(
+                            facade_bottom_altitude_m if facade_bottom_altitude_m is not None
+                            else max(constraints.min_altitude_m, 5.0)
+                        ),
+                        "horizontal_spacing_m": max(1.0, point_step_m),
+                        "vertical_spacing_m": max(1.0, line_step_m),
+                        "gimbal_pitch_deg": float(gimbal_pitch_deg),
+                        "inspection_dwell_s": float(inspection_dwell_s),
+                        # Per-face overrides. A building is not four identical walls.
+                        "face_overrides": dict(facade_face_overrides or {}),
+                    },
+                )
+            ]
+
+        if template == "closed_loop":
+            return [
+                MissionPrimitive(
+                    kind="closed_loop",
+                    params={
+                        "polygon_local": local_polygon,
+                        "standoff_m": constraints.standoff_m,
+                        "radii_m": list(closed_loop_radii_m or []),
+                        "altitude_levels_m": self._altitude_levels(
+                            altitude_m, constraints, min_levels=2, max_levels=4
+                        ),
+                        "points_per_loop": int(closed_loop_points),
+                        "clockwise": bool(closed_loop_clockwise),
+                        "gimbal_pitch_deg": float(gimbal_pitch_deg),
+                        "inspection_dwell_s": float(inspection_dwell_s),
+                    },
+                )
+            ]
+
+        if template == "wind_turbine":
+            return [
+                MissionPrimitive(
+                    kind="wind_turbine",
+                    params={
+                        "center_local": list(tower_center_local or [0.0, 0.0]),
+                        "hub_height_m": float(
+                            turbine_hub_height_m if turbine_hub_height_m is not None
+                            else altitude_m
+                        ),
+                        "blade_length_m": float(turbine_blade_length_m),
+                        "standoff_m": constraints.standoff_m,
+                        "blade_angles_deg": list(turbine_blade_angles_deg or []),
+                        "tower_levels": int(turbine_tower_levels),
+                        "blade_stations": int(turbine_blade_stations),
+                        "min_altitude_m": float(constraints.min_altitude_m),
+                        "inspection_dwell_s": float(inspection_dwell_s),
+                    },
+                )
+            ]
+
         if template == "smart_adaptive":
             return [
                 MissionPrimitive(
@@ -4726,9 +4847,206 @@ class MissionPlanner:
             return self._compile_bubble_primitive(primitive.params)
         if kind in {"facade", "facade_mapping"}:
             return self._compile_facade_primitive(primitive.params)
+        if kind == "multi_facade":
+            return self._compile_multi_facade_primitive(primitive.params)
+        if kind == "closed_loop":
+            return self._compile_closed_loop_primitive(primitive.params)
+        if kind == "wind_turbine":
+            return self._compile_wind_turbine_primitive(primitive.params)
         if kind == "smart_adaptive":
             return self._compile_smart_adaptive_primitive(primitive.params)
         return []
+
+    def _compile_multi_facade_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """One pass per building face, each with its own stand-off and spacing.
+
+        A building is not four identical walls. One face may be twenty metres tall
+        against a courtyard while another is ten metres against a road, so each edge
+        carries its own parameters and the operator overrides only the ones that
+        differ, rather than planning several separate missions.
+        """
+        polygon_local = params.get("polygon_local", [])
+        # Fewer than three vertices is not a face; returning nothing beats raising on
+        # geometry an operator drew.
+        if not polygon_local or len(polygon_local) < 3:
+            return []
+        ring = np.asarray(_ensure_closed_xy(polygon_local), dtype=np.float64)[:-1]
+        if len(ring) < 3:
+            return []
+
+        overrides = params.get("face_overrides") or {}
+        default_standoff = max(0.5, float(params.get("standoff_m", 8.0)))
+        default_top = float(params.get("top_altitude_m", 30.0))
+        default_bottom = float(params.get("bottom_altitude_m", 5.0))
+        default_h = max(0.75, float(params.get("horizontal_spacing_m", 4.0)))
+        default_v = max(0.75, float(params.get("vertical_spacing_m", 4.0)))
+        gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", 0.0)), -120.0, 30.0))
+        dwell_s = float(max(0.0, params.get("inspection_dwell_s", 0.0)))
+        centroid = ring.mean(axis=0)
+
+        poses: list[_CapturePose] = []
+        for index in range(len(ring)):
+            start = ring[index]
+            end = ring[(index + 1) % len(ring)]
+            face = overrides.get(str(index), overrides.get(index, {})) or {}
+
+            standoff = max(0.5, float(face.get("standoff_m", default_standoff)))
+            top = float(face.get("top_altitude_m", default_top))
+            bottom = float(face.get("bottom_altitude_m", default_bottom))
+            h_spacing = max(0.75, float(face.get("horizontal_spacing_m", default_h)))
+            v_spacing = max(0.75, float(face.get("vertical_spacing_m", default_v)))
+            face_pitch = float(np.clip(float(face.get("gimbal_pitch_deg", gimbal_pitch)), -120.0, 30.0))
+
+            edge = end - start
+            length = float(np.linalg.norm(edge))
+            if length < 1e-6:
+                continue
+            direction = edge / length
+
+            # Outward normal: the side away from the building centre, so the aircraft
+            # stands off outside the wall rather than inside the building.
+            normal = np.array([-direction[1], direction[0]], dtype=np.float64)
+            if float(np.dot(normal, start + edge / 2.0 - centroid)) < 0.0:
+                normal = -normal
+
+            # The camera looks back at the wall, opposite the stand-off direction.
+            yaw = _wrap_deg(math.degrees(math.atan2(-normal[0], -normal[1])))
+
+            columns = max(2, int(math.ceil(length / h_spacing)) + 1)
+            levels = max(1, int(math.ceil(abs(top - bottom) / v_spacing)) + 1)
+
+            for level in range(levels):
+                altitude = bottom + (top - bottom) * (level / max(1, levels - 1))
+                # Serpentine: alternate rows reverse, so the aircraft does not fly the
+                # length of the face twice for every level.
+                order = range(columns) if level % 2 == 0 else range(columns - 1, -1, -1)
+                for column in order:
+                    along = start + direction * (length * column / max(1, columns - 1))
+                    point = along + normal * standoff
+                    poses.append(_CapturePose(
+                        x_m=float(point[0]), y_m=float(point[1]), alt_m=float(altitude),
+                        yaw_deg=yaw, gimbal_pitch_deg=face_pitch,
+                        primitive="facade_face_%d" % index, dwell_s=dwell_s,
+                        camera_yaw_locked=True,
+                    ))
+        return poses
+
+    def _compile_closed_loop_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """Continuous loops around a structure at one or more altitude rings.
+
+        Unlike a face-by-face pass the aircraft never stops at a corner, which keeps
+        the capture cadence even and avoids the motion blur a stop-start path produces
+        in wind.
+        """
+        polygon_local = params.get("polygon_local", [])
+        centre = params.get("center_local")
+        if polygon_local and len(polygon_local) >= 3:
+            ring = np.asarray(_ensure_closed_xy(polygon_local), dtype=np.float64)[:-1]
+            centre_xy = ring.mean(axis=0)
+            extent = float(np.linalg.norm(ring - centre_xy, axis=1).max())
+        elif isinstance(centre, list) and len(centre) >= 2:
+            centre_xy = np.asarray([float(centre[0]), float(centre[1])], dtype=np.float64)
+            extent = float(params.get("object_radius_m", 5.0))
+        else:
+            return []
+
+        standoff = max(1.0, float(params.get("standoff_m", 10.0)))
+        radii = [float(r) for r in (params.get("radii_m") or []) if float(r) > 0.0]
+        if not radii:
+            radii = [extent + standoff]
+
+        altitudes = [float(a) for a in (params.get("altitude_levels_m") or [])]
+        if not altitudes:
+            altitudes = [float(params.get("altitude_m", 40.0))]
+
+        points_per_loop = int(np.clip(int(params.get("points_per_loop", 24)), 6, 240))
+        clockwise = bool(params.get("clockwise", True))
+        gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -20.0)), -120.0, 30.0))
+        dwell_s = float(max(0.0, params.get("inspection_dwell_s", 0.0)))
+
+        poses: list[_CapturePose] = []
+        for ring_index, radius in enumerate(radii):
+            for altitude in altitudes:
+                for step in range(points_per_loop):
+                    fraction = step / points_per_loop
+                    angle = 2.0 * math.pi * (-fraction if clockwise else fraction)
+                    x = centre_xy[0] + radius * math.cos(angle)
+                    y = centre_xy[1] + radius * math.sin(angle)
+                    # The camera always faces the structure, which is what makes a loop
+                    # usable for reconstruction rather than just a perimeter flight.
+                    yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                    poses.append(_CapturePose(
+                        x_m=float(x), y_m=float(y), alt_m=float(altitude),
+                        yaw_deg=yaw, gimbal_pitch_deg=gimbal_pitch,
+                        primitive="closed_loop_r%d" % ring_index, dwell_s=dwell_s,
+                        camera_yaw_locked=True,
+                    ))
+        return poses
+
+    def _compile_wind_turbine_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """Tower, nacelle and per-blade capture for a wind turbine.
+
+        Blades are inspected at the parked rotor angles the operator reports, because a
+        turbine cannot be asked to hold an arbitrary position. Each blade is captured
+        from both faces: a crack on the trailing edge is invisible from the leading
+        side.
+        """
+        centre = params.get("center_local") or [0.0, 0.0]
+        centre_xy = np.asarray([float(centre[0]), float(centre[1])], dtype=np.float64)
+
+        hub_height = float(params.get("hub_height_m", 90.0))
+        blade_length = float(params.get("blade_length_m", 55.0))
+        standoff = max(2.0, float(params.get("standoff_m", 12.0)))
+        tower_levels = int(np.clip(int(params.get("tower_levels", 6)), 2, 40))
+        blade_stations = int(np.clip(int(params.get("blade_stations", 8)), 2, 40))
+        # Parked rotor angles; the default is the common "Y" park position.
+        blade_angles = [float(a) for a in (params.get("blade_angles_deg") or [90.0, 210.0, 330.0])]
+        minimum_altitude = float(params.get("min_altitude_m", 5.0))
+        dwell_s = float(max(0.0, params.get("inspection_dwell_s", 1.5)))
+
+        poses: list[_CapturePose] = []
+
+        # Tower: a vertical stack on one side, camera level.
+        for level in range(tower_levels):
+            altitude = hub_height * (level + 1) / tower_levels
+            poses.append(_CapturePose(
+                x_m=float(centre_xy[0]), y_m=float(centre_xy[1] - standoff),
+                alt_m=float(altitude), yaw_deg=0.0, gimbal_pitch_deg=0.0,
+                primitive="turbine_tower", dwell_s=dwell_s, camera_yaw_locked=True,
+            ))
+
+        # Nacelle: four aspects at hub height.
+        for bearing in (0.0, 90.0, 180.0, 270.0):
+            radians = math.radians(bearing)
+            point = centre_xy + np.array([math.sin(radians), math.cos(radians)]) * standoff
+            poses.append(_CapturePose(
+                x_m=float(point[0]), y_m=float(point[1]), alt_m=float(hub_height),
+                yaw_deg=_wrap_deg(bearing + 180.0), gimbal_pitch_deg=0.0,
+                primitive="turbine_nacelle", dwell_s=dwell_s, camera_yaw_locked=True,
+            ))
+
+        # Blades: stations along each blade, captured from both faces.
+        for blade_index, blade_angle in enumerate(blade_angles):
+            radians = math.radians(blade_angle)
+            for face_sign in (1.0, -1.0):
+                face_label = "a" if face_sign > 0 else "b"
+                for station in range(blade_stations):
+                    distance = blade_length * (station + 1) / blade_stations
+                    x = centre_xy[0] + math.cos(radians) * distance
+                    altitude = hub_height + math.sin(radians) * distance
+                    if altitude < minimum_altitude:
+                        # Below a safe height a blade tip is not inspectable from the
+                        # air; skipping beats planning a point that cannot be flown.
+                        continue
+                    poses.append(_CapturePose(
+                        x_m=float(x), y_m=float(centre_xy[1] + face_sign * standoff),
+                        alt_m=float(altitude),
+                        yaw_deg=0.0 if face_sign > 0 else 180.0,
+                        gimbal_pitch_deg=0.0,
+                        primitive="turbine_blade_%d%s" % (blade_index, face_label),
+                        dwell_s=dwell_s, camera_yaw_locked=True,
+                    ))
+        return poses
 
     def _compile_smart_adaptive_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """Uniform coverage plus extra passes over regions that warrant a closer look.
