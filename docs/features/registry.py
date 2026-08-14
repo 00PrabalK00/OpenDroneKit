@@ -401,11 +401,20 @@ INSPECTION = [
       "Gradient for pitched roofs, pavements and ramps.",
       "not_started", []),
     F("th.radiometric", "Radiometric thermal processing", "workers", "Thermal",
-      "Real temperature values, not colour-mapped images.",
-      "not_started", []),
+      "Raw counts converted to temperature through the camera's Planck constants with "
+      "emissivity and reflected-temperature correction, verified by round trip within "
+      "0.1 K, and a file carrying no radiometric data refused rather than read from "
+      "its palette.",
+      "implemented", ["tests/test_thermal.py::TestConversion",
+                      "tests/test_thermal.py::TestEmissivity",
+                      "tests/test_thermal.py::TestRefusal"],
+      "Sidecar counts supported; extracting the embedded APP1 payload from a thermal "
+      "JPEG is not implemented and says so."),
     F("th.map_2d", "2D thermal map", "workers", "Thermal",
-      "Georeferenced thermal mosaic.",
-      "not_started", []),
+      "Temperature field written as a georeferenced raster in Celsius, so its units "
+      "are unambiguous in GIS.",
+      "in_progress", ["tests/test_thermal.py::TestGeoreferencedOutput"],
+      "Single-frame georeferenced output done; mosaicking many frames is not."),
     F("th.model_3d", "3D thermal model", "workers", "Thermal",
       "Thermal values projected onto reconstructed geometry.",
       "not_started", []),
