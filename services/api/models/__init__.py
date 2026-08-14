@@ -347,8 +347,53 @@ class Defect(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ShareLink(Base):
+    """A no-account, read-only link to one project.
+
+    Only the token hash is stored, so a database disclosure does not yield working
+    links. Expiry and revocation are properties of the row and are checked on every
+    access rather than only at creation.
+    """
+
+    __tablename__ = "share_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    prefix: Mapped[str] = mapped_column(String(16), default="")
+    password_hash: Mapped[str] = mapped_column(String(255), default="")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    allow_download: Mapped[bool] = mapped_column(Boolean, default=False)
+    include_defects: Mapped[bool] = mapped_column(Boolean, default=True)
+    include_missions: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    access_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ShareAccess(Base):
+    """One attempt to open a share link, successful or not.
+
+    Failures are recorded too: repeated failures against one link are how a guessed
+    token or a revoked link still in circulation becomes visible.
+    """
+
+    __tablename__ = "share_accesses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    share_id: Mapped[int] = mapped_column(ForeignKey("share_links.id", ondelete="CASCADE"), index=True)
+    client_ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(400), default="")
+    outcome: Mapped[str] = mapped_column(String(30), default="granted")
+    accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 __all__ = [
     "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Defect", "Job", "Membership",
     "Mission",
-    "Organization", "Project", "ROLE_RANK", "Role", "UploadSession", "User", "utcnow",
+    "Organization", "Project", "ROLE_RANK", "Role", "ShareAccess", "ShareLink",
+    "UploadSession", "User", "utcnow",
 ]

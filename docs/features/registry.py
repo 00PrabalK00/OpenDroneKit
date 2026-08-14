@@ -471,11 +471,17 @@ PLATFORM = [
       "implemented", ["tests/test_report_formats.py::TestTemplates",
                       "tests/test_report_formats.py::TestFindingOrder"]),
     F("sh.links", "Shareable project links", "hub", "Sharing",
-      "Secure browser link viewable without an account.",
-      "not_started", []),
+      "A high-entropy link opens one project read-only with no account. Only the token "
+      "hash is stored, and the response states plainly that it grants no write access.",
+      "implemented", ["tests/test_sharing.py::TestCreation",
+                      "tests/test_sharing.py::TestPublicAccess"]),
     F("sh.security", "Sharing security", "hub", "Sharing",
-      "Password, expiry, view-only, download control and access logs.",
-      "not_started", []),
+      "Password protection, expiry and revocation checked on every access, with every "
+      "attempt logged including failures, and a revoked link indistinguishable from an "
+      "unknown one so a probe cannot learn which tokens existed.",
+      "implemented", ["tests/test_sharing.py::TestRevocationAndExpiry",
+                      "tests/test_sharing.py::TestPassword",
+                      "tests/test_sharing.py::TestAccessLog"]),
     F("ex.geotiff", "GeoTIFF export", "core", "Export",
       "Cloud-Optimized GeoTIFF readable by QGIS with correct CRS.",
       "verified", ["tests/test_geo.py::TestGeoTiffRoundTrip"]),
