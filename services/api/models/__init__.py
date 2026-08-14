@@ -303,7 +303,52 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Defect(Base):
+    """One inspection finding.
+
+    The model's claim and the human's decision are separate fields on purpose. A
+    prediction is never stored as verified, so a report can always distinguish what a
+    model asserted from what an inspector confirmed.
+    """
+
+    __tablename__ = "defects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    category: Mapped[str] = mapped_column(String(80), index=True)
+    severity: Mapped[str] = mapped_column(String(20), default="medium")
+    description: Mapped[str] = mapped_column(Text, default="")
+
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    altitude_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    geometry_geojson: Mapped[str | None] = mapped_column(Text, nullable=True)
+    crs_epsg: Mapped[int] = mapped_column(Integer, default=4326)
+    # None means unmeasured, which is different from zero.
+    area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    length_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Provenance of the claim.
+    source: Mapped[str] = mapped_column(String(20), default="human")
+    model_key: Mapped[str] = mapped_column(String(120), default="")
+    model_sha256: Mapped[str] = mapped_column(String(64), default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # The human decision, kept apart from the claim above.
+    review_state: Mapped[str] = mapped_column(String(20), default="unreviewed", index=True)
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 __all__ = [
-    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Job", "Membership", "Mission",
+    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Defect", "Job", "Membership",
+    "Mission",
     "Organization", "Project", "ROLE_RANK", "Role", "UploadSession", "User", "utcnow",
 ]

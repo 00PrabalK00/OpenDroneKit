@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import init_db, spatial_backend
 from .security import secret_is_deployment_grade
 from .storage import describe_storage
-from .routers import auth, datasets, organizations, processing, projects
+from .routers import auth, datasets, inspection, organizations, processing, projects
 
 VERSION = "0.1.0"
 
@@ -61,6 +61,7 @@ app.include_router(organizations.router)
 app.include_router(projects.router)
 app.include_router(datasets.router)
 app.include_router(processing.router)
+app.include_router(inspection.router)
 
 
 @app.get("/health", tags=["system"])

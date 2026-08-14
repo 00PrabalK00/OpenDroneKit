@@ -343,12 +343,16 @@ VISION = [
       "Model pre-labels imagery; a reviewer accepts, edits, merges, splits or reclassifies.",
       "not_started", []),
     F("ai.human_validation", "Human validation record", "hub", "AI",
-      "Prediction, confidence, model version, reviewer and final decision all stored.",
-      "not_started", []),
+      "A model prediction is never stored as verified. The model's claim (key, sha256, "
+      "confidence) and the reviewer's decision are separate fields, so reviewing never "
+      "erases what the model asserted.",
+      "implemented", ["tests/test_inspection.py::TestProvenance",
+                      "tests/test_inspection.py::TestReview"]),
     F("ai.quantification", "Defect quantification", "vision", "AI",
-      "Counts, total length, total area and percentage of surface affected, in metric units.",
+      "Counts, total length, total area and percentage of surface affected, in metric "
+      "units, with unmeasured defects declared rather than counted as zero.",
       "verified", ["tests/test_dsm_analysis.py::test_measurements_sum_defect_geometry",
-                   "tests/test_risk_scoring.py"]),
+                   "tests/test_risk_scoring.py", "tests/test_inspection.py::TestSummary"]),
     F("ai.projection", "Defect back-projection to 3D", "vision", "AI",
       "2-D masks projected onto the reconstructed surface as georeferenced polygons in m2.",
       "verified", ["tests/test_defect_projection.py"]),
@@ -373,8 +377,9 @@ INSPECTION = [
       "Point, line, polygon, rectangle, circle, freehand and text with severity and status.",
       "in_progress", [], "core/annotations.py exists; no UI."),
     F("in.defect_library", "Defect library", "hub", "Inspection",
-      "Default categories plus organisation-defined custom defects.",
-      "in_progress", [], "Categories exist in risk_scoring; not user-editable."),
+      "Default categories offered, with any organisation-defined category accepted; "
+      "the default list is not a whitelist.",
+      "implemented", ["tests/test_inspection.py::TestDefectLibrary"]),
     F("in.defect_record", "Defect record", "hub", "Inspection",
       "ID, category, severity, confidence, location, 3D position, measurements and history.",
       "implemented", ["tests/test_defect_projection.py"]),
