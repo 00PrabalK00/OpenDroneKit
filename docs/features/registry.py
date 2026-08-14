@@ -350,8 +350,15 @@ PROCESSING = [
       "Thousands of images via chunking, resumable jobs and memory-aware scheduling.",
       "not_started", []),
     F("pr.provenance", "Derived file provenance", "workers", "Processing",
-      "Every derived artifact records its source, engine, CRS and parameters.",
-      "in_progress", [], "Digital twin records some of this."),
+      "Every derived artifact records its source, engine, CRS and parameters in a "
+      "sidecar that travels with the file, and the record can be checked against the "
+      "artifact: a file modified since it was recorded is reported as such rather than "
+      "passed off as attributed.",
+      "implemented", ["tests/test_provenance.py::TestRecording",
+                      "tests/test_provenance.py::TestVerification",
+                      "tests/test_provenance.py::TestReconstructionOutputs",
+                      "tests/test_provenance.py::TestAudit"],
+      "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run."),
 ]
 
 # ---------------------------------------------------------------------------
