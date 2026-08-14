@@ -225,8 +225,17 @@ MISSION_PLANNING = [
       "not_started", []),
     F("mp.camera_db", "Camera database", "core", "Mission engine",
       "Sensor dimensions, resolution, focal length, pixel size and thermal capability, "
-      "with user-defined cameras.",
-      "in_progress", [], "Sensor width DB exists in core/geo.py; not a full profile store."),
+      "with user-defined cameras, geometry validated as physically possible, and an "
+      "unrecognised camera reported as unrecognised rather than resolved to a default "
+      "that would yield a confident but wrong GSD.",
+      "implemented", ["tests/test_cameras.py::TestGeometry",
+                      "tests/test_cameras.py::TestValidation",
+                      "tests/test_cameras.py::TestResolution",
+                      "tests/test_cameras.py::TestThermal",
+                      "tests/test_cameras.py::TestUserProfiles",
+                      "tests/test_cameras.py::TestAgreementWithThePlanner"],
+      "mission/cameras.py; 11 published profiles, planner reads them, "
+      "Api.list_cameras/describe_camera/add_camera/altitude_for_gsd."),
     F("mp.payload_db", "Payload database", "core", "Mission engine",
       "RGB, thermal, multispectral, LiDAR, magnetometer and custom payload commands.",
       "not_started", []),

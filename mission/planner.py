@@ -696,16 +696,30 @@ def _wrap_deg(value: float) -> float:
     return wrapped
 
 
+def _camera_profile(camera: str):
+    """Resolve a camera through the profile database.
+
+    CAMERA_PRESETS held three cameras; the database holds every published profile plus
+    whatever the operator has added, and reports whether the name was recognised. The
+    fallback geometry is unchanged, so nothing that worked before changes -- but an
+    unknown camera can now be surfaced as a guess instead of resolving silently.
+    """
+    from .cameras import resolve
+
+    profile, _known = resolve(camera or "")
+    return profile
+
+
 def _estimate_gsd_cm(altitude_m: float, camera: str) -> float:
-    p = CAMERA_PRESETS.get(camera.lower(), CAMERA_PRESETS["custom"])
-    gsd_m = altitude_m * (p["sensor_w_mm"] / p["focal_mm"]) / p["image_w_px"]
+    p = _camera_profile(camera)
+    gsd_m = altitude_m * (p.sensor_w_mm / p.focal_mm) / p.image_w_px
     return float(gsd_m * 100.0)
 
 
 def _estimate_footprint_m(altitude_m: float, camera: str) -> tuple[float, float]:
-    p = CAMERA_PRESETS.get(camera.lower(), CAMERA_PRESETS["custom"])
-    fw = altitude_m * (p["sensor_w_mm"] / p["focal_mm"])
-    fh = altitude_m * (p["sensor_h_mm"] / p["focal_mm"])
+    p = _camera_profile(camera)
+    fw = altitude_m * (p.sensor_w_mm / p.focal_mm)
+    fh = altitude_m * (p.sensor_h_mm / p.focal_mm)
     return float(fw), float(fh)
 
 
@@ -718,10 +732,8 @@ def _effective_footprint_m(altitude_m: float, camera: str, gimbal_pitch_deg: flo
 
 
 def _horizontal_fov_deg(camera: str) -> float:
-    p = CAMERA_PRESETS.get(camera.lower(), CAMERA_PRESETS["custom"])
-    sensor_w = float(p["sensor_w_mm"])
-    focal = max(1e-6, float(p["focal_mm"]))
-    return float(np.degrees(2.0 * np.arctan(sensor_w / (2.0 * focal))))
+    p = _camera_profile(camera)
+    return float(np.degrees(2.0 * np.arctan(p.sensor_w_mm / (2.0 * max(1e-6, p.focal_mm)))))
 
 
 def _recommended_shutter_s(speed_m_s: float, gsd_cm: float, blur_px_limit: float = 0.7) -> float:

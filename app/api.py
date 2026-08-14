@@ -337,6 +337,69 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def list_cameras(self) -> dict[str, Any]:
+        """Every camera profile available for planning, built-in and user-defined."""
+        from mission.cameras import all_profiles
+
+        profiles = all_profiles()
+        return ok(cameras=[p.to_dict() for p in sorted(profiles.values(),
+                                                       key=lambda c: c.name)])
+
+    @guard
+    def describe_camera(self, name: str, altitude_m: float = 60.0) -> dict[str, Any]:
+        """A camera's geometry and what it yields at a working altitude."""
+        from mission.cameras import describe
+
+        return ok(camera=describe(name, altitude_m=float(altitude_m)))
+
+    @guard
+    def add_camera(self, profile: dict[str, Any]) -> dict[str, Any]:
+        """Store an operator's own camera so it can be planned with."""
+        from mission.cameras import CameraProfile, save_user_profile
+
+        required = ("key", "name", "sensor_w_mm", "sensor_h_mm", "focal_mm",
+                    "image_w_px", "image_h_px")
+        missing = [field for field in required if field not in profile]
+        if missing:
+            return fail(f"A camera profile needs: {', '.join(missing)}.")
+
+        try:
+            entry = CameraProfile(
+                key=str(profile["key"]).strip().lower(),
+                name=str(profile["name"]),
+                sensor_w_mm=float(profile["sensor_w_mm"]),
+                sensor_h_mm=float(profile["sensor_h_mm"]),
+                focal_mm=float(profile["focal_mm"]),
+                image_w_px=int(profile["image_w_px"]),
+                image_h_px=int(profile["image_h_px"]),
+                thermal=bool(profile.get("thermal", False)),
+                source="user",
+                notes=str(profile.get("notes", "")),
+            )
+            path = save_user_profile(entry)
+        except (ValueError, TypeError) as exc:
+            # The validation messages explain why the geometry cannot be real.
+            return fail(str(exc))
+
+        return ok(camera=entry.to_dict(), stored_at=str(path))
+
+    @guard
+    def altitude_for_gsd(self, camera: str, gsd_cm: float) -> dict[str, Any]:
+        """The altitude that achieves a required GSD, which is how surveys are specified."""
+        from mission.cameras import UnknownCamera, require
+
+        try:
+            profile = require(camera)
+            altitude = profile.altitude_for_gsd_m(float(gsd_cm))
+        except UnknownCamera as exc:
+            return fail(str(exc))
+        except ValueError as exc:
+            return fail(str(exc))
+
+        return ok(camera=profile.key, gsd_cm=float(gsd_cm),
+                  altitude_m=round(altitude, 1))
+
+    @guard
     def measure_on_raster(self, raster_path: str, pixels: list[list[float]],
                           kind: str = "distance") -> dict[str, Any]:
         """Measure distance, area or perimeter on a georeferenced raster.
