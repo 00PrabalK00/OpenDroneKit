@@ -252,6 +252,70 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Crack point cloud: `{recon.get('crack_cloud_path')}`")
 
     lines.append("")
+    lines.append("## Measurements")
+    lines.append("")
+    measurements = payload.get("measurements", {}) or {}
+    totals = measurements.get("totals", {}) if isinstance(measurements, dict) else {}
+    terrain = measurements.get("terrain", {}) if isinstance(measurements, dict) else {}
+    if totals.get("defect_count"):
+        lines.append(f"- Defects measured: `{totals.get('defect_count')}`")
+        lines.append(f"- Total defect area: `{totals.get('total_area_m2')} m2`")
+        lines.append(f"- Total defect length: `{totals.get('total_length_m')} m`")
+        for name, values in (totals.get("by_type") or {}).items():
+            lines.append(
+                f"  - {name}: `{values.get('count')}` covering `{values.get('area_m2')} m2`"
+            )
+    else:
+        # Areas in square metres require the georeferenced defect layer, which only
+        # the COLMAP engine produces. Say so rather than reporting a bare zero.
+        lines.append(
+            "- No georeferenced defect layer was available, so no real-world defect "
+            "measurements could be taken."
+        )
+    if terrain.get("covered_area_m2"):
+        lines.append(f"- Surveyed area: `{terrain.get('covered_area_m2')} m2`")
+        lines.append(
+            f"- Elevation range: `{terrain.get('elevation_min_m')} - "
+            f"{terrain.get('elevation_max_m')} m` (relief `{terrain.get('relief_m')} m`)"
+        )
+
+    volume = payload.get("volume_estimation", {}) or {}
+    if isinstance(volume, dict) and volume.get("ok"):
+        preferred = volume.get("preferred") or {}
+        lines.append("")
+        lines.append("### Volume")
+        lines.append("")
+        lines.append(f"- Reference surface: `{preferred.get('reference')}`")
+        lines.append(f"- Cut (above reference): `{preferred.get('cut_volume_m3')} m3`")
+        lines.append(f"- Fill (below reference): `{preferred.get('fill_volume_m3')} m3`")
+        lines.append(f"- Net: `{preferred.get('net_volume_m3')} m3`")
+        lines.append(f"- CRS: `EPSG:{volume.get('crs_epsg')}` at `{volume.get('pixel_size_m')} m/px`")
+        if volume.get("note"):
+            lines.append(f"- Note: {volume.get('note')}")
+
+    lines.append("")
+    lines.append("## Defect Risk Ranking")
+    lines.append("")
+    risk = payload.get("risk_scoring", {}) or {}
+    if isinstance(risk, dict) and risk.get("defect_count"):
+        lines.append(f"- Risk index: `{risk.get('risk_index')}`")
+        lines.append(
+            f"- Integrity score: `{risk.get('integrity_score')}` "
+            f"(grade `{risk.get('grade')}` - {risk.get('grade_label')})"
+        )
+        lines.append(f"- Basis: {risk.get('measurement_note', '')}")
+        lines.append("")
+        lines.append("| # | Defect | Type | Risk | Action |")
+        lines.append("|---|---|---|---|---|")
+        for item in (risk.get("defects") or [])[:10]:
+            lines.append(
+                f"| {item.get('rank')} | `{item.get('defect_id')}` | {item.get('defect_type')} "
+                f"| {item.get('risk_score')} | {item.get('action')} |"
+            )
+    else:
+        lines.append("- No defect records were available to rank.")
+
+    lines.append("")
     lines.append("## Artifacts")
     lines.append("")
     for key, value in artifacts.items():

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -489,6 +489,48 @@ class StructuralFaultPipeline:
         )
         health_scoring_path = write_json(run_dir / "health_scoring.json", health_scoring)
 
+        _emit_progress(96, "Extracting measurements and scoring defect risk")
+        # These run off the georeferenced rasters and defect layer the COLMAP engine
+        # produces, so they yield real metres and square metres or nothing at all.
+        # They are best-effort: a sparse-only reconstruction has no DSM to measure,
+        # and that must not fail an otherwise complete run.
+        measurements_payload: dict[str, Any] = {}
+        volume_payload: dict[str, Any] = {}
+        risk_payload: dict[str, Any] = {}
+        recon_dict_early = recon.to_dict()
+        dsm_path = recon_dict_early.get("dsm_cog_path") or recon_dict_early.get("dsm_path")
+        dtm_path = recon_dict_early.get("dtm_cog_path") or recon_dict_early.get("dtm_path")
+        defects_geojson = recon_dict_early.get("defects_geojson_path")
+
+        try:
+            from .dsm_analysis import estimate_volume, extract_measurements
+
+            measurements_payload = extract_measurements(
+                defects_geojson=defects_geojson, dsm_path=dsm_path, dtm_path=dtm_path
+            )
+            if dsm_path and Path(dsm_path).exists():
+                volume_payload = estimate_volume(dsm_path, dtm_path=dtm_path)
+        except Exception as exc:  # noqa: BLE001
+            measurements_payload = {"error": f"{type(exc).__name__}: {exc}"}
+
+        try:
+            from .risk_scoring import score_run_risk
+
+            risk_payload = score_run_risk(
+                run_dir / "defects.json" if (run_dir / "defects.json").exists() else None,
+                defects_geojson=defects_geojson,
+                structure_type=str(self.config.structure_type or "generic"),
+                asset_id=asset_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            risk_payload = {"error": f"{type(exc).__name__}: {exc}"}
+
+        measurements_path = write_json(run_dir / "measurements.json", measurements_payload)
+        risk_path = write_json(run_dir / "risk_scoring.json", risk_payload)
+        volume_path = (
+            write_json(run_dir / "volume_estimation.json", volume_payload) if volume_payload else ""
+        )
+
         _emit_progress(97, "Writing summary artifacts")
         payload = {
             "run_utc": run_utc,
@@ -509,6 +551,9 @@ class StructuralFaultPipeline:
             "forecast": forecast_payload,
             "reconstruction": recon.to_dict(),
             "health_scoring": health_scoring,
+            "measurements": measurements_payload,
+            "volume_estimation": volume_payload,
+            "risk_scoring": risk_payload,
             "artifacts": {
                 "run_dir": str(run_dir),
                 "masks_dir": str(masks_dir),
@@ -518,6 +563,9 @@ class StructuralFaultPipeline:
                 "coverage_dir": str(coverage_dir),
                 "multisensor_dir": str(multisensor_dir),
                 "health_scoring_path": str(health_scoring_path),
+                "measurements_path": str(measurements_path),
+                "risk_scoring_path": str(risk_path),
+                **({"volume_estimation_path": str(volume_path)} if volume_path else {}),
             },
         }
         if isinstance(multisensor_payload, dict):
