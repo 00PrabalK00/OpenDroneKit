@@ -14,7 +14,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _skimage_skeletonize = None
 
-from .models import get_model_spec, model_status
+from .models import get_model_spec, model_identity, model_status
 
 LOGGER = logging.getLogger(__name__)
 
@@ -64,6 +64,10 @@ class CrackDetectionResult:
     # trained segmentation model did. Reported verbatim so a run can never claim a
     # model it did not use.
     model_used: str = "heuristic"
+    # Which model, and the digest of the file that actually ran. Empty for the
+    # heuristic path, which has no model identity to record.
+    model_key: str = ""
+    model_sha256: str = ""
 
 
 @dataclass
@@ -108,6 +112,10 @@ class StructuralDefectResult:
     class_pixel_ratio: dict[str, float] = field(default_factory=dict)
     model_used: str = "heuristic"
     model_available: bool = False
+    model_key: str = ""
+    model_sha256: str = ""
+    model_key: str = ""
+    model_sha256: str = ""
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -118,6 +126,8 @@ class StructuralDefectResult:
             "detections": [d.to_dict() for d in self.detections],
             "model_used": self.model_used,
             "model_available": bool(self.model_available),
+            "model_key": self.model_key,
+            "model_sha256": self.model_sha256,
         }
 
 
@@ -135,6 +145,8 @@ class SolarDefectResult:
     class_pixel_ratio: dict[str, float] = field(default_factory=dict)
     model_used: str = "heuristic"
     model_available: bool = False
+    model_key: str = ""
+    model_sha256: str = ""
     hotspot_max_temp_c: float | None = None
 
     def to_summary(self) -> dict[str, Any]:
@@ -146,6 +158,8 @@ class SolarDefectResult:
             "detections": [d.to_dict() for d in self.detections],
             "model_used": self.model_used,
             "model_available": bool(self.model_available),
+            "model_key": self.model_key,
+            "model_sha256": self.model_sha256,
             "hotspot_max_temp_c": self.hotspot_max_temp_c,
         }
 
@@ -450,13 +464,27 @@ def detect_cracks(
     if binary is None:
         binary = _crack_mask_heuristic(image_bgr, min_area_px)
 
-    return _crack_result_from_mask(image_bgr, binary, model_used)
+    return _crack_result_from_mask(image_bgr, binary, model_used, model_key)
+
+
+def _identity_for(model_used: str, model_key: str) -> dict[str, str]:
+    """Model identity, but only when a model actually produced the result.
+
+    Derived here rather than assigned at each branch, so the recorded identity and the
+    reported model_used cannot drift apart: one is computed from the other.
+    """
+    if not str(model_used).startswith("onnx:"):
+        return {"model_key": "", "model_sha256": ""}
+    identity = model_identity(model_key)
+    return {"model_key": identity["model_key"],
+            "model_sha256": identity["model_sha256"]}
 
 
 def _crack_result_from_mask(
-    image_bgr: np.ndarray, binary: np.ndarray, model_used: str
+    image_bgr: np.ndarray, binary: np.ndarray, model_used: str, model_key: str = ""
 ) -> CrackDetectionResult:
     """Derive length, width, and overlay from a binary crack mask."""
+    identity = _identity_for(model_used, model_key)
     skeleton = _skeletonize_binary(binary)
     dist_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
 
@@ -479,6 +507,8 @@ def _crack_result_from_mask(
             np.clip(max_width * 2.0, 0.0, float(max(image_bgr.shape[:2]) * 2.0))
         ),
         model_used=model_used,
+        model_key=identity["model_key"],
+        model_sha256=identity["model_sha256"],
     )
 
 
@@ -694,6 +724,7 @@ def detect_structural_defects(
         class_pixel_ratio[label] = float(np.sum(mask > 0) / total)
     overlay = _overlay_by_masks(image_bgr, mask_by_class)
 
+    identity = _identity_for(model_used, model_key)
     return StructuralDefectResult(
         mask=union,
         overlay=overlay,
@@ -705,6 +736,8 @@ def detect_structural_defects(
         class_pixel_ratio=class_pixel_ratio,
         model_used=model_used,
         model_available=model_available,
+        model_key=identity["model_key"],
+        model_sha256=identity["model_sha256"],
     )
 
 
@@ -847,6 +880,7 @@ def detect_solar_defects(
         class_pixel_ratio[label] = float(np.sum(mask > 0) / total)
     overlay = _overlay_by_masks(image_bgr, mask_by_class)
 
+    identity = _identity_for(model_used, model_key)
     return SolarDefectResult(
         mask=union,
         overlay=overlay,

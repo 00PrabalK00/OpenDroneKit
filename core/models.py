@@ -322,3 +322,44 @@ def migrate_legacy_models() -> dict[str, Any]:
         "target": str(target),
         "reason": "legacy_source_not_found",
     }
+
+
+# ── Model identity ────────────────────────────────────────────────────────────
+
+# Digests are cached against (path, size, mtime) so a repeated detection does not
+# re-read a 200 MB graph, while a model replaced on disk still produces a new identity.
+_DIGEST_CACHE: dict[tuple[str, int, float], str] = {}
+
+
+def model_identity(model_key: str) -> dict[str, str]:
+    """Which model file would answer for this key, and its digest.
+
+    The digest is computed from the installed file rather than read from the registry.
+    A recorded hash describes what was installed at some point; hashing the file
+    describes what is about to run, and those differ exactly when it matters -- after a
+    model has been replaced, retrained, or copied in by hand.
+    """
+    import hashlib
+
+    info = model_status(model_key)
+    path_str = str(info.get("path", "") or "")
+    if not info.get("exists") or not path_str:
+        return {"model_key": model_key, "model_sha256": "", "model_path": ""}
+
+    path = Path(path_str)
+    try:
+        stat = path.stat()
+    except OSError:
+        return {"model_key": model_key, "model_sha256": "", "model_path": path_str}
+
+    cache_key = (path_str, stat.st_size, stat.st_mtime)
+    digest = _DIGEST_CACHE.get(cache_key)
+    if digest is None:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                hasher.update(block)
+        digest = hasher.hexdigest()
+        _DIGEST_CACHE[cache_key] = digest
+
+    return {"model_key": model_key, "model_sha256": digest, "model_path": path_str}

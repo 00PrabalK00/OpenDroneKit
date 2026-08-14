@@ -50,7 +50,8 @@ def project(client):
                              json={"name": "Bridge 7", "client": "County Roads"}).json()["id"]
     client.post(f"/projects/{project_id}/defects", headers=headers, json={
         "category": "crack", "severity": "high", "source": "model",
-        "model_key": "crack_segmentation", "confidence": 0.8, "area_m2": 0.5})
+        "model_key": "crack_segmentation", "model_sha256": "a" * 64,
+        "confidence": 0.8, "area_m2": 0.5})
     return headers, organization_id, project_id
 
 

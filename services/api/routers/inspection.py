@@ -151,12 +151,33 @@ def create_defect(
             status_code=422,
             detail=f"Unknown severity {payload.severity!r}. Use one of: {', '.join(SEVERITIES)}.",
         )
-    if payload.source == "model" and not payload.model_key:
-        # A model-sourced finding without its model is unattributable.
-        raise HTTPException(
-            status_code=422,
-            detail="A defect with source 'model' must name the model_key that produced it.",
-        )
+    if payload.source == "model":
+        # A model-sourced finding has to carry enough to audit it later. The key says
+        # which model, the digest says which build of it -- a retrained model under the
+        # same key is a different model -- and the confidence says how sure it was.
+        # Without all three the finding cannot be re-examined when the model is found
+        # to be wrong, which is the moment the record is actually needed.
+        missing = [
+            name for name, value in (
+                ("model_key", payload.model_key),
+                ("model_sha256", payload.model_sha256),
+            ) if not value
+        ]
+        if payload.confidence is None:
+            missing.append("confidence")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"A defect with source 'model' must carry {', '.join(missing)}. "
+                    "An unattributable model finding cannot be audited after the fact."
+                ),
+            )
+        if not 0.0 <= float(payload.confidence) <= 1.0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Confidence must be between 0 and 1, got {payload.confidence}.",
+            )
 
     defect = Defect(
         project_id=project_id, category=payload.category, severity=payload.severity,

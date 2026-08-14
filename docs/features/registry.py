@@ -540,10 +540,16 @@ VISION = [
       "in_progress", ["tests/test_change_detection.py::TestSurfaceComparison"],
       "Volume added/removed and changed area between two surveys are computed; "
       "progress percentage against a design model is not."),
-    F("ai.model_version_recorded", "Every AI result stores model version and confidence", "vision", "AI",
-      "No detection is stored without its model identity and confidence.",
-      "in_progress", ["tests/test_honesty.py::TestDetectionReportsWhatItActuallyUsed"],
-      "model_used is reported; per-detection model version is not yet persisted."),
+    F("ai.model_version_recorded", "Every AI result stores model version and confidence",
+      "vision", "AI",
+      "No detection is stored without its model identity and confidence, where identity "
+      "is the digest of the file that actually ran rather than a registry entry, and the "
+      "heuristic path claims no identity at all.",
+      "implemented", ["tests/test_model_provenance.py::TestModelIdentity",
+                      "tests/test_model_provenance.py::TestDetectionCarriesIdentity",
+                      "tests/test_model_provenance.py::TestApiRefusesUnattributableFindings"],
+      "core/models.py::model_identity hashes the installed file; detection results carry "
+      "it; the API refuses a model-sourced defect missing key, digest or confidence."),
 ]
 
 # ---------------------------------------------------------------------------
