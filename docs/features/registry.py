@@ -357,11 +357,15 @@ VISION = [
       "2-D masks projected onto the reconstructed surface as georeferenced polygons in m2.",
       "verified", ["tests/test_defect_projection.py"]),
     F("ai.change_detection", "Change detection", "vision", "AI",
-      "New, resolved, growing and shrinking defects between two capture dates.",
-      "not_started", []),
+      "New, resolved, grown and shrunk defects between two surveys, matched by type "
+      "within a radius; a defect that moved beyond the radius is reported as one "
+      "resolved plus one new rather than as the same defect having moved.",
+      "implemented", ["tests/test_change_detection.py::TestDefectComparison"]),
     F("ai.progress_tracking", "Construction progress tracking", "vision", "AI",
       "Baseline versus current model with progress percentage and change regions.",
-      "not_started", []),
+      "in_progress", ["tests/test_change_detection.py::TestSurfaceComparison"],
+      "Volume added/removed and changed area between two surveys are computed; "
+      "progress percentage against a design model is not."),
     F("ai.model_version_recorded", "Every AI result stores model version and confidence", "vision", "AI",
       "No detection is stored without its model identity and confidence.",
       "in_progress", ["tests/test_honesty.py::TestDetectionReportsWhatItActuallyUsed"],
@@ -454,8 +458,12 @@ PLATFORM = [
       "Model, cloud, ortho, images, annotations, defects and history as one navigable object.",
       "in_progress", [], "digital_twin.json artifact index exists; no UI."),
     F("hub.timeline", "Time based comparison / 4D", "hub", "Hub",
-      "Compare any two capture dates of the same asset.",
-      "not_started", []),
+      "Elevation difference and volume added/removed between two surveys, refusing to "
+      "compare surveys in different coordinate systems or at different resolutions "
+      "rather than resampling them into apparent agreement.",
+      "implemented", ["tests/test_change_detection.py::TestSurfaceComparison",
+                      "tests/test_change_detection.py::TestIncomparableSurveys"],
+      "Core comparison done; no timeline UI yet."),
     F("rp.reports", "Automated inspection reports", "hub", "Reporting",
       "Structured report with findings, images, measurements and AI results.",
       "implemented", [], "Markdown and HTML; PDF path unverified."),
