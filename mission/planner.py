@@ -24,18 +24,21 @@ CAMERA_PRESETS = {
         "sensor_h_mm": 8.8,
         "focal_mm": 10.26,
         "image_w_px": 5472,
+        "image_h_px": 3648,
     },
     "phantom4rtk": {
         "sensor_w_mm": 13.2,
         "sensor_h_mm": 8.8,
         "focal_mm": 8.8,
         "image_w_px": 5472,
+        "image_h_px": 3648,
     },
     "custom": {
         "sensor_w_mm": 13.2,
         "sensor_h_mm": 8.8,
         "focal_mm": 10.0,
         "image_w_px": 4000,
+        "image_h_px": 3000,
     },
 }
 
@@ -229,6 +232,17 @@ class MissionPlan:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def estimates(self, aircraft=None, image_format: str = "jpeg") -> dict:
+        """Batteries, storage and duration for this plan.
+
+        Kept off ``to_dict`` deliberately. These figures depend on which airframe flies
+        the mission and in what image format, and burning a default aircraft into the
+        serialised plan would make a guess look like part of the plan itself.
+        """
+        from .estimates import estimate_mission
+
+        return estimate_mission(self, aircraft=aircraft, image_format=image_format)
 
 
 @dataclass

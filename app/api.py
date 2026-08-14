@@ -337,6 +337,51 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def import_boundary(self, path: str) -> dict[str, Any]:
+        """Load an area of interest from a KML, KMZ, GeoJSON, GPX or CSV file.
+
+        The imported boundary becomes the session AOI, so the operator can plan against
+        the client's own file rather than tracing it by hand on the map.
+        """
+        from mission.boundary_import import BoundaryImportError, describe_boundary, read_boundary
+
+        try:
+            polygon = read_boundary(path)
+        except BoundaryImportError as exc:
+            # These messages are written for an operator, so pass them through rather
+            # than replacing them with something generic.
+            return fail(str(exc))
+
+        self._session.aoi_polygon = [list(point) for point in polygon]
+        summary = describe_boundary(polygon)
+        self._session.audit("boundary_imported",
+                            {"path": str(path), "points": summary["point_count"],
+                             "area_hectares": summary["area_hectares"]})
+        return ok(polygon=self._session.aoi_polygon, summary=summary)
+
+    @guard
+    def mission_estimates(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Batteries, storage and duration for the current plan."""
+        from mission.estimates import AircraftProfile, estimate_mission
+
+        plan = getattr(self._session, "mission_plan", None)
+        if plan is None:
+            return fail("Plan a mission before asking what it will cost to fly.")
+
+        opts = dict(options or {})
+        aircraft = AircraftProfile(
+            name=str(opts.get("aircraft_name", "generic multirotor")),
+            endurance_min=float(opts.get("endurance_min", 25.0)),
+            cruise_speed_m_s=float(opts.get("cruise_speed_m_s", 8.0)),
+            reserve_pct=float(opts.get("reserve_pct", 25.0)),
+            batteries_owned=int(opts.get("batteries_owned", 0)),
+        )
+        return ok(estimates=estimate_mission(
+            plan, aircraft=aircraft,
+            image_format=str(opts.get("image_format", "jpeg")),
+        ))
+
+    @guard
     def plan_mission(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Plan a mission over the drawn AOI with the operator's real constraints."""
         from mission.planner import MissionConstraints, MissionPlanner

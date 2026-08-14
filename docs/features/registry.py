@@ -80,8 +80,9 @@ MISSION_PLANNING = [
     F("mp.output.contract", "Mission output carries the full capture contract", "core", "Mission engine",
       "Every generated mission yields waypoints, altitude, speed, heading, yaw, gimbal pitch, "
       "trigger timing, estimated time, distance, image count and a return path.",
-      "in_progress", ["tests/test_exporters.py::test_capture_commands_survive_export"],
-      "Storage and battery estimates not yet emitted."),
+      "implemented", ["tests/test_exporters.py::test_capture_commands_survive_export",
+                      "tests/test_estimates.py::TestWholeMission"],
+      "Storage and battery now emitted by MissionPlan.estimates()."),
     F("mp.type.mapping_2d", "2D mapping mission", "core", "Mission types",
       "Single and double grid over a drawn polygon with configurable direction, overlap and GSD.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -181,9 +182,14 @@ MISSION_PLANNING = [
       "verified", ["tests/test_mission_constraints.py::TestNoFlyZones",
                    "tests/test_mission_constraints.py::TestAltitudeBand"]),
     F("mp.estimates", "Mission estimates", "core", "Mission engine",
-      "Duration, distance, image count, storage, battery count and reserve before flight.",
-      "in_progress", ["tests/test_mission_constraints.py::TestPhotogrammetry::test_duration_estimate_is_positive_and_finite"],
-      "Storage and battery estimates missing."),
+      "Duration, distance, image count, storage, battery count and reserve before flight, "
+      "with a mission too long for one battery reported as such rather than rounded down, "
+      "and an unknown camera reported as a guess rather than sized silently.",
+      "implemented", ["tests/test_mission_constraints.py::TestPhotogrammetry::test_duration_estimate_is_positive_and_finite",
+                      "tests/test_estimates.py::TestStorage",
+                      "tests/test_estimates.py::TestBatteries",
+                      "tests/test_estimates.py::TestWholeMission"],
+      "mission/estimates.py; MissionPlan.estimates() and Api.mission_estimates."),
     F("mp.simulation", "3D mission simulation", "hub", "Mission engine",
       "Timeline playback of trajectory, gimbal, capture points, terrain and battery.",
       "not_started", []),
@@ -197,8 +203,17 @@ MISSION_PLANNING = [
       "Repeat exactly, with updated terrain, modified boundary, or a different aircraft.",
       "not_started", []),
     F("mp.import", "Mission import", "hub", "Mission engine",
-      "KML, KMZ, GeoJSON, GPX and CSV waypoint import.",
-      "in_progress", [], "GeoJSON import works; KML/KMZ/GPX/CSV missing."),
+      "KML, KMZ, GeoJSON, GPX and CSV boundary import, each read in its own coordinate "
+      "order, with out-of-range coordinates and headerless CSVs refused rather than "
+      "guessed at, and the imported boundary usable directly for planning.",
+      "implemented", ["tests/test_boundary_import.py::TestKML",
+                      "tests/test_boundary_import.py::TestKMZ",
+                      "tests/test_boundary_import.py::TestGeoJSON",
+                      "tests/test_boundary_import.py::TestGPX",
+                      "tests/test_boundary_import.py::TestCSV",
+                      "tests/test_boundary_import.py::TestValidation",
+                      "tests/test_boundary_import.py::TestDispatch"],
+      "mission/boundary_import.py; Api.import_boundary sets the session AOI."),
     F("mp.fly_to_draw", "Fly to draw", "app", "Mission engine",
       "Boundary defined by flying the aircraft to mark positions.",
       "not_started", []),
@@ -649,8 +664,14 @@ PLATFORM = [
                       "tests/test_change_detection.py::TestIncomparableSurveys"],
       "Core comparison done; no timeline UI yet."),
     F("rp.reports", "Automated inspection reports", "hub", "Reporting",
-      "Structured report with findings, images, measurements and AI results.",
-      "implemented", [], "Markdown and HTML; PDF path unverified."),
+      "Structured report with findings, images, measurements and AI results, generated "
+      "from real project data, listed and persisted per project, refused outright when "
+      "the project is missing, and reporting an absent defect run as absent rather than "
+      "as zero defects found.",
+      "implemented", ["tests/test_report_engine.py::TestReadiness",
+                      "tests/test_report_engine.py::TestGeneration",
+                      "tests/test_report_engine.py::TestContent"],
+      "core/report_engine.py; each report gets its own directory and a manifest."),
     F("rp.formats", "Report formats", "hub", "Reporting",
       "PDF and DOCX generated directly from the report payload, each verified by "
       "opening the result with its own reader rather than checking it is non-empty.",
