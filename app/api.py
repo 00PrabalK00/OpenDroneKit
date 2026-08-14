@@ -569,6 +569,58 @@ class Api:
             versions=self._session.store.list_mission_versions(self._session.project_id(), name or None)
         )
 
+    @guard
+    def mission_version_history(self, name: str = "") -> dict[str, Any]:
+        """Every saved version with what changed from the one before it."""
+        from mission.versioning import version_history
+
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        return ok(history=version_history(versions))
+
+    @guard
+    def diff_mission_versions(self, from_version: int, to_version: int,
+                              name: str = "") -> dict[str, Any]:
+        """Compare two saved versions of a mission."""
+        from mission.versioning import diff_versions
+
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        by_num = {int(v.get("version_num", 0)): v for v in versions}
+
+        older, newer = by_num.get(int(from_version)), by_num.get(int(to_version))
+        missing = [n for n, v in ((from_version, older), (to_version, newer)) if v is None]
+        if missing:
+            available = ", ".join(str(n) for n in sorted(by_num)) or "none"
+            return fail(f"No such version(s): {missing}. Saved versions: {available}.")
+
+        return ok(diff=diff_versions(older, newer).to_dict())
+
+    @guard
+    def restore_mission_version(self, version_num: int, name: str = "",
+                                note: str = "") -> dict[str, Any]:
+        """Reinstate an earlier version by saving it again as the newest.
+
+        Nothing is deleted: the versions in between remain on the record, because an
+        audit trail that can be rewritten is not one.
+        """
+        from mission.versioning import restore_version
+
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        source = next((v for v in versions
+                       if int(v.get("version_num", 0)) == int(version_num)), None)
+        if source is None:
+            available = ", ".join(str(v.get("version_num")) for v in versions) or "none"
+            return fail(f"No version {version_num}. Saved versions: {available}.")
+
+        entry = restore_version(self._session.store, self._session.project_id(),
+                                source, note=note)
+        self._session.audit("mission_version_restored",
+                            {"from_version": version_num,
+                             "new_version": entry.get("version_num")})
+        return ok(version=entry)
+
     # -- vehicle ---------------------------------------------------------
 
     @guard

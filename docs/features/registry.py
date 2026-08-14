@@ -194,8 +194,14 @@ MISSION_PLANNING = [
       "Timeline playback of trajectory, gimbal, capture points, terrain and battery.",
       "not_started", []),
     F("mp.versioning", "Mission versioning", "hub", "Mission engine",
-      "Version, author, timestamp, diff against previous and restore.",
-      "in_progress", [], "save_mission_version stores versions; diff and restore missing."),
+      "Version, author, timestamp, diff against previous and restore, with the diff "
+      "stated in operator terms rather than as a raw field dump, and restore appending "
+      "a new version so the record of what was flown in between survives.",
+      "implemented", ["tests/test_versioning.py::TestDiff",
+                      "tests/test_versioning.py::TestHistory",
+                      "tests/test_versioning.py::TestRestore",
+                      "tests/test_versioning.py::TestAgainstRealStorage"],
+      "mission/versioning.py; Api.diff_mission_versions and restore_mission_version."),
     F("mp.sharing", "Mission preview sharing", "hub", "Mission engine",
       "Secure link showing path, area, altitude, duration, drone and safety areas.",
       "not_started", []),
