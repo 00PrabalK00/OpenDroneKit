@@ -288,6 +288,7 @@ def run_preflight(
     no_fly_zones: list[dict[str, Any]] | None = None,
     weather_acknowledged: bool = False,
     free_storage_mb: float | None = None,
+    gimbal_ok: bool | None = None,
 ) -> PreflightReport:
     telemetry: DroneTelemetry
     try:
@@ -303,7 +304,11 @@ def run_preflight(
         checks.append(check_battery_status(telemetry,
                                            warn_pct=drone_profile.battery_warn_pct,
                                            critical_pct=drone_profile.battery_critical_pct))
+        # A bad compass arms perfectly happily and is the classic cause of a fly-away.
+        checks.append(check_compass(telemetry))
+        checks.append(check_imu(telemetry))
     checks.append(check_camera_ready())
+    checks.append(check_gimbal(gimbal_ok))
     checks.append(check_storage_ready(free_mb_available=free_storage_mb))
     checks.append(check_mission_valid(mission_summary))
     checks.append(check_mission_uploaded(mission_uploaded, drone.is_connected()))
@@ -337,3 +342,102 @@ def confirm_manual_check(report: PreflightReport, check_id: str, operator_note: 
 def can_start_mission(report: PreflightReport) -> bool:
     """Return True only when all blocking checks pass / are confirmed."""
     return report.can_start
+
+
+# ── Sensor health ─────────────────────────────────────────────────────────────
+
+# MAV_SYS_STATUS_SENSOR bit positions, from the MAVLink common message set. The
+# autopilot reports three parallel bitmasks: which sensors exist, which are enabled,
+# and which are healthy.
+SENSOR_BITS = {
+    "gyro": 1 << 0,        # MAV_SYS_STATUS_SENSOR_3D_GYRO
+    "accelerometer": 1 << 1,  # MAV_SYS_STATUS_SENSOR_3D_ACCEL
+    "compass": 1 << 2,     # MAV_SYS_STATUS_SENSOR_3D_MAG
+}
+
+
+def _sensor_state(telemetry: DroneTelemetry, sensor: str) -> str:
+    """Report a sensor as healthy, unhealthy, absent, or unknown.
+
+    Unknown is a distinct answer and must stay that way. A vehicle that never sent
+    SYS_STATUS has not told us its compass is fine, and recording that silence as a
+    pass would put a tick against a sensor nobody asked about.
+    """
+    raw = getattr(telemetry, "raw", None) or {}
+    if "sensors_health" not in raw:
+        return "unknown"
+
+    bit = SENSOR_BITS[sensor]
+    present = int(raw.get("sensors_present", 0)) & bit
+    healthy = int(raw.get("sensors_health", 0)) & bit
+
+    if not present:
+        return "absent"
+    return "healthy" if healthy else "unhealthy"
+
+
+def check_compass(telemetry: DroneTelemetry) -> CheckResult:
+    """A bad compass is the classic cause of a fly-away, and it arms perfectly happily."""
+    state = _sensor_state(telemetry, "compass")
+    if state == "healthy":
+        return CheckResult("compass", "Compass", SEVERITY_PASS,
+                           "Magnetometer reporting healthy.")
+    if state == "unhealthy":
+        return CheckResult("compass", "Compass", SEVERITY_BLOCK,
+                           "The autopilot reports the magnetometer as unhealthy.",
+                           fix_action="Calibrate the compass and move away from metal "
+                                      "structures or vehicles before retrying.")
+    if state == "absent":
+        return CheckResult("compass", "Compass", SEVERITY_WARN,
+                           "No magnetometer is present on this vehicle.",
+                           fix_action="Confirm the airframe is intended to fly without "
+                                      "one before proceeding.")
+    return CheckResult("compass", "Compass", SEVERITY_WARN,
+                       "The vehicle has not reported compass health.",
+                       fix_action="Check it manually. An unreported sensor is not a "
+                                  "healthy sensor.")
+
+
+def check_imu(telemetry: DroneTelemetry) -> CheckResult:
+    """Gyro and accelerometer together: an aircraft cannot stabilise without both."""
+    gyro = _sensor_state(telemetry, "gyro")
+    accel = _sensor_state(telemetry, "accelerometer")
+
+    if "unhealthy" in (gyro, accel):
+        faulty = ", ".join(n for n, s in (("gyroscope", gyro), ("accelerometer", accel))
+                           if s == "unhealthy")
+        return CheckResult("imu", "IMU", SEVERITY_BLOCK,
+                           f"The autopilot reports {faulty} as unhealthy.",
+                           fix_action="Calibrate the IMU with the aircraft level and "
+                                      "still, and let it reach a stable temperature.")
+    if gyro == "healthy" and accel == "healthy":
+        return CheckResult("imu", "IMU", SEVERITY_PASS,
+                           "Gyroscope and accelerometer reporting healthy.")
+    if "unknown" in (gyro, accel):
+        return CheckResult("imu", "IMU", SEVERITY_WARN,
+                           "The vehicle has not reported IMU health.",
+                           fix_action="Check it manually before arming.")
+    return CheckResult("imu", "IMU", SEVERITY_WARN,
+                       "The IMU is not reported as present on this vehicle.",
+                       fix_action="Confirm the autopilot is configured correctly.")
+
+
+def check_gimbal(gimbal_ok: bool | None = None, notes: str = "") -> CheckResult:
+    """Gimbal readiness.
+
+    ``None`` means nothing reported it, which is a warning rather than a pass: a survey
+    flown with a stuck gimbal produces imagery pointing somewhere other than planned,
+    and nothing downstream will notice until the reconstruction comes out wrong.
+    """
+    if gimbal_ok is True:
+        return CheckResult("gimbal", "Gimbal", SEVERITY_PASS,
+                           notes or "Gimbal reports ready.")
+    if gimbal_ok is False:
+        return CheckResult("gimbal", "Gimbal", SEVERITY_BLOCK,
+                           notes or "The gimbal is not ready.",
+                           fix_action="Power-cycle the payload and confirm the gimbal "
+                                      "moves freely and is not caught on its lock.")
+    return CheckResult("gimbal", "Gimbal", SEVERITY_WARN,
+                       "Gimbal status was not reported.",
+                       fix_action="Confirm by eye that the gimbal is unlocked and level.",
+                       requires_manual=True)

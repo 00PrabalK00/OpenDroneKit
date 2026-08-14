@@ -395,6 +395,15 @@ class MissionPlannerDroneClient:
             elif t == "SYS_STATUS":
                 tel.battery_v = float(msg.voltage_battery) / 1000.0
                 tel.battery_pct = max(0.0, float(msg.battery_remaining))
+                # Sensor health bitmasks, kept so preflight can report compass, gyro
+                # and accelerometer state instead of leaving them unchecked. Stored
+                # raw: interpreting the bits belongs with the checks, not the parser.
+                tel.raw["sensors_present"] = int(
+                    getattr(msg, "onboard_control_sensors_present", 0) or 0)
+                tel.raw["sensors_enabled"] = int(
+                    getattr(msg, "onboard_control_sensors_enabled", 0) or 0)
+                tel.raw["sensors_health"] = int(
+                    getattr(msg, "onboard_control_sensors_health", 0) or 0)
             elif t == "GPS_RAW_INT":
                 tel.gps_fix = int(msg.fix_type)
                 tel.satellites = int(getattr(msg, "satellites_visible", 0))

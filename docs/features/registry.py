@@ -292,8 +292,17 @@ FLIGHT = [
       "not_started", [], "Loopback peer is tested; a real SITL flight is not."),
     F("fl.preflight", "Preflight checks", "app", "Flight",
       "Connection, battery, GPS, compass, IMU, home point, storage, camera, gimbal and "
-      "mission-vs-geofence conflicts checked before arming.",
-      "in_progress", [], "core/preflight.py exists; not wired to a real vehicle."),
+      "mission-vs-geofence conflicts checked before arming, with a sensor the vehicle "
+      "has not reported treated as unestablished rather than healthy.",
+      "implemented", ["tests/test_preflight.py::TestCompass",
+                      "tests/test_preflight.py::TestImu",
+                      "tests/test_preflight.py::TestGimbal",
+                      "tests/test_preflight.py::TestGps",
+                      "tests/test_preflight.py::TestBattery",
+                      "tests/test_preflight.py::TestConnection",
+                      "tests/test_preflight.py::TestWholeReport"],
+      "core/preflight.py; compass and IMU read the SYS_STATUS sensor health bitmask, "
+      "which the bridge now keeps instead of discarding."),
     F("fl.telemetry", "Live telemetry", "core", "Flight",
       "Position, battery, GPS, RC link and mission progress streamed to subscribers.",
       "implemented", [], "subscribe() added to the bridge; no UI consumer test."),
