@@ -91,7 +91,10 @@ MISSION_PLANNING = [
       "in_progress", [], "double_grid gives cross-hatch; oblique bands not implemented."),
     F("mp.type.roof_mapping", "Roof mapping", "core", "Mission types",
       "Nadir and oblique capture over a roof outline with GSD-driven altitude.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_standoff.py::TestAgainstARealPlan::test_every_named_mission_type_compiles_to_its_own_template"],
+      "Resolves to grid deliberately -- a roof map is a nadir grid -- rather than by "
+      "falling through the alias default, which is how it used to arrive."),
     F("mp.type.roof_inspection", "Roof inspection", "core", "Mission types",
       "Stop-and-capture at computed picture points with stand-off and gimbal control.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -99,8 +102,12 @@ MISSION_PLANNING = [
       "Vertical capture paths along an elevation with stand-off and vertical overlap.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.facade_inspection", "Facade inspection", "core", "Mission types",
-      "Inspection rows and columns at configurable GSD and stand-off.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "Inspection rows and columns at configurable GSD and stand-off, compiling to the "
+      "facade primitive rather than a nadir grid, and keeping the stand-off it declares.",
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_standoff.py::TestAgainstARealPlan::test_every_named_mission_type_compiles_to_its_own_template",
+                      "tests/test_standoff.py::TestAgainstARealPlan::test_facade_inspection_is_not_silently_a_nadir_grid"],
+      "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
       "capture points sit outside the footprint with the camera facing the wall.",
@@ -116,8 +123,11 @@ MISSION_PLANNING = [
       "Facade planning maintains coverage on non-rectangular footprints.",
       "not_started", []),
     F("mp.type.linear_mapping", "Linear mapping", "core", "Mission types",
-      "Corridor following a polyline with configurable width and parallel passes.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "Corridor following a polyline with configurable width and parallel passes, "
+      "compiling to the corridor primitive rather than gridding the bounding area.",
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_standoff.py::TestAgainstARealPlan::test_every_named_mission_type_compiles_to_its_own_template"],
+      "Was silently aliased to grid."),
     F("mp.type.linear_inspection", "Linear inspection", "core", "Mission types",
       "Asset-following capture at inspection distance with camera facing control.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -159,8 +169,20 @@ MISSION_PLANNING = [
       "Paths generated from imported OBJ/GLB/PLY/LAS/IFC surfaces.",
       "not_started", []),
     F("mp.standoff", "Stand-off distance planning", "core", "Mission engine",
-      "Fixed, per-surface and adaptive stand-off with a minimum clearance guarantee.",
-      "in_progress", [], "Fixed stand-off only."),
+      "Fixed, per-surface and adaptive stand-off with a minimum clearance guarantee, "
+      "where a resolution that would require flying inside the clearance is reported as "
+      "a conflict rather than silently resolved either way, and compiled missions are "
+      "measured against the structure to prove the stand-off survived compilation.",
+      "implemented", ["tests/test_standoff.py::TestFixedPolicy",
+                      "tests/test_standoff.py::TestPerSurfacePolicy",
+                      "tests/test_standoff.py::TestAdaptivePolicy",
+                      "tests/test_standoff.py::TestTheConflict",
+                      "tests/test_standoff.py::TestTheFloor",
+                      "tests/test_standoff.py::TestGeometry",
+                      "tests/test_standoff.py::TestVerification",
+                      "tests/test_standoff.py::TestAgainstARealPlan"],
+      "mission/standoff.py. Verification found facade_inspection compiling to a nadir "
+      "grid and the geofence projecting capture points onto the wall; both fixed."),
     F("mp.gsd", "GSD planning and calculator", "core", "Mission engine",
       "Ground sample distance from sensor, focal length and distance; and the inverse.",
       "implemented", ["tests/test_mission_constraints.py::TestPhotogrammetry"]),

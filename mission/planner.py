@@ -291,12 +291,27 @@ def _normalize_template(mode: str) -> str:
         "waypoint": "waypoints",
         "waypoints": "waypoints",
         "advanced_waypoints": "waypoints",
+        # A roof map genuinely is a nadir grid over the outline, so this resolves to
+        # grid deliberately rather than by falling through the default -- the two look
+        # identical in behaviour and completely different in intent.
+        "roof_mapping": "grid",
+        "roof_map": "grid",
         "facade": "facade",
         "vertical": "facade",
         "vertical_scan": "facade",
+        # Facade inspection is the stand-off facade primitive, not a nadir grid. It was
+        # missing from this table, so it fell through to the "grid" default and produced
+        # a lawnmower sweep across the top of the building at constant altitude -- no
+        # stand-off, no altitude band, camera pointing down instead of at the wall.
+        "facade_inspection": "facade",
+        "vertical_inspection": "facade",
         "facade_mapping": "facade_mapping",
         "vertical_mapping": "facade_mapping",
         "facade_3d": "facade_mapping",
+        # Corridor work: mapping follows the route as a corridor rather than gridding
+        # its bounding area, which is both slower and off-specification.
+        "linear_mapping": "corridor",
+        "corridor_mapping": "corridor",
         "linear": "linear_inspection",
         "linear_inspection": "linear_inspection",
         "pipeline": "linear_inspection",
@@ -324,6 +339,64 @@ def _normalize_template(mode: str) -> str:
         "turbine_inspection": "wind_turbine",
     }
     return table.get(value, "grid")
+
+
+# Templates that inspect a structure from outside it. For these the drawn polygon is
+# the thing being inspected, not the area the aircraft may occupy, so a geofence equal
+# to that polygon makes the mission impossible: every capture point placed at stand-off
+# lies outside the fence and is projected back onto the wall.
+STRUCTURE_RELATIVE_TEMPLATES = frozenset({
+    "facade", "facade_mapping", "multi_facade", "closed_loop",
+    "tower_mapping", "orbit", "wind_turbine", "bubble_360",
+})
+
+# Room beyond the stand-off itself, so a capture point sitting exactly at stand-off is
+# not on the fence boundary and subject to projection by rounding alone.
+GEOFENCE_EXPANSION_MARGIN_M = 10.0
+
+
+def _expand_geofence_for_structure(
+    geofence_lonlat: list[list[float]],
+    standoff_m: float,
+    lat0: float,
+) -> list[list[float]]:
+    """Push a geofence outwards so a stand-off mission fits inside it.
+
+    The polygon is expanded radially from its centroid, matching how the facade
+    compiler offsets its capture points, so the fence clears every point it places.
+    """
+    if len(geofence_lonlat) < 3:
+        return geofence_lonlat
+
+    distance = float(standoff_m) + GEOFENCE_EXPANSION_MARGIN_M
+    if distance <= 0:
+        return geofence_lonlat
+
+    # Degrees per metre at this latitude; longitude converges towards the poles.
+    lat_per_m = 1.0 / 110_540.0
+    lon_per_m = 1.0 / max(1.0, 111_320.0 * cos(radians(lat0)))
+
+    ring = [pt for pt in geofence_lonlat]
+    if len(ring) > 1 and ring[0] == ring[-1]:
+        ring = ring[:-1]
+
+    cx = sum(p[0] for p in ring) / len(ring)
+    cy = sum(p[1] for p in ring) / len(ring)
+
+    expanded: list[list[float]] = []
+    for lon, lat in ring:
+        # Work in metres so the expansion is uniform on the ground rather than in
+        # degrees, which would be lopsided away from the equator.
+        dx = (lon - cx) / lon_per_m
+        dy = (lat - cy) / lat_per_m
+        norm = sqrt(dx * dx + dy * dy)
+        if norm < 1e-6:
+            expanded.append([lon, lat])
+            continue
+        scale = (norm + distance) / norm
+        expanded.append([cx + dx * scale * lon_per_m, cy + dy * scale * lat_per_m])
+
+    return _ensure_closed(expanded)
 
 
 def _normalize_facade_capture_profile(value: str | None) -> str:
@@ -2217,6 +2290,32 @@ class MissionPlanner:
             frame = _asset_frame_from_dict(dict(asset_frame))
 
         constraints_obj = self._coerce_constraints(constraints, polygon=polygon, default_altitude_m=altitude_m)
+
+        # A structure-relative mission stands off from the drawn polygon, so a geofence
+        # equal to that polygon would clip every capture point back onto the structure.
+        # Expanding it keeps a real fence while letting the mission be flown as
+        # specified; the expansion is recorded on the plan rather than done silently.
+        geofence_expanded_m = 0.0
+        if template in STRUCTURE_RELATIVE_TEMPLATES and constraints_obj.geofence:
+            fence = [list(map(float, pt)) for pt in constraints_obj.geofence]
+            drawn = [list(map(float, pt)) for pt in _ensure_closed(polygon)]
+            if fence == drawn:
+                standoff_for_fence = float(
+                    facade_standoff_m if facade_standoff_m is not None
+                    else max(constraints_obj.standoff_m, 8.0)
+                )
+                lat_ref = sum(p[1] for p in drawn) / max(1, len(drawn))
+                constraints_obj = MissionConstraints(
+                    geofence=_expand_geofence_for_structure(fence, standoff_for_fence, lat_ref),
+                    min_altitude_m=constraints_obj.min_altitude_m,
+                    max_altitude_m=constraints_obj.max_altitude_m,
+                    standoff_m=constraints_obj.standoff_m,
+                    rth_altitude_m=constraints_obj.rth_altitude_m,
+                    no_fly_polygons=constraints_obj.no_fly_polygons,
+                    rth_action=constraints_obj.rth_action,
+                    obstacle_avoidance_profile=constraints_obj.obstacle_avoidance_profile,
+                )
+                geofence_expanded_m = standoff_for_fence + GEOFENCE_EXPANSION_MARGIN_M
 
         if facade_bottom_altitude_m is None:
             bottom_altitude_m = max(constraints_obj.min_altitude_m, altitude_m - 20.0)
