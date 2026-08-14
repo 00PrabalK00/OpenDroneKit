@@ -268,9 +268,17 @@ MISSION_PLANNING = [
 # ---------------------------------------------------------------------------
 
 FLIGHT = [
-    F("fl.abstraction", "Drone abstraction layer", "app", "Flight",
-      "A generic interface with adapters; no core code depends on one manufacturer.",
-      "in_progress", [], "core/drone.py defines the protocol; only MAVLink and mock exist."),
+    F("fl.abstraction", "Drone abstraction layer", "core", "Flight",
+      "A generic interface with adapters; no core code depends on one manufacturer, "
+      "enforced by reading the source rather than by convention, and the mission engine "
+      "imports no drone SDK at all.",
+      "implemented", ["tests/test_drone_abstraction.py::TestLayering",
+                      "tests/test_drone_abstraction.py::TestProtocolConformance",
+                      "tests/test_drone_abstraction.py::TestFactory",
+                      "tests/test_drone_abstraction.py::TestHonestyAtTheBoundary",
+                      "tests/test_drone_abstraction.py::TestMockBehaviour"],
+      "Three drivers: mock, MAVSDK, pymavlink. pymavlink is confined to "
+      "mission_planner_bridge plus one declared capability probe."),
     F("fl.mavlink.upload", "MAVLink mission upload", "core", "Flight",
       "Request/ack transfer protocol; gimbal, yaw, dwell and trigger items survive a round trip.",
       "verified", ["tests/test_mavlink_transfer.py::test_mission_upload_is_acknowledged",

@@ -269,7 +269,10 @@ class MAVSDKDroneClient:
     """
     Real drone client using MAVSDK-Python.
     Requires `pip install mavsdk` and a running MAVSDK server.
-    Falls back to a no-op if mavsdk is not installed.
+
+    A missing mavsdk raises on connect rather than degrading to a no-op: a client that
+    reported itself connected while doing nothing would let a pilot believe a mission
+    had been uploaded.
     """
 
     def __init__(self):
