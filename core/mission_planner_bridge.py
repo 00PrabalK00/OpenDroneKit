@@ -703,6 +703,111 @@ class MissionPlannerDroneClient:
         except Exception as exc:
             return CommandResult(False, name, str(exc))
 
+    # ── Flight commands (the set a ground station is expected to offer) ──────
+
+    def arm(self, force: bool = False) -> CommandResult:
+        """Arm the motors. `force` skips the autopilot's own arming checks.
+
+        Forcing is offered because a legitimate ground test sometimes needs it, but it
+        is never the default: the pre-arm checks exist to catch a bad compass or a
+        missing GPS fix before the aircraft is in the air.
+        """
+        # MAV_CMD_COMPONENT_ARM_DISARM = 400. param2 = 21196 is the documented
+        # "force" magic number.
+        return self._command_long(400, 1.0, 21196.0 if force else 0.0, name="arm")
+
+    def disarm(self, force: bool = False) -> CommandResult:
+        return self._command_long(400, 0.0, 21196.0 if force else 0.0, name="disarm")
+
+    def takeoff(self, altitude_m: float) -> CommandResult:
+        """Climb to `altitude_m` above the home position.
+
+        ArduPilot requires GUIDED before it will accept a takeoff command, so the mode
+        is set first rather than leaving the caller to discover the ordering.
+        """
+        if altitude_m <= 0:
+            return CommandResult(False, "takeoff", "Takeoff altitude must be positive.")
+        mode = self.set_flight_mode("GUIDED")
+        if not mode.success:
+            return CommandResult(False, "takeoff", f"Could not enter GUIDED: {mode.message}")
+        # MAV_CMD_NAV_TAKEOFF = 22, altitude in param7.
+        return self._command_long(22, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(altitude_m),
+                                  name="takeoff")
+
+    def land(self) -> CommandResult:
+        """Land at the current position. MAV_CMD_NAV_LAND = 21."""
+        return self._command_long(21, name="land")
+
+    def goto(self, latitude: float, longitude: float, altitude_m: float) -> CommandResult:
+        """Fly to a position in GUIDED mode.
+
+        Sent as SET_POSITION_TARGET_GLOBAL_INT rather than a mission item, so it does
+        not disturb the uploaded flight plan.
+        """
+        try:
+            conn = self._ensure()
+            from pymavlink import mavutil
+        except (AppError, ImportError) as exc:
+            return CommandResult(False, "goto", str(exc))
+
+        mode = self.set_flight_mode("GUIDED")
+        if not mode.success:
+            return CommandResult(False, "goto", f"Could not enter GUIDED: {mode.message}")
+
+        try:
+            conn.mav.set_position_target_global_int_send(
+                0, conn.target_system, conn.target_component,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                # Type mask: use position only, ignore velocity, acceleration and yaw.
+                0b0000111111111000,
+                int(latitude * 1e7), int(longitude * 1e7), float(altitude_m),
+                0, 0, 0, 0, 0, 0, 0, 0,
+            )
+            return CommandResult(True, "goto", f"Flying to {latitude:.6f}, {longitude:.6f}.")
+        except Exception as exc:  # noqa: BLE001
+            return CommandResult(False, "goto", str(exc))
+
+    def set_altitude(self, altitude_m: float) -> CommandResult:
+        """Change altitude while holding position. MAV_CMD_CONDITION_CHANGE_ALT = 113."""
+        return self._command_long(113, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(altitude_m),
+                                  name="set_altitude")
+
+    def set_speed(self, speed_m_s: float, airspeed: bool = False) -> CommandResult:
+        """Change the commanded speed. MAV_CMD_DO_CHANGE_SPEED = 178."""
+        if speed_m_s <= 0:
+            return CommandResult(False, "set_speed", "Speed must be positive.")
+        return self._command_long(178, 0.0 if airspeed else 1.0, float(speed_m_s), -1.0,
+                                  name="set_speed")
+
+    def set_home(self, latitude: float | None = None, longitude: float | None = None,
+                 altitude_m: float = 0.0) -> CommandResult:
+        """Set the home position, defaulting to the vehicle's current location.
+
+        Home is where return-to-launch flies to, so getting it wrong is not a cosmetic
+        problem.
+        """
+        # MAV_CMD_DO_SET_HOME = 179. param1 = 1 means "use current position".
+        if latitude is None or longitude is None:
+            return self._command_long(179, 1.0, name="set_home")
+        return self._command_long(179, 0.0, 0.0, 0.0, 0.0,
+                                  float(latitude), float(longitude), float(altitude_m),
+                                  name="set_home")
+
+    def emergency_stop(self) -> CommandResult:
+        """Cut the motors immediately.
+
+        This drops a flying aircraft out of the sky. It is separate from `abort_mission`
+        precisely so it cannot be reached by accident, and the caller is expected to
+        have confirmed intent.
+        """
+        # MAV_CMD_COMPONENT_ARM_DISARM with the force magic number, which disarms even
+        # while armed and flying.
+        return self._command_long(400, 0.0, 21196.0, name="emergency_stop")
+
+    def loiter(self) -> CommandResult:
+        """Hold the current position."""
+        return self.set_flight_mode("LOITER")
+
     def set_flight_mode(self, mode: str) -> CommandResult:
         try:
             conn = self._ensure()

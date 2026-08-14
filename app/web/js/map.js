@@ -9,14 +9,26 @@
 
   const EARTH_RADIUS_M = 6371008.8;
 
-  /* Raster basemaps. The offline style needs no network and is what makes the app
-     usable in the field with no connectivity. */
+  /* Raster basemaps.
+
+     `maxzoom` is the deepest zoom the provider actually serves. MapLibre overzooms
+     past it by scaling the last real tile, so setting it correctly is what turns a
+     grey screen at z20 into a usable, if soft, picture. Setting it too high asks the
+     provider for tiles that do not exist, which is what made the topographic layer
+     look broken.
+
+     `offline` is served from this deployment's own tile cache. It is not a blank
+     background: whatever has been cached for the working area is shown, and the rest
+     is honestly empty rather than pretending coverage exists. */
+  const OFFLINE_TILE_URL = 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';
+
   const BASEMAPS = {
     satellite: {
       label: 'Satellite',
       tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
       attribution: 'Esri, Maxar, Earthstar Geographics',
-      maxzoom: 19
+      // Esri imagery reaches z23 over most populated areas.
+      maxzoom: 23
     },
     street: {
       label: 'Street',
@@ -27,10 +39,30 @@
     topo: {
       label: 'Topographic',
       tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}'],
-      attribution: 'Esri',
+      attribution: 'Esri, USGS, NOAA',
+      // The topographic service stops at z19; asking beyond it returns nothing, which
+      // is why this looked broken when it was set to match satellite.
       maxzoom: 19
     },
-    offline: { label: 'Offline grid', tiles: null, attribution: 'Offline — no basemap imagery' }
+    terrain: {
+      label: 'Terrain (hillshade)',
+      tiles: ['https://services.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}'],
+      attribution: 'Esri, Airbus DS, USGS, NGA',
+      maxzoom: 16
+    },
+    usgs_topo: {
+      label: 'USGS Topo (US)',
+      tiles: ['https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}'],
+      attribution: 'USGS The National Map',
+      maxzoom: 16
+    },
+    offline: {
+      label: 'Offline cache',
+      tiles: [OFFLINE_TILE_URL],
+      attribution: 'Locally cached tiles',
+      maxzoom: 20,
+      offline: true
+    }
   };
 
   function basemapStyle(key) {
@@ -49,6 +81,8 @@
           type: 'raster',
           tiles: spec.tiles,
           tileSize: 256,
+          // The provider's real limit. MapLibre scales the last real tile beyond it
+          // rather than requesting tiles that do not exist.
           maxzoom: spec.maxzoom || 19,
           attribution: spec.attribution
         }

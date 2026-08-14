@@ -523,11 +523,15 @@ class Api:
         return ok(items=len(items), result=payload)
 
     @guard
-    def vehicle_command(self, command: str) -> dict[str, Any]:
+    def vehicle_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
         """Arm / start / pause / resume / RTL / abort against the connected vehicle."""
         client = self._session._drone_client
         if client is None:
             return fail("No vehicle connected.")
+        # The command set a ground station is expected to offer. Anything the
+        # connected driver does not implement is reported as unsupported rather than
+        # failing silently, because a pilot pressing a button needs to know whether
+        # the aircraft heard it.
         mapping = {
             "start": "start_mission",
             "pause": "pause_mission",
@@ -536,14 +540,29 @@ class Api:
             "abort": "abort_mission",
             "arm": "arm",
             "disarm": "disarm",
+            "takeoff": "takeoff",
+            "land": "land",
+            "loiter": "loiter",
+            "emergency_stop": "emergency_stop",
+            "set_home": "set_home",
         }
         method_name = mapping.get(str(command).lower())
         if method_name is None:
-            return fail(f"Unknown command {command!r}.")
+            return fail(
+                f"Unknown command {command!r}. Available: {', '.join(sorted(mapping))}."
+            )
         method = getattr(client, method_name, None)
         if method is None:
             return fail(f"The {self._session.vehicle.driver!r} driver does not support {command!r}.")
-        result = method()
+
+        # Takeoff needs a target altitude; the rest take none.
+        if method_name == "takeoff":
+            altitude = float(kwargs.get("altitude_m", 0.0) or 0.0)
+            if altitude <= 0:
+                return fail("Takeoff requires a positive altitude_m.")
+            result = method(altitude)
+        else:
+            result = method()
         self._session.audit("vehicle_command", {"command": command, "driver": self._session.vehicle.driver})
         return ok(result=result.to_dict() if hasattr(result, "to_dict") else str(result))
 

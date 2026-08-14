@@ -25,7 +25,7 @@ from .security import secret_is_deployment_grade
 from .storage import describe_storage
 from .routers import (
     auth, datasets, events, fleet, inspection, organizations, processing, projects,
-    sharing,
+    sharing, tiles,
 )
 
 VERSION = "0.1.0"
@@ -68,6 +68,7 @@ app.include_router(inspection.router)
 app.include_router(sharing.router)
 app.include_router(fleet.router)
 app.include_router(events.router)
+app.include_router(tiles.router)
 
 
 @app.get("/health", tags=["system"])
