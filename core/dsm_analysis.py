@@ -55,9 +55,25 @@ class RasterSurface:
         return x, y
 
 
+class NotGeoreferenced(ValueError):
+    """Raised when a raster carries no CRS, so nothing on it can be measured."""
+
+
 def load_surface(path: str | Path) -> RasterSurface:
-    """Read an elevation GeoTIFF, normalising nodata to NaN."""
+    """Read an elevation GeoTIFF, normalising nodata to NaN.
+
+    A raster without a CRS is rejected outright. The custom reconstruction engine
+    writes its DSM as a PNG colormap in arbitrary structure-from-motion units, and
+    rasterio will happily open that -- producing "volumes" in pixel-units that look
+    like cubic metres and are not.
+    """
     data, meta = geo.read_geotiff(path)
+    if not meta.get("epsg"):
+        raise NotGeoreferenced(
+            f"{path} has no coordinate reference system, so distances and volumes "
+            "measured on it would not be in metres. Reconstruct with the COLMAP "
+            "engine to obtain georeferenced rasters."
+        )
     elevation = np.asarray(data[0], dtype=np.float64)
 
     nodata = meta.get("nodata")

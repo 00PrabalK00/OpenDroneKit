@@ -498,8 +498,26 @@ class StructuralFaultPipeline:
         volume_payload: dict[str, Any] = {}
         risk_payload: dict[str, Any] = {}
         recon_dict_early = recon.to_dict()
-        dsm_path = recon_dict_early.get("dsm_cog_path") or recon_dict_early.get("dsm_path")
-        dtm_path = recon_dict_early.get("dtm_cog_path") or recon_dict_early.get("dtm_path")
+
+        def _georeferenced_raster(*keys: str) -> str:
+            """Return the first path that is a georeferenced GeoTIFF.
+
+            Only the COLMAP engine emits real rasters. The custom engine writes its
+            DSM as a PNG colormap in arbitrary SfM units under `dsm_path`, and
+            measuring that would produce pixel-unit numbers presented as cubic
+            metres, so a non-GeoTIFF path is never accepted here.
+            """
+            for key in keys:
+                value = recon_dict_early.get(key)
+                if not isinstance(value, str) or not value:
+                    continue
+                candidate = Path(value)
+                if candidate.suffix.lower() in {".tif", ".tiff"} and candidate.exists():
+                    return value
+            return ""
+
+        dsm_path = _georeferenced_raster("dsm_cog_path", "dsm_path")
+        dtm_path = _georeferenced_raster("dtm_cog_path", "dtm_path")
         defects_geojson = recon_dict_early.get("defects_geojson_path")
 
         try:
