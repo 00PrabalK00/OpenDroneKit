@@ -21,12 +21,12 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
 from . import geo
-from .dsm_analysis import RasterSurface, load_surface
+from .dsm_analysis import RasterSurface, _polygon_mask, load_surface
 
 # Beyond this, two findings are treated as different defects rather than one that
 # moved. Chosen to exceed typical georeferencing error (~1 m on the verified
@@ -88,6 +88,42 @@ def _require_comparable(earlier: RasterSurface, later: RasterSurface) -> None:
             f"Surveys have different resolutions ({earlier.pixel_size_m} m and "
             f"{later.pixel_size_m} m per pixel)."
         )
+    if not np.allclose(
+        np.asarray(earlier.transform[:6], dtype=float),
+        np.asarray(later.transform[:6], dtype=float),
+        rtol=0.0,
+        atol=1e-9,
+    ):
+        raise IncomparableSurveys(
+            "Surveys use different grid origins or orientations. Matching CRS, shape, "
+            "and resolution are not enough when the cells cover different ground."
+        )
+
+
+def _write_difference_raster(
+    reference_path: str | Path,
+    output_path: str | Path,
+    difference: np.ndarray,
+) -> str:
+    """Write a single-band float raster preserving the later DSM's exact grid."""
+
+    geo.require("rasterio")
+    import rasterio
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(reference_path) as source:
+        profile = source.profile.copy()
+    profile.update(
+        driver="GTiff",
+        count=1,
+        dtype="float32",
+        nodata=float("nan"),
+        compress="DEFLATE",
+    )
+    with rasterio.open(out, "w", **profile) as target:
+        target.write(np.asarray(difference, dtype=np.float32), 1)
+    return str(out)
 
 
 def compare_surfaces(
@@ -96,6 +132,7 @@ def compare_surfaces(
     *,
     output_path: str | Path | None = None,
     change_threshold_m: float = 0.05,
+    roi_polygon_xy: Sequence[Sequence[float]] | None = None,
 ) -> SurfaceChange:
     """Difference two DSMs, reporting volume added and removed.
 
@@ -109,10 +146,14 @@ def compare_surfaces(
 
     difference = later.elevation - earlier.elevation
     valid = np.isfinite(difference)
+    if roi_polygon_xy is not None:
+        valid &= _polygon_mask(later, roi_polygon_xy)
     if not valid.any():
-        raise IncomparableSurveys(
-            "The two surveys share no cell where both have data, so nothing can be compared."
-        )
+        if roi_polygon_xy is not None:
+            raise IncomparableSurveys(
+                "The two surveys share no comparable cell inside the selected ROI."
+            )
+        raise IncomparableSurveys("The two surveys share no cell with valid elevation data.")
 
     cell_area = later.pixel_area_m2
     rise = np.where(valid & (difference > 0), difference, 0.0)
@@ -124,18 +165,14 @@ def compare_surfaces(
         # NaN where a cell could not be compared, so the raster never implies
         # "no change" where the truth is "no data".
         raster = np.where(valid, difference, np.nan).astype(np.float32)
-        written = geo.write_geotiff(
-            output_path, raster, epsg=later.epsg or 4326,
-            west=float(later.transform[2]), north=float(later.transform[5]),
-            pixel_size=later.pixel_size_m, nodata=float("nan"), cog=False,
-        )
+        written = _write_difference_raster(later.path, output_path, raster)
 
     return SurfaceChange(
         added_volume_m3=float(rise.sum() * cell_area),
         removed_volume_m3=float(fall.sum() * cell_area),
         net_volume_m3=float((rise.sum() - fall.sum()) * cell_area),
-        max_rise_m=float(np.nanmax(np.where(valid, difference, np.nan))),
-        max_fall_m=float(-np.nanmin(np.where(valid, difference, np.nan))),
+        max_rise_m=max(0.0, float(np.nanmax(np.where(valid, difference, np.nan)))),
+        max_fall_m=max(0.0, float(-np.nanmin(np.where(valid, difference, np.nan)))),
         changed_area_m2=float(int(changed.sum()) * cell_area),
         compared_cells=int(valid.sum()),
         crs_epsg=later.epsg,

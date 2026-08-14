@@ -59,6 +59,10 @@ class NotGeoreferenced(ValueError):
     """Raised when a raster carries no CRS, so nothing on it can be measured."""
 
 
+class IncompatibleReferenceSurface(ValueError):
+    """Raised when a DSM and its claimed reference surface do not share a grid."""
+
+
 def load_surface(path: str | Path) -> RasterSurface:
     """Read an elevation GeoTIFF, normalising nodata to NaN.
 
@@ -134,7 +138,9 @@ def _polygon_mask(surface: RasterSurface, polygon_xy: Sequence[Sequence[float]])
     x, y = surface.xy_of(row_index, col_index)
 
     vertices = [v for v in polygon_xy if len(v) >= 2]
-    if len(vertices) >= 3 and np.allclose(vertices[0][:2], vertices[-1][:2]):
+    if len(vertices) >= 3 and np.allclose(
+        vertices[0][:2], vertices[-1][:2], rtol=0.0, atol=1e-9
+    ):
         vertices = vertices[:-1]
     if len(vertices) < 3:
         return np.zeros_like(surface.elevation, dtype=bool)
@@ -214,16 +220,22 @@ def estimate_volume(
 
     if dtm_path and Path(dtm_path).exists():
         ground = load_surface(dtm_path)
-        if ground.elevation.shape == elevation.shape:
-            accumulate("dtm", ground.elevation, None)
-        else:
-            results.append(
-                VolumeResult(
-                    reference="dtm_unavailable", reference_elevation_m=None,
-                    cut_volume_m3=0.0, fill_volume_m3=0.0, net_volume_m3=0.0,
-                    area_m2=0.0, cell_count=0, mean_height_m=0.0, max_height_m=0.0,
-                )
+        if (
+            ground.epsg != surface.epsg
+            or ground.elevation.shape != elevation.shape
+            or not np.allclose(
+                np.asarray(ground.transform[:6], dtype=float),
+                np.asarray(surface.transform[:6], dtype=float),
+                rtol=0.0,
+                atol=1e-9,
             )
+        ):
+            raise IncompatibleReferenceSurface(
+                "The DTM does not share the DSM's CRS, dimensions, origin and "
+                "orientation. It cannot be used as a volume reference without "
+                "explicit reprojection and grid alignment."
+            )
+        accumulate("dtm", ground.elevation, None)
 
     region_values = elevation[region]
     minimum = float(np.nanmin(region_values))

@@ -11,7 +11,14 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 SourceKind = Literal["http", "kaggle", "roboflow"]
-TaskKind = Literal["segmentation", "detection", "classification", "photogrammetry"]
+TaskKind = Literal[
+    "segmentation",
+    "detection",
+    "classification",
+    "photogrammetry",
+    "change_detection",
+    "multispectral",
+]
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,7 @@ class DatasetSpec:
     # http
     url: str = ""
     archive_name: str = ""
+    expected_md5: str = ""
     # kaggle / roboflow
     slug: str = ""
     workspace: str = ""
@@ -197,6 +205,155 @@ DATASETS: dict[str, DatasetSpec] = {
         feeds=(),
         notes="Carries GPS EXIF, so the geo anchor and UTM outputs can be checked against truth.",
     ),
+    # -- India-first mission packs ---------------------------------------
+    'minenetcd': DatasetSpec(
+        name='minenetcd',
+        kind='http',
+        task='change_detection',
+        target='mining',
+        license='CC BY 4.0',
+        description='MineNetCD paired imagery and masks from 100 global mining sites.',
+        approx_size_mb=3500,
+        url='https://rodare.hzdr.de/record/3251/files/MineNetCD.zip?download=1',
+        archive_name='minenetcd.zip',
+        feeds=('mining_change_semantics',),
+        notes='RGB change benchmark only; DSM geometry remains the source of volume truth.',
+    ),
+    'iarpa_smart_annotations': DatasetSpec(
+        name='iarpa_smart_annotations',
+        kind='http',
+        task='change_detection',
+        target='construction',
+        license='MIT for repository; source imagery carries separate provider terms',
+        description='Temporal heavy-construction site polygons and phase annotations.',
+        approx_size_mb=30,
+        url='https://github.com/pubgeo/IARPA-SMART/archive/refs/heads/main.zip',
+        archive_name='iarpa_smart_annotations.zip',
+        feeds=('construction_change_semantics',),
+        notes='Annotations are not per-object site segmentation; obtain imagery per upstream instructions.',
+    ),
+    'spacenet7': DatasetSpec(
+        name='spacenet7',
+        kind='http',
+        task='change_detection',
+        target='land',
+        license='CC BY-SA 4.0',
+        description='Monthly building footprints and imagery for 101 time-series AOIs.',
+        approx_size_mb=8700,
+        url='https://spacenet-dataset.s3.amazonaws.com/spacenet/SN7_buildings/tarballs/SN7_buildings_train.tar.gz',
+        archive_name='spacenet7_train.tar.gz',
+        expected_md5='6eda13b9c28f6f5cdf00a7e8e218c1b1',
+        feeds=('shared_semantic_engine', 'land_gis_extraction', 'encroachment_change'),
+        notes='About 8.7 GB compressed and roughly 25 GB extracted; drone-domain fine-tuning remains required.',
+    ),
+    'openearthmap_mixed': DatasetSpec(
+        name='openearthmap_mixed',
+        kind='http',
+        task='segmentation',
+        target='land',
+        license='Mixed per region; sample-level allowlist required',
+        description='Global 8-class aerial land-cover masks; only explicitly commercial-compatible regions are indexed.',
+        approx_size_mb=9100,
+        url='https://zenodo.org/records/7223446/files/OpenEarthMap.zip?download=1',
+        archive_name='OpenEarthMap.zip',
+        expected_md5='64155d1dc9d3b68536063f79878e1a67',
+        feeds=('shared_semantic_engine', 'land_gis_extraction'),
+        notes=(
+            'Licences vary by region. The adapter admits only explicit CC BY 4.0 or '
+            'CC BY-SA 4.0 rows from the official attribution table. Public-domain or '
+            'unspecified-source labels default to CC BY-NC-SA 4.0 and are excluded; '
+            'DL-DE-BY-2.0 regions remain excluded pending legal review.'
+        ),
+    ),
+    'infrared_solar_modules': DatasetSpec(
+        name='infrared_solar_modules',
+        kind='http',
+        task='classification',
+        target='solar',
+        license='MIT',
+        description='20,000 infrared PV-module crops across 11 anomaly classes plus normal.',
+        approx_size_mb=25,
+        url='https://github.com/RaptorMaps/InfraredSolarModules/archive/refs/heads/master.zip',
+        archive_name='infrared_solar_modules.zip',
+        feeds=('solar_thermal_anomaly',),
+        notes='Very low-resolution module crops; not a panel localization dataset.',
+    ),
+    'solar_pv_uav': DatasetSpec(
+        name='solar_pv_uav',
+        kind='http',
+        task='segmentation',
+        target='solar',
+        license='CC BY 4.0',
+        description='Duke UAV imagery, masks and videos with 2,019 PV instances.',
+        approx_size_mb=2500,
+        url='https://figshare.com/ndownloader/articles/18093890/versions/1',
+        archive_name='solar_pv_uav.zip',
+        feeds=('solar_module_inventory',),
+        notes='Validate whether each annotation is a module or an array before label conversion.',
+    ),
+    'weedsgalore': DatasetSpec(
+        name='weedsgalore',
+        kind='http',
+        task='multispectral',
+        target='agriculture',
+        license='CC BY 4.0',
+        description='Multitemporal multispectral UAV maize crop and weed segmentation.',
+        approx_size_mb=321,
+        url='https://doidata.gfz.de/weedsgalore_e_celikkan_2024/weedsgalore-dataset.zip',
+        archive_name='weedsgalore-dataset.zip',
+        feeds=('agriculture_canopy', 'agriculture_crop_weed'),
+    ),
+    'rdd2022_india': DatasetSpec(
+        name='rdd2022_india',
+        kind='http',
+        task='detection',
+        target='roads',
+        license='CC BY-SA 4.0',
+        description='RDD2022 India road images with cracks and potholes.',
+        approx_size_mb=503,
+        url='https://bigdatacup.s3.ap-northeast-1.amazonaws.com/2022/CRDDC2022/RDD2022/Country_Specific_Data_CRDDC2022/RDD2022_India.zip',
+        archive_name='rdd2022_india.zip',
+        feeds=('road_damage_detector',),
+        notes='India subset is mostly ground imagery; validate drone transfer separately.',
+    ),
+    'rdd2022_china_drone': DatasetSpec(
+        name='rdd2022_china_drone',
+        kind='http',
+        task='detection',
+        target='roads',
+        license='CC BY-SA 4.0',
+        description='RDD2022 UAV road-damage subset with four defect classes.',
+        approx_size_mb=153,
+        url='https://bigdatacup.s3.ap-northeast-1.amazonaws.com/2022/CRDDC2022/RDD2022/Country_Specific_Data_CRDDC2022/RDD2022_China_Drone.zip',
+        archive_name='rdd2022_china_drone.zip',
+        feeds=('road_damage_detector',),
+    ),
+    'uav_rsod': DatasetSpec(
+        name='uav_rsod',
+        kind='http',
+        task='segmentation',
+        target='rail',
+        license='CC BY 4.0',
+        description='Indian UAV railway rail, gauge and background segmentation.',
+        approx_size_mb=810,
+        url='https://zenodo.org/records/12606374/files/UAV-RSOD_Dataset%20for%20Segmentation.zip?download=1',
+        archive_name='uav_rsod_segmentation.zip',
+        feeds=('rail_corridor_segmentation',),
+        notes='The Zenodo record separates segmentation and obstacle-detection archives.',
+    ),
+    'uav_rsod_obstacles': DatasetSpec(
+        name='uav_rsod_obstacles',
+        kind='http',
+        task='detection',
+        target='rail',
+        license='CC BY 4.0',
+        description='Indian UAV railway obstacle images covering six obstacle classes.',
+        approx_size_mb=856,
+        url='https://zenodo.org/records/12606374/files/V2%20UAV-RSOD_Dataset%20for%20Obstacle%20Detection.zip?download=1',
+        archive_name='uav_rsod_obstacles.zip',
+        feeds=('rail_obstacle_detector',),
+        notes='Separate 2,002-image augmented obstacle archive from the segmentation set.',
+    ),
 }
 
 
@@ -212,6 +369,25 @@ GROUPS: dict[str, tuple[str, ...]] = {
     "structural": ("codebrim_structural",),
     "corrosion": ("corrosion_detection",),
     "recon": ("odm_aukerman",),
+    "mining": ("odm_aukerman", "minenetcd"),
+    "construction_india": ("iarpa_smart_annotations", "spacenet7"),
+    "land": ("spacenet7", "openearthmap_mixed"),
+    "agriculture": ("weedsgalore",),
+    "roads": ("rdd2022_india", "rdd2022_china_drone"),
+    "rail": ("uav_rsod", "uav_rsod_obstacles"),
+    "india_first": (
+        "minenetcd",
+        "iarpa_smart_annotations",
+        "spacenet7",
+        "openearthmap_mixed",
+        "infrared_solar_modules",
+        "solar_pv_uav",
+        "weedsgalore",
+        "rdd2022_india",
+        "rdd2022_china_drone",
+        "uav_rsod",
+        "uav_rsod_obstacles",
+    ),
     "public": ("crackforest", "deepcrack", "crack_segmentation_combined", "elpv", "odm_aukerman"),
     "all": tuple(DATASETS.keys()),
 }

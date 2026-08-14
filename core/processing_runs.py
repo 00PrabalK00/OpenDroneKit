@@ -186,6 +186,9 @@ DEFAULT_STAGE_INPUTS = {
     "defect_projection": ["reconstruction", "defect_results"],
     "report_generation": ["project"],
     "volume_estimation": ["reconstruction"],
+    "survey_change": ["earlier_dsm", "later_dsm"],
+    "selected_roi_change": ["earlier_dsm", "later_dsm", "roi_polygon"],
+    "semantic_segmentation": ["orthomosaic", "semantic_model", "semantic_model_manifest"],
 }
 
 
@@ -260,11 +263,52 @@ def validate_pipeline_inputs(project_root: Path | str, run_id: str) -> PipelineR
     issues: list[str] = []
     notes: list[str] = []
 
+    needs_dataset = any("dataset" in stage.required_inputs for stage in run.stages)
     ds = get_dataset(pr, run.dataset_id) if run.dataset_id else None
-    if ds is None:
-        issues.append("Dataset missing.")
-    elif ds.image_count == 0:
-        issues.append("Dataset has no images.")
+    if needs_dataset:
+        if ds is None:
+            issues.append("Dataset missing.")
+        elif ds.image_count == 0:
+            issues.append("Dataset has no images.")
+
+    if any(stage.id in {"survey_change", "selected_roi_change"} for stage in run.stages):
+        for label, key in (
+            ("Earlier DSM", "earlier_dsm_path"),
+            ("Later DSM", "later_dsm_path"),
+        ):
+            value = run.config.get(key)
+            if not value:
+                issues.append(f"{label} missing ({key}).")
+            elif not Path(str(value)).is_file():
+                issues.append(f"{label} does not exist: {value}")
+
+    if any(stage.id == "selected_roi_change" for stage in run.stages):
+        polygon = run.config.get("roi_polygon_xy")
+        if not polygon or len(polygon) < 3:
+            issues.append("ROI polygon missing (roi_polygon_xy).")
+
+    if any(stage.id == 'semantic_segmentation' for stage in run.stages):
+        semantic_paths = (
+            ('Orthomosaic', 'orthomosaic_path'),
+            ('Semantic model', 'semantic_model_path'),
+            ('Semantic model manifest', 'semantic_model_manifest_path'),
+        )
+        for label, key in semantic_paths:
+            value = run.config.get(key)
+            if not value:
+                issues.append(f'{label} missing ({key}).')
+            elif not Path(str(value)).is_file():
+                issues.append(f'{label} does not exist: {value}')
+        manifest_path = run.config.get('semantic_model_manifest_path')
+        if manifest_path and Path(str(manifest_path)).is_file():
+            try:
+                from .semantic_engine import load_semantic_manifest
+
+                _, semantic_model, _ = load_semantic_manifest(manifest_path)
+                if not semantic_model.task_trained:
+                    issues.append('Semantic model manifest describes an untrained foundation initializer.')
+            except Exception as exc:
+                issues.append(f'Semantic model manifest is invalid: {exc}')
 
     needs_model = any("model_registry" in s.required_inputs for s in run.stages)
     if needs_model:
@@ -386,6 +430,12 @@ def run_pipeline(
             _mark_stage(run, pr, stage, STATUS_CANCELLED)
             continue
         result = run_pipeline_stage(pr, run.id, stage.id)
+        # run_pipeline_stage reloads and persists its own ProcessingRun instance.
+        # Synchronise before _emit_progress saves this outer instance, otherwise it
+        # overwrites the completed stage with the stale pending copy held here.
+        persisted = _load_run(pr, run.id)
+        if persisted is not None:
+            run.stages = persisted.stages
         done += 1
         if progress_callback:
             try:
@@ -632,15 +682,131 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
                 "Volume estimation needs a DSM from the reconstruction stage.",
                 recovery_action="Run reconstruction with the COLMAP engine first, or set dsm_path in the run config.",
             )
+        dtm_path = cfg.get("dtm_path") or artifacts.get("dtm")
+        polygon_xy = cfg.get("volume_polygon_xy") or None
+        base_elevation_m = cfg.get("volume_base_elevation_m")
+        if run.workflow_id == "stockpile_measurement":
+            if not polygon_xy:
+                raise AppError(
+                    ERR_PIPELINE_INPUTS,
+                    "Stockpile measurement needs a selected pile polygon.",
+                    recovery_action="Draw the stockpile boundary on the DSM and retry.",
+                )
+            from .survey_intelligence import create_stockpile_package
+
+            package = create_stockpile_package(
+                dsm_path,
+                Path(run.output_dir) / "stockpile",
+                polygon_xy=polygon_xy,
+                dtm_path=dtm_path,
+                base_elevation_m=base_elevation_m,
+            )
+            return package.artifact_paths()
         report = estimate_volume(
             dsm_path,
-            dtm_path=cfg.get("dtm_path") or artifacts.get("dtm"),
-            polygon_xy=cfg.get("volume_polygon_xy") or None,
-            base_elevation_m=cfg.get("volume_base_elevation_m"),
+            dtm_path=dtm_path,
+            polygon_xy=polygon_xy,
+            base_elevation_m=base_elevation_m,
         )
         artifact = Path(run.output_dir) / "volume_estimation.json"
         artifact.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return [str(artifact)]
+
+    if sid == "survey_change":
+        from .survey_intelligence import create_surface_change_package
+
+        earlier_dsm = cfg.get("earlier_dsm_path")
+        later_dsm = cfg.get("later_dsm_path")
+        if not earlier_dsm or not later_dsm:
+            raise AppError(
+                ERR_PIPELINE_INPUTS,
+                "Survey change requires earlier_dsm_path and later_dsm_path.",
+                recovery_action="Select two aligned, georeferenced DSM GeoTIFFs.",
+            )
+        package = create_surface_change_package(
+            earlier_dsm,
+            later_dsm,
+            Path(run.output_dir) / "survey_change",
+            change_threshold_m=float(cfg.get("change_threshold_m", 0.05)),
+            min_region_area_m2=float(cfg.get("min_region_area_m2", 1.0)),
+        )
+        return package.artifact_paths()
+
+    if sid == "selected_roi_change":
+        from .survey_intelligence import create_selected_roi_change_package
+
+        earlier_dsm = cfg.get("earlier_dsm_path")
+        later_dsm = cfg.get("later_dsm_path")
+        polygon_xy = cfg.get("roi_polygon_xy")
+        if not earlier_dsm or not later_dsm or not polygon_xy:
+            raise AppError(
+                ERR_PIPELINE_INPUTS,
+                "Selected ROI change requires two DSMs and roi_polygon_xy.",
+                recovery_action="Select aligned DSMs and draw a stockpile or pit boundary.",
+            )
+        package = create_selected_roi_change_package(
+            earlier_dsm,
+            later_dsm,
+            Path(run.output_dir) / "selected_roi_change",
+            polygon_xy=polygon_xy,
+            roi_type=str(cfg.get("roi_type", "stockpile")),
+            roi_name=str(cfg.get("roi_name", "")),
+            change_threshold_m=float(cfg.get("change_threshold_m", 0.05)),
+            min_region_area_m2=float(cfg.get("min_region_area_m2", 1.0)),
+        )
+        return package.artifact_paths()
+
+    if sid == 'semantic_segmentation':
+        from .semantic_engine import (
+            ONNXSemanticPredictor,
+            SemanticInferenceConfig,
+            load_semantic_manifest,
+            run_semantic_inference,
+        )
+
+        orthomosaic = cfg.get('orthomosaic_path')
+        model_path = cfg.get('semantic_model_path')
+        manifest_path = cfg.get('semantic_model_manifest_path')
+        if not orthomosaic or not model_path or not manifest_path:
+            raise AppError(
+                ERR_PIPELINE_INPUTS,
+                'Semantic segmentation requires orthomosaic, model and manifest paths.',
+                recovery_action='Select a georeferenced orthomosaic and a trained semantic ONNX package.',
+            )
+        schema, model, defaults = load_semantic_manifest(manifest_path)
+        device = str(cfg.get('semantic_device', defaults.get('device', 'cuda')))
+        predictor = ONNXSemanticPredictor(
+            model_path,
+            device=device,
+            mean=defaults.get('mean', (0.485, 0.456, 0.406)),
+            std=defaults.get('std', (0.229, 0.224, 0.225)),
+        )
+        package = run_semantic_inference(
+            orthomosaic,
+            Path(run.output_dir) / 'semantic_segmentation',
+            schema=schema,
+            model=model,
+            predictor=predictor,
+            config=SemanticInferenceConfig(
+                tile_size=int(cfg.get('semantic_tile_size', defaults.get('tile_size', 518))),
+                overlap=int(cfg.get('semantic_overlap', defaults.get('overlap', 126))),
+                device=device,
+                allow_cpu=bool(cfg.get('semantic_allow_cpu', defaults.get('allow_cpu', False))),
+                max_cpu_pixels=int(cfg.get(
+                    'semantic_max_cpu_pixels', defaults.get('max_cpu_pixels', 4_000_000)
+                )),
+                min_polygon_area_m2=float(cfg.get(
+                    'semantic_min_polygon_area_m2', defaults.get('min_polygon_area_m2', 1.0)
+                )),
+                polygonize_background=bool(cfg.get(
+                    'semantic_polygonize_background', defaults.get('polygonize_background', False)
+                )),
+                input_bands=tuple(cfg.get(
+                    'semantic_input_bands', defaults.get('input_bands', (1, 2, 3))
+                )),
+            ),
+        )
+        return package.artifact_paths()
 
     if sid == "defect_projection":
         from .reconstruction_engine import project_defects_to_3d

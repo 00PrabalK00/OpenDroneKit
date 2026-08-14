@@ -79,6 +79,14 @@ def sha256_file(path: Path, chunk: int = CHUNK) -> str:
     return digest.hexdigest()
 
 
+def md5_file(path: Path, chunk: int = CHUNK) -> str:
+    digest = hashlib.md5(usedforsecurity=False)
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def download_http(
     url: str,
     destination: Path,
@@ -175,7 +183,7 @@ def extract_archive(archive: Path, target: Path, progress: Callable[[str], None]
         with tarfile.open(archive) as bundle:
             members = [m for m in bundle.getmembers() if is_safe(m.name)]
             skipped = len(bundle.getmembers()) - len(members)
-            bundle.extractall(staging, members=members)
+            bundle.extractall(staging, members=members, filter="data")
     else:
         raise RuntimeError(f"Unsupported archive format: {archive.name}")
 
@@ -200,7 +208,33 @@ def fetch_http(spec: DatasetSpec, data_root: Path, progress: Callable[[str], Non
     archive = archive_dir / (spec.archive_name or f"{spec.name}.zip")
     target = data_root / spec.name
     progress(f"  source: {spec.url}")
-    download_http(spec.url, archive, progress=progress)
+    marker = target / ".extracted"
+    if marker.is_file() and archive.is_file():
+        lines = marker.read_text(encoding="utf-8").splitlines()
+        cached_sha256 = lines[1] if len(lines) > 1 else sha256_file(archive)
+        progress(f"  already downloaded and extracted: {spec.name}")
+        return {"path": str(target), "archive": str(archive), "sha256": cached_sha256}
+
+    cached_verified = False
+    if archive.is_file() and spec.expected_md5:
+        actual_md5 = md5_file(archive)
+        if actual_md5 == spec.expected_md5.casefold():
+            cached_verified = True
+            progress(f"  cached and MD5 verified: {archive.name}")
+        else:
+            progress(
+                f"  cached MD5 mismatch for {archive.name}; replacing the corrupt archive"
+            )
+            archive.unlink()
+    if not cached_verified:
+        download_http(spec.url, archive, progress=progress)
+    if spec.expected_md5:
+        actual_md5 = md5_file(archive)
+        if actual_md5 != spec.expected_md5.casefold():
+            raise RuntimeError(
+                f"MD5 mismatch for {archive.name}: expected {spec.expected_md5}, got {actual_md5}"
+            )
+        progress(f"  MD5 verified: {actual_md5}")
     extract_archive(archive, target, progress=progress)
     return {"path": str(target), "archive": str(archive), "sha256": sha256_file(archive)}
 

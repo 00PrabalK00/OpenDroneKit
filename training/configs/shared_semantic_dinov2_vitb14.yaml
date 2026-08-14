@@ -1,0 +1,51 @@
+# Architecture contract only. This is not a task-trained production model.
+name: shared_semantic_dinov2_vitb14
+status: architecture_only
+architecture:
+  encoder: dinov2_vitb14
+  encoder_checkpoint: models/pretrained/dinov2_vitb14_pretrain.pth
+  encoder_source: training/sources/dinov2
+  encoder_source_type: local
+  encoder_source_commit: 7764ea0f912e53c92e82eb78a2a1631e92725fc8
+  encoder_license: Apache-2.0
+  intermediate_layers: [2, 5, 8, 11]
+  decoder: opendronekit_upernet
+  decoder_channels: 256
+  ppm_scales: [1, 2, 3, 6]
+schema:
+  id: india_shared_landcover
+  version: 0.1.0-draft
+  classes:
+    - {id: 0, name: background, color_rgb: [0, 0, 0], background: true}
+    - {id: 1, name: building, color_rgb: [220, 60, 60]}
+    - {id: 2, name: road, color_rgb: [120, 120, 120]}
+    - {id: 3, name: vegetation, color_rgb: [40, 150, 60]}
+    - {id: 4, name: water, color_rgb: [45, 110, 210]}
+    - {id: 5, name: bare_land, color_rgb: [180, 135, 75]}
+inference:
+  tile_size: 518
+  overlap: 126
+  device: cuda
+  allow_cpu: false
+  max_cpu_pixels: 4000000
+  min_polygon_area_m2: 1.0
+training:
+  seed: 42
+  tile_size: 518
+  batch_size: 1
+  workers: 0
+  epochs: 40
+  learning_rate: 0.0002
+  encoder_learning_rate: 0.00002
+  min_learning_rate: 0.000002
+  weight_decay: 0.01
+  gradient_accumulation: 8
+  max_grad_norm: 1.0
+  mixed_precision: true
+  class_balance: log_inverse
+  freeze_encoder: false
+release_gates:
+  - Train the decoder and fine-tune the encoder on the frozen schema.
+  - Validate with site-separated and date-separated India holdouts.
+  - Export the complete encoder and decoder to ONNX and verify parity.
+  - Write a semantic model manifest with exact checkpoint SHA-256 and metrics.

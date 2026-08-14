@@ -12,6 +12,16 @@ tqdm>=4.66
 # Desktop shell (replaces PyQt6). On Windows this uses the built-in Edge WebView2.
 pywebview>=5.0
 
+# Self-hosted Hub API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+SQLAlchemy>=2.0
+PyJWT>=2.8
+bcrypt>=4.1
+email-validator>=2.1
+python-multipart>=0.0.9
+httpx>=0.27
+
 # Geospatial
 rasterio>=1.3
 pyproj>=3.6

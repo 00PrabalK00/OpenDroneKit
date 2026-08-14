@@ -3,6 +3,26 @@
 # New modules
 from .project import ProjectManager, ProjectReadiness, ProjectSummary, AuditEvent, get_manager
 from .workflows import WorkflowTemplate, WorkflowReadiness, list_workflow_templates, get_workflow_template, validate_workflow_readiness
+from .survey_intelligence import (
+    ChangeRegion,
+    SelectedROIChangePackage,
+    StockpilePackage,
+    SurveyChangePackage,
+    create_selected_roi_change_package,
+    create_stockpile_package,
+    create_surface_change_package,
+)
+from .semantic_engine import (
+    ONNXSemanticPredictor,
+    SemanticClass,
+    SemanticInferenceConfig,
+    SemanticInferencePackage,
+    SemanticInferenceRefused,
+    SemanticModelMetadata,
+    SemanticSchema,
+    load_semantic_manifest,
+    run_semantic_inference,
+)
 from .measurements import Measurement, create_measurement, list_measurements, delete_measurement, update_measurement, export_measurements, measure_image_distance, measure_polygon_area, measure_crack_length
 from .annotations import Annotation, create_annotation, list_annotations, update_annotation, delete_annotation, export_annotations, get_report_annotations
 from .drone import DroneTelemetry, CommandResult, DroneClient, MockDroneClient, MAVSDKDroneClient, create_drone_client
@@ -77,6 +97,17 @@ from .reconstruction import (
 )
 
 __all__ = [
+    'ONNXSemanticPredictor',
+    'SemanticClass',
+    'SemanticInferenceConfig',
+    'SemanticInferencePackage',
+    'SemanticInferenceRefused',
+    'SemanticModelMetadata',
+    'SemanticSchema',
+    'load_semantic_manifest',
+    'run_semantic_inference',
+    'SelectedROIChangePackage',
+    'create_selected_roi_change_package',
     "ProjectManager",
     "ProjectReadiness",
     "ProjectSummary",
@@ -87,6 +118,11 @@ __all__ = [
     "list_workflow_templates",
     "get_workflow_template",
     "validate_workflow_readiness",
+    "ChangeRegion",
+    "StockpilePackage",
+    "SurveyChangePackage",
+    "create_stockpile_package",
+    "create_surface_change_package",
     "Measurement",
     "create_measurement",
     "list_measurements",

@@ -70,6 +70,24 @@ _BUILTIN_TEMPLATES: list[WorkflowTemplate] = [
         },
     ),
     WorkflowTemplate(
+        id="construction_progress",
+        name="Construction Progress",
+        description=(
+            "Compare two aligned survey DSMs and deliver mapped surface-rise/fall "
+            "regions, measured cut/fill volumes, and a client-readable change report."
+        ),
+        asset_type="construction_site",
+        required_inputs=["earlier_dsm", "later_dsm"],
+        optional_inputs=["site_semantic_layer", "approved_design_model"],
+        mission_modes=["polygon_survey", "double_grid"],
+        processing_stages=["survey_change"],
+        report_sections=["summary", "surface_change", "change_map", "limitations"],
+        default_parameters={
+            "change_threshold_m": 0.05,
+            "min_region_area_m2": 1.0,
+        },
+    ),
+    WorkflowTemplate(
         id="facade_inspection",
         name="Facade Inspection",
         description="Systematic facade grid capture and crack / spalling detection.",
@@ -149,14 +167,20 @@ _BUILTIN_TEMPLATES: list[WorkflowTemplate] = [
     WorkflowTemplate(
         id="stockpile_measurement",
         name="Stockpile Measurement",
-        description="Volumetric photogrammetry of stockpiles. Generates DSM and volume estimate.",
+        description=(
+            "Reconstruct a stockpile survey, measure an operator-selected pile against "
+            "an explicit DTM/base plane, and produce a mapped client deliverable."
+        ),
         asset_type="stockpile",
         required_inputs=["image_dataset"],
         optional_inputs=["calibration_profile"],
         mission_modes=["polygon_survey"],
         processing_stages=["dataset_validation", "reconstruction", "volume_estimation", "report_generation"],
         report_sections=["summary", "volume_report", "dsm_view", "image_gallery"],
-        default_parameters={"reconstruction_profile": "inspection_high_accuracy"},
+        default_parameters={
+            "reconstruction_profile": "inspection_high_accuracy",
+            "volume_polygon_xy": None,
+        },
     ),
     WorkflowTemplate(
         id="linear_corridor",
@@ -181,6 +205,45 @@ _BUILTIN_TEMPLATES: list[WorkflowTemplate] = [
         processing_stages=["dataset_validation", "crack_detection", "structural_detection", "solar_defect_detection", "crack_propagation", "reconstruction", "report_generation"],
         report_sections=["summary", "crack_analysis", "structural_defects", "propagation_forecast", "3d_model", "image_gallery"],
         default_parameters={},
+    ),
+    WorkflowTemplate(
+        id='stockpile_change',
+        name='Selected Stockpile or Pit Change',
+        description=(
+            'Compare two aligned DSMs only inside an operator-selected stockpile or '
+            'pit polygon, with mapped rise/fall and volume change.'
+        ),
+        asset_type='mining_roi',
+        required_inputs=['earlier_dsm', 'later_dsm', 'roi_polygon'],
+        optional_inputs=['site_semantic_layer'],
+        mission_modes=['polygon_survey', 'double_grid'],
+        processing_stages=['selected_roi_change'],
+        report_sections=['summary', 'roi_selection', 'surface_change', 'limitations'],
+        default_parameters={
+            'roi_type': 'stockpile',
+            'roi_name': '',
+            'change_threshold_m': 0.05,
+            'min_region_area_m2': 1.0,
+        },
+    ),
+    WorkflowTemplate(
+        id='semantic_mapping',
+        name='Shared Semantic Mapping',
+        description=(
+            'Apply a schema-matched trained semantic model to a georeferenced '
+            'orthomosaic and produce class, confidence and polygon GIS layers.'
+        ),
+        asset_type='survey_map',
+        required_inputs=['orthomosaic', 'semantic_model', 'semantic_model_manifest'],
+        optional_inputs=[],
+        mission_modes=['polygon_survey', 'double_grid', 'linear_corridor'],
+        processing_stages=['semantic_segmentation'],
+        report_sections=['summary', 'semantic_map', 'class_areas', 'model_provenance'],
+        default_parameters={
+            'semantic_device': 'cuda',
+            'semantic_allow_cpu': False,
+            'semantic_max_cpu_pixels': 4_000_000,
+        },
     ),
 ]
 
@@ -249,12 +312,35 @@ def validate_workflow_readiness(project_meta: dict, template_id: str) -> Workflo
             datasets_dir = root / "datasets"
             if not datasets_dir.exists() or not any(datasets_dir.iterdir()):
                 missing.append("image_dataset — import drone images in Data Library")
+        elif req in {"earlier_dsm", "later_dsm"}:
+            value = project_meta.get(req) or project_meta.get(f"{req}_path")
+            if not value or not Path(str(value)).is_file():
+                missing.append(f"{req} - select an existing georeferenced DSM")
         elif req == "thermal_dataset":
             improvements.append("thermal_dataset — import thermal imagery for better analysis")
+
+    for req in template.required_inputs:
+        if req in {'orthomosaic', 'semantic_model', 'semantic_model_manifest'}:
+            value = project_meta.get(req) or project_meta.get(f'{req}_path')
+            if not value or not Path(str(value)).is_file():
+                missing.append(f'{req} - select an existing file')
+
+    if 'roi_polygon' in template.required_inputs:
+        polygon = project_meta.get('roi_polygon') or project_meta.get('roi_polygon_xy')
+        if not polygon or len(polygon) < 3:
+            missing.append('roi_polygon - draw a stockpile or pit boundary')
 
     for opt in template.optional_inputs:
         if opt == "calibration_profile":
             improvements.append("calibration_profile — improves measurement accuracy")
+        elif opt == "site_semantic_layer":
+            improvements.append(
+                "site_semantic_layer - enables cause-specific labels instead of geometric change only"
+            )
+        elif opt == "approved_design_model":
+            improvements.append(
+                "approved_design_model - enables design progress percentage"
+            )
         elif opt == "capture_bundle":
             improvements.append("capture_bundle — enables multi-sensor processing")
 

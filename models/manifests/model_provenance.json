@@ -45,12 +45,74 @@
         }
       },
       "registered_utc": "2026-08-14T11:13:11Z"
+    },
+    {
+      "registry_key": "foundation_dinov2_vitb14",
+      "path": "pretrained/dinov2_vitb14_pretrain.pth",
+      "sha256": "0b8b82f85de91b424aded121c7e1dcc2b7bc6d0adeea651bf73a13307fad8c73",
+      "bytes": 346378731,
+      "method": "downloaded_official_foundation",
+      "source_url": "https://dl.fbaipublicfiles.com/dinov2/dinov2_vitb14/dinov2_vitb14_pretrain.pth",
+      "source_repository": "https://github.com/facebookresearch/dinov2",
+      "source_commit": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+      "local_source": "training/sources/dinov2",
+      "architecture": "DINOv2 ViT-B/14",
+      "license": "Apache-2.0",
+      "task_trained": false,
+      "intended_use": "Initialization for shared semantic heads and anomaly features.",
+      "registered_utc": "2026-08-14"
+    },
+    {
+      "registry_key": "foundation_yolo11x",
+      "path": "pretrained/yolo11x.pt",
+      "sha256": "7bc158aa95c0ebfdd87f70f01653c1131b93e92522dbe15c228bcd742e773a24",
+      "bytes": 114636239,
+      "method": "downloaded_official_foundation",
+      "source_url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x.pt",
+      "architecture": "Ultralytics YOLO11x detection",
+      "license": "AGPL-3.0 or Ultralytics Enterprise",
+      "task_trained": false,
+      "intended_use": "Initialization for road, power and railway detection.",
+      "deployment_gate": "AGPL-compliant deployment or Enterprise terms required.",
+      "registered_utc": "2026-08-14"
+    },
+    {
+      "registry_key": "foundation_yolo11l_seg",
+      "path": "pretrained/yolo11l-seg.pt",
+      "sha256": "cabe90049795dfc9a370b7934d6dec7f6b9e44a20e573b0ff81b7e205512c872",
+      "bytes": 56096965,
+      "method": "downloaded_official_foundation",
+      "source_url": "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11l-seg.pt",
+      "architecture": "Ultralytics YOLO11l instance segmentation",
+      "license": "AGPL-3.0 or Ultralytics Enterprise",
+      "task_trained": false,
+      "intended_use": "Initialization for solar-module and plant/tree instance masks.",
+      "deployment_gate": "AGPL-compliant deployment or Enterprise terms required.",
+      "registered_utc": "2026-08-14"
+    },
+    {
+      "registry_key": "upstream_weedsgalore_deeplabv3plus",
+      "path": "pretrained/weedsgalore_deeplabv3plus_ckpts.zip",
+      "sha256": "5e2e24985c9c330bcbce7428c3f75da55abf6933e23c18c1a95d5847f730085c",
+      "bytes": 886908486,
+      "method": "downloaded_upstream_task_baseline",
+      "source_url": "https://doidata.gfz.de/weedsgalore_e_celikkan_2024/ckpts.zip",
+      "architecture": "DeepLabv3+ RGB and multispectral benchmark bundle",
+      "license": "Checkpoint licence not explicit; upstream code Apache-2.0 and training data CC BY 4.0",
+      "task_trained": true,
+      "opendronekit_trained": false,
+      "intended_use": "Agriculture benchmark and transfer initializer, not India production inference.",
+      "redistribution_gate": "Do not redistribute until the checkpoint licence is clarified.",
+      "registered_utc": "2026-08-14"
     }
   ],
   "licensing_policy": [
     "Record the true source, licence, and sha256 for every shipped weight file.",
     "Do not redistribute weights whose source licence is absent or incompatible.",
     "ELPV is CC BY-NC-SA 4.0: models trained on it must not be shipped for commercial use.",
-    "Datasets fetched by training/datasets/download.py carry their licence in training/data/manifest.json."
+    "Datasets fetched by training/datasets/download.py carry their licence in training/data/manifest.json.",
+    "Downloaded foundation checkpoints are initialization only and must carry task_trained=false.",
+    "Ultralytics checkpoints require AGPL-compliant deployment or Enterprise terms.",
+    "The NVIDIA SegFormer reference licence is non-commercial; do not select it as the production foundation."
   ]
 }
