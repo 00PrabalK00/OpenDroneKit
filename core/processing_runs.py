@@ -463,6 +463,56 @@ def list_processing_runs(project_root: Path | str, project_id: str | None = None
 
 # ── Stage execution ──────────────────────────────────────────────────────────-
 
+def _reconstruction_artifacts(run: ProcessingRun) -> dict[str, str]:
+    """Locate the rasters and defect layer a prior reconstruction stage produced.
+
+    Later stages need the DSM/DTM by path, and the reconstruction stage records only
+    its summary JSON as an artifact. The summary names the rest, so it is read when
+    present and the output directory is scanned as a fallback for runs whose summary
+    predates those fields.
+    """
+    found: dict[str, str] = {}
+
+    summary_path = next(
+        (Path(p) for s in run.stages if s.id in {"reconstruction", "image_alignment"}
+         for p in s.output_artifacts if str(p).endswith(".json")),
+        None,
+    )
+    if summary_path and summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary = {}
+        for key, field_names in (
+            ("dsm", ("dsm_cog_path", "dsm_path")),
+            ("dtm", ("dtm_cog_path", "dtm_path")),
+            ("orthomosaic", ("orthomosaic_cog_path", "orthomosaic_path")),
+            ("defects_geojson", ("defects_geojson_path",)),
+        ):
+            for name in field_names:
+                value = summary.get(name)
+                if value and Path(value).exists():
+                    found[key] = str(value)
+                    break
+
+    search_root = Path(run.output_dir)
+    for key, filename in (
+        ("dsm", "dsm.tif"),
+        ("dtm", "dtm.tif"),
+        ("orthomosaic", "orthomosaic.tif"),
+    ):
+        if key not in found:
+            match = next(iter(sorted(search_root.rglob(filename))), None)
+            if match:
+                found[key] = str(match)
+    if "defects_geojson" not in found:
+        match = next(iter(sorted(search_root.rglob("*defect*.geojson"))), None)
+        if match:
+            found["defects_geojson"] = str(match)
+
+    return found
+
+
 def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage) -> list[str]:
     """Dispatch known stages to underlying engines. Returns artifact paths."""
     sid = stage.id.lower()
@@ -537,14 +587,32 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
         return [str(result.html_path)] + ([str(result.pdf_path)] if result.pdf_path else [])
 
     if sid == "measurement_extraction":
-        # Side-effect free placeholder — emit summary
+        from .dsm_analysis import extract_measurements
+        artifacts = _reconstruction_artifacts(run)
+        report = extract_measurements(
+            defects_geojson=cfg.get("defects_geojson") or artifacts.get("defects_geojson"),
+            dsm_path=cfg.get("dsm_path") or artifacts.get("dsm"),
+            dtm_path=cfg.get("dtm_path") or artifacts.get("dtm"),
+        )
         artifact = Path(run.output_dir) / "measurements_summary.json"
-        artifact.write_text(json.dumps({"note": "Measurements are created manually in the UI."}, indent=2), encoding="utf-8")
+        artifact.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return [str(artifact)]
 
     if sid == "risk_scoring":
+        from .risk_scoring import score_run_risk
+        defect_summary = next(
+            (Path(p) for s in run.stages if "defect" in s.id and "projection" not in s.id
+             for p in s.output_artifacts),
+            None,
+        )
+        report = score_run_risk(
+            defect_summary,
+            defects_geojson=_reconstruction_artifacts(run).get("defects_geojson"),
+            structure_type=str(cfg.get("structure_type", "generic")),
+            asset_id=run.project_id,
+        )
         artifact = Path(run.output_dir) / "risk_summary.json"
-        artifact.write_text(json.dumps({"note": "Risk scoring runs as part of structural health pipeline."}, indent=2), encoding="utf-8")
+        artifact.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return [str(artifact)]
 
     if sid == "image_quality_check":
@@ -555,8 +623,23 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
         return [str(artifact)]
 
     if sid == "volume_estimation":
+        from .dsm_analysis import estimate_volume
+        artifacts = _reconstruction_artifacts(run)
+        dsm_path = cfg.get("dsm_path") or artifacts.get("dsm")
+        if not dsm_path or not Path(dsm_path).exists():
+            raise AppError(
+                ERR_PIPELINE_INPUTS,
+                "Volume estimation needs a DSM from the reconstruction stage.",
+                recovery_action="Run reconstruction with the COLMAP engine first, or set dsm_path in the run config.",
+            )
+        report = estimate_volume(
+            dsm_path,
+            dtm_path=cfg.get("dtm_path") or artifacts.get("dtm"),
+            polygon_xy=cfg.get("volume_polygon_xy") or None,
+            base_elevation_m=cfg.get("volume_base_elevation_m"),
+        )
         artifact = Path(run.output_dir) / "volume_estimation.json"
-        artifact.write_text(json.dumps({"note": "Volume estimation depends on reconstruction DSM."}, indent=2), encoding="utf-8")
+        artifact.write_text(json.dumps(report, indent=2), encoding="utf-8")
         return [str(artifact)]
 
     if sid == "defect_projection":

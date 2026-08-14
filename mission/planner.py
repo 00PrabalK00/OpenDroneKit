@@ -639,6 +639,34 @@ def _bearing_deg(start_xy: np.ndarray, end_xy: np.ndarray) -> float:
     return float(np.degrees(np.arctan2(vec[1], vec[0])))
 
 
+def _cluster_points_2d(
+    points: Sequence[tuple[float, float]], radius_m: float
+) -> list[tuple[float, float]]:
+    """Greedy single-pass clustering: return one centre per group of nearby points.
+
+    Used so a cluster of prior defects a few metres apart produces one detail region
+    rather than a stack of near-identical overlapping ones.
+    """
+    centres: list[list[float]] = []
+    counts: list[int] = []
+    squared_radius = float(radius_m) ** 2
+
+    for x, y in points:
+        for index, (centre_x, centre_y) in enumerate(centres):
+            if (x - centre_x) ** 2 + (y - centre_y) ** 2 <= squared_radius:
+                count = counts[index]
+                # Running mean keeps the centre representative as members join.
+                centres[index][0] = (centre_x * count + x) / (count + 1)
+                centres[index][1] = (centre_y * count + y) / (count + 1)
+                counts[index] = count + 1
+                break
+        else:
+            centres.append([float(x), float(y)])
+            counts.append(1)
+
+    return [(c[0], c[1]) for c in centres]
+
+
 def _wrap_deg(value: float) -> float:
     wrapped = (float(value) + 180.0) % 360.0 - 180.0
     if wrapped == -180.0:
@@ -1845,6 +1873,12 @@ class MissionPlanner:
         asset_frame: AssetReferenceFrame | dict | None = None,
         recipe_version: int = 1,
         metadata: dict[str, Any] | None = None,
+        # smart_adaptive inputs. Without at least one of these the template has
+        # nothing to adapt to and degrades to a uniform grid, which it declares.
+        adaptive_interest_regions_lonlat: Iterable[Iterable[Iterable[float]]] | None = None,
+        adaptive_prior_defects_lonlat: Iterable[Iterable[float]] | None = None,
+        adaptive_density_factor: float = 2.5,
+        adaptive_region_radius_m: float = 12.0,
     ) -> FlightRecipe:
         raw_vertices = [list(p) for p in (polygon_lonlat or [])]
         linear_path_world: list[list[float]] | None = None
@@ -2181,6 +2215,18 @@ class MissionPlanner:
 
         local_polygon = _world_to_local(polygon, frame)
         local_polygon_closed = _ensure_closed_xy(local_polygon.tolist())
+
+        # Adaptive-density inputs arrive in WGS84 (they come from a prior survey's
+        # defect layer) and have to share the mission's local frame to be usable.
+        adaptive_regions_local: list[list[list[float]]] = []
+        for region in adaptive_interest_regions_lonlat or []:
+            vertices = [v for v in region if len(v) >= 2]
+            if len(vertices) >= 3:
+                adaptive_regions_local.append(_world_to_local(vertices, frame).tolist())
+        adaptive_defects_local: list[list[float]] = []
+        prior_defects = [p for p in (adaptive_prior_defects_lonlat or []) if len(p) >= 2]
+        if prior_defects:
+            adaptive_defects_local = _world_to_local(prior_defects, frame).tolist()
         linear_path_local = _world_to_local(linear_path_world, frame).tolist() if linear_path_world is not None else None
         lateral_target_local = (
             _world_to_local(lateral_target_world, frame).tolist()
@@ -2378,6 +2424,10 @@ class MissionPlanner:
             facade_curvature_alignment=facade_curvature_alignment,
             facade_curve_local=facade_curve_local,
             double_grid_cross_angle_deg=cross_angle_deg,
+            adaptive_interest_regions_local=adaptive_regions_local,
+            adaptive_prior_defects_local=adaptive_defects_local,
+            adaptive_density_factor=adaptive_density_factor,
+            adaptive_region_radius_m=adaptive_region_radius_m,
         )
 
         coverage = CoverageExpectation(
@@ -2976,6 +3026,10 @@ class MissionPlanner:
         enable_repeat: bool = False,
         constraints: MissionConstraints | dict | None = None,
         asset_frame: AssetReferenceFrame | dict | None = None,
+        adaptive_interest_regions_lonlat: Iterable[Iterable[Iterable[float]]] | None = None,
+        adaptive_prior_defects_lonlat: Iterable[Iterable[float]] | None = None,
+        adaptive_density_factor: float = 2.5,
+        adaptive_region_radius_m: float = 12.0,
     ) -> MissionPlan:
         if repeat_recipe is not None:
             recipe_obj = self._coerce_recipe(repeat_recipe)
@@ -2997,6 +3051,10 @@ class MissionPlanner:
             raise ValueError("polygon_lonlat is required for this mission mode.")
 
         recipe = self.build_flight_recipe(
+            adaptive_interest_regions_lonlat=adaptive_interest_regions_lonlat,
+            adaptive_prior_defects_lonlat=adaptive_prior_defects_lonlat,
+            adaptive_density_factor=adaptive_density_factor,
+            adaptive_region_radius_m=adaptive_region_radius_m,
             polygon_lonlat=polygon_lonlat,
             altitude_m=altitude_m,
             front_overlap_pct=front_overlap_pct,
@@ -3910,6 +3968,10 @@ class MissionPlanner:
         facade_curvature_alignment: bool = False,
         facade_curve_local: list[list[float]] | None = None,
         double_grid_cross_angle_deg: float = DOUBLE_GRID_DEFAULT_CROSS_ANGLE_DEG,
+        adaptive_interest_regions_local: list[list[list[float]]] | None = None,
+        adaptive_prior_defects_local: list[list[float]] | None = None,
+        adaptive_density_factor: float = 2.5,
+        adaptive_region_radius_m: float = 12.0,
     ) -> list[MissionPrimitive]:
         template = _normalize_template(template)
         polygon_arr = np.asarray(local_polygon[:-1], dtype=np.float64)
@@ -4387,6 +4449,38 @@ class MissionPlanner:
                 )
             ]
 
+        if template == "smart_adaptive":
+            return [
+                MissionPrimitive(
+                    kind="smart_adaptive",
+                    params={
+                        "polygon_local": local_polygon,
+                        "line_step_m": line_step_m,
+                        "point_step_m": point_step_m,
+                        "line_spacing_m": line_step_m,
+                        "capture_spacing_m": point_step_m,
+                        "altitude_m": altitude_m,
+                        "flight_direction_deg": float(flight_direction_deg),
+                        "gimbal_pitch_deg": float(gimbal_pitch_deg),
+                        "ground_offset_m": float(ground_offset_m),
+                        "terrain_follow_enabled": bool(terrain_follow_enabled),
+                        "terrain_model": dict(terrain_model or {}),
+                        "terrain_follow_mode": str(terrain_follow_mode),
+                        "terrain_normal_camera_enabled": bool(terrain_normal_camera_enabled),
+                        "terrain_normal_gain": float(terrain_normal_gain),
+                        "terrain_normal_yaw_align": bool(terrain_normal_yaw_align),
+                        "continuous_capture": True,
+                        # Regions worth a denser second pass. Supplied by the caller
+                        # from a prior survey's defect layer; empty means the plan is a
+                        # plain grid and reports itself as one.
+                        "interest_regions_local": list(adaptive_interest_regions_local or []),
+                        "prior_defects_local": list(adaptive_prior_defects_local or []),
+                        "adaptive_density_factor": float(adaptive_density_factor),
+                        "adaptive_region_radius_m": float(adaptive_region_radius_m),
+                    },
+                )
+            ]
+
         if template in {"facade", "facade_mapping"}:
             baseline_start, baseline_end = self._facade_baseline(local_polygon)
             baseline_curve = self._facade_curve(
@@ -4633,8 +4727,116 @@ class MissionPlanner:
         if kind in {"facade", "facade_mapping"}:
             return self._compile_facade_primitive(primitive.params)
         if kind == "smart_adaptive":
-            return self._compile_grid_primitive(primitive.params)
+            return self._compile_smart_adaptive_primitive(primitive.params)
         return []
+
+    def _compile_smart_adaptive_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """Uniform coverage plus extra passes over regions that warrant a closer look.
+
+        "Adaptive" means the capture density responds to something. Here that something
+        is supplied by the caller: `interest_regions_local` (polygons) and/or
+        `prior_defects_local` (points from an earlier survey's defect layer), which get
+        a second, finer, cross-hatched pass at reduced altitude.
+
+        With no interest input there is nothing to adapt to, so this emits the plain
+        grid -- but labels its poses `grid_uniform_no_interest_input` rather than
+        claiming an adaptivity that did not happen.
+        """
+        polygon_local = params.get("polygon_local", [])
+        if not polygon_local:
+            return []
+        poly = np.asarray(_ensure_closed_xy(polygon_local), dtype=np.float64)
+
+        altitude = float(params.get("altitude_m", 60.0))
+        ground_offset = float(params.get("ground_offset_m", 0.0))
+        altitude_base = max(1.0, altitude + ground_offset)
+        line_step = max(0.75, float(params.get("line_spacing_m", params.get("line_step_m", 5.0))))
+        point_step = max(0.75, float(params.get("capture_spacing_m", params.get("point_step_m", 5.0))))
+        flight_direction = _wrap_deg(float(params.get("flight_direction_deg", 0.0)))
+        gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -90.0)), -120.0, 30.0))
+        terrain_follow_enabled = bool(params.get("terrain_follow_enabled", False))
+        terrain_model = params.get("terrain_model")
+        terrain_model = terrain_model if isinstance(terrain_model, dict) else None
+
+        regions = self._adaptive_interest_regions(params)
+        base_name = "smart_adaptive_base" if regions else "grid_uniform_no_interest_input"
+
+        poses = self._compile_grid_pass(
+            poly_local_closed=poly,
+            altitude_m=altitude_base,
+            line_step_m=line_step,
+            capture_spacing_m=point_step,
+            flight_direction_deg=flight_direction,
+            gimbal_pitch_deg=gimbal_pitch,
+            primitive_name=base_name,
+            terrain_follow_enabled=terrain_follow_enabled,
+            terrain_model=terrain_model,
+        )
+        if not regions:
+            return poses
+
+        density_factor = float(np.clip(float(params.get("adaptive_density_factor", 2.5)), 1.1, 6.0))
+        # A closer look means finer spacing and a lower pass; both are capped so an
+        # aggressive factor cannot drive the vehicle below a safe height.
+        detail_altitude = max(
+            float(params.get("adaptive_min_altitude_m", 15.0)),
+            altitude_base / float(np.clip(float(params.get("adaptive_altitude_factor", 1.5)), 1.0, 3.0)),
+        )
+
+        for index, region in enumerate(regions):
+            region_closed = np.asarray(_ensure_closed_xy(region), dtype=np.float64)
+            if len(region_closed) < 4:
+                continue
+            poses.extend(
+                self._compile_grid_pass(
+                    poly_local_closed=region_closed,
+                    altitude_m=detail_altitude,
+                    line_step_m=max(0.75, line_step / density_factor),
+                    capture_spacing_m=max(0.75, point_step / density_factor),
+                    # Cross-hatched against the base pass: two directions over the same
+                    # ground is what actually improves reconstruction of a defect.
+                    flight_direction_deg=_wrap_deg(flight_direction + 90.0),
+                    gimbal_pitch_deg=gimbal_pitch,
+                    primitive_name=f"smart_adaptive_detail_{index}",
+                    terrain_follow_enabled=terrain_follow_enabled,
+                    terrain_model=terrain_model,
+                )
+            )
+
+        return poses
+
+    def _adaptive_interest_regions(self, params: dict[str, Any]) -> list[list[list[float]]]:
+        """Collect the regions that justify a denser pass.
+
+        Explicit polygons are used as given. Prior defect points are clustered so that
+        several defects a few metres apart produce one box rather than a pile of
+        overlapping ones.
+        """
+        regions: list[list[list[float]]] = []
+
+        for polygon in params.get("interest_regions_local") or []:
+            vertices = [list(map(float, v[:2])) for v in polygon if len(v) >= 2]
+            if len(vertices) >= 3:
+                regions.append(vertices)
+
+        points = [
+            (float(p[0]), float(p[1]))
+            for p in (params.get("prior_defects_local") or [])
+            if len(p) >= 2
+        ]
+        if points:
+            radius = max(2.0, float(params.get("adaptive_region_radius_m", 12.0)))
+            for centre_x, centre_y in _cluster_points_2d(points, radius):
+                regions.append(
+                    [
+                        [centre_x - radius, centre_y - radius],
+                        [centre_x + radius, centre_y - radius],
+                        [centre_x + radius, centre_y + radius],
+                        [centre_x - radius, centre_y + radius],
+                    ]
+                )
+
+        return regions
 
     def _compile_grid_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         polygon_local = params.get("polygon_local", [])

@@ -371,14 +371,24 @@ class CrackPropagationForecaster:
 
 
 def run_fenicsx_phasefield(mask_path: str, steps: int, output_dir: str) -> tuple[bool, str]:
-    """
-    Try running legacy FEniCSx phase-field simulation from cracksim.py.
+    """Optional FEniCSx phase-field crack simulation, if the solver is installed.
+
+    This is a hook for an external `cracksim` module providing a `run_phasefield`
+    entry point; nothing in this repository supplies one, and FEniCSx has no Windows
+    wheels. The supported path is the Paris-law model in this module, which is fully
+    implemented -- this returns an explicit "unavailable" rather than degrading to it
+    silently, so a caller cannot mistake one for the other.
+
     Returns (success, message).
     """
     try:
         from cracksim import run_phasefield
     except Exception as exc:
-        return False, f"Unable to import cracksim/FEniCSx stack: {exc}"
+        return False, (
+            "FEniCSx phase-field simulation is not available: no `cracksim` module "
+            f"providing `run_phasefield` is installed ({exc}). The Paris-law "
+            "propagation model in core.propagation is the supported alternative."
+        )
 
     try:
         run_phasefield(mask_path=mask_path, steps=steps, output_dir=output_dir)

@@ -80,8 +80,14 @@ This section states what actually works in this build.
 | Georeferenced COG outputs | Working (orthomosaic, DSM, DTM, hillshade) |
 | Dense MVS | **Requires a CUDA COLMAP build.** The pycolmap wheels are CPU-only, so dense stereo is skipped and raster resolution is reduced to what the sparse cloud supports. The run reports this explicitly. |
 | Trained defect models | **No weights are installed.** Detection falls back to classical image processing and reports `model_used` as `heuristic`, never as AI. See below. |
+| Heuristic crack detector quality | **Poor, and measured.** On 300 held-out crack images: IoU 0.054, precision 0.056, recall 0.66 — it over-predicts crack area by ~12x. It is a placeholder that finds roughly the right places and vastly the wrong extent, not a substitute for a trained model. |
+| Training rig | Working end to end: download → prepare → train → ONNX export with a torch-parity check → register with real sha256. Verified on a short local run; the full-scale runs have not been done. |
+| Volume / measurement / risk stages | Working against the real DSM/DTM. Volume verified to 0.00 m³ error against an analytic test surface. |
 | Cloud reconstruction | Not implemented. Requesting it runs locally and says so; no data leaves the machine. |
+| MAVLink upload | Working and verified against a MAVLink peer: mission, geofence, and rally upload each use the request/ack transfer protocol and land in the correct `MAV_MISSION_TYPE` slot. Gimbal, yaw, dwell, and camera-trigger items survive a full upload/download round trip. Requires MAVLink 2 (fence and rally are v2-only). |
 | GUI flight control | Real MAVLink commands when a MAVLink driver is connected. A `mock` driver is also selectable and is always labelled SIMULATED in the UI. |
+| `smart_adaptive` template | Genuinely adaptive when given interest regions or a prior survey's defect points: those get a finer cross-hatched pass at lower altitude. With no such input it emits a uniform grid and labels its poses `grid_uniform_no_interest_input` rather than implying adaptivity. |
+| FEniCSx phase-field propagation | Not available — no `cracksim` solver ships here. Reports unavailable explicitly. The Paris-law model is implemented and is the supported path. |
 
 ## Model assets and licensing
 
@@ -98,11 +104,35 @@ To train real weights, see `training/`:
 python -m training.datasets.download --list     # catalogue and credential status
 python -m training.datasets.download public     # no account needed
 python -m training.datasets.download crack solar structural corrosion
+
+python -m training.datasets.prepare --list      # task catalogue
+python -m training.datasets.prepare crack       # normalise to trainer layout
+
+python -m training.train_seg --config training/configs/crack_segformer_b5.yaml
+python -m training.train_det --config training/configs/structural_yolo11x.yaml
+
+python -m training.export_onnx --run training/runs/crack_segformer_b5 --kind seg
+python -m training.register --run training/runs/crack_segformer_b5 --key crack_segmentation
+python -m training.register --list              # installed models with real sha256
 ```
 
 Kaggle datasets need `KAGGLE_API_TOKEN` (or `~/.kaggle/access_token`); Roboflow needs
 `ROBOFLOW_API_KEY`. Each dataset's licence is recorded in the catalogue and written to
 `training/data/manifest.json` on download.
+
+Prepared corpora normalise to one of three layouts (binary-mask segmentation, folder
+classification, YOLO detection) with deterministic splits: a dataset that ships its own
+train/test division keeps it, and everything else is bucketed by a salted hash of the
+sample id, so re-running prepare can never move a sample from val into train and
+quietly invalidate an earlier metric.
+
+Both trainers checkpoint and resume every epoch, because Vast.ai interruptible
+instances get reclaimed without warning and Kaggle sessions are capped at nine hours.
+
+`export_onnx.py` fails the run if the ONNX graph disagrees with torch by more than
+1e-3, and additionally checks the graph loads under `cv2.dnn` — the runtime
+`core/detection.py` actually uses. `register.py` refuses to install a model whose
+parity check failed.
 
 Licensing rules for anything produced here:
 

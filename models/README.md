@@ -51,13 +51,22 @@ to:
 
 if the legacy source exists.
 
-To archive additional legacy checkpoints into this folder, run:
+To train, export, and install a model into this folder, use the training rig:
 
 ```bash
-python training/scripts/sync_legacy_models.py
+python -m training.datasets.download crack        # fetch source data
+python -m training.datasets.prepare crack         # normalise to trainer layout
+python -m training.train_seg --config training/configs/crack_segformer_b5.yaml
+python -m training.export_onnx --run training/runs/crack_segformer_b5 --kind seg
+python -m training.register --run training/runs/crack_segformer_b5 --key crack_segmentation
+python -m training.register --list                # what is installed, with real sha256
 ```
 
-Runtime code uses files from `final_toolkit/models/` only.
+`register.py` refuses to install an export whose ONNX-vs-torch parity check failed,
+and records the true sha256, source run, training datasets, and licences in
+`manifests/model_provenance.json`.
+
+Runtime code resolves weights through `model_registry.json` relative to this folder.
 
 ## Supported Model Runtime (Current Build)
 

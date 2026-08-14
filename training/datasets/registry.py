@@ -72,11 +72,28 @@ DATASETS: dict[str, DatasetSpec] = {
         task="segmentation",
         target="crack",
         license="MIT (repository)",
-        description="Combined crack segmentation corpus aggregating several public crack sets.",
+        description="khanhha/crack_segmentation source repository. Code and sanity images only.",
         approx_size_mb=85,
         url="https://github.com/khanhha/crack_segmentation/archive/refs/heads/master.zip",
         archive_name="crack_segmentation_combined.zip",
+        feeds=(),
+        notes=(
+            "The repository does not vendor its corpus - the 11k image/mask pairs sit behind a "
+            "Google Drive link. Use the 'crack_segmentation_kaggle' entry for the actual data. "
+            "This checkout contributes no training samples."
+        ),
+    ),
+    "crack_segmentation_kaggle": DatasetSpec(
+        name="crack_segmentation_kaggle",
+        kind="kaggle",
+        task="segmentation",
+        target="crack",
+        license="See Kaggle dataset page; aggregates CFD, Crack500, GAPs384, DeepCrack, Rissbilder, Volker",
+        description="11,298 crack image/mask pairs aggregating six public crack corpora.",
+        approx_size_mb=1300,
+        slug="lakshaymiddha/crack-segmentation-dataset",
         feeds=("crack_segmentation",),
+        notes="The redistributed form of the khanhha corpus, with masks included.",
     ),
     "sdnet2018": DatasetSpec(
         name="sdnet2018",
@@ -168,7 +185,13 @@ DATASETS: dict[str, DatasetSpec] = {
 
 
 GROUPS: dict[str, tuple[str, ...]] = {
-    "crack": ("crackforest", "deepcrack", "crack_segmentation_combined", "sdnet2018", "surface_crack"),
+    "crack": (
+        "crackforest",
+        "deepcrack",
+        "crack_segmentation_kaggle",
+        "sdnet2018",
+        "surface_crack",
+    ),
     "solar": ("elpv", "solar_panel_defects"),
     "structural": ("codebrim_structural",),
     "corrosion": ("corrosion_detection",),

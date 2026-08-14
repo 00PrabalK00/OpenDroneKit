@@ -1,0 +1,23 @@
+# SegFormer-B5 crack segmentation, sized for a 24GB RTX 4090.
+# Effective batch = batch_size * grad_accum = 16.
+name: crack_segformer_b5
+data_root: training/data/prepared/crack_seg
+model_id: nvidia/mit-b5
+image_size: 1024
+batch_size: 2
+grad_accum: 8
+epochs: 40
+lr: 0.00006
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 8
+seed: 1337
+amp_dtype: bf16
+ema_decay: 0.999
+dice_weight: 0.5
+# Crack pixels are 1-6% of a typical image; without this the BCE term collapses
+# toward predicting all background.
+pos_weight: 4.0
+output_dir: training/runs
+val_interval: 1
+early_stop_patience: 8

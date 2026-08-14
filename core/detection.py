@@ -57,6 +57,10 @@ class CrackDetectionResult:
     crack_ratio: float
     estimated_length_px: float
     estimated_max_width_px: float
+    # "heuristic" when the classical path produced the mask, "onnx:<file>" when a
+    # trained segmentation model did. Reported verbatim so a run can never claim a
+    # model it did not use.
+    model_used: str = "heuristic"
 
 
 @dataclass
@@ -353,7 +357,129 @@ def _hits_to_masks(
     return by_class
 
 
-def detect_cracks(image_bgr: np.ndarray, min_area_px: int = 30) -> CrackDetectionResult:
+def _run_onnx_segmentation(
+    image_bgr: np.ndarray,
+    model_path: Path,
+    threshold: float,
+    input_size: int,
+) -> np.ndarray | None:
+    """Run a binary segmentation ONNX model and return a full-resolution 0/1 mask.
+
+    The exporter folds the upsample and sigmoid into the graph, so the output is
+    already a probability map at input resolution and only needs thresholding and a
+    resize back to the source image size.
+    """
+    net = _load_onnx_net(model_path)
+    if net is None:
+        return None
+
+    size = int(max(64, input_size))
+    # ImageNet normalisation, matching training. cv2.dnn applies mean subtraction
+    # before scaling, so the std division is done afterwards by hand.
+    blob = cv2.dnn.blobFromImage(
+        image_bgr, scalefactor=1.0 / 255.0, size=(size, size), swapRB=True, crop=False
+    )
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 3, 1, 1)
+    blob = (blob - mean) / std
+
+    net.setInput(blob)
+    try:
+        output = np.asarray(net.forward())
+    except Exception:
+        return None
+
+    probability = np.squeeze(output)
+    if probability.ndim != 2:
+        return None
+    if probability.min() < 0.0 or probability.max() > 1.0:
+        # A graph exported without the sigmoid still yields logits; apply it here
+        # rather than thresholding raw scores against a probability cut-off.
+        probability = 1.0 / (1.0 + np.exp(-probability))
+
+    binary = (probability >= float(threshold)).astype(np.uint8)
+    height, width = image_bgr.shape[:2]
+    if binary.shape != (height, width):
+        binary = cv2.resize(binary, (width, height), interpolation=cv2.INTER_NEAREST)
+    return binary
+
+
+def detect_cracks(
+    image_bgr: np.ndarray,
+    min_area_px: int = 30,
+    *,
+    model_key: str = "crack_segmentation",
+    use_model: bool = True,
+) -> CrackDetectionResult:
+    """Segment cracks, preferring a trained model and falling back to morphology.
+
+    The classical path stays available and is reported as `heuristic`; it is never
+    presented as a model result.
+    """
+    binary: np.ndarray | None = None
+    model_used = "heuristic"
+
+    if use_model:
+        model_info = model_status(model_key)
+        spec = get_model_spec(model_key)
+        path_str = str(model_info.get("path", "")) if model_info.get("exists") else ""
+        if spec is not None and path_str and spec.kind == "onnx_segmentation":
+            predicted = _run_onnx_segmentation(
+                image_bgr,
+                Path(path_str),
+                threshold=float(getattr(spec, "score_threshold", 0.5) or 0.5),
+                input_size=int(getattr(spec, "input_size", 512) or 512),
+            )
+            if predicted is not None and predicted.any():
+                binary = _filter_connected_components(
+                    (predicted * 255).astype(np.uint8), min_area_px=min_area_px
+                )
+                binary = (binary > 0).astype(np.uint8)
+                model_used = f"onnx:{Path(path_str).name}"
+            elif predicted is not None:
+                # The model ran and found nothing. That is a real answer, not a
+                # failure, so it must not be overwritten by the heuristic.
+                binary = np.zeros(image_bgr.shape[:2], dtype=np.uint8)
+                model_used = f"onnx:{Path(path_str).name}"
+            else:
+                model_used = "onnx_fallback_heuristic"
+
+    if binary is None:
+        binary = _crack_mask_heuristic(image_bgr, min_area_px)
+
+    return _crack_result_from_mask(image_bgr, binary, model_used)
+
+
+def _crack_result_from_mask(
+    image_bgr: np.ndarray, binary: np.ndarray, model_used: str
+) -> CrackDetectionResult:
+    """Derive length, width, and overlay from a binary crack mask."""
+    skeleton = _skeletonize_binary(binary)
+    dist_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+
+    crack_pixels = int(binary.sum())
+    total_pixels = int(binary.size)
+    max_width = float(np.nan_to_num(dist_map.max(), nan=0.0, posinf=0.0, neginf=0.0))
+
+    overlay = image_bgr.copy()
+    overlay[binary > 0] = (0, 0, 255)
+    overlay = cv2.addWeighted(image_bgr, 0.65, overlay, 0.35, 0.0)
+
+    return CrackDetectionResult(
+        mask=(binary * 255).astype(np.uint8),
+        overlay=overlay,
+        crack_pixels=crack_pixels,
+        total_pixels=total_pixels,
+        crack_ratio=float(crack_pixels / max(total_pixels, 1)),
+        estimated_length_px=float(skeleton.sum()),
+        estimated_max_width_px=float(
+            np.clip(max_width * 2.0, 0.0, float(max(image_bgr.shape[:2]) * 2.0))
+        ),
+        model_used=model_used,
+    )
+
+
+def _crack_mask_heuristic(image_bgr: np.ndarray, min_area_px: int) -> np.ndarray:
     """
     Detect crack-like structures using morphology + edge cues.
     This is a robust fallback when no trained model is available.
@@ -382,30 +508,7 @@ def detect_cracks(image_bgr: np.ndarray, min_area_px: int = 30) -> CrackDetectio
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
     mask = _filter_connected_components(mask, min_area_px=min_area_px)
 
-    binary = (mask > 0).astype(np.uint8)
-    skeleton = _skeletonize_binary(binary)
-    dist_map = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-
-    crack_pixels = int(binary.sum())
-    total_pixels = int(binary.size)
-    crack_ratio = float(crack_pixels / max(total_pixels, 1))
-    estimated_length = float(skeleton.sum())
-    max_width = float(np.nan_to_num(dist_map.max(), nan=0.0, posinf=0.0, neginf=0.0))
-    estimated_max_width = float(np.clip(max_width * 2.0, 0.0, float(max(gray.shape) * 2.0)))
-
-    overlay = image_bgr.copy()
-    overlay[binary > 0] = (0, 0, 255)
-    overlay = cv2.addWeighted(image_bgr, 0.65, overlay, 0.35, 0.0)
-
-    return CrackDetectionResult(
-        mask=(binary * 255).astype(np.uint8),
-        overlay=overlay,
-        crack_pixels=crack_pixels,
-        total_pixels=total_pixels,
-        crack_ratio=crack_ratio,
-        estimated_length_px=estimated_length,
-        estimated_max_width_px=estimated_max_width,
-    )
+    return (mask > 0).astype(np.uint8)
 
 
 def detect_metal_defects(image_bgr: np.ndarray, min_area_px: int = 40) -> MetalDefectResult:

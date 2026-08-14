@@ -1,0 +1,22 @@
+# Small SegFormer at low resolution: fits the 8GB RTX 5060 laptop GPU.
+# Used to prove the pipeline end to end (train -> export -> register) before
+# spending paid GPU hours on the B5 run.
+name: crack_segformer_b0_local
+data_root: training/data/prepared/crack_seg
+model_id: nvidia/mit-b0
+image_size: 512
+batch_size: 4
+grad_accum: 4
+epochs: 12
+lr: 0.0002
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 2
+seed: 1337
+amp_dtype: bf16
+ema_decay: 0.999
+dice_weight: 0.5
+pos_weight: 4.0
+output_dir: training/runs
+val_interval: 1
+early_stop_patience: 4

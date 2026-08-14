@@ -356,12 +356,28 @@ class Api:
         self._session.mission_plan_dict = _plan_to_dict(plan)
         self._session.audit("mission_planned", {"template": kwargs["mode"], "waypoints": len(plan.waypoints)})
 
-        terrain = (self._session.mission_plan_dict.get("flight_recipe") or {}).get("terrain_model") or {}
+        # The recipe carries the resolved terrain model under `metadata`; reading it
+        # from the recipe root silently yielded None, so no terrain warning ever fired.
+        recipe = self._session.mission_plan_dict.get("flight_recipe") or {}
+        terrain = (recipe.get("metadata") or {}).get("terrain_model") or recipe.get("terrain_model") or {}
         warnings: list[str] = []
         if self._session.terrain_source_path and terrain.get("source") == "missing_terrain_source":
             warnings.append(
                 "Terrain following was requested but the source could not be read; "
                 "the plan assumes flat ground."
+            )
+        elif not self._session.terrain_source_path and terrain.get("type") == "flat":
+            # Flat-earth planning is only safe over genuinely flat ground. Saying so
+            # every time is the difference between an assumption and a silent one.
+            warnings.append(
+                "No terrain model loaded: altitudes are relative to a flat plane at the "
+                "launch elevation. Over sloping ground the true height above surface will "
+                "differ. Load a terrain source via File > Import Terrain to plan AGL."
+            )
+        if terrain.get("type") == "plane" and terrain.get("source") == "fitted_plane":
+            warnings.append(
+                "Terrain was approximated by a single fitted plane, so local relief "
+                "inside the area is not represented."
             )
 
         return ok(

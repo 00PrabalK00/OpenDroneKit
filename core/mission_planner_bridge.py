@@ -16,9 +16,18 @@ This module is the one-stop integration with Mission Planner:
 
 from __future__ import annotations
 
+import os
+import queue
 import socket
 import threading
 import time
+
+# `mission_type` is a MAVLink 2 extension field on every message of the mission
+# transfer protocol. Under MAVLink 1 it is truncated off the wire and silently
+# reads back as 0, so a fence or rally upload would be stored as the flight plan
+# and overwrite it. pymavlink decides the wire version at import time from this
+# variable, so it has to be set before the first `from pymavlink import ...`.
+os.environ.setdefault("MAVLINK20", "1")
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +41,57 @@ DEFAULT_UDPIN_PORT = 14550        # Mission Planner default UDP target for Pixha
 DEFAULT_TCP_PORT = 5760           # Mission Planner default TCP server when GCS is host
 DEFAULT_FORWARD_UDP_PORTS = [14551, 14552, 14553, 14554, 14555, 14556]
 DEFAULT_FORWARD_TCP_PORTS = [5762, 5763, 5764, 5765, 5766]
+
+# MAV_MISSION_TYPE. One autopilot holds three independent item lists, selected by
+# this field on every message of the transfer protocol. Fence and rally uploads are
+# the same handshake as a mission upload with a different type.
+MAV_MISSION_TYPE_MISSION = 0
+MAV_MISSION_TYPE_FENCE = 1
+MAV_MISSION_TYPE_RALLY = 2
+
+# MAV_MISSION_RESULT
+MAV_MISSION_ACCEPTED = 0
+
+_MISSION_RESULT_TEXT = {
+    0: "accepted",
+    1: "generic error",
+    2: "unsupported frame",
+    3: "unsupported command",
+    4: "no space left on vehicle",
+    5: "invalid parameter",
+    6: "param1 invalid",
+    7: "param2 invalid",
+    8: "param3 invalid",
+    9: "param4 invalid",
+    10: "x/latitude invalid",
+    11: "y/longitude invalid",
+    12: "z/altitude invalid",
+    13: "mission type not supported",
+    14: "vehicle busy",
+    15: "operation cancelled",
+}
+
+# Commands whose x/y fields carry plain numbers rather than degrees. Scaling these
+# by 1e7 like a coordinate is the classic way to make an autopilot reject a mission,
+# so the uploader checks membership here before converting.
+_NON_POSITIONAL_COMMANDS = frozenset(
+    {
+        112,  # CONDITION_DELAY
+        113,  # CONDITION_CHANGE_ALT
+        114,  # CONDITION_DISTANCE
+        115,  # CONDITION_YAW
+        176,  # DO_SET_MODE
+        177,  # DO_JUMP
+        178,  # DO_CHANGE_SPEED
+        181,  # DO_SET_RELAY
+        183,  # DO_SET_SERVO
+        201,  # DO_SET_ROI
+        203,  # DO_DIGICAM_CONTROL
+        205,  # DO_MOUNT_CONTROL
+        206,  # DO_SET_CAM_TRIGG_DIST
+        2500,  # DO_GIMBAL_MANAGER_CONFIGURE
+    }
+)
 
 
 # ── Connection autodiscovery ──────────────────────────────────────────────────
@@ -215,6 +275,12 @@ class MissionPlannerDroneClient:
         self._lock = threading.RLock()
         self._uri = ""
         self._mission_uploaded_count = 0
+        # The listener thread owns the socket, so an uploader cannot call recv_match
+        # itself without stealing messages from telemetry. Protocol traffic is
+        # forwarded here instead and consumed by whichever transfer is in flight.
+        self._protocol_queue: queue.Queue = queue.Queue()
+        self._transfer_lock = threading.Lock()
+        self._telemetry_subscribers: list[Any] = []
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -236,6 +302,16 @@ class MissionPlannerDroneClient:
                 raise AppError(ERR_DRONE_NOT_CONNECTED,
                                f"No heartbeat from {connection_uri}.",
                                recovery_action="Verify Mission Planner is forwarding telemetry.")
+            if "mission_type" not in mavutil.mavlink.MAVLink_mission_count_message.fieldnames:
+                raise AppError(
+                    ERR_DRONE_NOT_CONNECTED,
+                    "MAVLink 1 link: geofence and rally upload are not supported.",
+                    technical_message=(
+                        "pymavlink resolved to the MAVLink 1 dialect, which truncates the "
+                        "mission_type field. Set MAVLINK20=1 before pymavlink is first imported."
+                    ),
+                    recovery_action="Set the MAVLINK20=1 environment variable and restart.",
+                )
             self._connected = True
             self._uri = connection_uri
             self._start_listener()
@@ -277,17 +353,31 @@ class MissionPlannerDroneClient:
         self._heartbeat_thread.start()
 
     def _listener_loop(self) -> None:
+        last_publish = 0.0
         while not self._heartbeat_stop.is_set() and self._conn is not None:
             try:
                 msg = self._conn.recv_match(blocking=True, timeout=1.0)
-                if msg is None:
-                    continue
-                self._absorb_message(msg)
+                if msg is not None:
+                    self._absorb_message(msg)
+                # Telemetry arrives far faster than any UI needs it, so subscribers
+                # get a snapshot at a fixed rate rather than one event per message.
+                now = time.monotonic()
+                if now - last_publish >= 0.25:
+                    last_publish = now
+                    with self._lock:
+                        snapshot = self._latest_telemetry
+                    self._publish({"type": "telemetry", "telemetry": snapshot.to_dict()
+                                   if hasattr(snapshot, "to_dict") else vars(snapshot)})
             except Exception:
                 time.sleep(0.5)
 
     def _absorb_message(self, msg) -> None:
         t = msg.get_type()
+        if t in {"MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK", "MISSION_COUNT", "MISSION_ITEM_INT"}:
+            self._protocol_queue.put(msg)
+        if t == "STATUSTEXT":
+            self._publish({"type": "statustext", "severity": int(getattr(msg, "severity", 6)),
+                           "text": str(getattr(msg, "text", "")).strip("\x00")})
         with self._lock:
             tel = self._latest_telemetry
             tel.connected = True
@@ -329,38 +419,274 @@ class MissionPlannerDroneClient:
             raise AppError(ERR_DRONE_NOT_CONNECTED, "Mission Planner link not connected.")
         return self._conn
 
-    def upload_mission(self, mission_items: list[dict[str, Any]]) -> CommandResult:
-        try:
-            from pymavlink import mavutil
-        except ImportError:
-            return CommandResult(False, "upload_mission", "pymavlink not installed.")
+    # ── Telemetry subscribers ────────────────────────────────────────────────
+
+    def subscribe(self, callback) -> None:
+        """Register a callable invoked with each telemetry/status event.
+
+        The desktop shell uses this to push live telemetry into the UI without
+        polling. Callbacks run on the listener thread, so they must not block.
+        """
+        with self._lock:
+            if callback not in self._telemetry_subscribers:
+                self._telemetry_subscribers.append(callback)
+
+    def unsubscribe(self, callback) -> None:
+        with self._lock:
+            if callback in self._telemetry_subscribers:
+                self._telemetry_subscribers.remove(callback)
+
+    def _publish(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            subscribers = list(self._telemetry_subscribers)
+        for callback in subscribers:
+            try:
+                callback(event)
+            except Exception:
+                # A broken subscriber must not take the MAVLink listener down with it.
+                pass
+
+    # ── Mission transfer protocol ────────────────────────────────────────────
+
+    def _drain_protocol_queue(self) -> None:
+        while True:
+            try:
+                self._protocol_queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _await_protocol(self, types: set[str], timeout: float):
+        """Wait for one of `types` off the listener's protocol queue."""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            try:
+                msg = self._protocol_queue.get(timeout=remaining)
+            except queue.Empty:
+                return None
+            if msg.get_type() in types:
+                return msg
+
+    def _send_item(self, conn, item: dict[str, Any], seq: int, mission_type: int) -> None:
+        command = int(item.get("command", 16))  # NAV_WAYPOINT
+        frame = int(item.get("frame", 3))       # MAV_FRAME_GLOBAL_RELATIVE_ALT
+        if command in _NON_POSITIONAL_COMMANDS:
+            # These carry plain values in x/y, not degrees; MISSION_ITEM_INT still
+            # transports them as int32, so they are passed through unscaled.
+            x = int(float(item.get("lat", item.get("x", 0.0))))
+            y = int(float(item.get("lon", item.get("y", 0.0))))
+        else:
+            x = int(round(float(item.get("lat", 0.0)) * 1e7))
+            y = int(round(float(item.get("lon", 0.0)) * 1e7))
+        conn.mav.mission_item_int_send(
+            conn.target_system,
+            conn.target_component,
+            seq,
+            frame,
+            command,
+            int(item.get("current", 1 if seq == 0 else 0)),
+            int(item.get("autocontinue", 1)),
+            float(item.get("param1", 0.0)),
+            float(item.get("param2", 0.0)),
+            float(item.get("param3", 0.0)),
+            float(item.get("param4", 0.0)),
+            x,
+            y,
+            float(item.get("alt", 0.0)),
+            mission_type,
+        )
+
+    def _upload_list(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        mission_type: int,
+        name: str,
+        timeout_s: float = 20.0,
+    ) -> CommandResult:
+        """Run the MAVLink mission transfer handshake for one item list.
+
+        The protocol is request-driven: the GCS announces a count, then sends each
+        item only when the vehicle asks for it by sequence number. The previous
+        implementation pushed all items immediately after MISSION_COUNT, which
+        ArduPilot discards -- and because nothing waited for MISSION_ACK, the upload
+        reported success regardless of what the vehicle actually stored.
+        """
         try:
             conn = self._ensure()
         except AppError as exc:
-            return CommandResult(False, "upload_mission", exc.user_message)
+            return CommandResult(False, name, exc.user_message)
 
+        if not items:
+            return CommandResult(False, name, "Nothing to upload: the item list is empty.")
+
+        if not self._transfer_lock.acquire(timeout=timeout_s):
+            return CommandResult(False, name, "Another mission transfer is already in progress.")
         try:
-            conn.mav.mission_count_send(conn.target_system, conn.target_component, len(mission_items))
-            for idx, item in enumerate(mission_items):
-                lat = float(item.get("lat", 0.0))
-                lon = float(item.get("lon", 0.0))
-                alt = float(item.get("alt", 0.0))
-                command = int(item.get("command", 16))   # NAV_WAYPOINT
-                frame = int(item.get("frame", 3))        # MAV_FRAME_GLOBAL_RELATIVE_ALT
-                conn.mav.mission_item_int_send(
-                    conn.target_system, conn.target_component,
-                    idx, frame, command,
-                    0, 1,
-                    float(item.get("param1", 0.0)),
-                    float(item.get("param2", 0.0)),
-                    float(item.get("param3", 0.0)),
-                    float(item.get("param4", 0.0)),
-                    int(lat * 1e7), int(lon * 1e7), alt,
+            self._drain_protocol_queue()
+            conn.mav.mission_count_send(
+                conn.target_system, conn.target_component, len(items), mission_type
+            )
+
+            sent: set[int] = set()
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                msg = self._await_protocol(
+                    {"MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK"},
+                    timeout=min(5.0, max(0.1, deadline - time.monotonic())),
                 )
-            self._mission_uploaded_count = len(mission_items)
-            return CommandResult(True, "upload_mission", f"Uploaded {len(mission_items)} items.")
+                if msg is None:
+                    continue
+
+                if msg.get_type() == "MISSION_ACK":
+                    result = int(getattr(msg, "type", 1))
+                    if result == MAV_MISSION_ACCEPTED:
+                        if mission_type == MAV_MISSION_TYPE_MISSION:
+                            self._mission_uploaded_count = len(items)
+                        return CommandResult(
+                            True, name, f"Vehicle accepted {len(items)} items."
+                        )
+                    reason = _MISSION_RESULT_TEXT.get(result, f"result {result}")
+                    return CommandResult(
+                        False, name, f"Vehicle rejected the upload: {reason}."
+                    )
+
+                seq = int(getattr(msg, "seq", 0))
+                if not 0 <= seq < len(items):
+                    return CommandResult(
+                        False, name, f"Vehicle requested out-of-range item {seq}."
+                    )
+                self._send_item(conn, items[seq], seq, mission_type)
+                sent.add(seq)
+                # Each request is fresh progress, so the window extends with it and
+                # only a genuinely silent link times out.
+                deadline = time.monotonic() + timeout_s
+
+            return CommandResult(
+                False,
+                name,
+                f"Timed out after sending {len(sent)}/{len(items)} items with no MISSION_ACK.",
+            )
         except Exception as exc:
-            return CommandResult(False, "upload_mission", str(exc))
+            return CommandResult(False, name, str(exc))
+        finally:
+            self._transfer_lock.release()
+
+    def upload_mission(self, mission_items: list[dict[str, Any]]) -> CommandResult:
+        """Upload the flight plan, including gimbal, yaw, dwell, and trigger items."""
+        return self._upload_list(
+            mission_items, mission_type=MAV_MISSION_TYPE_MISSION, name="upload_mission"
+        )
+
+    def upload_geofence(self, fence_items: list[dict[str, Any]]) -> CommandResult:
+        """Upload inclusion/exclusion fence polygons as MAV_MISSION_TYPE_FENCE."""
+        return self._upload_list(
+            fence_items, mission_type=MAV_MISSION_TYPE_FENCE, name="upload_geofence"
+        )
+
+    def upload_rally_points(self, rally_items: list[dict[str, Any]]) -> CommandResult:
+        """Upload rally / emergency landing points as MAV_MISSION_TYPE_RALLY."""
+        return self._upload_list(
+            rally_items, mission_type=MAV_MISSION_TYPE_RALLY, name="upload_rally_points"
+        )
+
+    def upload_mission_plan(self, mission_plan: Any) -> dict[str, Any]:
+        """Upload a planner MissionPlan in full: waypoints, then fence, then rally.
+
+        Fence and rally are optional -- a plan with no geofence simply skips them,
+        and a vehicle that does not support those mission types reports the rejection
+        rather than failing the whole upload.
+        """
+        from mission.exporters import build_fence_items, build_mission_items, build_rally_items
+
+        report: dict[str, Any] = {"mission": None, "fence": None, "rally": None}
+
+        items = [item.to_dict() for item in build_mission_items(mission_plan)]
+        mission_result = self.upload_mission(items)
+        report["mission"] = {
+            "success": mission_result.success,
+            "message": mission_result.message,
+            "count": len(items),
+        }
+        if not mission_result.success:
+            return report
+
+        fence = [item.to_dict() for item in build_fence_items(mission_plan)]
+        if fence:
+            fence_result = self.upload_geofence(fence)
+            report["fence"] = {
+                "success": fence_result.success,
+                "message": fence_result.message,
+                "count": len(fence),
+            }
+
+        rally = [item.to_dict() for item in build_rally_items(mission_plan)]
+        if rally:
+            rally_result = self.upload_rally_points(rally)
+            report["rally"] = {
+                "success": rally_result.success,
+                "message": rally_result.message,
+                "count": len(rally),
+            }
+
+        return report
+
+    def download_mission(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
+        """Read the mission currently stored on the vehicle.
+
+        Used to verify an upload round-trips: what the vehicle reports back is the
+        only trustworthy evidence that it stored what was sent.
+        """
+        conn = self._ensure()
+        if not self._transfer_lock.acquire(timeout=timeout_s):
+            raise AppError(ERR_DRONE_NOT_CONNECTED, "Another mission transfer is in progress.")
+        try:
+            self._drain_protocol_queue()
+            conn.mav.mission_request_list_send(
+                conn.target_system, conn.target_component, MAV_MISSION_TYPE_MISSION
+            )
+            count_msg = self._await_protocol({"MISSION_COUNT"}, timeout=timeout_s)
+            if count_msg is None:
+                raise AppError(ERR_DRONE_NOT_CONNECTED, "Vehicle did not report a mission count.")
+
+            total = int(getattr(count_msg, "count", 0))
+            items: list[dict[str, Any]] = []
+            for seq in range(total):
+                conn.mav.mission_request_int_send(
+                    conn.target_system, conn.target_component, seq, MAV_MISSION_TYPE_MISSION
+                )
+                item = self._await_protocol({"MISSION_ITEM_INT"}, timeout=timeout_s)
+                if item is None:
+                    raise AppError(
+                        ERR_DRONE_NOT_CONNECTED, f"Vehicle stopped responding at item {seq}."
+                    )
+                positional = int(item.command) not in _NON_POSITIONAL_COMMANDS
+                items.append(
+                    {
+                        "seq": int(item.seq),
+                        "command": int(item.command),
+                        "frame": int(item.frame),
+                        "param1": float(item.param1),
+                        "param2": float(item.param2),
+                        "param3": float(item.param3),
+                        "param4": float(item.param4),
+                        "lat": float(item.x) / 1e7 if positional else float(item.x),
+                        "lon": float(item.y) / 1e7 if positional else float(item.y),
+                        "alt": float(item.z),
+                        "autocontinue": int(item.autocontinue),
+                    }
+                )
+            conn.mav.mission_ack_send(
+                conn.target_system,
+                conn.target_component,
+                MAV_MISSION_ACCEPTED,
+                MAV_MISSION_TYPE_MISSION,
+            )
+            return items
+        finally:
+            self._transfer_lock.release()
 
     def _command_long(self, command: int, *params: float, name: str = "command") -> CommandResult:
         try:

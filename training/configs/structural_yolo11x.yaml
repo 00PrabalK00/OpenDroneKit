@@ -1,0 +1,23 @@
+# YOLO11x on CODEBRIM concrete bridge defects, sized for a 24GB RTX 4090.
+# copy_paste and mixup are set high because the exposed-bar and efflorescence
+# classes are rare enough that plain mosaic leaves them under-sampled.
+name: structural_yolo11x
+data_root: training/data/prepared/structural_det
+model_id: yolo11x.pt
+image_size: 1024
+batch_size: 8
+epochs: 120
+lr: 0.01
+optimizer: auto
+patience: 25
+seed: 1337
+workers: 8
+output_dir: training/runs
+mosaic: 1.0
+close_mosaic: 15
+copy_paste: 0.3
+mixup: 0.1
+degrees: 10.0
+perspective: 0.0005
+cos_lr: true
+amp: true

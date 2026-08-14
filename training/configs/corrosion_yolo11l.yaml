@@ -1,0 +1,22 @@
+# YOLO11l metal corrosion / rust severity detection. Kaggle P100 tier.
+name: corrosion_yolo11l
+data_root: training/data/prepared/corrosion_det
+model_id: yolo11l.pt
+image_size: 960
+batch_size: 10
+epochs: 100
+lr: 0.01
+optimizer: auto
+patience: 20
+seed: 1337
+workers: 4
+output_dir: training/runs
+mosaic: 1.0
+close_mosaic: 10
+copy_paste: 0.3
+mixup: 0.1
+# Rust has no canonical orientation, so full rotation is safe here.
+degrees: 15.0
+perspective: 0.0005
+cos_lr: true
+amp: true

@@ -285,10 +285,24 @@ def build_fence_items(mission: Any) -> list[MissionItem]:
             )
             seq += 1
 
-    geofence = constraints.get("geofence") or plan.get("polygon") or []
+    # The planner accepts several spellings on input (`parse_constraints` reads
+    # no_fly_polygons, no_fly_zones, and obstacles), so the exporter accepts the
+    # same ones rather than silently emitting no fence for a plan that has one.
+    geofence = (
+        constraints.get("geofence")
+        or constraints.get("geofence_polygon")
+        or plan.get("polygon")
+        or []
+    )
     if geofence:
         add_ring(geofence, MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION)
-    for polygon in constraints.get("no_fly_polygons") or []:
+    exclusions = (
+        constraints.get("no_fly_polygons")
+        or constraints.get("no_fly_zones")
+        or constraints.get("obstacles")
+        or []
+    )
+    for polygon in exclusions:
         add_ring(polygon, MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION)
     return items
 
