@@ -327,8 +327,16 @@ FLIGHT = [
                       "tests/test_resume.py::TestAgainstARealPlan"],
       "mission/resume.py; Api.plan_battery_segments and resume_from_images."),
     F("fl.crash_recovery", "Crash recovery", "app", "Flight",
-      "Mission state and telemetry persist; the app never silently restarts a mission.",
-      "not_started", []),
+      "Mission state and telemetry persist across a crash of the ground station, and "
+      "the app never silently restarts a mission: recovery reports what was recorded, "
+      "states that the aircraft may still be airborne, and leaves the decision to the "
+      "operator.",
+      "implemented", ["tests/test_flight_state.py::TestPersistence",
+                      "tests/test_flight_state.py::TestCleanShutdown",
+                      "tests/test_flight_state.py::TestRecovery",
+                      "tests/test_flight_state.py::TestCorruptState"],
+      "core/flight_state.py; atomic writes, Api.check_interrupted_flight. A test asserts "
+      "recover() calls no command that could re-fly a mission."),
     F("fl.camera_control", "Camera control", "app", "Flight",
       "Photo, video, RAW, ISO, shutter, exposure, white balance, focus and zoom.",
       "not_started", []),

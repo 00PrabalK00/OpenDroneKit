@@ -337,6 +337,26 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def check_interrupted_flight(self) -> dict[str, Any]:
+        """Whether a flight was in progress when this software last stopped.
+
+        Nothing is resumed. The aircraft may still be airborne and no file on disk can
+        say otherwise, so the operator is given what was recorded and left to decide.
+        """
+        from core.flight_state import recover
+
+        return ok(**recover(self._session.project_root()))
+
+    @guard
+    def discard_interrupted_flight(self) -> dict[str, Any]:
+        """Forget a recorded flight once the operator has resolved it."""
+        from core.flight_state import clear_state
+
+        clear_state(self._session.project_root())
+        self._session.audit("flight_state_discarded", {})
+        return ok(cleared=True)
+
+    @guard
     def control_state(self) -> dict[str, Any]:
         """Who is flying the aircraft right now."""
         from core.flight_control import control_state as describe_control
@@ -865,6 +885,16 @@ class Api:
         items = [item.to_dict() for item in exporters.build_mission_items(self._session.mission_plan_dict)]
         result = uploader(items)
         self._session.audit("mission_uploaded", {"items": len(items), "driver": self._session.vehicle.driver})
+
+        # Recorded so that, if this software dies before the mission ends, the next
+        # session knows a mission was on the aircraft rather than guessing.
+        from core.flight_state import PHASE_UPLOADED, record_transition
+
+        record_transition(
+            self._session.project_root(), PHASE_UPLOADED,
+            mission_name=str(self._session.mission_plan_dict.get("template", "")),
+            vehicle_driver=self._session.vehicle.driver,
+        )
         payload = result.to_dict() if hasattr(result, "to_dict") else {"result": str(result)}
         return ok(items=len(items), result=payload)
 
