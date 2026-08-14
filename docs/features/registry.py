@@ -312,8 +312,19 @@ FLIGHT = [
       "Pitch, yaw, centre and look-at commands issued as mission items.",
       "verified", ["tests/test_exporters.py::test_gimbal_pitch_and_mount_mode_land_in_the_right_slots"]),
     F("fl.logging", "Flight logging", "app", "Flight",
-      "Full telemetry log exported to CSV, JSON, GPX and KML.",
-      "not_started", []),
+      "Full telemetry log exported to CSV, JSON, GPX and KML, with samples that had no "
+      "GPS fix kept in the record but omitted from the tracks, and gaps left as gaps "
+      "rather than interpolated into a flight nobody observed.",
+      "implemented", ["tests/test_flight_log.py::TestRecording",
+                      "tests/test_flight_log.py::TestPositionValidity",
+                      "tests/test_flight_log.py::TestCsv",
+                      "tests/test_flight_log.py::TestJson",
+                      "tests/test_flight_log.py::TestGpx",
+                      "tests/test_flight_log.py::TestKml",
+                      "tests/test_flight_log.py::TestExportDispatch",
+                      "tests/test_flight_log.py::TestEmptyAndDegenerate"],
+      "core/flight_log.py; AppSession records every telemetry read, "
+      "Api.export_flight_log writes it out."),
     F("fl.data_verification", "On-site data verification", "app", "Flight",
       "Image count, blur, exposure, corrupt files, missing GPS and coverage gaps checked "
       "before leaving the site.",

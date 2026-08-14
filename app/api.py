@@ -337,6 +337,38 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def export_flight_log(self, output_dir: str = "", output_format: str = "all") -> dict[str, Any]:
+        """Write the recorded flight to CSV, JSON, GPX and KML.
+
+        A telemetry stream is transient; the moment it matters is afterwards, when
+        someone asks where the aircraft was or what altitude something was flown at.
+        """
+        from core.flight_log import export, export_all
+
+        log = getattr(self._session, "flight_log", None)
+        if log is None or not getattr(log, "samples", None):
+            return fail(
+                "No flight has been recorded in this session. Connect to a vehicle and "
+                "fly, or load a log, before exporting one."
+            )
+
+        target = Path(output_dir) if output_dir else (self._session.project_root() / "flights")
+        stem = (log.mission_name or "flight").replace(" ", "_").lower()
+
+        try:
+            if output_format == "all":
+                written = export_all(log, target, stem=stem)
+            else:
+                path = export(log, target / f"{stem}.{output_format}", output_format)
+                written = {output_format: str(path)}
+        except ValueError as exc:
+            return fail(str(exc))
+
+        self._session.audit("flight_log_exported",
+                            {"formats": sorted(written), "samples": len(log.samples)})
+        return ok(files=written, summary=log.summary())
+
+    @guard
     def plan_battery_segments(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Split the current mission into sorties that each fit inside one battery."""
         from mission.estimates import AircraftProfile

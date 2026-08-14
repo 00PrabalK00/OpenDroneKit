@@ -80,6 +80,12 @@ class AppSession:
         self.mission_plan: Any = None
         self.mission_plan_dict: dict[str, Any] = {}
         self.aoi_polygon: list[list[float]] = []
+
+        from core.flight_log import FlightLog
+
+        # One log per session. Recording starts as soon as telemetry is read, because a
+        # log that has to be armed separately is one somebody forgets to arm.
+        self.flight_log = FlightLog()
         self.no_fly_polygons: list[list[list[float]]] = []
         self.terrain_source_path: str = ""
         # Which geocoding backend place search uses. Switchable to a self-hosted
@@ -295,6 +301,15 @@ class AppSession:
         payload["connected"] = True
         payload["driver"] = self.vehicle.driver
         payload["is_simulated"] = self.vehicle.driver in {"mock", "sitl"}
+
+        # Record as we go. A telemetry stream is transient, and the moment it is wanted
+        # is after the flight, when nobody can go back and start recording.
+        try:
+            self.flight_log.record(data)
+        except Exception:  # noqa: BLE001
+            # Logging must never be the reason a pilot loses their telemetry display.
+            pass
+
         return payload
 
 
