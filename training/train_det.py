@@ -122,16 +122,27 @@ def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
         )
         box = getattr(validation, "box", None)
         if box is not None:
+            # `box.maps` is pre-filled with the overall mAP and only overwritten for
+            # classes the model actually scored on, so reporting it wholesale invents
+            # a per-class number for classes that were never detected. Only classes
+            # present in `ap_class_index` are reported; the rest are named explicitly.
+            names = list(validation.names.values())
+            evaluated = [int(i) for i in getattr(box, "ap_class_index", [])]
+            per_class = {
+                names[index]: float(box.maps[index])
+                for index in evaluated
+                if 0 <= index < len(names)
+            }
             metrics = {
                 "map50_95": float(box.map),
                 "map50": float(box.map50),
                 "map75": float(box.map75),
                 "precision": float(box.mp),
                 "recall": float(box.mr),
-                "per_class_map50_95": {
-                    name: float(value)
-                    for name, value in zip(validation.names.values(), box.maps)
-                },
+                "per_class_map50_95": per_class,
+                "classes_without_predictions": [
+                    name for index, name in enumerate(names) if index not in evaluated
+                ],
             }
 
     summary = {

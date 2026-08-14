@@ -114,7 +114,11 @@ def register(run_dir: Path, key: str, *, force: bool = False) -> dict[str, Any]:
     subdir = KEY_SUBDIR.get(key, "structural")
     destination_dir = MODELS_DIR / subdir
     destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / source.name
+
+    # Ultralytics names every export `best.onnx`, so installing under the source
+    # filename would have each YOLO model silently overwrite the last. The registry
+    # key is unique by construction, so it names the installed file.
+    destination = destination_dir / f"{key}{source.suffix}"
     shutil.copy2(source, destination)
 
     checksum = sha256_of(destination)

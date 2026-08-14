@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import sys
 import zipfile
@@ -513,6 +514,29 @@ def adapt_surface_crack(raw: Path) -> Iterator[ClsSample]:
                 )
 
 
+def _clean_class_name(name: str) -> str:
+    """Strip the index prefix some Roboflow exports bake into the class name.
+
+    CODEBRIM's mirror lists its classes as "0 Efflorescence", "1 CorrosionStain", and
+    so on. The number is a leftover from however the project was imported, not part of
+    the label, and keeping it makes every downstream metrics table read badly.
+    """
+    cleaned = re.sub(r"^\s*\d+\s+", "", str(name).strip())
+    return cleaned or str(name).strip()
+
+
+def read_yolo_license(root: Path) -> str:
+    """Recover the licence Roboflow records inside the export's data.yaml."""
+    candidate = root / "data.yaml"
+    if not candidate.exists():
+        return ""
+    for line in candidate.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("license:"):
+            return stripped.split(":", 1)[1].strip().strip("'\"")
+    return ""
+
+
 def _read_yolo_class_names(root: Path) -> tuple[str, ...]:
     """Read class names out of a Roboflow ``data.yaml`` without a yaml dependency.
 
@@ -530,7 +554,9 @@ def _read_yolo_class_names(root: Path) -> tuple[str, ...]:
                 remainder = stripped[len("names:") :].strip()
                 if remainder.startswith("["):
                     inner = remainder.strip("[]")
-                    return tuple(part.strip().strip("'\"") for part in inner.split(",") if part.strip())
+                    return tuple(
+                        _clean_class_name(part) for part in inner.split(",") if part.strip()
+                    )
                 in_block = True
                 continue
             if in_block:
@@ -541,15 +567,32 @@ def _read_yolo_class_names(root: Path) -> tuple[str, ...]:
                 else:
                     break
         if names:
-            return tuple(names)
+            return tuple(_clean_class_name(n) for n in names)
     return ()
 
 
 def adapt_roboflow_yolo(raw: Path, *, prefix: str) -> Iterator[DetSample]:
-    """Any Roboflow YOLO export: ``{train,valid,test}/{images,labels}`` + data.yaml."""
+    """Any Roboflow YOLO export: ``{train,valid,test}/{images,labels}`` + data.yaml.
+
+    Some Universe projects ship a token validation split -- CODEBRIM's mirror has 90
+    validation images against 2565 training ones, which is far too few to choose a
+    checkpoint on across six classes. When the native split is that thin, part of the
+    training set is deterministically reassigned to validation. The test split is
+    never touched, so published comparisons stay valid.
+    """
     class_names = _read_yolo_class_names(raw)
     if not class_names:
         return
+
+    def count_images(split_name: str) -> int:
+        directory = raw / split_name / "images"
+        return sum(1 for _ in _iter_images(directory)) if directory.is_dir() else 0
+
+    train_count = count_images("train")
+    val_count = count_images("valid") or count_images("val")
+    # Below ~8% the validation set is too small to separate checkpoints reliably.
+    rebalance = train_count > 0 and val_count < 0.08 * train_count
+
     split_map = {"train": "train", "valid": "val", "val": "val", "test": "test"}
     for source_split, target_split in split_map.items():
         image_dir = raw / source_split / "images"
@@ -557,12 +600,16 @@ def adapt_roboflow_yolo(raw: Path, *, prefix: str) -> Iterator[DetSample]:
         if not image_dir.is_dir():
             continue
         for image_path in _iter_images(image_dir):
+            resolved = target_split
+            if rebalance and target_split == "train":
+                bucket = deterministic_split(image_path.stem, salt=f"{prefix}-val")
+                resolved = "val" if bucket == "val" else "train"
             yield DetSample(
                 sample_id=f"{prefix}_{source_split}_{image_path.stem}",
                 image_path=image_path,
                 label_path=label_dir / f"{image_path.stem}.txt",
                 class_names=class_names,
-                split=target_split,
+                split=resolved,
             )
 
 
@@ -761,6 +808,11 @@ def prepare_task(spec: TaskSpec, *, force: bool = False) -> PreparedTask:
         registry_entry = DATASETS.get(dataset_name)
         if registry_entry is not None:
             task.licenses[dataset_name] = registry_entry.license
+        # A Roboflow export states its own licence; prefer that over the catalogue's
+        # placeholder, since it is the authoritative record for what was downloaded.
+        declared = read_yolo_license(raw)
+        if declared:
+            task.licenses[dataset_name] = declared
 
     return task
 

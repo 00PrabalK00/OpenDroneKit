@@ -251,9 +251,27 @@ def fetch_roboflow(spec: DatasetSpec, data_root: Path, progress: Callable[[str],
     client = Roboflow(api_key=key)
     project = client.workspace(spec.workspace).project(spec.project)
     target = data_root / spec.name
-    target.mkdir(parents=True, exist_ok=True)
-    dataset = project.version(spec.version).download(spec.export_format, location=str(target), overwrite=False)
-    return {"path": str(getattr(dataset, "location", target))}
+
+    # The SDK treats an existing location as "already downloaded" and returns without
+    # fetching anything, so creating the directory first silently produced an empty
+    # dataset that still reported success. Only the parent is created here, and an
+    # existing-but-incomplete directory is re-fetched.
+    already_complete = (target / "data.yaml").exists()
+    if already_complete:
+        progress(f"  already present at {target}")
+        return {"path": str(target)}
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    dataset = project.version(spec.version).download(
+        spec.export_format, location=str(target), overwrite=True
+    )
+    location = Path(str(getattr(dataset, "location", target)))
+    if not (location / "data.yaml").exists():
+        raise RuntimeError(
+            f"Roboflow reported success but no data.yaml landed in {location}. "
+            "Check the workspace/project/version pin in registry.py."
+        )
+    return {"path": str(location)}
 
 
 FETCHERS: dict[str, Callable[[DatasetSpec, Path, Callable[[str], None]], dict[str, Any]]] = {

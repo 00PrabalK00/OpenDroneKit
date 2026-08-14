@@ -138,34 +138,50 @@ DATASETS: dict[str, DatasetSpec] = {
         kind="roboflow",
         task="detection",
         target="structural",
-        license="Per Roboflow Universe project",
-        description="Concrete bridge defects: crack, spallation, efflorescence, exposed bars, corrosion.",
-        workspace="",
-        project="",
+        license="CC BY 4.0 (declared in the export's data.yaml)",
+        description="CODEBRIM concrete bridge defects: crack, spallation, efflorescence, exposed bars, corrosion stain.",
+        approx_size_mb=400,
+        workspace="defect-detection-edbnh",
+        project="codebrim-lnsfg",
+        version=3,
         feeds=("structural_multiclass_detector",),
-        notes="Workspace/project resolved at fetch time via Roboflow Universe search.",
+        notes="Roboflow Universe mirror of the CODEBRIM benchmark (~1051 annotated images).",
     ),
     "solar_panel_defects": DatasetSpec(
         name="solar_panel_defects",
         kind="roboflow",
         task="detection",
         target="solar",
-        license="Per Roboflow Universe project",
-        description="Aerial and thermal solar panel defect detection set.",
-        workspace="",
-        project="",
+        license="CC BY 4.0 (declared in the export's data.yaml)",
+        description="Solar panel surface condition: clear, dusty, snow-covered, bird-drop, physical damage.",
+        approx_size_mb=180,
+        workspace="defect-detection-in-solar-panels-using-thermal-imaging",
+        project="solar-panel-defects-ki9pu",
+        version=4,
         feeds=("solar_pv_multidefect_detector",),
+        notes=(
+            "Soiling/obstruction classes, not electrical faults - despite the project title "
+            "these are panel surface conditions, so a model trained here detects what is ON "
+            "a panel, not a cell defect. ELPV remains the electroluminescence source. The "
+            "export also carries a junk class literally named '1'."
+        ),
     ),
     "corrosion_detection": DatasetSpec(
         name="corrosion_detection",
         kind="roboflow",
         task="detection",
         target="metal",
-        license="Per Roboflow Universe project",
-        description="Metal corrosion and rust severity detection set.",
-        workspace="",
-        project="",
+        license="CC BY 4.0 (declared in the export's data.yaml)",
+        description="Metal corrosion and rust detection set.",
+        approx_size_mb=150,
+        workspace="scaledge-ztihl",
+        project="corrosion-detection-obirw",
+        version=1,
         feeds=("metal_corrosion_detector",),
+        notes=(
+            "Carries both 'Corrosion' and 'Corrosion-detection' as separate classes, which "
+            "appear to be the same label under two names; merge them before training."
+        ),
     ),
     # -- photogrammetry test asset ----------------------------------------
     "odm_aukerman": DatasetSpec(
