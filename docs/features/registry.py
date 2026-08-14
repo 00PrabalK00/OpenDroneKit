@@ -293,8 +293,15 @@ FLIGHT = [
       "The pilot can interrupt autonomy at any time, and the control state is displayed.",
       "not_started", []),
     F("fl.battery_swap", "Battery swap and resume", "app", "Flight",
-      "Completed segments recorded; resume continues without duplicate capture.",
-      "not_started", []),
+      "Completed segments recorded; resume continues without duplicate capture and "
+      "without dropping a point, with what was flown determined from the imagery on the "
+      "card rather than a progress counter, and every ambiguous case re-flown.",
+      "implemented", ["tests/test_resume.py::TestStateFromSegments",
+                      "tests/test_resume.py::TestStateFromImages",
+                      "tests/test_resume.py::TestResumePlan",
+                      "tests/test_resume.py::TestBatterySegments",
+                      "tests/test_resume.py::TestAgainstARealPlan"],
+      "mission/resume.py; Api.plan_battery_segments and resume_from_images."),
     F("fl.crash_recovery", "Crash recovery", "app", "Flight",
       "Mission state and telemetry persist; the app never silently restarts a mission.",
       "not_started", []),

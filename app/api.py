@@ -337,6 +337,56 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def plan_battery_segments(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Split the current mission into sorties that each fit inside one battery."""
+        from mission.estimates import AircraftProfile
+        from mission.resume import plan_battery_segments
+
+        plan = getattr(self._session, "mission_plan", None)
+        if plan is None:
+            return fail("Plan a mission before splitting it across batteries.")
+
+        opts = dict(options or {})
+        aircraft = AircraftProfile(
+            name=str(opts.get("aircraft_name", "generic multirotor")),
+            endurance_min=float(opts.get("endurance_min", 25.0)),
+            reserve_pct=float(opts.get("reserve_pct", 25.0)),
+            batteries_owned=int(opts.get("batteries_owned", 0)),
+        )
+        try:
+            return ok(**plan_battery_segments(plan, aircraft))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def resume_from_images(self, image_folder: str) -> dict[str, Any]:
+        """Work out what is left to fly from the images already on the card.
+
+        The imagery is the record of what was captured, which is a better source than a
+        progress counter: a counter can be confident about a photograph that was never
+        written to disk.
+        """
+        from mission.resume import resume_plan, state_from_images
+
+        plan = getattr(self._session, "mission_plan_dict", None)
+        if not plan:
+            return fail("Plan a mission before resuming one.")
+        if not Path(image_folder).is_dir():
+            return fail(f"Not a folder of images: {image_folder}")
+
+        try:
+            state = state_from_images(plan, image_folder)
+        except (ValueError, NotADirectoryError) as exc:
+            return fail(str(exc))
+
+        resumed = resume_plan(plan, state)
+        self._session.audit("mission_resumed", {
+            "remaining": resumed.get("capture_count", 0),
+            "completed": state.to_dict()["completed"],
+        })
+        return ok(resume=resumed, progress=state.to_dict())
+
+    @guard
     def list_cameras(self) -> dict[str, Any]:
         """Every camera profile available for planning, built-in and user-defined."""
         from mission.cameras import all_profiles
