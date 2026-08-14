@@ -270,7 +270,40 @@ class UploadSession(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class Job(Base):
+    """A long-running processing job.
+
+    `engine` and `crs_epsg` are recorded on the job itself so a result can always be
+    traced to what produced it and to the coordinate system it is expressed in.
+    """
+
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    dataset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("datasets.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(60), default="reconstruction")
+    engine: Mapped[str] = mapped_column(String(60), default="auto")
+    profile: Mapped[str] = mapped_column(String(60), default="standard")
+    options_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    percent: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    log: Mapped[str] = mapped_column(Text, default="")
+    artifacts_json: Mapped[str] = mapped_column(Text, default="[]")
+    # None means the run produced nothing georeferenced, which is reported rather
+    # than papered over.
+    crs_epsg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
-    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Membership", "Mission",
+    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Job", "Membership", "Mission",
     "Organization", "Project", "ROLE_RANK", "Role", "UploadSession", "User", "utcnow",
 ]

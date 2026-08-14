@@ -293,7 +293,9 @@ PROCESSING = [
       "not_started", []),
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Job queue with priorities, retries, cancellation, progress and resource limits.",
-      "in_progress", ["tests/test_jobs.py"], "In-process JobManager only; no multi-worker queue."),
+      "in_progress", ["tests/test_jobs.py", "tests/test_processing.py"],
+      "Submit/poll/cancel over the API with cooperative cancellation and honest failure "
+      "reporting. Still single-process: no multi-worker queue, priorities or retries."),
     F("pr.large_datasets", "Large dataset processing", "workers", "Processing",
       "Thousands of images via chunking, resumable jobs and memory-aware scheduling.",
       "not_started", []),
@@ -476,9 +478,18 @@ PLATFORM = [
       "in_progress", [], "OBJ and PLY only."),
     F("api.rest", "REST API", "hub", "API",
       "Documented endpoints for every resource in the specification.",
-      "in_progress", ["tests/test_api.py::TestProjectsAndMissions", "tests/test_api.py::TestAssets"],
-      "Auth, orgs, projects, assets, missions and export done. Datasets, processing, "
-      "defects, measurements, reports and AI jobs still to come."),
+      "in_progress", ["tests/test_api.py::TestProjectsAndMissions", "tests/test_api.py::TestAssets",
+                      "tests/test_uploads.py", "tests/test_processing.py"],
+      "Auth, orgs, projects, assets, missions, export, datasets, resumable upload and "
+      "processing jobs done. Defects, measurements, reports and AI jobs still to come."),
+    F("api.uploads", "Resumable dataset upload", "hub", "API",
+      "A client declares a file with its size and sha256, sends chunks in any order, "
+      "queries what is missing, and finalises; assembly is refused unless both the byte "
+      "count and the checksum match, and a rejected file is not left on disk.",
+      "implemented", ["tests/test_uploads.py::TestResumableUpload"]),
+    F("api.upload_safety", "Upload path containment", "hub", "Security",
+      "A client-supplied filename can never place a file outside the storage root.",
+      "implemented", ["tests/test_uploads.py::TestUploadPathSafety"]),
     F("api.webhooks", "Webhooks", "hub", "API",
       "Events for mission, flight, dataset, processing, AI, defect and report lifecycle.",
       "not_started", []),
