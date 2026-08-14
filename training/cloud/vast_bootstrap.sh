@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Bootstrap a rented GPU box (Vast.ai / any Ubuntu + CUDA host) for OpenDroneKit training.
+#
+# Interruptible instances get reclaimed without warning, so everything here is
+# idempotent and every training call resumes from the last checkpoint. Re-running
+# this script on a fresh box after a reclaim continues where the previous one died,
+# provided CHECKPOINT_REMOTE points at durable storage.
+#
+#   bash vast_bootstrap.sh prepare        # deps + data, no training
+#   bash vast_bootstrap.sh crack          # SegFormer-B5 crack segmentation
+#   bash vast_bootstrap.sh structural     # YOLO11x CODEBRIM
+#   bash vast_bootstrap.sh all
+#
+# Required in the environment (never commit these):
+#   KAGGLE_API_TOKEN    for the crack corpora
+#   ROBOFLOW_API_KEY    for the detection corpora
+
+set -euo pipefail
+
+REPO_URL="${REPO_URL:-}"
+WORKDIR="${WORKDIR:-/workspace/OpenDroneKit}"
+CHECKPOINT_REMOTE="${CHECKPOINT_REMOTE:-}"   # optional rclone/rsync target for runs/
+SYNC_INTERVAL_S="${SYNC_INTERVAL_S:-600}"
+
+log() { printf '\n=== %s ===\n' "$1"; }
+
+require_env() {
+  local missing=0
+  for name in "$@"; do
+    if [ -z "${!name:-}" ]; then
+      echo "Missing required environment variable: $name" >&2
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ] || exit 2
+}
+
+setup_repo() {
+  log "Repository"
+  if [ -d "$WORKDIR/.git" ]; then
+    git -C "$WORKDIR" pull --ff-only || true
+  elif [ -n "$REPO_URL" ]; then
+    git clone "$REPO_URL" "$WORKDIR"
+  else
+    echo "No repo at $WORKDIR and REPO_URL is unset. Upload the tree or set REPO_URL." >&2
+    exit 2
+  fi
+  cd "$WORKDIR"
+}
+
+setup_python() {
+  log "Python dependencies"
+  python -c "import torch; assert torch.cuda.is_available()" 2>/dev/null || {
+    # Vast images normally ship CUDA torch already; only install if it is absent or CPU-only.
+    pip install --quiet torch torchvision --index-url https://download.pytorch.org/whl/cu128
+  }
+  pip install --quiet -r training/requirements-train.txt
+  pip install --quiet kagglehub roboflow
+  python - <<'PY'
+import torch
+print(f"torch {torch.__version__} cuda={torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    name = torch.cuda.get_device_name(0)
+    total = torch.cuda.get_device_properties(0).total_memory / 1e9
+    print(f"gpu: {name} ({total:.0f} GB)")
+PY
+}
+
+fetch_data() {
+  log "Datasets"
+  require_env KAGGLE_API_TOKEN
+  python -m training.datasets.download crack_segmentation_kaggle deepcrack crackforest
+  python -m training.datasets.prepare crack_seg
+  if [ -n "${ROBOFLOW_API_KEY:-}" ]; then
+    python -m training.datasets.download codebrim_structural
+    python -m training.datasets.prepare structural_det
+  else
+    echo "ROBOFLOW_API_KEY unset: skipping the detection corpora."
+  fi
+}
+
+# Push checkpoints off the box periodically. Without this a reclaim loses the run.
+start_checkpoint_sync() {
+  [ -n "$CHECKPOINT_REMOTE" ] || { echo "CHECKPOINT_REMOTE unset: checkpoints stay on this box only."; return; }
+  log "Checkpoint sync every ${SYNC_INTERVAL_S}s -> $CHECKPOINT_REMOTE"
+  (
+    while true; do
+      sleep "$SYNC_INTERVAL_S"
+      rclone copy training/runs "$CHECKPOINT_REMOTE" --include '*.pt' --include '*.json' 2>/dev/null \
+        || rsync -a --include='*.pt' --include='*.json' training/runs/ "$CHECKPOINT_REMOTE" 2>/dev/null \
+        || true
+    done
+  ) &
+  echo "sync pid $!"
+}
+
+train_crack() {
+  log "SegFormer-B5 crack segmentation @1024"
+  # --resume is always passed: on a first run there is no checkpoint and it is a
+  # no-op, and after a reclaim it is exactly what is needed.
+  python -m training.train_seg \
+    --config training/configs/crack_segformer_b5.yaml \
+    --resume
+  python -m training.export_onnx --run training/runs/crack_segformer_b5 --kind seg
+}
+
+train_structural() {
+  log "YOLO11x structural detection @1024"
+  python -m training.train_det \
+    --config training/configs/structural_yolo11x.yaml \
+    --resume
+  python -m training.export_onnx --run training/runs/structural_yolo11x --kind yolo
+}
+
+main() {
+  local target="${1:-prepare}"
+  setup_repo
+  setup_python
+  fetch_data
+  [ "$target" = "prepare" ] && { log "Prepared. Nothing trained."; return; }
+  start_checkpoint_sync
+  case "$target" in
+    crack)      train_crack ;;
+    structural) train_structural ;;
+    all)        train_crack; train_structural ;;
+    *) echo "Unknown target: $target (prepare|crack|structural|all)" >&2; exit 2 ;;
+  esac
+  log "Done. Copy training/runs/*/ back to the workstation, then run training.register."
+}
+
+main "$@"
