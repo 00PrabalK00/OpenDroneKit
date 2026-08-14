@@ -465,10 +465,56 @@ class Maintenance(Base):
     performed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Webhook(Base):
+    """An outbound subscription belonging to one organisation.
+
+    The signing secret is stored in plaintext, unlike a password, because the server
+    must reproduce the HMAC for every delivery. It is returned to the caller only at
+    creation.
+    """
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
+    url: Mapped[str] = mapped_column(String(800), nullable=False)
+    events_json: Mapped[str] = mapped_column(Text, default="[]")
+    description: Mapped[str] = mapped_column(Text, default="")
+    secret_hash: Mapped[str] = mapped_column(String(64), default="")
+    secret_prefix: Mapped[str] = mapped_column(String(16), default="")
+    secret_plain: Mapped[str] = mapped_column(String(120), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    delivery_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebhookDelivery(Base):
+    """One delivery attempt, successful or not.
+
+    Failures are recorded because a webhook that silently stopped working is worse
+    than one that never existed.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    webhook_id: Mapped[int] = mapped_column(ForeignKey("webhooks.id", ondelete="CASCADE"), index=True)
+    event: Mapped[str] = mapped_column(String(60), default="")
+    status_code: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 __all__ = [
     "Aircraft", "ApiToken", "Asset", "AuditEntry", "Base", "Battery", "Dataset",
     "Defect", "Job", "Maintenance", "Membership", "PilotProfile",
     "Mission",
     "Organization", "Project", "ROLE_RANK", "Role", "ShareAccess", "ShareLink",
-    "UploadSession", "User", "utcnow",
+    "UploadSession", "User", "Webhook", "WebhookDelivery", "utcnow",
 ]

@@ -527,11 +527,19 @@ PLATFORM = [
       "A client-supplied filename can never place a file outside the storage root.",
       "implemented", ["tests/test_uploads.py::TestUploadPathSafety"]),
     F("api.webhooks", "Webhooks", "hub", "API",
-      "Events for mission, flight, dataset, processing, AI, defect and report lifecycle.",
-      "not_started", []),
+      "Signed HMAC-SHA256 deliveries with the timestamp inside the signed material, "
+      "subscriptions refused for unknown events, and every delivery recorded including "
+      "failures. Best-effort delivery is declared rather than implied otherwise.",
+      "implemented", ["tests/test_events.py::TestSubscription",
+                      "tests/test_events.py::TestDelivery",
+                      "tests/test_events.py::TestHonestyAboutGuarantees"]),
     F("api.realtime", "Real time communication", "hub", "API",
-      "WebSocket telemetry, processing progress and notifications.",
-      "not_started", []),
+      "Per-organization WebSocket stream with the token verified as a normal request "
+      "would be, declaring that in-process fan-out only reaches clients on the same "
+      "worker.",
+      "in_progress", ["tests/test_events.py::TestLiveStream"],
+      "Authenticated stream works; a shared broker is needed for multi-worker "
+      "deployments and telemetry is not yet published into it."),
     F("fm.fleet", "Fleet management", "hub", "Fleet",
       "Airframes with accumulating flight hours and a service interval that reports "
       "when maintenance is due, plus a fleet status view answering what needs "
