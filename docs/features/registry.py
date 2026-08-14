@@ -259,6 +259,28 @@ FLIGHT = [
       "Image count, blur, exposure, corrupt files, missing GPS and coverage gaps checked "
       "before leaving the site.",
       "in_progress", [], "core/coverage_validation.py covers gaps; blur/exposure checks missing."),
+    F("fl.capture.match", "Captured images matched to planned capture points", "core", "Flight verification",
+      "Every planned capture point is paired with at most one image, and every image with at "
+      "most one point, within a stated match radius. A planned point with no image is reported "
+      "by index rather than absorbed, and an image with no GPS is set aside rather than "
+      "guessed at from filename order.",
+      "implemented", ["tests/test_capture_matching.py::TestMatching",
+                      "tests/test_capture_matching.py::TestGeotagging",
+                      "tests/test_capture_matching.py::TestPlanExtraction"],
+      "core/capture_matching.py; greedy nearest-first, one-to-one."),
+    F("fl.capture.deviation", "Flight deviation from the plan is quantified", "core", "Flight verification",
+      "Per-image and aggregate distance between the planned capture point and where the "
+      "photograph was actually taken, with altitude difference where known, and an operator "
+      "warning when the plan was flown but loosely.",
+      "implemented", ["tests/test_capture_matching.py::TestDeviation",
+                      "tests/test_capture_matching.py::TestReportShape"],
+      "Warning threshold 8 m, match radius 15 m."),
+    F("fl.capture.priors", "Planned poses seed reconstruction", "workers", "Flight verification",
+      "Matched images carry their planned position, yaw and gimbal pitch into reconstruction "
+      "as priors; unmatched images are left for SfM to place rather than given a position "
+      "they were not observed at.",
+      "implemented", ["tests/test_capture_matching.py::TestReconstructionPriors"],
+      "pose_priors_for_reconstruction; consumed by the COLMAP engine."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -373,6 +395,156 @@ VISION = [
       "No detection is stored without its model identity and confidence.",
       "in_progress", ["tests/test_honesty.py::TestDetectionReportsWhatItActuallyUsed"],
       "model_used is reported; per-detection model version is not yet persisted."),
+]
+
+# ---------------------------------------------------------------------------
+# India-first survey intelligence roadmap
+# ---------------------------------------------------------------------------
+
+INDIA_FIRST = [
+    # Shared engines
+    F("eng.semantic", "Semantic understanding engine", "vision", "India: shared engines",
+      "Versioned class schemas run through overlap-blended tiled inference and emit "
+      "georeferenced class/confidence rasters, polygons and model provenance.",
+      "in_progress", ["tests/test_semantic_engine.py"],
+      "Runtime and DINOv2/UPerNet architecture are implemented; the shared production "
+      "head still needs licence-filtered training and site/date holdout evaluation."),
+    F("eng.assets", "Object and asset detection engine", "vision", "India: shared engines",
+      "Count and individually locate assets such as trees, modules, equipment, poles "
+      "and insulators with model provenance and confidence.",
+      "in_progress", [],
+      "Defect-specific detection exists; a shared asset taxonomy and geospatial output do not."),
+    F("eng.change", "Survey change intelligence engine", "core", "India: shared engines",
+      "Aligned T1/T2 DSMs produce a georeferenced difference raster, contiguous change "
+      "polygons, exact rise/fall volumes and an interpretation-safe report.",
+      "implemented", ["tests/test_survey_intelligence.py::TestSurfaceChangePackage"]),
+    F("eng.anomaly", "Anomaly intelligence engine", "vision", "India: shared engines",
+      "Find deviations from a validated normal baseline without assigning an unsupported "
+      "named defect class.",
+      "not_started", []),
+
+    # Photogrammetry and geometry foundation
+    F("india.foundation.orthomosaic", "Survey orthomosaic", "workers", "India: foundation",
+      "A georeferenced site orthomosaic suitable for GIS and downstream analysis.",
+      "in_progress", [], "Writer and reconstruction path exist; end-to-end survey evidence is not automated."),
+    F("india.foundation.dsm_dtm", "Survey DSM and DTM", "workers", "India: foundation",
+      "Metric surface and terrain rasters in an explicit projected CRS.",
+      "in_progress", [], "Reconstruction path exists; end-to-end survey evidence is not automated."),
+    F("india.foundation.reconstruction", "Survey 3D reconstruction", "workers", "India: foundation",
+      "Georeferenced point cloud and model from a real drone survey.",
+      "in_progress", [], "Verified manually on Aukerman; the registry requires an automated real-input test."),
+    F("india.foundation.area", "Survey area and distance", "core", "India: foundation",
+      "Metric area and distance measured from georeferenced survey products.",
+      "in_progress", [], "Core measurement functions exist; the mapped client workflow is incomplete."),
+    F("india.foundation.volume", "Stockpile volume", "core", "India: foundation",
+      "Volume against an explicit reference surface, exact on a known metric DSM/DTM.",
+      "implemented", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",
+                      "tests/test_dsm_analysis.py::test_polygon_clip_halves_the_volume"]),
+    F("india.foundation.cut_fill", "Cut and fill", "core", "India: foundation",
+      "Measured surface rise and fall between aligned surveys with area and volume in "
+      "metric units.",
+      "implemented", ["tests/test_change_detection.py::TestSurfaceComparison",
+                      "tests/test_survey_intelligence.py::TestSurfaceChangePackage"]),
+    F("india.foundation.deliverable", "Georeferenced client deliverable", "core", "India: foundation",
+      "A customer receives mapped vectors/rasters, quantities, method and honest limits "
+      "rather than an isolated model prediction.",
+      "in_progress", ["tests/test_survey_intelligence.py::TestSurfaceChangePackage"],
+      "Complete for surface-change comparisons; each remaining mission pack needs its own deliverable."),
+
+    # Construction
+    F("pack.construction.change", "Construction survey comparison", "core",
+      "India pack: Construction",
+      "Two survey DSMs produce mapped rise/fall regions, changed area, added/removed "
+      "volume and a client-readable report without inventing a semantic cause.",
+      "implemented", ["tests/test_survey_intelligence.py"]),
+    F("pack.construction.segmentation", "Construction site segmentation", "vision",
+      "India pack: Construction",
+      "Building, unfinished building, road, bare soil, vegetation, water, concrete, "
+      "excavation, stockpile, construction material and equipment classes.",
+      "not_started", []),
+    F("pack.construction.progress", "Progress against approved design", "core",
+      "India pack: Construction",
+      "Measured percentage and location of progress against an explicit approved design model.",
+      "not_started", []),
+
+    # Mining and quarry
+    F("pack.mining.stockpile", "Stockpile selection and measurement", "core",
+      "India pack: Mining",
+      "Select or segment a pile, state the base-surface method, calculate volume and "
+      "produce a mapped client result.",
+      "implemented", ["tests/test_stockpile_intelligence.py"]),
+    F("pack.mining.stockpile_segmentation", "Automatic stockpile segmentation", "vision",
+      "India pack: Mining",
+      "Automatically propose georeferenced stockpile boundaries for human review before "
+      "the geometry engine measures them.",
+      "not_started", []),
+    F("pack.mining.scene", "Mine and quarry segmentation", "vision",
+      "India pack: Mining",
+      "Pit, bench, haul road, stockpile, water, vegetation, excavated region and "
+      "restricted-boundary layers.",
+      "not_started", []),
+    F("pack.mining.change", "Mine and stockpile change", "core",
+      "India pack: Mining",
+      "Per-pile and per-pit area/volume change between dated surveys.",
+      "implemented", ["tests/test_survey_intelligence.py::TestSelectedROIChangePackage",
+                      "tests/test_survey_intelligence.py::TestSelectedROIChangeWorkflow"]),
+
+    # Solar
+    F("pack.solar.inventory", "Solar array and module inventory", "vision",
+      "India pack: Solar",
+      "Geolocated arrays and individual modules with missing/damaged/obstructed module findings.",
+      "not_started", []),
+    F("pack.solar.thermal", "Solar RGB and thermal inspection", "vision",
+      "India pack: Solar",
+      "Aligned RGB/radiometric thermal imagery with module-level hotspots, hot cells, "
+      "string/module anomalies and temperature-backed severity.",
+      "in_progress", ["tests/test_thermal.py"],
+      "Radiometric conversion and single-frame mapping work; alignment and module association do not."),
+
+    # Land and property
+    F("pack.land.gis", "Land-survey GIS extraction", "vision",
+      "India pack: Land",
+      "Georeferenced building, road/path, water and vegetation polygons extracted from "
+      "an orthomosaic.",
+      "not_started", []),
+    F("pack.land.encroachment", "Property and encroachment change", "core",
+      "India pack: Land",
+      "New buildings, boundary encroachment, new roads and structure expansion between surveys.",
+      "not_started", []),
+
+    # Agriculture
+    F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
+      "India pack: Agriculture",
+      "Crop, soil, unwanted vegetation and water masks with canopy cover and bare/missing regions.",
+      "not_started", []),
+    F("pack.agriculture.indices", "Multispectral crop indices", "core",
+      "India pack: Agriculture",
+      "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
+      "not_started", []),
+    F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
+      "India pack: Agriculture",
+      "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
+      "not_started", []),
+    F("pack.agriculture.count", "Plant and tree counting", "vision",
+      "India pack: Agriculture",
+      "Geolocated plant/tree counts with missing and health categories only where validated.",
+      "not_started", []),
+
+    # Roads, power and rail
+    F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
+      "Road/edge segmentation plus geolocated pothole, crack, waterlogging and debris "
+      "counts, severity and surveyed distance.",
+      "not_started", []),
+    F("pack.power.inspection", "Power-line asset inspection", "vision",
+      "India pack: Power and rail",
+      "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
+      "transformers, vegetation and validated component findings.",
+      "not_started", []),
+    F("pack.rail.inspection", "Railway corridor inspection", "vision",
+      "India pack: Power and rail",
+      "Mapped railway track, bridge, overhead equipment and corridor findings from "
+      "capture geometry appropriate to the component.",
+      "not_started", []),
 ]
 
 # ---------------------------------------------------------------------------
@@ -613,6 +785,7 @@ ALL_FEATURES: list[Feature] = [
     *FLIGHT,
     *PROCESSING,
     *VISION,
+    *INDIA_FIRST,
     *INSPECTION,
     *PLATFORM,
 ]

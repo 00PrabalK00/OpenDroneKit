@@ -153,7 +153,14 @@ def _battery_out(battery: Battery) -> BatteryOut:
 
 
 def _pilot_out(pilot: PilotProfile, today: date | None = None) -> PilotOut:
-    today = today or datetime.now(timezone.utc).date()
+    # A licence expires on a local calendar date, and the server does not know which
+    # calendar the operator keeps. Comparing against the UTC date would report a lapsed
+    # licence as current for hours after local midnight -- five and a half of them in
+    # India, thirteen in New Zealand. Since this is a pre-flight advisory, the safe
+    # direction to err is early: treat a date as past once it is past anywhere on Earth.
+    # The cost is flagging up to a day early for operators west of UTC; the alternative
+    # is telling a grounded pilot they are current on the morning of a job.
+    today = today or (datetime.now(timezone.utc) + timedelta(hours=14)).date()
     warnings: list[str] = []
 
     for label, expiry in (("Licence", pilot.licence_expires_on),
