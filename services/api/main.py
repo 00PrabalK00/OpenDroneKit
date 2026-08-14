@@ -24,7 +24,7 @@ from .db import init_db, spatial_backend
 from .security import secret_is_deployment_grade
 from .storage import describe_storage
 from .routers import (
-    auth, datasets, inspection, organizations, processing, projects, sharing,
+    auth, datasets, fleet, inspection, organizations, processing, projects, sharing,
 )
 
 VERSION = "0.1.0"
@@ -65,6 +65,7 @@ app.include_router(datasets.router)
 app.include_router(processing.router)
 app.include_router(inspection.router)
 app.include_router(sharing.router)
+app.include_router(fleet.router)
 
 
 @app.get("/health", tags=["system"])

@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import enum
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -391,8 +392,82 @@ class ShareAccess(Base):
     accessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class Aircraft(Base):
+    """One airframe, with the hours that decide when it is due for service."""
+
+    __tablename__ = "aircraft"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    model: Mapped[str] = mapped_column(String(120), default="")
+    serial_number: Mapped[str] = mapped_column(String(120), default="")
+    firmware: Mapped[str] = mapped_column(String(80), default="")
+    flight_hours: Mapped[float] = mapped_column(Float, default=0.0)
+    flight_count: Mapped[int] = mapped_column(Integer, default=0)
+    service_interval_hours: Mapped[float] = mapped_column(Float, default=100.0)
+    hours_at_last_service: Mapped[float] = mapped_column(Float, default=0.0)
+    last_service_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="available")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Battery(Base):
+    """A pack, tracked by cycles and measured health rather than age alone."""
+
+    __tablename__ = "batteries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
+    serial_number: Mapped[str] = mapped_column(String(120), nullable=False)
+    capacity_mah: Mapped[int] = mapped_column(Integer, default=0)
+    cycle_count: Mapped[int] = mapped_column(Integer, default=0)
+    cycle_limit: Mapped[int] = mapped_column(Integer, default=300)
+    health_pct: Mapped[float] = mapped_column(Float, default=100.0)
+    retired: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PilotProfile(Base):
+    """Currency, which is the thing that quietly expires between jobs."""
+
+    __tablename__ = "pilot_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    licence_number: Mapped[str] = mapped_column(String(120), default="")
+    licence_expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    medical_expires_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    flight_hours: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Maintenance(Base):
+    """A service record. The hours at which it happened reset the interval."""
+
+    __tablename__ = "maintenance"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    aircraft_id: Mapped[int] = mapped_column(ForeignKey("aircraft.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(60), default="scheduled")
+    description: Mapped[str] = mapped_column(Text, default="")
+    hours_at_service: Mapped[float] = mapped_column(Float, default=0.0)
+    performed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    performed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 __all__ = [
-    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Defect", "Job", "Membership",
+    "Aircraft", "ApiToken", "Asset", "AuditEntry", "Base", "Battery", "Dataset",
+    "Defect", "Job", "Maintenance", "Membership", "PilotProfile",
     "Mission",
     "Organization", "Project", "ROLE_RANK", "Role", "ShareAccess", "ShareLink",
     "UploadSession", "User", "utcnow",

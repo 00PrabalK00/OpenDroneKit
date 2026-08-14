@@ -533,14 +533,24 @@ PLATFORM = [
       "WebSocket telemetry, processing progress and notifications.",
       "not_started", []),
     F("fm.fleet", "Fleet management", "hub", "Fleet",
-      "Drones, controllers, payloads, batteries and firmware with flight hours.",
-      "not_started", []),
+      "Airframes with accumulating flight hours and a service interval that reports "
+      "when maintenance is due, plus a fleet status view answering what needs "
+      "attention before the next job.",
+      "implemented", ["tests/test_fleet.py::TestAircraftService",
+                      "tests/test_fleet.py::TestFleetStatus"]),
     F("fm.battery", "Battery management", "hub", "Fleet",
-      "Cycle count, health, capacity and retirement state.",
-      "not_started", []),
+      "Cycle count against a per-battery limit, measured health, and retirement, each "
+      "surfaced as a warning rather than left for the reader to compute.",
+      "implemented", ["tests/test_fleet.py::TestBatteries"]),
     F("fm.pilots", "Pilot management", "hub", "Fleet",
-      "Certifications, licences, currency and expiry tracking.",
-      "not_started", []),
+      "Licence and medical expiry with currency computed, warning a month ahead so a "
+      "lapse is not discovered on the morning of a job.",
+      "implemented", ["tests/test_fleet.py::TestPilotCurrency"]),
+    F("fm.maintenance", "Maintenance records", "hub", "Fleet",
+      "Service history per airframe, where recording a service resets the interval "
+      "from the hours at which it happened without altering the airframe's total.",
+      "implemented", ["tests/test_fleet.py::TestAircraftService::test_recording_maintenance_resets_the_interval",
+                      "tests/test_fleet.py::TestAircraftService::test_maintenance_history_is_kept"]),
     F("sec.audit", "Audit log", "hub", "Security",
       "Every state-changing request recorded with actor, resource and timestamp, "
       "committed in the same transaction as the action it describes.",
