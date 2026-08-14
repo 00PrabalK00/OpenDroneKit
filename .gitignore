@@ -16,7 +16,7 @@ training/sources/
 *.onnx
 *.ckpt
 
-# Credentials â€” never commit. Keys live in the user profile or environment.
+# Credentials — never commit. Keys live in the user profile or environment.
 .env
 *.key
 kaggle.json
@@ -35,3 +35,6 @@ models/manifests/*
 *.db
 opendronekit.db
 test_api.db
+
+# Deployment secrets
+infrastructure/docker/.env

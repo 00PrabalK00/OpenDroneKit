@@ -514,8 +514,11 @@ PLATFORM = [
       "gets 404 rather than 403, and nobody may grant a role above their own.",
       "implemented", ["tests/test_api.py::TestAuthorization"]),
     F("inf.docker", "Docker deployment", "infra", "Deployment",
-      "docker compose up brings the platform online.",
-      "not_started", []),
+      "docker compose up brings PostGIS, MinIO, the API and a worker online, with "
+      "healthchecks so the API waits for a database that actually accepts connections, "
+      "and no credential committed to the repository.",
+      "implemented", ["tests/test_compose.py"],
+      "Definition verified as data; booting the stack needs a Docker daemon."),
     F("inf.k8s", "Kubernetes and Helm", "infra", "Deployment",
       "Helm chart deploys the platform to a cluster.",
       "not_started", []),
@@ -526,8 +529,10 @@ PLATFORM = [
       "Schema and CRS columns are in place and the backend is reported honestly; native "
       "geometry columns and spatial indexes still to come."),
     F("inf.storage", "Storage abstraction", "infra", "Deployment",
-      "Local filesystem and S3-compatible backends behind one interface.",
-      "not_started", []),
+      "Local filesystem and S3-compatible backends behind one interface, with keys "
+      "that cannot escape the storage root and an unknown backend refused rather than "
+      "silently falling back.",
+      "implemented", ["tests/test_storage.py"]),
     F("inf.offline_first", "No external telemetry by default", "infra", "Privacy",
       "A self-hosted install sends nothing outward unless explicitly configured.",
       "verified", ["tests/test_honesty.py::TestNoSilentNetworkCall"]),

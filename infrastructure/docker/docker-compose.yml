@@ -1,0 +1,130 @@
+# OpenDroneKit, self-hosted.
+#
+#   cp .env.example .env   and edit it
+#   docker compose up -d
+#
+# Nothing here reaches a proprietary service. PostGIS holds the data, MinIO holds the
+# objects, and both run on your own infrastructure.
+
+name: opendronekit
+
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-odk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-opendronekit}
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns before the database accepts connections on first boot,
+      # so the API waits on this rather than on the container merely being up.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-odk} -d ${POSTGRES_DB:-opendronekit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${ODK_S3_ACCESS_KEY:?set ODK_S3_ACCESS_KEY in .env}
+      MINIO_ROOT_PASSWORD: ${ODK_S3_SECRET_KEY:?set ODK_S3_SECRET_KEY in .env}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+
+  # Creates the bucket once, then exits. Without it the first upload fails against a
+  # bucket that does not exist yet.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
+      ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
+      ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set odk http://minio:9000 $${ODK_S3_ACCESS_KEY} $${ODK_S3_SECRET_KEY} &&
+      mc mb --ignore-existing odk/$${ODK_S3_BUCKET} &&
+      echo 'bucket ready'
+      "
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.api
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ODK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-odk}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-opendronekit}
+      ODK_SECRET_KEY: ${ODK_SECRET_KEY:?set ODK_SECRET_KEY in .env}
+      ODK_STORAGE_BACKEND: ${ODK_STORAGE_BACKEND:-s3}
+      ODK_STORAGE_PATH: /data/storage
+      ODK_S3_ENDPOINT: http://minio:9000
+      ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
+      ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
+      ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
+      ODK_CORS_ORIGINS: ${ODK_CORS_ORIGINS:-}
+    volumes:
+      - api_storage:/data/storage
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    ports:
+      - "${ODK_API_PORT:-8000}:8000"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ODK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-odk}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-opendronekit}
+      ODK_STORAGE_BACKEND: ${ODK_STORAGE_BACKEND:-s3}
+      ODK_STORAGE_PATH: /data/storage
+      ODK_S3_ENDPOINT: http://minio:9000
+      ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
+      ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
+      ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
+    volumes:
+      - api_storage:/data/storage
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import core.geo' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  postgis_data:
+  minio_data:
+  api_storage:

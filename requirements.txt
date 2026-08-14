@@ -26,5 +26,9 @@ pymavlink>=2.4.41
 # Model inference (training extras live in training/requirements-train.txt)
 onnxruntime>=1.17
 
+# Object storage (S3 / MinIO backend)
+boto3>=1.34
+PyYAML>=6.0
+
 # Test suite (tests/): python -m pytest
 pytest>=8.0

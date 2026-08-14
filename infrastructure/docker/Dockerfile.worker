@@ -1,0 +1,33 @@
+# OpenDroneKit processing worker.
+#
+# Reconstruction is CPU and memory hungry, and dense multi-view stereo additionally
+# needs a CUDA build of COLMAP that the pycolmap wheels do not provide. This image
+# runs the sparse pipeline; dense stereo is reported as unavailable rather than
+# silently skipped.
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gdal-bin libgdal-dev proj-bin libproj-dev \
+      libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "psycopg[binary]" boto3
+
+COPY core/ ./core/
+COPY mission/ ./mission/
+COPY services/ ./services/
+COPY models/ ./models/
+
+ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
+
+RUN useradd --create-home --uid 10002 odkworker && mkdir -p /data/storage && chown -R odkworker /data/storage
+USER odkworker
+
+# Placeholder until a distributed queue exists: the API currently runs jobs on its own
+# worker threads, so this container stays alive and reports readiness without claiming
+# to consume a queue that is not there yet.
+CMD ["python", "-c", "import time, core.geo; print('worker ready (queue consumer not implemented)', flush=True)\nwhile True: time.sleep(3600)"]

@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .db import init_db, spatial_backend
 from .security import secret_is_deployment_grade
+from .storage import describe_storage
 from .routers import auth, datasets, organizations, processing, projects
 
 VERSION = "0.1.0"
@@ -90,10 +91,15 @@ def health() -> dict[str, Any]:
     if not secret_ok:
         warnings.append(secret_reason)
 
+    storage = describe_storage()
+    if storage.get("note"):
+        warnings.append(storage["note"])
+
     return {
         "status": "ok",
         "version": VERSION,
         "database": database,
+        "storage": storage,
         "capabilities": capabilities,
         "warnings": warnings,
     }
