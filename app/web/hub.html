@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenDroneKit Hub</title>
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl-draw.css" />
+  <link rel="stylesheet" href="css/hub.css" />
+</head>
+<body>
+  <header class="hub-header">
+    <a class="brand" href="index.html">OpenDroneKit <span>Hub</span></a>
+    <div class="connection-fields">
+      <label>API URL <input id="hub-api-url" value="http://127.0.0.1:8000" /></label>
+      <label>Token <input id="hub-token" type="password" autocomplete="off" /></label>
+      <label>Organization <input id="hub-org-id" type="number" min="1" value="1" /></label>
+      <button id="hub-connect">Connect</button>
+      <span id="hub-connection-state" class="badge muted">not connected</span>
+    </div>
+  </header>
+  <div class="hub-shell">
+    <nav class="hub-nav" aria-label="Hub sections">
+      <button class="active" data-panel="overview">Overview</button>
+      <button data-panel="projects">Projects</button>
+      <button data-panel="assets">Assets</button>
+      <button data-panel="maps">Maps and layers</button>
+      <button data-panel="offline">Offline tiles</button>
+      <button data-panel="viewer2d">2D viewer</button>
+      <button data-panel="viewer3d">3D viewer</button>
+      <button data-panel="pointcloud">Point cloud</button>
+      <button data-panel="digital-twin">Digital twin</button>
+      <button data-panel="timeline">Timeline / 4D</button>
+    </nav>
+    <main class="hub-main">
+      <section class="hub-panel active" id="panel-overview">
+        <h1>Survey operations</h1>
+        <p class="lede">One place for projects, mapped assets, processing history and survey artifacts.</p>
+        <div class="metric-grid">
+          <article><span>Projects</span><strong id="metric-projects">—</strong></article>
+          <article><span>Assets</span><strong id="metric-assets">—</strong></article>
+          <article><span>Cached tiles</span><strong id="metric-tiles">—</strong></article>
+          <article><span>Selected project jobs</span><strong id="metric-jobs">—</strong></article>
+        </div>
+        <div class="card"><h2>Activity</h2><div id="overview-activity" class="timeline-list empty">Connect to load real activity.</div></div>
+      </section>
+      <section class="hub-panel" id="panel-projects">
+        <div class="panel-heading"><div><h1>Projects</h1><p>Client, site, type, tags, organization members and activity.</p></div><button id="refresh-projects">Refresh</button></div>
+        <div class="two-column">
+          <form id="project-form" class="card form-card">
+            <h2>New project</h2>
+            <label>Name<input name="name" required maxlength="200" /></label>
+            <label>Client<input name="client" /></label>
+            <label>Site address<input name="address" /></label>
+            <label>Project type<input name="project_type" value="inspection" /></label>
+            <label>Tags<input name="tags" placeholder="solar, annual, Karnataka" /></label>
+            <label>Description<textarea name="description"></textarea></label>
+            <button type="submit">Create project</button>
+          </form>
+          <div class="card"><h2>Project register</h2><div id="project-list" class="record-list empty">No projects loaded.</div></div>
+        </div>
+        <div class="two-column">
+          <div class="card"><h2>Members</h2><div id="project-members" class="record-list empty">Select a project.</div></div>
+          <div class="card"><h2>History and activity</h2><div id="project-activity" class="timeline-list empty">Select a project.</div></div>
+        </div>
+      </section>
+      <section class="hub-panel" id="panel-assets">
+        <div class="panel-heading"><div><h1>Assets</h1><p>Persistent named geometry, location and inspection context.</p></div><button id="refresh-assets">Refresh</button></div>
+        <div class="two-column">
+          <form id="asset-form" class="card form-card">
+            <h2>New asset</h2>
+            <label>Name<input name="name" required maxlength="200" /></label>
+            <label>Type<input name="asset_type" value="building" /></label>
+            <label>Description<textarea name="description"></textarea></label>
+            <div class="form-row"><label>Longitude<input name="longitude" type="number" step="any" /></label><label>Latitude<input name="latitude" type="number" step="any" /></label></div>
+            <label>Geometry GeoJSON<textarea name="geometry" placeholder='{"type":"Point","coordinates":[77.59,12.97]}'></textarea></label>
+            <button type="submit">Create asset</button>
+          </form>
+          <div class="card"><h2>Asset register</h2><div id="asset-list" class="record-list empty">No assets loaded.</div></div>
+        </div>
+        <div class="card"><h2>Inspection timeline</h2><div id="asset-history" class="timeline-list empty">The current API does not link defects to asset IDs; this panel will not invent that relationship.</div></div>
+      </section>
+      <section class="hub-panel viewer-panel" id="panel-maps">
+        <div class="panel-heading"><div><h1>Maps and layers</h1><p>XYZ, WMS, WMTS, standard and local offline sources.</p></div></div>
+        <div class="map-layout">
+          <aside class="card compact">
+            <label>Standard basemap<select id="hub-basemap"><option value="street">OpenStreetMap</option><option value="satellite">Satellite</option><option value="terrain">Terrain</option><option value="offline">Offline cache</option></select></label>
+            <hr />
+            <label>Provider name<input id="provider-name" value="Custom layer" /></label>
+            <label>Protocol<select id="provider-kind"><option value="xyz">XYZ</option><option value="wms">WMS</option><option value="wmts">WMTS template</option></select></label>
+            <label>URL<input id="provider-url" placeholder="https://…/{z}/{x}/{y}.png" /></label>
+            <label>WMS layers<input id="provider-layers" /></label>
+            <label>Attribution<input id="provider-attribution" /></label>
+            <button id="add-map-provider">Add layer</button>
+            <div id="map-layer-list" class="record-list"></div>
+          </aside>
+          <div id="hub-map" class="map-surface" aria-label="Hub layer map"></div>
+        </div>
+      </section>
+      <section class="hub-panel" id="panel-offline">
+        <h1>Offline tile cache</h1>
+        <p>“Offline ready” is shown only when the server reports real cached tiles.</p>
+        <div class="two-column">
+          <form id="tile-cache-form" class="card form-card">
+            <label>Provider<select name="provider" id="tile-provider"></select></label>
+            <div class="form-row"><label>West<input name="west" type="number" step="any" required /></label><label>South<input name="south" type="number" step="any" required /></label></div>
+            <div class="form-row"><label>East<input name="east" type="number" step="any" required /></label><label>North<input name="north" type="number" step="any" required /></label></div>
+            <div class="form-row"><label>Min zoom<input name="min_zoom" type="number" value="14" min="0" /></label><label>Max zoom<input name="max_zoom" type="number" value="17" min="0" /></label></div>
+            <button type="submit">Cache selected area</button>
+          </form>
+          <div class="card"><h2>Cache evidence</h2><div id="tile-cache-status" class="record-list empty">Connect to inspect the cache.</div><div id="tile-cache-job"></div></div>
+        </div>
+      </section>
+      <section class="hub-panel viewer-panel" id="panel-viewer2d">
+        <div class="panel-heading"><div><h1>2D survey viewer</h1><p>Vector layers, measurements, annotations and A/B comparison.</p></div><div class="inline-controls"><input id="viewer2d-a" type="file" accept=".geojson,.json" /><input id="viewer2d-b" type="file" accept=".geojson,.json" /></div></div>
+        <div class="viewer-toolbar"><button data-viewer-tool="pan">Pan</button><button data-viewer-tool="measure-distance">Distance</button><button data-viewer-tool="measure-area">Area</button><button data-viewer-tool="aoi">Annotate polygon</button><label>Comparison <input id="comparison-slider" type="range" min="0" max="100" value="50" /></label><span id="viewer2d-result"></span></div>
+        <div id="viewer2d-map" class="full-viewer" aria-label="2D artifact viewer"></div>
+      </section>
+      <section class="hub-panel viewer-panel" id="panel-viewer3d">
+        <div class="panel-heading"><div><h1>3D model viewer</h1><p>Orbit pointer drag, wheel zoom, WASDQE fly controls, clipping and overlays.</p></div><input id="scene-file" type="file" accept=".json" /></div>
+        <div class="viewer-toolbar"><label>Clip below Z <input id="scene-clip" type="range" min="-100" max="100" step="0.1" value="-100" /></label><span id="scene-status">Load an odk-scene-3d JSON artifact.</span></div>
+        <canvas id="scene-canvas" class="full-viewer" aria-label="3D model viewer"></canvas>
+      </section>
+      <section class="hub-panel viewer-panel" id="panel-pointcloud">
+        <div class="panel-heading"><div><h1>Progressive point cloud</h1><p>Loads explicit JSON chunks in manifest order and reports real loaded counts.</p></div><input id="point-manifest-file" type="file" accept=".json" /></div>
+        <div class="viewer-toolbar"><label>Point size <input id="point-size" type="range" min="1" max="8" value="2" /></label><span id="point-status">Load an odk-point-cloud-manifest.</span></div>
+        <canvas id="point-canvas" class="full-viewer" aria-label="Progressive point cloud viewer"></canvas>
+      </section>
+      <section class="hub-panel" id="panel-digital-twin">
+        <div class="panel-heading"><div><h1>Digital twin</h1><p>Model, cloud, ortho, vectors, images, annotations, defects and history from one artifact index.</p></div><input id="digital-twin-file" type="file" accept=".json" /></div>
+        <div class="three-column"><div class="card"><h2>Identity</h2><div id="twin-identity" class="record-list empty">Load digital_twin.json.</div></div><div class="card"><h2>Artifacts</h2><div id="twin-artifacts" class="record-list empty">—</div></div><div class="card"><h2>Evidence</h2><div id="twin-evidence" class="record-list empty">—</div></div></div>
+      </section>
+      <section class="hub-panel" id="panel-timeline">
+        <h1>Time-based comparison / 4D</h1>
+        <p>This view presents saved dated surveys and their measured change artifacts. It never compares incompatible rasters in the browser.</p>
+        <div id="survey-timeline" class="timeline-list empty">Load a digital twin containing dated surveys.</div>
+      </section>
+    </main>
+  </div>
+  <footer><span id="hub-status">Ready.</span><span>Local-first: no request is made until you connect or select a provider.</span></footer>
+  <script src="vendor/maplibre/maplibre-gl.js"></script>
+  <script src="vendor/maplibre/maplibre-gl-draw.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/hub-api.js"></script>
+  <script src="js/hub-viewers.js"></script>
+  <script src="js/hub.js"></script>
+</body>
+</html>

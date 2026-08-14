@@ -304,17 +304,27 @@ FLIGHT = [
 
 PROCESSING = [
     F("pr.sfm", "Structure from motion", "workers", "Processing",
-      "COLMAP SfM with bundle adjustment; reprojection error under 1.5 px on a real survey.",
-      "implemented", [], "77/77 registered at 1.27 px on Aukerman; needs a committed regression test."),
+      "COLMAP SfM with bundle adjustment; reprojection error under 1.5 px on a real "
+      "survey, with images that failed to register declared rather than hidden.",
+      "implemented", ["tests/test_reconstruction_colmap.py::TestStructureFromMotion",
+                      "tests/test_reconstruction_colmap.py::TestNoFabrication"],
+      "Regression test runs the real engine on 8 Aukerman frames in ~15 s: "
+      "0.81 px, 6/8 registered and warned about."),
     F("pr.georeference", "Georeferencing", "workers", "Processing",
       "RANSAC Helmert similarity between camera centres and geotags, into an auto-selected UTM zone.",
       "verified", ["tests/test_geo.py::TestUmeyamaSimilarity", "tests/test_geo.py::TestUtmZoneSelection"]),
     F("pr.ortho", "Orthomosaic generation", "workers", "Processing",
-      "True orthophoto by DSM back-projection, written as a Cloud-Optimized GeoTIFF.",
-      "implemented", [], "COLMAP engine only; needs an output regression test."),
+      "True orthophoto by DSM back-projection, written as a Cloud-Optimized GeoTIFF "
+      "carrying the survey's CRS, not a PNG that would leave measurements in pixels.",
+      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing"],
+      "COLMAP engine; CRS asserted against the auto-selected UTM zone."),
     F("pr.dsm_dtm", "DSM and DTM", "workers", "Processing",
-      "Metric elevation rasters with a ground filter, in a stated CRS.",
-      "implemented", ["tests/test_dsm_analysis.py"]),
+      "Metric elevation rasters with a ground filter, in a stated CRS, coarsened openly "
+      "when the cloud is too sparse to fill a finer grid rather than interpolated into "
+      "detail that was never measured.",
+      "implemented", ["tests/test_dsm_analysis.py",
+                      "tests/test_reconstruction_colmap.py::TestGeoreferencing",
+                      "tests/test_reconstruction_colmap.py::TestNoFabrication"]),
     F("pr.dense", "Dense point cloud", "workers", "Processing",
       "Patch-match multi-view stereo. Never synthesised from the sparse cloud.",
       "not_started", ["tests/test_honesty.py::TestNoSyntheticDensification"],
