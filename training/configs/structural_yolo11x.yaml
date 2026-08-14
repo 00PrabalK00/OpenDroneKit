@@ -11,12 +11,15 @@ lr: 0.01
 optimizer: auto
 patience: 25
 seed: 1337
-workers: 8
+# Each dataloader worker holds its own mosaic/mixup buffers; on a 16GB host eight of
+# them exhaust RAM before the first epoch ends. Raise this only with headroom to spare.
+workers: 2
 output_dir: training/runs
 mosaic: 1.0
 close_mosaic: 15
 copy_paste: 0.3
-mixup: 0.1
+# mixup allocates float64 copies of every image pair, which is where the host ran out.
+mixup: 0.0
 degrees: 10.0
 perspective: 0.0005
 cos_lr: true

@@ -232,7 +232,45 @@ class AuditEntry(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class Dataset(Base):
+    """A collection of captured files belonging to a project."""
+
+    __tablename__ = "datasets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(80), default="imagery")
+    description: Mapped[str] = mapped_column(Text, default="")
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    total_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UploadSession(Base):
+    """An in-flight resumable upload.
+
+    Chunks live on disk until the upload is finalised, so a dropped connection costs
+    only the chunks still missing rather than the whole transfer.
+    """
+
+    __tablename__ = "upload_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    upload_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    dataset_id: Mapped[int] = mapped_column(ForeignKey("datasets.id", ondelete="CASCADE"), index=True)
+    filename: Mapped[str] = mapped_column(String(400), nullable=False)
+    total_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    chunk_size: Mapped[int] = mapped_column(Integer, default=8 * 1024 * 1024)
+    # Declared by the client at the start; compared against the assembled file.
+    sha256: Mapped[str] = mapped_column(String(64), default="")
+    actual_sha256: Mapped[str] = mapped_column(String(64), default="")
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 __all__ = [
-    "ApiToken", "Asset", "AuditEntry", "Base", "Membership", "Mission",
-    "Organization", "Project", "ROLE_RANK", "Role", "User", "utcnow",
+    "ApiToken", "Asset", "AuditEntry", "Base", "Dataset", "Membership", "Mission",
+    "Organization", "Project", "ROLE_RANK", "Role", "UploadSession", "User", "utcnow",
 ]
