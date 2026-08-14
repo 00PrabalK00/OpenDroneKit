@@ -337,6 +337,50 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def import_gcps(self, path: str, epsg: int | None = None) -> dict[str, Any]:
+        """Load surveyed ground control points for this project."""
+        from core.gcp import GcpError, read_gcp_file
+
+        try:
+            points = read_gcp_file(path, default_epsg=epsg)
+        except GcpError as exc:
+            return fail(str(exc))
+
+        self._session.ground_control = points
+        self._session.audit("gcps_imported", {"path": str(path), "count": len(points)})
+        return ok(points=[p.to_dict() for p in points], count=len(points))
+
+    @guard
+    def mark_gcp(self, name: str, image: str, pixel_x: float, pixel_y: float) -> dict[str, Any]:
+        """Record where a control point appears in one image."""
+        from core.gcp import add_mark
+
+        points = getattr(self._session, "ground_control", None) or []
+        point = next((p for p in points if p.name == name), None)
+        if point is None:
+            known = ", ".join(p.name for p in points) or "none imported"
+            return fail(f"No control point named {name!r}. Imported: {known}.")
+
+        add_mark(point, image, float(pixel_x), float(pixel_y))
+        return ok(point=point.to_dict())
+
+    @guard
+    def gcp_accuracy_report(self, computed: dict[str, list[float]] | None = None) -> dict[str, Any]:
+        """How far each control point landed from where it was surveyed."""
+        from core.gcp import accuracy_report, residuals_from_positions, write_report
+
+        points = getattr(self._session, "ground_control", None) or []
+        if not points:
+            return fail("No ground control points have been imported.")
+
+        placed = {k: tuple(v) for k, v in (computed or {}).items() if len(v) >= 3}
+        report = accuracy_report(points, residuals_from_positions(points, placed))
+
+        target = self._session.project_root() / "gcp_report.json"
+        write_report(report, target)
+        return ok(report=report, path=str(target))
+
+    @guard
     def camera_capabilities(self) -> dict[str, Any]:
         """What the connected payload has said it can do."""
         client = self._session._drone_client

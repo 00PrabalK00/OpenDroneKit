@@ -443,8 +443,16 @@ PROCESSING = [
       "Indoor, handheld and ground-robot imagery reconstructed without geotags.",
       "not_started", []),
     F("pr.gcp", "Ground control points", "workers", "Processing",
-      "GCP import, image marking, and a reprojection error report.",
-      "not_started", []),
+      "GCP import, image marking, and a reprojection error report that states per-point "
+      "residuals rather than a verdict, refuses to quote an accuracy when no control was "
+      "checked, and flags points marked in too few images or on the wrong target.",
+      "implemented", ["tests/test_gcp.py::TestReading",
+                      "tests/test_gcp.py::TestMarking",
+                      "tests/test_gcp.py::TestResiduals",
+                      "tests/test_gcp.py::TestAccuracyReport",
+                      "tests/test_gcp.py::TestReportOutput"],
+      "core/gcp.py; Api.import_gcps, mark_gcp, gcp_accuracy_report. Fitting the "
+      "transform itself belongs to the reconstruction engine."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
       "RTK/PPK metadata and RINEX base station data with timestamp alignment.",
       "not_started", []),

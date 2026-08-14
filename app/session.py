@@ -80,6 +80,9 @@ class AppSession:
         self.mission_plan: Any = None
         self.mission_plan_dict: dict[str, Any] = {}
         self.aoi_polygon: list[list[float]] = []
+        # Surveyed control points, once imported. Empty is the honest default: a survey
+        # with no control has no measured accuracy.
+        self.ground_control: list = []
 
         from core.flight_log import FlightLog
 
