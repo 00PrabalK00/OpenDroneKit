@@ -337,6 +337,41 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def control_state(self) -> dict[str, Any]:
+        """Who is flying the aircraft right now."""
+        from core.flight_control import control_state as describe_control
+
+        client = self._session._drone_client
+        if client is None:
+            return ok(state={
+                "control": "unknown", "mode": "", "armed": False,
+                "pilot_has_control": False,
+                "description": "No vehicle is connected.",
+            })
+        return ok(state=describe_control(client.get_telemetry()).to_dict())
+
+    @guard
+    def take_manual_control(self, preferred_mode: str = "") -> dict[str, Any]:
+        """Interrupt autonomy and hand the aircraft back to the pilot.
+
+        Confirms against the vehicle's reported mode rather than against having sent the
+        command, because telling a pilot they have control while the aircraft is still
+        flying its mission is the worst outcome available here.
+        """
+        from core.flight_control import take_manual_control as hand_back
+
+        client = self._session._drone_client
+        if client is None:
+            return fail("No vehicle connected.")
+
+        result = hand_back(client, preferred=preferred_mode)
+        self._session.audit("manual_control_requested", {
+            "ok": result.get("ok"),
+            "mode": result.get("mode", ""),
+        })
+        return ok(**result) if result.get("ok") else fail(result["error"], **result)
+
+    @guard
     def verify_site(self, image_folder: str = "", quality_sample_limit: int = 200) -> dict[str, Any]:
         """Decide whether this survey can be left as flown.
 

@@ -383,7 +383,10 @@ class MissionPlannerDroneClient:
             tel.connected = True
             tel.timestamp = time.time()
             if t == "HEARTBEAT":
-                tel.flight_mode = getattr(msg, "custom_mode", tel.flight_mode) and str(getattr(msg, "custom_mode", "")) or tel.flight_mode
+                # custom_mode is a number. Reporting it as the flight mode gives the
+                # operator "3" where they need "AUTO", and makes it impossible to say
+                # who is flying the aircraft, so it is resolved to its name here.
+                tel.flight_mode = self._mode_name(getattr(msg, "custom_mode", None)) or tel.flight_mode
                 tel.armed = bool(getattr(msg, "base_mode", 0) & 0x80)
             elif t == "GLOBAL_POSITION_INT":
                 tel.latitude = float(msg.lat) / 1e7
@@ -817,22 +820,68 @@ class MissionPlannerDroneClient:
         """Hold the current position."""
         return self.set_flight_mode("LOITER")
 
-    def set_flight_mode(self, mode: str) -> CommandResult:
+    def _mode_name(self, custom_mode: Any) -> str:
+        """Resolve a numeric custom_mode to the name a pilot recognises."""
+        if custom_mode is None:
+            return ""
+        try:
+            mapping = self._conn.mode_mapping() if self._conn is not None else None
+        except Exception:
+            mapping = None
+        if not mapping:
+            return ""
+        for name, identifier in mapping.items():
+            if identifier == custom_mode:
+                return str(name).upper()
+        return ""
+
+    def set_flight_mode(self, mode: str, *, verify: bool = True,
+                        timeout_s: float = 3.0) -> CommandResult:
+        """Change flight mode, and by default wait for the vehicle to confirm it.
+
+        Sending the command is not the same as being in the mode. An autopilot rejects
+        a mode it cannot enter -- LOITER without a position estimate, AUTO with no
+        mission loaded -- and says nothing. Reporting success on the strength of having
+        transmitted would tell a pilot they had handed control back when the aircraft is
+        still flying its mission.
+        """
         try:
             conn = self._ensure()
         except AppError as exc:
             return CommandResult(False, "set_flight_mode", exc.user_message)
         try:
-            mode_id = conn.mode_mapping().get(mode.upper())
+            wanted = mode.upper()
+            mode_id = conn.mode_mapping().get(wanted)
             if mode_id is None:
-                return CommandResult(False, "set_flight_mode", f"Unknown mode {mode!r}.")
+                available = ", ".join(sorted(conn.mode_mapping()))
+                return CommandResult(False, "set_flight_mode",
+                                     f"Unknown mode {mode!r}. Available: {available}.")
             from pymavlink import mavutil
             conn.mav.set_mode_send(
                 conn.target_system,
                 mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                 mode_id,
             )
-            return CommandResult(True, "set_flight_mode", f"Mode set to {mode}.")
+            if not verify:
+                return CommandResult(True, "set_flight_mode",
+                                     f"Mode {wanted} requested; not confirmed.")
+
+            deadline = time.monotonic() + max(0.1, float(timeout_s))
+            while time.monotonic() < deadline:
+                with self._lock:
+                    current = (self._latest_telemetry.flight_mode or "").upper()
+                if current == wanted:
+                    return CommandResult(True, "set_flight_mode", f"Mode is {wanted}.")
+                time.sleep(0.1)
+
+            with self._lock:
+                current = (self._latest_telemetry.flight_mode or "unknown").upper()
+            return CommandResult(
+                False, "set_flight_mode",
+                f"The vehicle did not enter {wanted} within {timeout_s:.0f} s; it is "
+                f"still in {current}. The autopilot may be refusing the mode -- LOITER "
+                "needs a position estimate, AUTO needs a loaded mission.",
+            )
         except Exception as exc:
             return CommandResult(False, "set_flight_mode", str(exc))
 

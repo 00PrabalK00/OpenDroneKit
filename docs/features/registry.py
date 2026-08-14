@@ -307,8 +307,15 @@ FLIGHT = [
       "Position, battery, GPS, RC link and mission progress streamed to subscribers.",
       "implemented", [], "subscribe() added to the bridge; no UI consumer test."),
     F("fl.manual_override", "Manual override", "app", "Flight",
-      "The pilot can interrupt autonomy at any time, and the control state is displayed.",
-      "not_started", []),
+      "The pilot can interrupt autonomy at any time, and the control state is displayed, "
+      "with a mode change confirmed against the vehicle's own heartbeat rather than "
+      "against having sent the command, and an unrecognised mode treated as autonomous.",
+      "implemented", ["tests/test_flight_control.py::TestClassification",
+                      "tests/test_flight_control.py::TestControlState",
+                      "tests/test_flight_control.py::TestTakeManualControl",
+                      "tests/test_flight_control.py::TestCommandedIsNotConfirmed"],
+      "core/flight_control.py; Api.control_state and take_manual_control. The bridge "
+      "now verifies mode changes and resolves custom_mode to a name."),
     F("fl.battery_swap", "Battery swap and resume", "app", "Flight",
       "Completed segments recorded; resume continues without duplicate capture and "
       "without dropping a point, with what was flown determined from the imagery on the "
