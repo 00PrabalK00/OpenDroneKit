@@ -31,8 +31,6 @@ RECONSTRUCTION_PROFILES: dict[str, dict[str, float | int]] = {
         "flann_trigger_product": 4_000_000,
         "crosscheck_trigger_product": 9_000_000,
         "max_points_default": 80_000,
-        "mvs_multiplier": 1,
-        "mvs_jitter_scale": 0.0012,
         "mosaic_scale": 0.45,
         "dsm_grid_size": 0.16,
     },
@@ -45,8 +43,6 @@ RECONSTRUCTION_PROFILES: dict[str, dict[str, float | int]] = {
         "flann_trigger_product": 6_500_000,
         "crosscheck_trigger_product": 14_000_000,
         "max_points_default": 150_000,
-        "mvs_multiplier": 2,
-        "mvs_jitter_scale": 0.0008,
         "mosaic_scale": 0.65,
         "dsm_grid_size": 0.09,
     },
@@ -59,8 +55,6 @@ RECONSTRUCTION_PROFILES: dict[str, dict[str, float | int]] = {
         "flann_trigger_product": 9_500_000,
         "crosscheck_trigger_product": 20_000_000,
         "max_points_default": 400_000,
-        "mvs_multiplier": 3,
-        "mvs_jitter_scale": 0.00045,
         "mosaic_scale": 1.0,
         "dsm_grid_size": 0.05,
     },
@@ -314,8 +308,6 @@ class CustomDroneReconstructor:
         self.cloud_endpoint = str(cloud_endpoint or "").strip()
         self.cloud_timeout_s = float(max(1.0, cloud_timeout_s))
 
-        self.mvs_multiplier = int(max(1, p["mvs_multiplier"]))
-        self.mvs_jitter_scale = float(max(1e-7, p["mvs_jitter_scale"]))
         self.mosaic_scale = float(np.clip(float(p["mosaic_scale"]), 0.2, 1.0))
         self.dsm_grid_size = float(max(1e-4, p["dsm_grid_size"]))
 
@@ -595,26 +587,16 @@ class CustomDroneReconstructor:
         return str(request_path), response_path, warnings
 
     def _densify_point_cloud(self, points: np.ndarray, colors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        if len(points) == 0 or self.mvs_multiplier <= 1:
-            return points, colors
+        """Return the cloud unchanged. Retained so callers and profiles keep working.
 
-        rng = np.random.default_rng(2026)
-        bbox = np.maximum(points.max(axis=0) - points.min(axis=0), 1e-6)
-        scale = float(np.linalg.norm(bbox))
-        sigma = max(1e-7, scale * self.mvs_jitter_scale)
-
-        replicas = self.mvs_multiplier - 1
-        jittered_points = [points]
-        jittered_colors = [colors]
-
-        for _ in range(replicas):
-            noise = rng.normal(0.0, sigma, size=points.shape).astype(np.float32)
-            jittered_points.append(points + noise)
-            jittered_colors.append(colors)
-
-        dense_points = np.concatenate(jittered_points, axis=0)
-        dense_colors = np.concatenate(jittered_colors, axis=0)
-        return dense_points, dense_colors
+        This previously cloned every point two or three times (per profile) with
+        Gaussian jitter and presented the result as multi-view-stereo densification.
+        It added no information: the copies carry no new observations, and the only
+        effect was to multiply the reported point count while blurring the surface by
+        the jitter sigma. Real densification needs patch-match stereo, which lives in
+        the COLMAP engine and requires a CUDA build.
+        """
+        return points, colors
 
     def _downsample_points(self, points: np.ndarray, colors: np.ndarray, limit: int) -> tuple[np.ndarray, np.ndarray]:
         if len(points) <= limit:
@@ -1304,10 +1286,6 @@ class CustomDroneReconstructor:
             criticality_scores_np = criticality_scores_np[:n]
 
         points, colors = self._densify_point_cloud(points, colors)
-        if len(points) > 0 and self.mvs_multiplier > 1 and len(base_links) > 0:
-            base_links = [dict(item) for _ in range(self.mvs_multiplier) for item in base_links]
-            risk_scores_np = np.tile(risk_scores_np, self.mvs_multiplier)
-            criticality_scores_np = np.tile(criticality_scores_np, self.mvs_multiplier)
 
         if len(points) > self.max_points:
             n_before = int(len(points))
@@ -1480,7 +1458,10 @@ class CustomDroneReconstructor:
         _emit_progress(98, "Writing digital twin metadata")
         digital_twin = {
             "generated_utc": datetime.now(timezone.utc).isoformat(),
-            "pipeline": "sfm_mvs_custom",
+            # Sparse SfM only. This engine performs no multi-view stereo; the label
+            # used to say "sfm_mvs_custom" while the only densification present was
+            # jittered copies of the sparse points.
+            "pipeline": "sfm_sparse_custom",
             "processing_profile": self.profile,
             "execution_mode_requested": execution_requested,
             "execution_mode_used": execution_used,
