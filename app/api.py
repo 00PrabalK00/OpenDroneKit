@@ -337,6 +337,38 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def verify_site(self, image_folder: str = "", quality_sample_limit: int = 200) -> dict[str, Any]:
+        """Decide whether this survey can be left as flown.
+
+        Every problem this catches is cheap on site and expensive afterwards, so it is
+        meant to be run before the aircraft goes back in its case.
+        """
+        from core.site_verification import verify_site as run_verification
+
+        folder = image_folder or self._session.active_dataset_dir
+        if not folder:
+            return fail("Select a dataset, or pass the folder the images were copied to.")
+        if not Path(folder).is_dir():
+            return fail(f"Not a folder of images: {folder}")
+
+        try:
+            verdict = run_verification(
+                folder,
+                self._session.mission_plan_dict or None,
+                quality_sample_limit=int(quality_sample_limit),
+            )
+        except NotADirectoryError as exc:
+            return fail(str(exc))
+
+        payload = verdict.to_dict()
+        self._session.audit("site_verified", {
+            "folder": str(folder),
+            "ok": payload["ok"],
+            "blocking": len(payload["blocking"]),
+        })
+        return ok(**payload)
+
+    @guard
     def export_flight_log(self, output_dir: str = "", output_format: str = "all") -> dict[str, Any]:
         """Write the recorded flight to CSV, JSON, GPX and KML.
 

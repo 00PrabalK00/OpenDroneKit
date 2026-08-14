@@ -326,9 +326,17 @@ FLIGHT = [
       "core/flight_log.py; AppSession records every telemetry read, "
       "Api.export_flight_log writes it out."),
     F("fl.data_verification", "On-site data verification", "app", "Flight",
-      "Image count, blur, exposure, corrupt files, missing GPS and coverage gaps checked "
-      "before leaving the site.",
-      "in_progress", [], "core/coverage_validation.py covers gaps; blur/exposure checks missing."),
+      "Image count, blur, exposure, corrupt files, missing GPS and coverage gaps "
+      "checked before leaving the site, with a verdict that distinguishes what blocks "
+      "departure from what merely warrants knowing, and reports anything it could not "
+      "check as unchecked rather than as passed.",
+      "implemented", ["tests/test_site_verification.py::TestUnreadableFiles",
+                      "tests/test_site_verification.py::TestQuality",
+                      "tests/test_site_verification.py::TestVerdict",
+                      "tests/test_site_verification.py::TestUnchecked",
+                      "tests/test_site_verification.py::TestUngeotagged"],
+      "core/site_verification.py joins capture_matching and coverage_validation; "
+      "Api.verify_site."),
     F("fl.capture.match", "Captured images matched to planned capture points", "core", "Flight verification",
       "Every planned capture point is paired with at most one image, and every image with at "
       "most one point, within a stated match radius. A planned point with no image is reported "
