@@ -165,7 +165,9 @@
 
       this.map = new maplibregl.Map({
         container: container,
-        style: basemapStyle(this.basemap),
+        // Tests, embedded deployments and air-gapped sites may provide a complete
+        // local style.  The default remains satellite for the normal Hub UI.
+        style: this.opts.style || basemapStyle(this.basemap),
         center: this.opts.center || [0, 20],
         zoom: this.opts.zoom || 2,
         attributionControl: { compact: true }

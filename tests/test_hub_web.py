@@ -151,6 +151,61 @@ process.stdout.write(JSON.stringify({projects,assets,before,providers,job,progre
             thread.join(timeout=2)
 
 
+class _TileSourceHandler(BaseHTTPRequestHandler):
+    """A real local XYZ source used to prove download then offline replay."""
+
+    tile = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+
+    def log_message(self, *_):
+        return
+
+    def do_GET(self):
+        if self.path != "/0/0/0.png":
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(self.tile)))
+        self.end_headers()
+        self.wfile.write(self.tile)
+
+
+class TestHubOfflineTiles:
+    def test_real_xyz_tile_is_downloaded_and_served_without_the_source(self, tmp_path, monkeypatch):
+        from services.api.routers import tiles
+
+        monkeypatch.setenv("ODK_STORAGE_PATH", str(tmp_path / "storage"))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _TileSourceHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setitem(tiles.PROVIDERS, "local-test", {
+                "url": f"http://127.0.0.1:{server.server_port}/{{z}}/{{x}}/{{y}}.png",
+                "max_zoom": 0,
+                "attribution": "Local test source",
+            })
+            request = tiles.CacheRequest(
+                provider="local-test", west=-1, south=-1, east=1, north=1,
+                min_zoom=0, max_zoom=0,
+            )
+            job = tiles.CacheJob(job_id="real-local", provider="local-test", total=1)
+            tiles._fetch_area(job, request)
+            assert job.done and job.fetched == 1 and job.failed == 0
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        # The upstream server is now gone: this response can only come from disk.
+        response = tiles.serve_tile(0, 0, 0, provider="local-test")
+        assert response.status_code == 200
+        assert response.headers["x-odk-tile"] == "cached"
+        assert response.body == _TileSourceHandler.tile
+
+
 class _BrowserHandler(BaseHTTPRequestHandler):
     viewer_source = (WEB / "js" / "hub-viewers.js").read_bytes()
     map_source = (WEB / "js" / "map.js").read_bytes()
@@ -187,7 +242,8 @@ window.addEventListener('load',async()=>{try{
         elif self.path == "/map-harness.html":
             body = b"""<!doctype html><body data-result="pending"><div id="map" style="width:640px;height:400px"></div><script src="/maplibre-gl.js"></script><script src="/maplibre-gl-draw.js"></script><script src="/map.js"></script><script>
 const survey={type:'FeatureCollection',features:[{type:'Feature',geometry:{type:'Polygon',coordinates:[[[77.59,12.97],[77.60,12.97],[77.60,12.98],[77.59,12.97]]]},properties:{survey:'T1'}}]};
-const viewer=new OdkMap('map',{center:[77.595,12.975],zoom:14,onReady:()=>{try{viewer.addVector('survey-a',survey,0.4);viewer.addVector('survey-b',survey,0.6);viewer.setLayerOpacity('survey-a',0.25);viewer.setTool('measure-distance');document.body.dataset.result=`layers:${viewer.vectorLayers.size};tool:${viewer.tool}`;}catch(error){document.body.dataset.result='error:'+error.message;}}});
+const localStyle={version:8,sources:{},layers:[{id:'background',type:'background',paint:{'background-color':'#0d1117'}}]};
+const viewer=new OdkMap('map',{center:[77.595,12.975],zoom:14,style:localStyle,onReady:()=>{try{viewer.addVector('survey-a',survey,0.4);viewer.addVector('survey-b',survey,0.6);viewer.setLayerOpacity('survey-a',0.25);viewer.setTool('measure-distance');document.body.dataset.result=`layers:${viewer.vectorLayers.size};tool:${viewer.tool}`;}catch(error){document.body.dataset.result='error:'+error.message;}}});
 </script></body>"""
             content_type = "text/html"
         else:

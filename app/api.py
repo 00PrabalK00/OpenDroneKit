@@ -337,6 +337,43 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def measure_on_raster(self, raster_path: str, pixels: list[list[float]],
+                          kind: str = "distance") -> dict[str, Any]:
+        """Measure distance, area or perimeter on a georeferenced raster.
+
+        The raster supplies its own scale, so nothing here depends on the operator
+        typing one in. A raster without a CRS is refused rather than measured in
+        pixels and labelled metres.
+        """
+        from core.raster_measurement import (
+            NotGeoreferenced,
+            NotProjected,
+            measure_area,
+            measure_distance,
+            measure_perimeter,
+        )
+
+        handlers = {
+            "distance": measure_distance,
+            "area": measure_area,
+            "perimeter": measure_perimeter,
+        }
+        handler = handlers.get(kind)
+        if handler is None:
+            return fail(f"Unknown measurement kind {kind!r}. Use distance, area or perimeter.")
+
+        points = [(float(p[0]), float(p[1])) for p in pixels if len(p) >= 2]
+        try:
+            measurement = handler(raster_path, points)
+        except (NotGeoreferenced, NotProjected) as exc:
+            # Written for an operator; passing them through beats a generic message.
+            return fail(str(exc))
+        except (FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+
+        return ok(measurement=measurement.to_dict())
+
+    @guard
     def import_boundary(self, path: str) -> dict[str, Any]:
         """Load an area of interest from a KML, KMZ, GeoJSON, GPX or CSV file.
 
