@@ -387,6 +387,42 @@
       this.map.fitBounds(bounds, { padding: padding == null ? 60 : padding, duration: 600, maxZoom: 19 });
       return true;
     }
+
+    /* Move to a search result. A bounding box frames the place at its true extent;
+       a bare point has no extent, so it gets a working zoom rather than a guess at one. */
+    goToPlace(place, options) {
+      if (!place || !Number.isFinite(place.lon) || !Number.isFinite(place.lat)) return false;
+      const zoom = (options && options.zoom) || 16;
+      if (Array.isArray(place.bounds) && place.bounds.length === 4) {
+        const [west, south, east, north] = place.bounds;
+        // A point-like result can carry a degenerate box; fitBounds would over-zoom.
+        if (Math.abs(east - west) > 1e-6 && Math.abs(north - south) > 1e-6) {
+          this.map.fitBounds([[west, south], [east, north]], { padding: 80, duration: 800, maxZoom: 18 });
+          return true;
+        }
+      }
+      this.map.flyTo({ center: [place.lon, place.lat], zoom, duration: 800 });
+      return true;
+    }
+
+    /* A transient marker so the operator can see what the search actually matched. */
+    markPlace(place) {
+      if (!place) return;
+      this.clearPlaceMarker();
+      const element = document.createElement('div');
+      element.className = 'place-marker';
+      element.title = place.name || '';
+      this._placeMarker = new maplibregl.Marker({ element })
+        .setLngLat([place.lon, place.lat])
+        .addTo(this.map);
+    }
+
+    clearPlaceMarker() {
+      if (this._placeMarker) {
+        this._placeMarker.remove();
+        this._placeMarker = null;
+      }
+    }
   }
 
   /* Draw styling: AOI in blue, no-fly in red, matching the toolbar semantics. */

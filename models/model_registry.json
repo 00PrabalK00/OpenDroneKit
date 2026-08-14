@@ -97,6 +97,17 @@
       "iou_threshold": 0.0,
       "input_size": 512,
       "description": "Alternative crack segmentation checkpoint slot."
+    },
+    "crack_segmentation": {
+      "kind": "onnx_segmentation",
+      "path": "structural/crack_segmentation.onnx",
+      "labels": [
+        "crack"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 512,
+      "description": "Trained in run crack_segformer_b2_local."
     }
   }
 }

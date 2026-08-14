@@ -82,6 +82,9 @@ class AppSession:
         self.aoi_polygon: list[list[float]] = []
         self.no_fly_polygons: list[list[list[float]]] = []
         self.terrain_source_path: str = ""
+        # Which geocoding backend place search uses. Switchable to a self-hosted
+        # Nominatim or to "offline" so no query ever leaves the machine.
+        self.geocoding_provider: str = "nominatim"
         self.active_dataset_dir: str = ""
         self.layers: dict[str, MapLayer] = {}
         self.vehicle = VehicleLink()

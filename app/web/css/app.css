@@ -300,3 +300,59 @@ tbody tr.selected { background: var(--accent-dim); }
 .maplibregl-ctrl-group button + button { border-top: 1px solid var(--border); }
 .maplibregl-ctrl-attrib { background: rgba(18, 22, 28, 0.8) !important; }
 .maplibregl-ctrl-attrib a { color: var(--text-dim) !important; }
+
+/* ---------- place search ---------- */
+
+.search-group { position: relative; }
+
+#place-search {
+  width: 230px;
+  padding: 4px 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-size: 12px;
+}
+
+#place-search:focus { outline: none; border-color: var(--accent); }
+
+.search-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.search-results li[data-index] { padding: 6px 10px; cursor: pointer; }
+.search-results li[data-index]:hover { background: var(--bg-input); }
+.search-results li b { display: block; font-weight: 500; font-size: 12px; }
+.search-results li span { font-size: 10px; color: var(--text-dim); }
+
+/* Says where a query was sent. Kept visible rather than tucked into a tooltip. */
+.search-note,
+.search-empty {
+  padding: 6px 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
+.place-marker {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
+}

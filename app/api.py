@@ -174,6 +174,37 @@ class Api:
         return ok(path=self._session.terrain_source_path)
 
     @guard
+    def search_places(self, query: str, provider: str = "") -> dict[str, Any]:
+        """Find a site by address, place name, or typed coordinates.
+
+        Geocoding is the one part of this toolkit that reaches outward, so it happens
+        only when the operator searches, and the response carries a note stating where
+        the query went. A typed coordinate is resolved locally either way.
+        """
+        from core.geocoding import search_places as run_search
+
+        selected = provider or getattr(self._session, "geocoding_provider", "") or "nominatim"
+        result = run_search(
+            query,
+            provider=selected,
+            gazetteer_path=self._session.project_root() / "places.json",
+        )
+        if result.get("results"):
+            self._session.audit("place_searched", {"query": query, "provider": result.get("provider")})
+        return ok(**result)
+
+    @guard
+    def set_geocoding_provider(self, provider: str) -> dict[str, Any]:
+        """Choose the search backend, including a self-hosted or offline one."""
+        from core.geocoding import PROVIDERS, build_provider
+
+        name = str(provider or "nominatim").strip().lower()
+        if name not in PROVIDERS:
+            return fail(f"Unknown provider {provider!r}. Available: {', '.join(sorted(PROVIDERS))}.")
+        self._session.geocoding_provider = name
+        return ok(provider=name, note=build_provider(name).describe())
+
+    @guard
     def get_state(self) -> dict[str, Any]:
         """Everything the UI needs for a full refresh in one call."""
         return ok(

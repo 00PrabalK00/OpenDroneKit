@@ -77,6 +77,13 @@
           <button class="tool" data-tool="measure-area" title="Measure area">Area</button>
           <button class="tool" data-tool="delete" title="Delete selected geometry">Delete</button>
         </div>
+        <div class="tool-group search-group">
+          <input id="place-search" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Search address, place, or lat, lon"
+                 title="Find a site by address or coordinates (Enter to search)" />
+          <button class="tool" id="btn-place-search" title="Search">Find</button>
+          <ul id="place-results" class="search-results" hidden></ul>
+        </div>
         <div class="tool-group">
           <select id="basemap-select" title="Basemap">
             <option value="satellite">Satellite</option>

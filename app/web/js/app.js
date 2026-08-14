@@ -615,6 +615,73 @@
     });
   }
 
+  /* ---------- place search ---------- */
+
+  /* Searching is the one action that can reach outside this machine, so it only ever
+     runs on an explicit submit -- never as-you-type -- and the provider note tells the
+     operator where the query went. */
+  function wirePlaceSearch() {
+    const input = $('#place-search');
+    const button = $('#btn-place-search');
+    const list = $('#place-results');
+    if (!input || !button || !list) return;
+
+    function hide() {
+      list.hidden = true;
+      list.innerHTML = '';
+    }
+
+    function render(result) {
+      const places = result.results || [];
+      if (!places.length) {
+        list.innerHTML = `<li class="search-empty">${result.error || 'No matching place found.'}</li>`;
+        list.hidden = false;
+        return;
+      }
+      list.innerHTML = places.map((place, index) => `
+        <li data-index="${index}" title="${place.name}">
+          <b>${place.name}</b>
+          <span>${place.kind || place.source || ''} · ${place.lat.toFixed(5)}, ${place.lon.toFixed(5)}</span>
+        </li>`).join('') +
+        `<li class="search-note">${result.provider_note || ''}</li>`;
+      list.hidden = false;
+
+      list.querySelectorAll('li[data-index]').forEach((row) => {
+        row.onclick = () => {
+          const place = places[Number(row.dataset.index)];
+          state.map.goToPlace(place);
+          state.map.markPlace(place);
+          status(`Moved to ${place.name}`);
+          hide();
+        };
+      });
+    }
+
+    async function run() {
+      const query = input.value.trim();
+      if (!query) { hide(); return; }
+      button.disabled = true;
+      const previous = button.textContent;
+      button.textContent = '...';
+      try {
+        const result = await tryCall('search_places', query, '');
+        if (result) render(result);
+      } finally {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    }
+
+    button.onclick = run;
+    input.onkeydown = (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); run(); }
+      if (event.key === 'Escape') { hide(); input.blur(); }
+    };
+    document.addEventListener('click', (event) => {
+      if (!list.contains(event.target) && event.target !== input && event.target !== button) hide();
+    });
+  }
+
   async function exportMission(formats) {
     const result = await tryCall('export_mission', formats, '');
     if (!result) return;
@@ -662,6 +729,7 @@
     $$('.tab').forEach((tab) => { tab.onclick = () => switchTab(tab.dataset.tab); });
 
     $('#basemap-select').onchange = (e) => state.map.setBasemap(e.target.value);
+    wirePlaceSearch();
     $('#btn-zoom-aoi').onclick = menuHandlers['view.zoom_aoi'];
     $('#btn-zoom-mission').onclick = menuHandlers['view.zoom_mission'];
     $('#btn-plan').onclick = planMission;
