@@ -628,13 +628,21 @@ class CustomDroneReconstructor:
         grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32) for f in frames]
         positions = np.zeros((len(frames), 2), dtype=np.float64)
 
+        # Pairs whose correlation failed get an assumed offset so the strip still
+        # renders, but that offset is invented and the count is reported so the
+        # mosaic is never mistaken for a measured one.
+        self._mosaic_guessed_offsets = 0
+
         for i in range(1, len(frames)):
             shift, response = cv2.phaseCorrelate(grays[i - 1], grays[i])
             dx = float(shift[0])
             dy = float(shift[1])
             if response < 0.03:
+                # No usable correlation between these frames. 35% of frame width is a
+                # stand-in for typical forward overlap, not a measurement.
                 dx = float(frames[i - 1].shape[1] * 0.35)
                 dy = 0.0
+                self._mosaic_guessed_offsets += 1
             max_dx = float(frames[i].shape[1] * 0.85)
             max_dy = float(frames[i].shape[0] * 0.85)
             dx = float(np.clip(dx, -max_dx, max_dx))
@@ -1441,6 +1449,13 @@ class CustomDroneReconstructor:
 
         _emit_progress(84, "Generating orthomosaic")
         orthomosaic_path, footprints = self._build_orthomosaic(images, out_dir / "orthomosaic.png")
+        guessed_offsets = int(getattr(self, "_mosaic_guessed_offsets", 0))
+        if guessed_offsets:
+            warnings.append(
+                f"Orthomosaic: {guessed_offsets} of {max(0, len(images) - 1)} frame pairs "
+                "could not be correlated, so an assumed forward overlap was substituted. "
+                "Those sections of the mosaic are not positioned from image content."
+            )
         _emit_progress(90, "Generating DSM/DTM")
         dem = self._build_dsm_dtm(points, out_dir)
         dsm_array = dem.pop("dsm_array")
