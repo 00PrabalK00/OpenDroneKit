@@ -515,14 +515,17 @@ def adapt_surface_crack(raw: Path) -> Iterator[ClsSample]:
 
 
 def _clean_class_name(name: str) -> str:
-    """Strip the index prefix some Roboflow exports bake into the class name.
+    """Normalise a class name from a YOLO data.yaml.
 
-    CODEBRIM's mirror lists its classes as "0 Efflorescence", "1 CorrosionStain", and
-    so on. The number is a leftover from however the project was imported, not part of
-    the label, and keeping it makes every downstream metrics table read badly.
+    Two things need removing. Inline list form (``names: ['a', 'b']``) leaves the
+    surrounding quotes on each entry, and CODEBRIM's mirror bakes the class index
+    into the label itself ("0 Efflorescence", "1 CorrosionStain"). The number is a
+    leftover from however that project was imported, not part of the label, and
+    keeping either makes every downstream metrics table read badly.
     """
-    cleaned = re.sub(r"^\s*\d+\s+", "", str(name).strip())
-    return cleaned or str(name).strip()
+    text = str(name).strip().strip("'\"").strip()
+    cleaned = re.sub(r"^\d+\s+", "", text)
+    return cleaned or text
 
 
 def read_yolo_license(root: Path) -> str:

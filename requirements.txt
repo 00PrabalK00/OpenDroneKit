@@ -25,3 +25,6 @@ pymavlink>=2.4.41
 
 # Model inference (training extras live in training/requirements-train.txt)
 onnxruntime>=1.17
+
+# Test suite (tests/): python -m pytest
+pytest>=8.0

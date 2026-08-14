@@ -47,6 +47,17 @@ The desktop shell uses the operating system's built-in webview (Edge WebView2 on
 Windows), with a native menu bar and a MapLibre GL map canvas. There is no bundled
 browser and no Qt dependency.
 
+Tests:
+
+```bash
+python -m pytest
+```
+
+The suite covers the geospatial measurement path against surfaces with analytically
+known answers, the mission exporters, the job lifecycle, dataset preparation, and a
+set of regression tests for fabrications that were removed (synthetic point-cloud
+densification, an ignored outbound cloud request, a heuristic reported as a model).
+
 Command-line pipeline:
 
 ```bash
