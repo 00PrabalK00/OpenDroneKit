@@ -160,12 +160,28 @@ class Project(Base):
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     crs_epsg: Mapped[int] = mapped_column(Integer, default=4326)
     tags: Mapped[str] = mapped_column(Text, default="")
+
+    # The thing being inspected. Nullable because plenty of work is a one-off survey
+    # with no persistent asset behind it, and inventing one would be worse than none.
+    asset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("assets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Whether organisation-wide membership is enough to see this project. Defaults to
+    # False, which preserves the behaviour every existing project was created under:
+    # turning restriction on by default would silently revoke access to live data.
+    restricted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
 
     organization: Mapped[Organization] = relationship(back_populates="projects")
+    asset: Mapped["Asset | None"] = relationship(back_populates="projects")
+    members: Mapped[list["ProjectMembership"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
     missions: Mapped[list["Mission"]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
@@ -191,6 +207,35 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     organization: Mapped[Organization] = relationship(back_populates="assets")
+    projects: Mapped[list["Project"]] = relationship(back_populates="asset")
+
+
+class ProjectMembership(Base):
+    """A user's role on one project, over and above their organisation role.
+
+    Two things are deliberately separate. An organisation role says what someone may do
+    across the tenancy; a project role says what they may do on one job. The effective
+    role is the higher of the two, so granting project access can only ever add
+    permission -- a bug here that silently removed it would lock an operator out of
+    their own survey.
+    """
+
+    __tablename__ = "project_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_project_membership"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[Role] = mapped_column(Enum(Role), default=Role.viewer, nullable=False)
+    added_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="members")
+    user: Mapped[User] = relationship()
 
 
 class Mission(Base):

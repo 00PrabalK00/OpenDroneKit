@@ -205,3 +205,68 @@ def require_role(db: Session, user: User, organization_id: int, minimum: Role) -
             detail=f"Requires {minimum.value} or higher; you are {role.value}.",
         )
     return role
+
+
+def role_on_project(db: Session, user: User, project) -> Role | None:
+    """The caller's effective role on one project.
+
+    Two grants combine here. An organisation role says what someone may do across the
+    tenancy; a project role says what they may do on one job. The effective role is the
+    higher of the two, so adding someone to a project can only ever grant permission.
+    Making project membership subtractive would let a misconfigured row lock an operator
+    out of their own survey, which is a worse failure than seeing one project too many.
+
+    A restricted project is the exception, and it is opt-in per project. There, an
+    organisation role below admin is not sufficient on its own -- membership of the
+    project is required. Owners and admins keep access regardless, because an
+    administrator who can be locked out of their own tenancy cannot fix anything.
+    """
+    from .models import ProjectMembership
+
+    organisation_role = role_in_organization(db, user, project.organization_id)
+
+    project_membership = db.scalar(
+        select(ProjectMembership).where(
+            ProjectMembership.user_id == user.id,
+            ProjectMembership.project_id == project.id,
+        )
+    )
+    project_role = project_membership.role if project_membership else None
+
+    if getattr(project, "restricted", False):
+        administrative = (
+            organisation_role is not None
+            and ROLE_RANK[organisation_role] >= ROLE_RANK[Role.admin]
+        )
+        if not administrative and project_role is None:
+            return None
+        if project_role is None:
+            return organisation_role
+        if organisation_role is None:
+            return project_role
+        return max(organisation_role, project_role, key=lambda r: ROLE_RANK[r])
+
+    if organisation_role is None and project_role is None:
+        return None
+    if organisation_role is None:
+        return project_role
+    if project_role is None:
+        return organisation_role
+    return max(organisation_role, project_role, key=lambda r: ROLE_RANK[r])
+
+
+def require_project_role(db: Session, user: User, project, minimum: Role) -> Role:
+    """Assert the caller holds at least `minimum` on this project.
+
+    As with organisations, someone with no access at all gets 404 rather than 403: the
+    existence of a project is itself information about a client's work.
+    """
+    role = role_on_project(db, user, project)
+    if role is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if ROLE_RANK[role] < ROLE_RANK[minimum]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Requires {minimum.value} or higher on this project; you are {role.value}.",
+        )
+    return role

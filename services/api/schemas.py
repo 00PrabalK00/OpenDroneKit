@@ -104,6 +104,10 @@ class ProjectCreate(BaseModel):
     latitude: float | None = None
     crs_epsg: int = 4326
     tags: str = ""
+    # The persistent thing being inspected, when there is one.
+    asset_id: int | None = None
+    # Opt-in: organisation membership below admin stops being sufficient to see it.
+    restricted: bool = False
 
 
 class ProjectOut(BaseModel):
@@ -119,6 +123,8 @@ class ProjectOut(BaseModel):
     latitude: float | None
     crs_epsg: int
     tags: str
+    asset_id: int | None = None
+    restricted: bool = False
     created_at: datetime
     updated_at: datetime
 

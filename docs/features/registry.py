@@ -707,18 +707,21 @@ PLATFORM = [
       "implemented", ["tests/test_hub_web.py::TestHubOfflineTiles",
                       "tests/test_hub_web.py::TestHubRestClient"],
       "The UI reports real cache progress; evidence downloads from a local XYZ server, stops it, then serves the disk copy."),
-    F("hub.projects", "Project management", "hub", "Hub",
-      "Projects with client, site, type, tags, members, history and activity timeline.",
-      "in_progress", ["tests/test_hub_web.py::TestHubPanels",
-                      "tests/test_hub_web.py::TestHubRestClient",
-                      "tests/test_api.py::TestAudit"],
-      "Persistent project fields and activity are exposed; membership is still organization-wide rather than project-scoped."),
-    F("hub.assets", "Asset management", "hub", "Hub",
-      "Persistent assets with geometry, inspection history and a timeline.",
-      "in_progress", ["tests/test_api.py::TestAssets",
-                      "tests/test_hub_web.py::TestHubPanels",
-                      "tests/test_hub_web.py::TestHubRestClient"],
-      "Persistent asset geometry is exposed; inspection records are not yet linked to an asset timeline."),
+    F("hub.projects", "Projects", "hub", "Hub",
+      "Projects with client, site, type, tags, members, history and activity timeline, "
+      "with project-scoped roles that add to organisation roles rather than replacing "
+      "them, and opt-in restriction that hides a project from non-members without ever "
+      "locking out an administrator.",
+      "implemented", ["tests/test_project_scope.py::TestUnrestrictedProjects",
+                      "tests/test_project_scope.py::TestProjectMembership",
+                      "tests/test_project_scope.py::TestRestrictedProjects"],
+      "services/api: ProjectMembership, role_on_project, require_project_role."),
+    F("hub.assets", "Assets", "hub", "Hub",
+      "Persistent assets with geometry, inspection history and a timeline, where "
+      "confirmed findings are counted separately from unconfirmed model predictions and "
+      "no trend is claimed from a single inspection.",
+      "implemented", ["tests/test_project_scope.py::TestAssetTimeline"],
+      "services/api: Project.asset_id and GET /assets/{id}/timeline."),
     F("hub.orgs", "Organizations and roles", "hub", "Hub",
       "Multiple organizations with eight ranked roles, member invite/remove, and an "
       "organization that can never lose its last owner.",
