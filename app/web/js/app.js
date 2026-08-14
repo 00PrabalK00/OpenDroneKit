@@ -131,7 +131,18 @@
         await tryCall('set_layer_opacity', layer.id, value);
       };
 
-      li.append(check, name, opacity);
+      const remove = document.createElement('button');
+      remove.className = 'layer-remove';
+      remove.textContent = '×';
+      remove.title = `Remove ${layer.name} from the project`;
+      remove.onclick = async (event) => {
+        event.stopPropagation();
+        await tryCall('remove_layer', layer.id);
+        state.map.removeLayer(layer.id);
+        await refreshLayers();
+      };
+
+      li.append(check, name, opacity, remove);
       tree.appendChild(li);
     });
 
@@ -248,7 +259,21 @@
         </div>
         <div class="job-bar"><div style="width:${job.percent}%"></div></div>
         <div class="job-msg">${job.error || job.message || ''}</div>
+        ${job.status === 'running'
+          ? `<button class="job-cancel" data-job="${job.id}">Cancel</button>`
+          : ''}
       </div>`).join('');
+
+    /* A reconstruction can run for hours. The backend has supported cooperative
+       cancellation all along; without this button there was no way to reach it. */
+    holder.querySelectorAll('.job-cancel').forEach((button) => {
+      button.onclick = async () => {
+        button.disabled = true;
+        button.textContent = 'Cancelling...';
+        await tryCall('cancel_job', button.dataset.job);
+        await renderJobs();
+      };
+    });
   }
 
   /* ---------- mission ---------- */

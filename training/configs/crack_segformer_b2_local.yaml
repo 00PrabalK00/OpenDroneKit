@@ -1,0 +1,25 @@
+# SegFormer-B2 crack segmentation, sized to fit the 8GB RTX 5060 laptop GPU.
+# This is the largest configuration that trains locally without paid compute;
+# the B5 @1024 config remains the target for a 24GB card.
+# Effective batch = batch_size * grad_accum = 16.
+name: crack_segformer_b2_local
+data_root: training/data/prepared/crack_seg
+model_id: nvidia/mit-b2
+image_size: 512
+batch_size: 4
+grad_accum: 4
+epochs: 24
+lr: 0.0001
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 2
+seed: 1337
+amp_dtype: bf16
+ema_decay: 0.999
+dice_weight: 0.5
+# Crack pixels are 1-6% of a typical image; without this the BCE term collapses
+# toward predicting all background.
+pos_weight: 4.0
+output_dir: training/runs
+val_interval: 1
+early_stop_patience: 6

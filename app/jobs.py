@@ -103,8 +103,23 @@ class JobManager:
                     job.error = f"{type(exc).__name__}: {exc}"
                     job.message = job.error
                     job.log.append(traceback.format_exc())
+            except BaseException as exc:  # noqa: BLE001
+                # SystemExit and friends bypass `except Exception`, which would leave
+                # the job reading "running" forever and show the UI a phantom job with
+                # a Cancel button that can never do anything.
+                with self._lock:
+                    job.status = "failed"
+                    job.error = f"{type(exc).__name__}: {exc}"
+                    job.message = job.error
+                    job.log.append(traceback.format_exc())
+                raise
             finally:
                 with self._lock:
+                    if job.status in {"pending", "running"}:
+                        # The worker left without reaching any branch above.
+                        job.status = "failed"
+                        job.error = job.error or "Job thread ended without reporting a result."
+                        job.message = job.error
                     job.finished_utc = _now()
 
         thread = threading.Thread(target=run, name=f"job-{name}-{job_id}", daemon=True)

@@ -71,7 +71,8 @@ html, body {
 
 .layer-tree li {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  /* checkbox | name | opacity | remove */
+  grid-template-columns: auto 1fr auto auto;
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
@@ -90,6 +91,18 @@ html, body {
 .layer-tree .layer-meta { font-size: 10px; color: var(--text-dim); }
 .layer-tree input[type="range"] { width: 54px; }
 .layer-tree .layer-warn { color: var(--warn); cursor: help; }
+
+.layer-tree .layer-remove {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.layer-tree .layer-remove:hover { color: var(--bad); }
 
 /* ---------- forms ---------- */
 
@@ -208,6 +221,20 @@ tbody tr.selected { background: var(--accent-dim); }
 .job-msg { color: var(--text-dim); font-size: 11px; margin-top: 3px; }
 .job.failed { border-color: var(--bad); }
 .job.done { border-color: var(--good); }
+
+.job-cancel {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.job-cancel:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+.job-cancel:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------- info blocks ---------- */
 
