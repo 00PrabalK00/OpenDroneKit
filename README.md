@@ -155,4 +155,13 @@ dsm_hillshade.tif            shaded relief
 camera_track.geojson         camera positions with GPS residuals
 geo_anchor.json              similarity transform and fit quality
 digital_twin.json            artifact index and run metadata
+measurements.json            defect areas/lengths in m2/m, terrain statistics
+volume_estimation.json       cut/fill against DTM, plane, and lowest-point references
+risk_scoring.json            per-defect risk ranking with an action for each
+health_scoring.json          asset integrity score and grade
 ```
+
+Measurements and volumes need the georeferenced rasters, so they are only produced
+by the COLMAP engine. When they are absent the report states that rather than
+printing zeros — a defect area in square metres means nothing unless something
+actually measured it.
