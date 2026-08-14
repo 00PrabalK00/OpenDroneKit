@@ -3,8 +3,8 @@
 An export that loads but computes something slightly different is worse than no
 export at all -- the pipeline would report `model_used: <the model>` while producing
 numbers the training metrics do not describe. So every export here is followed by a
-parity check: the same input is pushed through the torch model and the ONNX graph,
-and the run fails if the maximum absolute difference exceeds tolerance.
+parity check: the same input is pushed through the torch model and the ONNX graph, and
+the run fails unless every value agrees to within a tolerance scaled to its magnitude.
 
 The segmentation export is additionally verified through `cv2.dnn`, because that is
 the runtime `core/detection.py` actually uses, and it supports a narrower slice of
@@ -30,7 +30,36 @@ if str(REPO_ROOT) not in sys.path:
 
 # Tolerance for torch vs ONNX agreement. Chosen to catch a genuinely wrong graph
 # while allowing the fp32 reassociation an ONNX runtime is entitled to perform.
-PARITY_TOLERANCE = 1e-3
+#
+# The comparison is scaled to the magnitude of each value rather than applied flat,
+# because a detector's output mixes two kinds of number. Box coordinates are pixels
+# running to the image size, so an absolute 1e-3 there demands agreement to one part in
+# 600,000 -- stricter than fp32 reassociation can promise, and meaningless besides,
+# since a box shifted by a thousandth of a pixel is the same box. Class scores are
+# probabilities in 0..1, where 1e-3 is the right scale: a score that moves by that much
+# could cross a detection threshold and change what the model reports.
+#
+# So: an absolute floor that governs the probabilities, plus a relative term that
+# governs the coordinates. A genuinely wrong graph fails both.
+PARITY_ATOL = 1e-3
+PARITY_RTOL = 1e-4
+
+# Retained under its old name: this is the absolute floor, and callers that only care
+# about the probability-scale tolerance still read the number they expect.
+PARITY_TOLERANCE = PARITY_ATOL
+
+
+def parity_violation(reference: "np.ndarray", candidate: "np.ndarray") -> float:
+    """How far the ONNX output sits outside tolerance, as a multiple of it.
+
+    Returns the worst ``|a - b| / (atol + rtol * |a|)`` across the tensors. At or below
+    1.0 the graphs agree; above it they do not, and the number says by how much, which
+    is more useful when diagnosing an export than a bare maximum difference.
+    """
+    reference = np.asarray(reference, dtype=np.float64)
+    candidate = np.asarray(candidate, dtype=np.float64)
+    allowed = PARITY_ATOL + PARITY_RTOL * np.abs(reference)
+    return float((np.abs(reference - candidate) / allowed).max())
 
 
 def _onnx_session(path: Path):
@@ -98,6 +127,7 @@ def export_segmentation(run_dir: Path, *, opset: int = 17, image_size: int | Non
     onnx_output = session.run(None, {"images": example.numpy()})[0]
 
     difference = float(np.abs(torch_output - onnx_output).max())
+    violation = parity_violation(torch_output, onnx_output)
     report = {
         "name": config.name,
         "kind": "onnx_segmentation",
@@ -105,7 +135,8 @@ def export_segmentation(run_dir: Path, *, opset: int = 17, image_size: int | Non
         "input_size": size,
         "opset": opset,
         "max_abs_diff": difference,
-        "parity_ok": difference < PARITY_TOLERANCE,
+        "parity_violation": violation,
+        "parity_ok": violation <= 1.0,
         "output_shape": list(onnx_output.shape),
         "train_metrics": state.get("metrics", {}),
     }
@@ -156,6 +187,7 @@ def export_yolo(run_dir: Path, *, opset: int = 17, image_size: int | None = None
     onnx_output = session.run(None, {session.get_inputs()[0].name: example.numpy()})[0]
 
     difference = float(np.abs(torch_output - onnx_output).max())
+    violation = parity_violation(torch_output, onnx_output)
     report = {
         "name": run_dir.name,
         "kind": "onnx_yolo",
@@ -163,7 +195,8 @@ def export_yolo(run_dir: Path, *, opset: int = 17, image_size: int | None = None
         "input_size": size,
         "opset": opset,
         "max_abs_diff": difference,
-        "parity_ok": difference < PARITY_TOLERANCE,
+        "parity_violation": violation,
+        "parity_ok": violation <= 1.0,
         "output_shape": list(onnx_output.shape),
         "labels": list(model.names.values()),
         "train_metrics": summary.get("metrics", {}),
@@ -200,8 +233,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if not report["parity_ok"]:
         print(
-            f"\nPARITY FAILED: max abs diff {report['max_abs_diff']:.6f} "
-            f">= {PARITY_TOLERANCE}. The ONNX graph does not match the trained model.",
+            f"\nPARITY FAILED: worst deviation is {report['parity_violation']:.2f}x the "
+            f"allowed tolerance (atol {PARITY_ATOL}, rtol {PARITY_RTOL}; max abs diff "
+            f"{report['max_abs_diff']:.6f}). The ONNX graph does not match the trained "
+            "model.",
             file=sys.stderr,
         )
         return 1

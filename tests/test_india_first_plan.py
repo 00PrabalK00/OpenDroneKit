@@ -15,9 +15,13 @@ def test_the_user_selected_order_is_locked():
     assert WORKSTREAMS[-1].id == 'power_rail'
 
 
-def test_only_selected_roi_change_is_complete():
+def test_completed_pack_engines_and_withheld_training_are_recorded_honestly():
     assert WORKSTREAMS[0].state == 'complete'
-    assert all(item.state == 'started' for item in WORKSTREAMS[1:])
+    assert WORKSTREAMS[1].state == 'started'
+    assert WORKSTREAMS[2].state == 'started'
+    assert WORKSTREAMS[3].state == 'complete'
+    assert WORKSTREAMS[4].state == 'started'
+    assert all(item.state == 'complete' for item in WORKSTREAMS[5:])
 
 
 def test_fetchable_dataset_references_exist():

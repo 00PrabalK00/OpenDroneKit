@@ -1,6 +1,6 @@
 # India-first survey intelligence plan
 
-Updated: 2026-08-14
+Updated: 2026-08-15
 
 The product contract is survey to decision: report what changed, how much, where,
 and what evidence supports the interpretation. Photogrammetry and geometry remain
@@ -13,13 +13,13 @@ anomaly ranking; it must never manufacture a volume or a cause.
 |---:|---|---|---|
 | 1 | Selected stockpile or pit ROI change | Complete | Polygon-constrained DSM differencing |
 | 2 | Shared semantic engine | Started | DINOv2 ViT-B/14 encoder plus UPerNet-style head |
-| 3 | Construction segmentation | Started | Shared engine, construction-specific class head |
-| 4 | Approved-design progress | Started | IFC/CAD registration and deterministic geometry |
-| 5 | Solar RGB/thermal and inventory | Started | Geometric registration plus YOLO11l-seg modules |
-| 6 | Land GIS and encroachment | Started | Shared masks to GIS polygons plus overlay rules |
-| 7 | Agriculture | Started | Indices first, DeepLabv3+ MSI, instance counting |
-| 8 | Roads | Started | Shared road mask plus YOLO11x defects and mapping |
-| 9 | Power and rail | Started | Separate close-range detectors and corridor masks |
+| 3 | Construction segmentation | Started | Versioned shared-engine head; training still withheld |
+| 4 | Approved-design progress | Complete | Registered design polygons and deterministic surface evidence |
+| 5 | Solar RGB/thermal and inventory | Started; inventory complete | Validated instance inventory and approved-layout comparison; thermal alignment remains incomplete |
+| 6 | Land GIS and encroachment | Complete | Shared masks to GIS polygons plus cadastral overlay rules |
+| 7 | Agriculture | Complete | Calibrated indices, semantic canopy, scoped stress and validated instances |
+| 8 | Roads | Complete | Shared road mask, explicit centreline and validated mapped defects |
+| 9 | Power and rail | Complete | Capture-gated close-range assets and measured corridor packages |
 
 Complete means code, tests and a client artifact contract exist. Started means the
 dataset, architecture, licence boundary and next implementation action are recorded;
@@ -56,9 +56,12 @@ validation site groups.
 PyTorch/ONNX parity and writes the hash-locked task-trained runtime manifest. The
 export path exists, but no export is claimed before a real training checkpoint does.
 
-The existing NVIDIA SegFormer experiments remain valid research baselines, but the
-official SegFormer licence restricts the work to non-commercial use. Therefore
-SegFormer-B5 is not the selected production foundation.
+The standing licence decision supersedes the earlier SegFormer exclusion. OpenDroneKit
+is open source and is not sold, so NVIDIA SegFormer-B5 remains the production crack
+model and non-commercial weights are acceptable in this repository. A downstream firm
+using those weights for paid inspection work may need its own NVIDIA licence; that is
+documented for the downstream user and is not enforced as a runtime restriction. The
+shared semantic foundation remains DINOv2 ViT-B/14 plus UPerNet on technical merit.
 
 ### Object and instance models
 
@@ -79,6 +82,35 @@ NDRE and GNDVI are deterministic calibrated-band calculations and run before ML.
 No neural model is selected for DSM volume change, approved-design comparison,
 RGB/thermal calibration, GIS overlay, or vegetation indices. A model would add
 uncertainty without replacing the required coordinate and sensor calibration.
+
+## Implemented India-pack contracts
+
+The pack layer is implemented in `core/india_geospatial.py`, `core/india_land.py`,
+`core/india_agriculture.py`, `core/india_construction.py` and
+`core/india_assets.py`. Registry-visible tests create and read real GeoTIFF and
+GeoJSON inputs; they do not mock raster/vector I/O.
+
+- Land extraction writes observed building, road/path, water and vegetation vectors.
+  It labels the raster extent as survey coverage, never a legal parcel. Encroachment
+  overlays an imported cadastral polygon and maps building/road review findings; an
+  optional aligned prior survey supplies new/expanded surface evidence.
+- Agriculture computes NDVI, NDRE and GNDVI only from explicitly calibrated surface-
+  reflectance bands. Missing bands return per-index `unavailable` reasons. Canopy area
+  requires projected semantics; stress labels require caller-supplied crop/sensor
+  validation scope and thresholds; plant counts require a georeferenced validated
+  instance mask. Missing and health claims remain unavailable without their own
+  expected layout or validated health layer.
+- Road distance comes from an explicit projected centreline, never from pixels.
+  Defects retain manual/validated-model provenance and off-road associations are
+  review findings. Power and rail packages similarly require appropriate capture
+  geometry, projected corridors and validated finding provenance.
+- Approved-design progress reports visible semantic coverage by design element and
+  explicitly leaves contractual completion unavailable. Solar inventory counts
+  geolocated module instances; it calls a module missing only when an approved layout
+  was supplied and calls damage/obstruction only from supplied validated findings.
+- Construction segmentation has its full eleven-foreground-class schema and the
+  shared engine's task-training/metric/hash gates. It remains `in_progress`: no
+  production construction head is claimed and shared-semantic training has not run.
 
 ## Dataset decisions and licence gates
 

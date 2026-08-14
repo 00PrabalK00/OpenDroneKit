@@ -3,15 +3,14 @@
   "models": {
     "structural_multiclass_detector": {
       "kind": "onnx_yolo",
-      "path": "structural/structural_defect_yolov8n.onnx",
+      "path": "structural/structural_multiclass_detector.onnx",
       "labels": [
-        "crack",
-        "spalling",
-        "corrosion",
-        "delamination",
-        "rebar_exposure",
-        "efflorescence",
-        "moisture_intrusion"
+        "Efflorescence",
+        "CorrosionStain",
+        "Crack",
+        "Spallation",
+        "ExposedBars",
+        "Background"
       ],
       "score_threshold": 0.25,
       "iou_threshold": 0.45,

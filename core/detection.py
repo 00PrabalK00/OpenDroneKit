@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,8 @@ except Exception:  # pragma: no cover - optional dependency
     _skimage_skeletonize = None
 
 from .models import get_model_spec, model_status
+
+LOGGER = logging.getLogger(__name__)
 
 
 _MODEL_NET_CACHE: dict[str, Any] = {}
@@ -641,6 +644,12 @@ def detect_structural_defects(
     model_used = "heuristic"
     model_available = bool(model_info.get("exists", False))
 
+    # Whether the model ran at all, as distinct from whether it found anything. A
+    # trained detector reporting no defects on a sound wall is giving a real answer,
+    # and replacing it with the heuristic would overwrite that answer with invented
+    # findings. Only an actual inference failure justifies the fallback.
+    model_ran = False
+
     if use_model and model_available:
         spec = get_model_spec(model_key)
         path_str = str(model_info.get("path", ""))
@@ -654,14 +663,23 @@ def detect_structural_defects(
                     iou_threshold=float(spec.iou_threshold),
                     input_size=int(spec.input_size),
                 )
-            except Exception:
+                model_ran = True
+            except Exception as exc:
+                # Swallowing this silently would make a broken model look like a clean
+                # wall, so record why the fallback happened.
                 model_hits = []
+                model_error = f"{type(exc).__name__}: {exc}"
+                LOGGER.warning("ONNX structural inference failed (%s); using heuristic.",
+                               model_error)
             if model_hits:
                 hits = model_hits
                 mask_by_class = _hits_to_masks((h, w), hits)
                 model_used = f"onnx:{Path(path_str).name}"
+            elif model_ran:
+                # Ran, found nothing. That is the result.
+                model_used = f"onnx:{Path(path_str).name}"
 
-    if not hits or not mask_by_class:
+    if not model_ran and (not hits or not mask_by_class):
         mask_by_class, hits = _structural_fallback(image_bgr, min_area_px=min_area_px)
         if use_model and model_available:
             model_used = "onnx_fallback_heuristic"

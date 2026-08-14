@@ -353,17 +353,27 @@ VISION = [
       "Register, version, deploy and roll back models, with metrics and a real checksum.",
       "implemented", [], "training/register.py; refuses an export that failed parity."),
     F("ai.parity", "ONNX export parity", "vision", "AI",
-      "An export is rejected unless it matches torch within tolerance and loads in the "
-      "runtime the pipeline actually uses.",
-      "implemented", [], "Verified on two models; needs a committed test."),
+      "An export is rejected unless it matches torch within a tolerance scaled to each "
+      "value's magnitude -- absolute at probability scale, relative at pixel-coordinate "
+      "scale -- and loads in the runtime the pipeline actually uses. A graph computing "
+      "something else must still fail the gate.",
+      "implemented", ["tests/test_export_parity.py::TestAgreementPasses",
+                      "tests/test_export_parity.py::TestDisagreementFails",
+                      "tests/test_export_parity.py::TestScaling"],
+      "training/export_onnx.py::parity_violation; two models pass at 0.08x tolerance."),
     F("ai.crack", "Crack detection", "vision", "AI",
       "A trained model measurably better than the classical baseline on a held-out split, "
       "installed with a real checksum and reported as the model actually used.",
       "implemented", ["tests/test_honesty.py::TestDetectionReportsWhatItActuallyUsed"],
       "SegFormer-B2 installed: test-split IoU 0.515 vs heuristic 0.045 (11x), precision 0.540 vs 0.046."),
     F("ai.spalling", "Spalling detection", "vision", "AI",
-      "Trained detector for spallation with published validation metrics.",
-      "in_progress", [], "CODEBRIM data prepared; not yet trained."),
+      "Trained detector for spallation with published validation metrics, used in "
+      "preference to the heuristic, and reporting an empty result as an empty result "
+      "rather than falling back to invented findings.",
+      "implemented", ["tests/test_honesty.py::TestFindingNothingIsAnAnswer"],
+      "YOLO11x on CODEBRIM, installed as structural_multiclass_detector: "
+      "mAP50 0.417, mAP50-95 0.201; Spallation 0.306, ExposedBars 0.330, "
+      "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124."),
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
       "Trained detector for corrosion and rust with published validation metrics.",
       "in_progress", [], "Data prepared; not yet trained."),
@@ -476,11 +486,12 @@ INDIA_FIRST = [
       "India pack: Construction",
       "Building, unfinished building, road, bare soil, vegetation, water, concrete, "
       "excavation, stockpile, construction material and equipment classes.",
-      "not_started", []),
+      "in_progress", ["tests/test_india_construction_pack.py::test_construction_schema_covers_the_registry_contract"],
+      "Versioned schema and task-trained runtime gate exist; no production construction head is trained."),
     F("pack.construction.progress", "Progress against approved design", "core",
       "India pack: Construction",
       "Measured percentage and location of progress against an explicit approved design model.",
-      "not_started", []),
+      "implemented", ["tests/test_india_construction_pack.py::test_approved_design_progress_measures_observed_surface_not_contract_completion"]),
 
     # Mining and quarry
     F("pack.mining.stockpile", "Stockpile selection and measurement", "core",
@@ -508,7 +519,7 @@ INDIA_FIRST = [
     F("pack.solar.inventory", "Solar array and module inventory", "vision",
       "India pack: Solar",
       "Geolocated arrays and individual modules with missing/damaged/obstructed module findings.",
-      "not_started", []),
+      "implemented", ["tests/test_india_assets_pack.py::test_solar_inventory_counts_modules_and_only_calls_layout_gaps_missing"]),
     F("pack.solar.thermal", "Solar RGB and thermal inspection", "vision",
       "India pack: Solar",
       "Aligned RGB/radiometric thermal imagery with module-level hotspots, hot cells, "
@@ -521,45 +532,46 @@ INDIA_FIRST = [
       "India pack: Land",
       "Georeferenced building, road/path, water and vegetation polygons extracted from "
       "an orthomosaic.",
-      "not_started", []),
+      "implemented", ["tests/test_india_land_pack.py::test_land_gis_extracts_real_georeferenced_semantic_classes",
+                      "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster"]),
     F("pack.land.encroachment", "Property and encroachment change", "core",
       "India pack: Land",
       "New buildings, boundary encroachment, new roads and structure expansion between surveys.",
-      "not_started", []),
+      "implemented", ["tests/test_india_land_pack.py::test_encroachment_uses_imported_boundary_and_aligned_previous_survey"]),
 
     # Agriculture
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
       "India pack: Agriculture",
       "Crop, soil, unwanted vegetation and water masks with canopy cover and bare/missing regions.",
-      "not_started", []),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster"]),
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
-      "not_started", []),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable"]),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
-      "not_started", []),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_stress_zones_require_and_preserve_crop_sensor_scope"]),
     F("pack.agriculture.count", "Plant and tree counting", "vision",
       "India pack: Agriculture",
       "Geolocated plant/tree counts with missing and health categories only where validated.",
-      "not_started", []),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health"]),
 
     # Roads, power and rail
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
       "Road/edge segmentation plus geolocated pothole, crack, waterlogging and debris "
       "counts, severity and surveyed distance.",
-      "not_started", []),
+      "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance"]),
     F("pack.power.inspection", "Power-line asset inspection", "vision",
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
       "transformers, vegetation and validated component findings.",
-      "not_started", []),
+      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors"]),
     F("pack.rail.inspection", "Railway corridor inspection", "vision",
       "India pack: Power and rail",
       "Mapped railway track, bridge, overhead equipment and corridor findings from "
       "capture geometry appropriate to the component.",
-      "not_started", []),
+      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors"]),
 ]
 
 # ---------------------------------------------------------------------------

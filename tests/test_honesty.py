@@ -129,3 +129,62 @@ class TestDetectionReportsWhatItActuallyUsed:
         from core.detection import CrackDetectionResult
 
         assert "model_used" in CrackDetectionResult.__dataclass_fields__
+
+
+class TestFindingNothingIsAnAnswer:
+    """A trained detector reporting a clean surface must not be overruled.
+
+    The structural path used to treat "the model returned no detections" as though the
+    model had failed, and fall through to the classical heuristic. On a sound wall that
+    turns a correct empty result into a set of invented findings, attributed to a run
+    that says a model was available. Silence from a model that ran is data.
+    """
+
+    def _clean_surface(self):
+        cv2 = pytest.importorskip("cv2")
+        # Flat, featureless: nothing for either the model or the heuristic to latch on
+        # to legitimately.
+        return np.full((640, 640, 3), 175, dtype=np.uint8), cv2
+
+    def test_an_empty_model_result_is_not_replaced_by_the_heuristic(self):
+        from core.detection import detect_structural_defects
+        from core.models import model_status
+
+        image, _ = self._clean_surface()
+        if not model_status("structural_multiclass_detector").get("exists"):
+            pytest.skip("No structural model installed in this checkout.")
+
+        result = detect_structural_defects(image)
+        assert result.model_used.startswith("onnx:"), (
+            "a model that ran and found nothing must still be credited with running, "
+            f"got {result.model_used!r}"
+        )
+
+    def test_the_heuristic_is_still_labelled_when_the_model_is_switched_off(self):
+        from core.detection import detect_structural_defects
+
+        image, _ = self._clean_surface()
+        result = detect_structural_defects(image, use_model=False)
+        assert result.model_used == "heuristic"
+
+    def test_a_real_defect_image_produces_model_detections(self):
+        """The other half: silence must mean silence, not a broken inference path."""
+        import glob
+
+        cv2 = pytest.importorskip("cv2")
+        from core.detection import detect_structural_defects
+        from core.models import model_status
+
+        if not model_status("structural_multiclass_detector").get("exists"):
+            pytest.skip("No structural model installed in this checkout.")
+
+        paths = sorted(glob.glob("training/data/prepared/structural_det/test/images/*.jpg"))
+        if not paths:
+            pytest.skip("Prepared CODEBRIM test images are not present in this checkout.")
+
+        found = 0
+        for path in paths[:12]:
+            result = detect_structural_defects(cv2.imread(path))
+            assert result.model_used.startswith("onnx:")
+            found += len(result.detections)
+        assert found > 0, "the installed detector found nothing across 12 defect images"
