@@ -395,6 +395,14 @@ class MissionPlannerDroneClient:
                 tel.altitude_abs_m = float(msg.alt) / 1000.0
                 tel.heading_deg = float(getattr(msg, "hdg", 0) or 0) / 100.0
                 tel.speed_mps = (float(msg.vx) ** 2 + float(msg.vy) ** 2) ** 0.5 / 100.0
+            elif t == "CAMERA_INFORMATION":
+                # Kept so camera control can gate commands on what the payload says it
+                # can do, instead of transmitting into silence.
+                tel.raw["camera_information"] = {
+                    "flags": int(getattr(msg, "flags", 0) or 0),
+                    "vendor_name": getattr(msg, "vendor_name", b""),
+                    "model_name": getattr(msg, "model_name", b""),
+                }
             elif t == "SYS_STATUS":
                 tel.battery_v = float(msg.voltage_battery) / 1000.0
                 tel.battery_pct = max(0.0, float(msg.battery_remaining))
@@ -815,6 +823,32 @@ class MissionPlannerDroneClient:
         # MAV_CMD_COMPONENT_ARM_DISARM with the force magic number, which disarms even
         # while armed and flying.
         return self._command_long(400, 0.0, 21196.0, name="emergency_stop")
+
+    def camera(self):
+        """A camera controller wired to this vehicle's command channel.
+
+        Capabilities come from the payload's own CAMERA_INFORMATION when it has sent
+        one; otherwise they are unknown, which is different from absent.
+        """
+        from .camera_control import CameraCapabilities, CameraController, capabilities_from_message
+
+        with self._lock:
+            declared = (self._latest_telemetry.raw or {}).get("camera_information")
+
+        if declared:
+            class _Info:
+                flags = declared["flags"]
+                vendor_name = declared["vendor_name"]
+                model_name = declared["model_name"]
+
+            capabilities = capabilities_from_message(_Info())
+        else:
+            capabilities = CameraCapabilities()
+
+        def send(command: int, *params: float) -> CommandResult:
+            return self._command_long(command, *params, name="camera")
+
+        return CameraController(send, capabilities)
 
     def loiter(self) -> CommandResult:
         """Hold the current position."""

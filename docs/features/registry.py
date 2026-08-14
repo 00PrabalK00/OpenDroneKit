@@ -338,8 +338,20 @@ FLIGHT = [
       "core/flight_state.py; atomic writes, Api.check_interrupted_flight. A test asserts "
       "recover() calls no command that could re-fly a mission."),
     F("fl.camera_control", "Camera control", "app", "Flight",
-      "Photo, video, RAW, ISO, shutter, exposure, white balance, focus and zoom.",
-      "not_started", []),
+      "Photo, video, mode, focus and zoom over the standard MAVLink camera commands, "
+      "gated on the capabilities the payload declares, with exposure settings that are "
+      "extended parameters refused with the reason rather than transmitted into silence "
+      "and reported as success.",
+      "implemented", ["tests/test_camera_control.py::TestCapture",
+                      "tests/test_camera_control.py::TestModes",
+                      "tests/test_camera_control.py::TestZoomAndFocus",
+                      "tests/test_camera_control.py::TestExtendedSettings",
+                      "tests/test_camera_control.py::TestUndeclaredCapabilities",
+                      "tests/test_camera_control.py::TestCapabilityParsing",
+                      "tests/test_camera_control.py::TestTransportFailures"],
+      "core/camera_control.py; the bridge keeps CAMERA_INFORMATION and exposes camera(). "
+      "ISO, shutter and white balance are not standard MAVLink commands and are not "
+      "claimed as implemented."),
     F("fl.gimbal_control", "Gimbal control", "core", "Flight",
       "Pitch, yaw, centre and look-at commands issued as mission items.",
       "verified", ["tests/test_exporters.py::test_gimbal_pitch_and_mount_mode_land_in_the_right_slots"]),

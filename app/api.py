@@ -337,6 +337,57 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def camera_capabilities(self) -> dict[str, Any]:
+        """What the connected payload has said it can do."""
+        client = self._session._drone_client
+        if client is None:
+            return fail("No vehicle connected.")
+        camera = getattr(client, "camera", None)
+        if camera is None:
+            return fail(f"The {self._session.vehicle.driver!r} driver has no camera control.")
+        return ok(camera=camera().describe())
+
+    @guard
+    def camera_command(self, action: str, **kwargs: Any) -> dict[str, Any]:
+        """Photo, video, mode, zoom and focus on the connected payload.
+
+        Exposure settings are refused with the reason rather than silently dropped: an
+        operator who believes they set an ISO that never arrived will not find out
+        until the imagery comes back.
+        """
+        client = self._session._drone_client
+        if client is None:
+            return fail("No vehicle connected.")
+        builder = getattr(client, "camera", None)
+        if builder is None:
+            return fail(f"The {self._session.vehicle.driver!r} driver has no camera control.")
+
+        camera = builder()
+        handlers = {
+            "take_photo": lambda: camera.take_photo(
+                count=int(kwargs.get("count", 1)),
+                interval_s=float(kwargs.get("interval_s", 0.0))),
+            "stop_photo_sequence": camera.stop_photo_sequence,
+            "start_video": camera.start_video,
+            "stop_video": camera.stop_video,
+            "set_mode": lambda: camera.set_mode(str(kwargs.get("mode", "photo"))),
+            "set_zoom": lambda: camera.set_zoom(float(kwargs.get("level_pct", 0.0))),
+            "set_focus": lambda: camera.set_focus(float(kwargs.get("level_pct", 0.0))),
+            "set_exposure_setting": lambda: camera.set_exposure_setting(
+                str(kwargs.get("setting", "")), kwargs.get("value")),
+        }
+
+        handler = handlers.get(action)
+        if handler is None:
+            return fail(f"Unknown camera action {action!r}. "
+                        f"Use one of: {', '.join(sorted(handlers))}.")
+
+        result = handler()
+        self._session.audit("camera_command", {"action": action, "ok": result.ok})
+        payload = result.to_dict()
+        return ok(**payload) if result.ok else fail(result.message, **payload)
+
+    @guard
     def check_interrupted_flight(self) -> dict[str, Any]:
         """Whether a flight was in progress when this software last stopped.
 
