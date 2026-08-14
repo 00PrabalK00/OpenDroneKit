@@ -30,3 +30,8 @@ models/*
 !models/manifests/
 models/manifests/*
 !models/manifests/model_provenance.json
+
+# API development database
+*.db
+opendronekit.db
+test_api.db
