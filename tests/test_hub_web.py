@@ -36,7 +36,7 @@ class TestHubPanels:
         assert {
             "panel-projects", "panel-assets", "panel-maps", "panel-offline",
             "panel-viewer2d", "panel-viewer3d", "panel-pointcloud",
-            "panel-digital-twin", "panel-timeline",
+            "panel-thermal", "panel-digital-twin", "panel-timeline",
         } <= parser.ids
         assert {
             "js/map.js", "js/hub-api.js", "js/hub-viewers.js", "js/hub.js"

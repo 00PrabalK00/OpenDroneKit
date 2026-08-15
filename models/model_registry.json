@@ -103,10 +103,10 @@
       "labels": [
         "crack"
       ],
-      "score_threshold": 0.25,
+      "score_threshold": 0.85,
       "iou_threshold": 0.45,
       "input_size": 1024,
-      "description": "Trained in run crack_segformer_b2_local."
+      "description": "SegFormer-B5 @1024, run crack_segformer_b5. Decision threshold 0.85 chosen by sweep on the validation split (val IoU 0.5962 against 0.5582 at the previous 0.25)."
     }
   }
 }

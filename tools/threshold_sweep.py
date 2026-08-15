@@ -31,7 +31,7 @@ import numpy as np
 MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
-DEFAULT_THRESHOLDS = [0.25, 0.35, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
+DEFAULT_THRESHOLDS = [0.25, 0.5, 0.85]
 
 
 def find_mask(image_path: str) -> str | None:

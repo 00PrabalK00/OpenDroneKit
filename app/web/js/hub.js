@@ -15,6 +15,12 @@
     viewer2d: null,
     sceneViewer: null,
     pointViewer: null,
+    thermalMap: null,
+    thermalViewer: null,
+    thermalComparison: null,
+    thermalRgb: null,
+    thermalScene: null,
+    thermalModelViewer: null,
     twin: null
   };
 
@@ -63,12 +69,16 @@
     if (name === 'maps') initLayerMap();
     if (name === 'viewer2d') initViewer2d();
     if (name === 'viewer3d') initSceneViewer();
+    if (name === 'thermal') initThermalViewers();
     if (name === 'pointcloud') initPointViewer();
     setTimeout(() => {
       if (state.layerMap) state.layerMap.resize();
       if (state.viewer2d) state.viewer2d.map.resize();
       if (state.sceneViewer) state.sceneViewer.resize();
       if (state.pointViewer) state.pointViewer.resize();
+      if (state.thermalViewer) state.thermalViewer.render();
+      if (state.thermalComparison) state.thermalComparison.render();
+      if (state.thermalModelViewer) state.thermalModelViewer.resize();
     }, 0);
   }
 
@@ -358,6 +368,87 @@
     } catch (error) { $('#point-status').textContent = error.message; status(`Point cloud: ${error.message}`, 'error'); }
   }
 
+  function initThermalViewers() {
+    if (!state.thermalViewer) {
+      try {
+        state.thermalViewer = new ODKHubViewers.OdkThermalCanvas($('#thermal-map-canvas'));
+        $('#thermal-map-canvas').addEventListener('mousemove', (event) => {
+          const value = state.thermalViewer.temperatureAtClient(event.clientX, event.clientY);
+          if (value != null) $('#thermal-map-status').textContent = `${value.toFixed(2)} °C · EPSG:${state.thermalMap.crs_epsg}`;
+        });
+      } catch (error) { $('#thermal-map-status').textContent = error.message; }
+    }
+    if (!state.thermalComparison) {
+      try {
+        state.thermalComparison = new ODKHubViewers.OdkThermalComparison(
+          $('#thermal-comparison'), $('#thermal-rgb-canvas'), $('#thermal-comparison-canvas')
+        );
+      } catch (error) { $('#thermal-comparison-status').textContent = error.message; }
+    }
+    if (!state.thermalModelViewer) {
+      try { state.thermalModelViewer = new ODKHubViewers.OdkWebGLViewer($('#thermal-model-canvas')); }
+      catch (error) { $('#thermal-model-status').textContent = error.message; }
+    }
+  }
+
+  function readImageFile(input) {
+    const file = input.files && input.files[0];
+    if (!file) return Promise.reject(new Error('Select an RGB image first.'));
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), image = new Image();
+      image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+      image.onerror = () => { URL.revokeObjectURL(url); reject(new Error(`${file.name} is not a readable image.`)); };
+      image.src = url;
+    });
+  }
+
+  function loadThermalComparisonIfReady() {
+    if (!state.thermalMap || !state.thermalRgb || !state.thermalComparison) return;
+    const registration = state.thermalComparison.load(state.thermalRgb, state.thermalMap);
+    $('#thermal-comparison-status').textContent =
+      `${registration.method} · residual ${registration.residual_px.toFixed(2)} px · validated by ${registration.validated_by}`;
+  }
+
+  async function loadThermalMap() {
+    try {
+      initThermalViewers();
+      state.thermalMap = ODKHubViewers.parseThermalMap(await readJsonFile($('#thermal-map-file')));
+      state.thermalViewer.load(state.thermalMap);
+      $('#thermal-map-status').textContent =
+        `${state.thermalMap.min_c.toFixed(2)}–${state.thermalMap.max_c.toFixed(2)} °C · EPSG:${state.thermalMap.crs_epsg} · ${state.thermalMap.interpolated ? 'interpolated source declared' : 'measured cells'}`;
+      try { loadThermalComparisonIfReady(); }
+      catch (error) { $('#thermal-comparison-status').textContent = error.message; }
+      status('Radiometric thermal map loaded locally.', 'success');
+    } catch (error) { $('#thermal-map-status').textContent = error.message; status(`Thermal map: ${error.message}`, 'error'); }
+  }
+
+  async function loadThermalRgb() {
+    try {
+      initThermalViewers(); state.thermalRgb = await readImageFile($('#thermal-rgb-file'));
+      loadThermalComparisonIfReady(); status('Registered RGB comparison image loaded.', 'success');
+    } catch (error) { $('#thermal-comparison-status').textContent = error.message; status(`Thermal comparison: ${error.message}`, 'error'); }
+  }
+
+  async function loadThermalScene() {
+    try {
+      state.thermalScene = ODKHubViewers.parseScene(await readJsonFile($('#thermal-scene-file')));
+      $('#thermal-model-status').textContent = `${state.thermalScene.positions.length / 3} vertices ready for CRS-checked projection.`;
+    } catch (error) { $('#thermal-model-status').textContent = error.message; status(`Thermal 3D scene: ${error.message}`, 'error'); }
+  }
+
+  function projectThermalModel() {
+    try {
+      initThermalViewers();
+      if (!state.thermalMap || !state.thermalScene) throw new Error('Load both a thermal map and a 3D scene first.');
+      const model = ODKHubViewers.projectThermalOntoScene(state.thermalScene, state.thermalMap);
+      state.thermalModelViewer.loadScene(model);
+      const evidence = model.thermal_projection;
+      $('#thermal-model-status').textContent =
+        `${evidence.sampled_vertices}/${evidence.total_vertices} vertices carry nearest measured-cell temperatures · ${evidence.min_c.toFixed(2)}–${evidence.max_c.toFixed(2)} °C`;
+      status('Thermal measurements projected onto the 3D scene.', 'success');
+    } catch (error) { $('#thermal-model-status').textContent = error.message; status(`Thermal 3D model: ${error.message}`, 'error'); }
+  }
+
   function renderTwin(twin) {
     $('#twin-identity').innerHTML = record(twin.name, `${twin.id} · ${twin.crs_epsg ? `EPSG:${twin.crs_epsg}` : 'CRS not stated'}`);
     $('#twin-artifacts').innerHTML = twin.artifacts.length
@@ -406,12 +497,22 @@
     $('#scene-clip').oninput = (event) => { initSceneViewer(); if (state.sceneViewer) state.sceneViewer.setClipping(Number(event.target.value)); };
     $('#point-manifest-file').onchange = loadPointManifest;
     $('#point-size').oninput = (event) => { initPointViewer(); if (state.pointViewer) { state.pointViewer.pointSize = Number(event.target.value); state.pointViewer.render(); } };
+    $('#thermal-map-file').onchange = loadThermalMap;
+    $('#thermal-rgb-file').onchange = loadThermalRgb;
+    $('#thermal-scene-file').onchange = loadThermalScene;
+    $('#project-thermal-model').onclick = projectThermalModel;
+    $('#thermal-comparison-mode').onchange = (event) => { initThermalViewers(); state.thermalComparison.setMode(event.target.value); };
+    $('#thermal-opacity').oninput = (event) => { initThermalViewers(); state.thermalComparison.setOpacity(Number(event.target.value) / 100); };
+    $('#thermal-swipe').oninput = (event) => { initThermalViewers(); state.thermalComparison.setSwipe(Number(event.target.value) / 100); };
     $('#digital-twin-file').onchange = loadDigitalTwin;
     window.addEventListener('resize', () => {
       if (state.layerMap) state.layerMap.resize();
       if (state.viewer2d) state.viewer2d.map.resize();
       if (state.sceneViewer) state.sceneViewer.resize();
       if (state.pointViewer) state.pointViewer.resize();
+      if (state.thermalViewer) state.thermalViewer.render();
+      if (state.thermalComparison) state.thermalComparison.render();
+      if (state.thermalModelViewer) state.thermalModelViewer.resize();
     });
   }
 

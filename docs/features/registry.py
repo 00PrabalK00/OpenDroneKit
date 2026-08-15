@@ -497,11 +497,11 @@ VISION = [
       "A trained model measurably better than the classical baseline on a held-out split, "
       "installed with a real checksum and reported as the model actually used.",
       "implemented", ["tests/test_honesty.py::TestDetectionReportsWhatItActuallyUsed"],
-      "SegFormer-B5 @1024 installed, replacing B2: val IoU 0.606, dice 0.755, "
-      "precision 0.682, recall 0.846, over 40 epochs. B2 reached val IoU 0.585 and "
-      "test-split IoU 0.515 against a heuristic 0.045. Recall exceeds precision by "
-      "0.16, so the model still over-predicts; a threshold sweep is the cheapest "
-      "remaining gain."),
+      "SegFormer-B5 @1024 installed, replacing B2, at decision threshold 0.85 chosen by "
+      "sweep on the validation split. Held-out test split: IoU 0.637, precision 0.811, "
+      "recall 0.748, against IoU 0.607 and precision 0.664 at the previous 0.25 "
+      "threshold. B2 reached test-split IoU 0.515; the heuristic reaches 0.045. The "
+      "threshold gained +0.030 IoU and +0.147 precision for no retraining."),
     F("ai.spalling", "Spalling detection", "vision", "AI",
       "Trained detector for spallation with published validation metrics, used in "
       "preference to the heuristic, and reporting an empty result as an empty result "

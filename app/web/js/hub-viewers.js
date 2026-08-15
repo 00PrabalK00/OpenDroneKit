@@ -125,7 +125,158 @@
       primitive: indices.length ? 'triangles' : 'points',
       units: String(payload.units || 'unknown'),
       crs_epsg: payload.crs_epsg == null ? null : Number(payload.crs_epsg),
+      coordinate_frame: String(payload.coordinate_frame || 'unknown'),
+      origin_xy: Array.isArray(payload.origin_xy) && payload.origin_xy.length === 2
+        ? payload.origin_xy.map((value, index) => finiteNumber(value, `origin_xy[${index}]`))
+        : null,
       overlays: Array.isArray(payload.overlays) ? payload.overlays : []
+    };
+  }
+
+  function parseThermalMap(payload) {
+    if (!payload || payload.type !== 'odk-thermal-map') {
+      throw new Error('Thermal map type must be odk-thermal-map.');
+    }
+    if (Number(payload.schema_version) !== 1) throw new Error('Unsupported thermal map schema version.');
+    const width = Number(payload.width), height = Number(payload.height);
+    if (!Number.isInteger(width) || width < 1 || !Number.isInteger(height) || height < 1) {
+      throw new Error('Thermal map width and height must be positive integers.');
+    }
+    const epsg = Number(payload.crs_epsg);
+    if (!Number.isInteger(epsg) || epsg < 1) {
+      throw new Error('Thermal map needs an explicit EPSG coordinate reference system.');
+    }
+    if (String(payload.unit || '').toLowerCase() !== 'celsius') {
+      throw new Error('Thermal map unit must be celsius; palette indices are not temperatures.');
+    }
+    if (!Array.isArray(payload.transform) || payload.transform.length !== 6) {
+      throw new Error('Thermal map needs a six-value affine transform.');
+    }
+    const transform = payload.transform.map((value, index) => finiteNumber(value, `transform[${index}]`));
+    if (Math.abs(transform[0] * transform[4] - transform[1] * transform[3]) < 1e-15) {
+      throw new Error('Thermal map affine transform is degenerate.');
+    }
+    if (!Array.isArray(payload.values) || payload.values.length !== width * height) {
+      throw new Error('Thermal map needs exactly width x height temperature values.');
+    }
+    const values = payload.values.map((value, index) => {
+      if (value == null) return NaN;
+      return finiteNumber(value, `values[${index}]`);
+    });
+    const finite = values.filter(Number.isFinite);
+    if (!finite.length) throw new Error('Thermal map contains no valid temperature measurements.');
+
+    let registration = null;
+    if (payload.registration != null) {
+      const source = payload.registration;
+      const rgbWidth = Number(source.rgb_width), rgbHeight = Number(source.rgb_height);
+      const residual = Number(source.residual_px);
+      if (source.validated !== true || String(source.target || '').toLowerCase() !== 'rgb') {
+        throw new Error('RGB/thermal registration must be explicitly validated for an RGB target.');
+      }
+      if (!String(source.method || '').trim() || !String(source.validated_by || '').trim()) {
+        throw new Error('RGB/thermal registration must name its method and validator.');
+      }
+      if (!Number.isInteger(rgbWidth) || rgbWidth < 1 || !Number.isInteger(rgbHeight) || rgbHeight < 1) {
+        throw new Error('RGB/thermal registration needs positive RGB dimensions.');
+      }
+      if (!Number.isFinite(residual) || residual < 0) {
+        throw new Error('RGB/thermal registration residual_px must be finite and non-negative.');
+      }
+      registration = {
+        validated: true, target: 'rgb', method: String(source.method),
+        validated_by: String(source.validated_by), rgb_width: rgbWidth,
+        rgb_height: rgbHeight, residual_px: residual
+      };
+    }
+    return {
+      type: payload.type, schema_version: 1, width, height, crs_epsg: epsg,
+      transform, unit: 'celsius', values,
+      min_c: Math.min(...finite), max_c: Math.max(...finite),
+      source: String(payload.source || ''),
+      temperature_source: String(payload.temperature_source || 'unspecified'),
+      interpolated: payload.interpolated === true,
+      registration
+    };
+  }
+
+  function thermalColorRgb(value, minimum, maximum) {
+    if (!Number.isFinite(value)) return [0, 0, 0, 0];
+    const span = Math.max(1e-12, maximum - minimum);
+    const t = Math.max(0, Math.min(1, (value - minimum) / span));
+    const stops = [
+      [0.00, 18, 22, 88], [0.25, 32, 126, 184], [0.50, 56, 210, 168],
+      [0.75, 246, 218, 72], [1.00, 215, 38, 56]
+    ];
+    for (let index = 1; index < stops.length; index += 1) {
+      if (t <= stops[index][0]) {
+        const left = stops[index - 1], right = stops[index];
+        const mix = (t - left[0]) / (right[0] - left[0]);
+        return [
+          Math.round(left[1] + (right[1] - left[1]) * mix),
+          Math.round(left[2] + (right[2] - left[2]) * mix),
+          Math.round(left[3] + (right[3] - left[3]) * mix), 255
+        ];
+      }
+    }
+    return [215, 38, 56, 255];
+  }
+
+  function thermalImagePixels(input) {
+    const map = input.type === 'odk-thermal-map' && Array.isArray(input.values) && input.min_c != null
+      ? input : parseThermalMap(input);
+    const data = [];
+    map.values.forEach((value) => data.push(...thermalColorRgb(value, map.min_c, map.max_c)));
+    return { width: map.width, height: map.height, data };
+  }
+
+  function sampleThermalMap(input, x, y) {
+    const map = input.type === 'odk-thermal-map' && input.min_c != null ? input : parseThermalMap(input);
+    const [a, b, c, d, e, f] = map.transform;
+    const determinant = a * e - b * d;
+    const dx = finiteNumber(x, 'sample x') - c, dy = finiteNumber(y, 'sample y') - f;
+    const column = Math.floor((e * dx - b * dy) / determinant);
+    const row = Math.floor((-d * dx + a * dy) / determinant);
+    if (row < 0 || column < 0 || row >= map.height || column >= map.width) return null;
+    const value = map.values[row * map.width + column];
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function projectThermalOntoScene(sceneInput, thermalInput) {
+    const scene = Array.isArray(sceneInput.positions) ? sceneInput : parseScene(sceneInput);
+    const thermal = thermalInput.min_c != null ? thermalInput : parseThermalMap(thermalInput);
+    if (!Number.isInteger(scene.crs_epsg)) throw new Error('3D scene needs an explicit EPSG CRS for thermal projection.');
+    if (scene.crs_epsg !== thermal.crs_epsg) throw new Error('3D scene and thermal map CRS values do not match.');
+    let origin = [0, 0];
+    if (scene.coordinate_frame === 'local_projected') {
+      if (!scene.origin_xy) throw new Error('A local_projected 3D scene needs origin_xy.');
+      origin = scene.origin_xy;
+    } else if (scene.coordinate_frame !== 'projected') {
+      throw new Error('3D scene coordinate_frame must be projected or local_projected.');
+    }
+
+    const colors = [], temperatures = [];
+    let sampled = 0;
+    for (let index = 0; index < scene.positions.length; index += 3) {
+      const value = sampleThermalMap(
+        thermal, scene.positions[index] + origin[0], scene.positions[index + 1] + origin[1]
+      );
+      temperatures.push(value);
+      if (value == null) colors.push(0.18, 0.2, 0.24);
+      else {
+        const color = thermalColorRgb(value, thermal.min_c, thermal.max_c);
+        colors.push(color[0] / 255, color[1] / 255, color[2] / 255); sampled += 1;
+      }
+    }
+    if (!sampled) throw new Error('No 3D vertices overlap valid measured thermal cells.');
+    return {
+      ...scene, colors, temperatures_c: temperatures,
+      thermal_projection: {
+        source: thermal.source, crs_epsg: thermal.crs_epsg,
+        sampled_vertices: sampled, total_vertices: scene.positions.length / 3,
+        min_c: thermal.min_c, max_c: thermal.max_c,
+        sampling: 'nearest_measured_cell', interpolated: false
+      }
     };
   }
 
@@ -257,7 +408,8 @@
     }
 
     loadScene(input) {
-      const scene = input.type === 'odk-scene-3d' ? parseScene(input) : input;
+      const scene = input.type === 'odk-scene-3d' && !Array.isArray(input.positions)
+        ? parseScene(input) : input;
       this.geometry = scene;
       this._upload(scene.positions, scene.colors, scene.indices || []);
       this.render();
@@ -313,15 +465,213 @@
     }
   }
 
+  class OdkThermalCanvas {
+    constructor(canvas, options) {
+      if (!canvas || typeof canvas.getContext !== 'function') throw new Error('A thermal canvas element is required.');
+      this.canvas = canvas;
+      this.context = canvas.getContext('2d');
+      if (!this.context) throw new Error('A 2D canvas context is required for thermal maps.');
+      this.map = null;
+      this.sourceCanvas = null;
+      this.zoom = 1; this.panX = 0; this.panY = 0;
+      if (!options || options.interactive !== false) this._wireControls();
+    }
+
+    _wireControls() {
+      let drag = null;
+      this.canvas.addEventListener('pointerdown', (event) => {
+        drag = [event.clientX, event.clientY]; this.canvas.setPointerCapture(event.pointerId);
+      });
+      this.canvas.addEventListener('pointermove', (event) => {
+        if (!drag) return;
+        this.panX += event.clientX - drag[0]; this.panY += event.clientY - drag[1];
+        drag = [event.clientX, event.clientY]; this.render();
+      });
+      this.canvas.addEventListener('pointerup', () => { drag = null; });
+      this.canvas.addEventListener('wheel', (event) => {
+        event.preventDefault(); this.zoom = Math.max(0.25, Math.min(32, this.zoom * Math.exp(-event.deltaY * 0.001)));
+        this.render();
+      }, { passive: false });
+    }
+
+    load(input) {
+      this.map = input.min_c != null ? input : parseThermalMap(input);
+      const pixels = thermalImagePixels(this.map);
+      this.sourceCanvas = document.createElement('canvas');
+      this.sourceCanvas.width = pixels.width; this.sourceCanvas.height = pixels.height;
+      const context = this.sourceCanvas.getContext('2d');
+      const image = context.createImageData(pixels.width, pixels.height);
+      image.data.set(new Uint8ClampedArray(pixels.data)); context.putImageData(image, 0, 0);
+      this.zoom = 1; this.panX = 0; this.panY = 0; this.render();
+      return this.map;
+    }
+
+    setView(view) {
+      this.zoom = Math.max(0.25, Math.min(32, finiteNumber(view.zoom, 'thermal zoom')));
+      this.panX = finiteNumber(view.panX, 'thermal pan x');
+      this.panY = finiteNumber(view.panY, 'thermal pan y');
+      this.render();
+    }
+
+    viewState() { return { zoom: this.zoom, panX: this.panX, panY: this.panY }; }
+
+    _size() {
+      const width = Math.max(1, this.canvas.clientWidth || this.canvas.width || 640);
+      const height = Math.max(1, this.canvas.clientHeight || this.canvas.height || 400);
+      if (this.canvas.width !== width) this.canvas.width = width;
+      if (this.canvas.height !== height) this.canvas.height = height;
+      return [width, height];
+    }
+
+    destination() {
+      if (!this.map) return null;
+      const [width, height] = this._size();
+      const scale = Math.min(width / this.map.width, height / this.map.height) * this.zoom;
+      const drawWidth = this.map.width * scale, drawHeight = this.map.height * scale;
+      return { x: (width - drawWidth) / 2 + this.panX, y: (height - drawHeight) / 2 + this.panY,
+        width: drawWidth, height: drawHeight, scale };
+    }
+
+    render() {
+      const [width, height] = this._size();
+      this.context.clearRect(0, 0, width, height);
+      if (!this.map || !this.sourceCanvas) return;
+      const destination = this.destination();
+      this.context.imageSmoothingEnabled = false;
+      this.context.drawImage(this.sourceCanvas, destination.x, destination.y,
+        destination.width, destination.height);
+    }
+
+    temperatureAtClient(clientX, clientY) {
+      if (!this.map) return null;
+      const rect = this.canvas.getBoundingClientRect(), destination = this.destination();
+      const column = Math.floor((clientX - rect.left - destination.x) / destination.scale);
+      const row = Math.floor((clientY - rect.top - destination.y) / destination.scale);
+      if (row < 0 || column < 0 || row >= this.map.height || column >= this.map.width) return null;
+      const value = this.map.values[row * this.map.width + column];
+      return Number.isFinite(value) ? value : null;
+    }
+  }
+
+  function validateRgbThermalRegistration(map, rgbWidth, rgbHeight) {
+    if (!map.registration) {
+      throw new Error('RGB/thermal comparison requires explicit validated registration metadata.');
+    }
+    if (map.registration.rgb_width !== rgbWidth || map.registration.rgb_height !== rgbHeight) {
+      throw new Error(
+        `Registered RGB size is ${map.registration.rgb_width}x${map.registration.rgb_height}, ` +
+        `but the selected image is ${rgbWidth}x${rgbHeight}.`
+      );
+    }
+    return map.registration;
+  }
+
+  class OdkThermalComparison {
+    constructor(wrapper, rgbCanvas, thermalCanvas) {
+      if (!wrapper || !rgbCanvas || !thermalCanvas) throw new Error('Thermal comparison needs a wrapper and two canvases.');
+      this.wrapper = wrapper; this.rgbCanvas = rgbCanvas;
+      this.rgbContext = rgbCanvas.getContext('2d');
+      this.thermalViewer = new OdkThermalCanvas(thermalCanvas, { interactive: false });
+      this.mode = 'side-by-side'; this.opacity = 0.65; this.swipe = 0.5;
+      this.zoom = 1; this.panX = 0; this.panY = 0;
+      this.rgbSource = null; this.map = null; this.registration = null;
+      this._wireControls(); this._applyMode();
+    }
+
+    _wireControls() {
+      let drag = null;
+      [this.rgbCanvas, this.thermalViewer.canvas].forEach((canvas) => {
+        canvas.addEventListener('pointerdown', (event) => { drag = [event.clientX, event.clientY]; canvas.setPointerCapture(event.pointerId); });
+        canvas.addEventListener('pointermove', (event) => {
+          if (!drag) return;
+          this.panX += event.clientX - drag[0]; this.panY += event.clientY - drag[1];
+          drag = [event.clientX, event.clientY]; this.render();
+        });
+        canvas.addEventListener('pointerup', () => { drag = null; });
+        canvas.addEventListener('wheel', (event) => {
+          event.preventDefault(); this.zoom = Math.max(0.25, Math.min(32, this.zoom * Math.exp(-event.deltaY * 0.001)));
+          this.render();
+        }, { passive: false });
+      });
+    }
+
+    load(rgbSource, thermalInput) {
+      const map = thermalInput.min_c != null ? thermalInput : parseThermalMap(thermalInput);
+      const width = Number(rgbSource.naturalWidth || rgbSource.videoWidth || rgbSource.width);
+      const height = Number(rgbSource.naturalHeight || rgbSource.videoHeight || rgbSource.height);
+      this.registration = validateRgbThermalRegistration(map, width, height);
+      this.rgbSource = rgbSource; this.map = map; this.thermalViewer.load(map);
+      this.zoom = 1; this.panX = 0; this.panY = 0; this.render();
+      return this.registration;
+    }
+
+    setMode(mode) {
+      if (!['side-by-side', 'swipe', 'overlay'].includes(mode)) throw new Error('Thermal comparison mode must be side-by-side, swipe, or overlay.');
+      this.mode = mode; this._applyMode(); this.render();
+    }
+
+    setOpacity(value) {
+      this.opacity = Math.max(0, Math.min(1, finiteNumber(value, 'thermal opacity')));
+      this._applyMode();
+    }
+
+    setSwipe(value) {
+      this.swipe = Math.max(0, Math.min(1, finiteNumber(value, 'thermal swipe')));
+      this._applyMode();
+    }
+
+    setView(view) {
+      this.zoom = Math.max(0.25, Math.min(32, finiteNumber(view.zoom, 'comparison zoom')));
+      this.panX = finiteNumber(view.panX, 'comparison pan x');
+      this.panY = finiteNumber(view.panY, 'comparison pan y'); this.render();
+    }
+
+    viewState() { return { zoom: this.zoom, panX: this.panX, panY: this.panY }; }
+
+    _applyMode() {
+      this.wrapper.dataset.mode = this.mode;
+      this.wrapper.classList.remove('side-by-side', 'swipe', 'overlay');
+      this.wrapper.classList.add(this.mode);
+      const thermal = this.thermalViewer.canvas;
+      thermal.style.opacity = this.mode === 'overlay' ? String(this.opacity) : '1';
+      thermal.style.clipPath = this.mode === 'swipe'
+        ? `inset(0 ${Math.round((1 - this.swipe) * 10000) / 100}% 0 0)` : 'none';
+    }
+
+    render() {
+      if (!this.rgbSource || !this.map) return;
+      const width = Math.max(1, this.rgbCanvas.clientWidth || this.rgbCanvas.width || 640);
+      const height = Math.max(1, this.rgbCanvas.clientHeight || this.rgbCanvas.height || 400);
+      if (this.rgbCanvas.width !== width) this.rgbCanvas.width = width;
+      if (this.rgbCanvas.height !== height) this.rgbCanvas.height = height;
+      this.rgbContext.clearRect(0, 0, width, height);
+      const scale = Math.min(width / this.map.width, height / this.map.height) * this.zoom;
+      const drawWidth = this.map.width * scale, drawHeight = this.map.height * scale;
+      const x = (width - drawWidth) / 2 + this.panX, y = (height - drawHeight) / 2 + this.panY;
+      this.rgbContext.imageSmoothingEnabled = false;
+      this.rgbContext.drawImage(this.rgbSource, x, y, drawWidth, drawHeight);
+      this.thermalViewer.setView({ zoom: this.zoom, panX: this.panX, panY: this.panY });
+      this._applyMode();
+    }
+  }
+
   const exported = {
     OdkWebGLViewer,
+    OdkThermalCanvas,
+    OdkThermalComparison,
     mapLibreRasterSource,
     normaliseProvider,
     parseDigitalTwin,
     parsePointChunk,
     parsePointManifest,
     parseScene,
-    providerTileUrl
+    parseThermalMap,
+    projectThermalOntoScene,
+    providerTileUrl,
+    sampleThermalMap,
+    thermalColorRgb,
+    thermalImagePixels,
+    validateRgbThermalRegistration
   };
   global.ODKHubViewers = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;

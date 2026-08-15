@@ -123,7 +123,7 @@ class TestGeoreferencing:
         rasterio = pytest.importorskip("rasterio")
         _, twin, out = survey
 
-        for name in ("dsm.tif", "orthomosaic.tif"):
+        for name in ("dsm.tif", "dtm.tif", "orthomosaic.tif"):
             path = out / name
             assert path.exists(), f"{name} was not produced"
             with rasterio.open(path) as raster:
@@ -144,6 +144,20 @@ class TestGeoreferencing:
             # Metres above the ellipsoid over a small site: a real range, not pixel indices.
             assert -500.0 < float(finite.min()) < 9000.0
             assert spread < 2000.0
+
+    def test_the_dtm_holds_ground_elevations_in_metres(self, survey):
+        rasterio = pytest.importorskip("rasterio")
+        numpy = pytest.importorskip("numpy")
+        _, _, out = survey
+
+        with rasterio.open(out / "dtm.tif") as raster:
+            band = raster.read(1, masked=True)
+            finite = band.compressed() if hasattr(band, "compressed") else band[numpy.isfinite(band)]
+            if finite.size == 0:
+                pytest.skip("DTM has no valid ground cells at this resolution.")
+            assert raster.crs is not None and raster.crs.is_projected
+            assert -500.0 < float(finite.min()) < 9000.0
+            assert float(finite.max() - finite.min()) < 2000.0
 
 
 class TestNoFabrication:
