@@ -27,11 +27,19 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | tee -a "$STATE/
 log "system packages"
 apt-get update -qq >/dev/null 2>&1 || true
 # libarchive-tools provides bsdtar, which reads the RAR5 archive PVEL-AD ships as.
-apt-get install -y -qq git libarchive-tools >/dev/null 2>&1 || fail "apt install"
+# unar rather than bsdtar: libarchive 3.6.2 aborts on this RAR5 archive with a block
+# checksum error even though the file is byte-identical to a copy that extracts fine.
+# The X11 libs are for opencv -- ultralytics pulls the GUI build of opencv-python, which
+# fails to import in a headless container without libxcb, and reinstalls itself over
+# opencv-python-headless if you try to swap it. Fixing it at the system level sticks.
+apt-get install -y -qq git unar libxcb1 libgl1 libglib2.0-0 libsm6 libxext6 libxrender1   >/dev/null 2>&1 || fail "apt install"
 
 log "python packages"
 pip install -q --upgrade pip >/dev/null 2>&1 || true
-pip install -q ultralytics gdown pillow numpy pyyaml >/dev/null 2>&1 || fail "pip install"
+# Not silenced: a pip that half-fails still exits 0, and the resulting ImportError only
+# appears once training starts, on a machine billing by the hour.
+pip install -q ultralytics gdown pillow numpy pyyaml || fail "pip install"
+python -c "import ultralytics, cv2" || fail "ultralytics installed but does not import"
 python -c "import torch;print('torch',torch.__version__,'cuda',torch.cuda.is_available(),torch.cuda.get_device_name(0))" | tee -a "$STATE/bootstrap.log"
 
 log "clone repo at the pinned commit"
@@ -58,7 +66,14 @@ log "archive $(du -h training/data/_archives/pvel_ad.rar | cut -f1)"
 log "extract"
 mkdir -p training/data/pvel_ad
 if [ ! -d training/data/pvel_ad/PVELAD ]; then
-  bsdtar -xf training/data/_archives/pvel_ad.rar -C training/data/pvel_ad --strip-components=1 || fail "extract"
+  # unar warns (non-zero) on one file's checksum while extracting everything correctly,
+  # so completeness is checked below rather than trusting the exit code.
+  unar -q -f -o training/data/pvel_ad training/data/_archives/pvel_ad.rar || true
+  if [ -d training/data/pvel_ad/solar_cell_EL_image ]; then
+    mv training/data/pvel_ad/solar_cell_EL_image/* training/data/pvel_ad/ 2>/dev/null || true
+    rmdir training/data/pvel_ad/solar_cell_EL_image 2>/dev/null || true
+  fi
+  test "$(ls training/data/pvel_ad/PVELAD/EL2021/trainval/Annotations 2>/dev/null | wc -l)" = "4500"     || fail "extract did not yield the expected 4500 annotations"
 fi
 
 log "prepare corpus"
