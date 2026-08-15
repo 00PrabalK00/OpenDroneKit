@@ -13,6 +13,12 @@
     layerMap: null,
     customProviders: [],
     viewer2d: null,
+    annotations: [],
+    annotationSelection: new Set(),
+    missions: [],
+    missionSimulation: null,
+    missionPlayer: null,
+    missionTimer: null,
     sceneViewer: null,
     pointViewer: null,
     thermalMap: null,
@@ -71,6 +77,7 @@
     if (name === 'viewer3d') initSceneViewer();
     if (name === 'thermal') initThermalViewers();
     if (name === 'pointcloud') initPointViewer();
+    if (name === 'missions') initMissionSimulator();
     setTimeout(() => {
       if (state.layerMap) state.layerMap.resize();
       if (state.viewer2d) state.viewer2d.map.resize();
@@ -79,6 +86,7 @@
       if (state.thermalViewer) state.thermalViewer.render();
       if (state.thermalComparison) state.thermalComparison.render();
       if (state.thermalModelViewer) state.thermalModelViewer.resize();
+      if (state.missionPlayer) state.missionPlayer.render();
     }, 0);
   }
 
@@ -142,6 +150,8 @@
     ]);
     const jobRows = jobs || [];
     const missionRows = missions || [];
+    state.missions = missionRows;
+    renderMissionChoices();
     $('#metric-jobs').textContent = String(jobRows.length);
     const memberRows = Array.isArray(members) ? members : (members && members.members) || [];
     $('#project-members').innerHTML = memberRows.length
@@ -157,6 +167,7 @@
     $('#project-activity').innerHTML = activity.length
       ? activity.map((item) => timeline(item.when, item.text)).join('')
       : 'No project activity returned.';
+    await loadAnnotations();
   }
 
   async function renderOrganizationActivity() {
@@ -308,8 +319,236 @@
     state.viewer2d = new OdkMap('viewer2d-map', {
       center: [77.59, 12.97], zoom: 4,
       onMeasure: (message) => { $('#viewer2d-result').textContent = message; },
-      onGeometryChange: () => { $('#viewer2d-result').textContent = 'Annotation geometry changed locally.'; }
+      onGeometryChange: () => { $('#viewer2d-result').textContent = 'Viewer geometry changed locally.'; },
+      onAnnotation: (payload) => { persistAnnotation(payload); }
     });
+  }
+
+  function annotationFeature(row) {
+    return {
+      type: 'Feature', geometry: row.geometry,
+      properties: {
+        id: row.id, annotation_type: row.annotation_type, label: row.label,
+        severity: row.severity, status: row.status, radius_m: row.geometry.radius_m || null
+      }
+    };
+  }
+
+  function renderAnnotations() {
+    const holder = $('#annotation-list');
+    holder.classList.toggle('empty', !state.annotations.length);
+    holder.innerHTML = state.annotations.length ? state.annotations.map((row) => {
+      const claim = row.machine_claims && row.machine_claims[0];
+      const provenance = claim
+        ? `${escapeHtml(claim.model_key)} @ ${escapeHtml(String(claim.model_sha256).slice(0, 12))} &middot; score ${Number(claim.confidence).toFixed(3)} &middot; ${row.machine_claims.length} immutable claim${row.machine_claims.length === 1 ? '' : 's'}`
+        : 'Human-drawn annotation';
+      const review = row.origin === 'model' ? `<div class="annotation-actions">
+        <label><input type="checkbox" data-annotation-select="${Number(row.id)}" ${state.annotationSelection.has(Number(row.id)) ? 'checked' : ''} /> Select</label>
+        <button data-annotation-action="accept" data-annotation-id="${Number(row.id)}">Accept</button>
+        <button data-annotation-action="edit" data-annotation-id="${Number(row.id)}">Edit</button>
+        <button data-annotation-action="reclassify" data-annotation-id="${Number(row.id)}">Reclassify</button>
+        <button data-annotation-action="split" data-annotation-id="${Number(row.id)}">Split</button>
+      </div>` : '';
+      return `<article class="annotation-review-card" data-origin="${escapeHtml(row.origin)}">
+        <header><strong>${escapeHtml(row.annotation_type)} &middot; ${escapeHtml(row.label)}</strong><span>${escapeHtml(row.severity)} &middot; ${escapeHtml(row.status)}</span></header>
+        <small>${provenance} &middot; review: ${escapeHtml(row.review_action)}</small>${review}
+      </article>`;
+    }).join('') : 'No annotations saved for this project.';
+    if (state.viewer2d) {
+      state.viewer2d.removeLayer('saved-annotations');
+      const mapped = state.annotations.filter((row) => row.source_type === 'map');
+      if (mapped.length) state.viewer2d.addVector('saved-annotations', {
+        type: 'FeatureCollection', features: mapped.map(annotationFeature)
+      }, 1);
+    }
+  }
+
+  async function loadAnnotations() {
+    if (!state.api || !state.projectId) return;
+    const rows = await apiAction('Load annotations', () => state.api.listAnnotations(state.projectId));
+    if (rows) {
+      state.annotations = rows;
+      const ids = new Set(rows.map((row) => Number(row.id)));
+      state.annotationSelection = new Set([...state.annotationSelection].filter((id) => ids.has(id)));
+      renderAnnotations();
+    }
+  }
+
+  async function runPrelabel(event) {
+    event.preventDefault();
+    if (!state.api || !state.projectId) { status('Connect and select a project first.', 'warning'); return; }
+    const input = $('#prelabel-image'); const file = input.files && input.files[0];
+    if (!file) { status('Select a real inspection image first.', 'warning'); return; }
+    const batch = await apiAction('Installed-model pre-label', () => state.api.prelabelAnnotations(
+      state.projectId, file, $('#prelabel-model').value, $('#prelabel-severity').value
+    ));
+    if (!batch) return;
+    state.annotations.push(...batch.prelabels); renderAnnotations();
+    $('#viewer2d-result').textContent = `${batch.finding_count} pre-labels from ${batch.model.model_key} @ ${batch.model.model_sha256.slice(0, 12)}; all await review.`;
+  }
+
+  function parsePromptJson(message, initial) {
+    const text = window.prompt(message, JSON.stringify(initial));
+    if (text == null) return null;
+    try { return JSON.parse(text); }
+    catch (error) { status(`Review JSON: ${error.message}`, 'error'); return null; }
+  }
+
+  async function handleAnnotationReview(event) {
+    const button = event.target.closest('[data-annotation-action]');
+    if (!button) return;
+    const id = Number(button.dataset.annotationId);
+    const row = state.annotations.find((item) => Number(item.id) === id);
+    if (!row) return;
+    const action = button.dataset.annotationAction;
+    let operation;
+    if (action === 'accept') {
+      operation = () => state.api.reviewAnnotation(id, { action: 'accept' });
+    } else if (action === 'edit') {
+      const geometry = parsePromptJson('Edit the visible GeoJSON geometry. The model claim remains unchanged.', row.geometry);
+      if (!geometry) return;
+      const label = window.prompt('Edit the visible label.', row.label);
+      if (label == null || !label.trim()) return;
+      operation = () => state.api.reviewAnnotation(id, { action: 'edit', geometry, label: label.trim() });
+    } else if (action === 'reclassify') {
+      const label = window.prompt('Replacement human-reviewed class:', row.label);
+      if (label == null || !label.trim()) return;
+      operation = () => state.api.reviewAnnotation(id, { action: 'reclassify', label: label.trim() });
+    } else if (action === 'split') {
+      const geometries = parsePromptJson(
+        'Enter a JSON array with two or more replacement GeoJSON geometries.', [row.geometry, row.geometry]
+      );
+      if (!Array.isArray(geometries) || geometries.length < 2) {
+        status('Split needs at least two geometries.', 'warning'); return;
+      }
+      operation = () => state.api.splitAnnotation(id, { parts: geometries.map((geometry, index) => ({
+        annotation_type: row.annotation_type, geometry, label: `${row.label} ${index + 1}`,
+        severity: row.severity, status: 'open', note: `Split from annotation ${row.id}`
+      })) });
+    }
+    const result = await apiAction(`Annotation ${action}`, operation);
+    if (result) await loadAnnotations();
+  }
+
+  function handleAnnotationSelection(event) {
+    const input = event.target.closest('[data-annotation-select]');
+    if (!input) return;
+    const id = Number(input.dataset.annotationSelect);
+    if (input.checked) state.annotationSelection.add(id); else state.annotationSelection.delete(id);
+  }
+
+  async function mergeSelectedAnnotations() {
+    const ids = [...state.annotationSelection];
+    if (ids.length < 2) { status('Select at least two machine annotations to merge.', 'warning'); return; }
+    const parents = ids.map((id) => state.annotations.find((row) => Number(row.id) === id)).filter(Boolean);
+    if (parents.length !== ids.length) { status('Refresh annotations before merging.', 'warning'); return; }
+    const geometry = parsePromptJson('Enter the reviewed GeoJSON geometry for the merged annotation.', parents[0].geometry);
+    if (!geometry) return;
+    const label = window.prompt('Merged human-reviewed label:', parents[0].label);
+    if (label == null || !label.trim()) return;
+    const merged = await apiAction('Merge annotations', () => state.api.mergeAnnotations(state.projectId, {
+      annotation_ids: ids, annotation_type: parents[0].annotation_type, geometry,
+      label: label.trim(), severity: parents[0].severity, status: 'open',
+      note: `Merged from annotations ${ids.join(', ')}`
+    }));
+    if (merged) { state.annotationSelection.clear(); await loadAnnotations(); }
+  }
+
+  function renderMissionChoices() {
+    const select = $('#mission-select');
+    select.innerHTML = '<option value="">Select a mission</option>' + state.missions.map((mission) =>
+      `<option value="${Number(mission.id)}">${escapeHtml(mission.name)} · v${Number(mission.version)} · ${Number(mission.waypoint_count)} points</option>`
+    ).join('');
+  }
+
+  function initMissionSimulator() {
+    if (state.missionPlayer) return;
+    try {
+      state.missionPlayer = new ODKHubMissions.MissionSimulator($('#mission-simulation-canvas'), (frame, simulation) => {
+        $('#mission-frame').textContent = `${frame.time_s.toFixed(1)} s · ${frame.position[2].toFixed(1)} m · gimbal ${frame.gimbal_pitch_deg.toFixed(1)}° · ${frame.capture ? 'capture' : 'transit'}`;
+        $('#mission-terrain').textContent = simulation.terrain.status === 'available'
+          ? `${simulation.terrain.model_type} · ${simulation.terrain.source}`
+          : simulation.terrain.reason;
+        $('#mission-battery').textContent = frame.battery_pct == null
+          ? simulation.battery.reason : `${frame.battery_pct.toFixed(1)}% · ${simulation.battery.basis}`;
+      });
+    } catch (error) { $('#mission-simulation-status').textContent = error.message; }
+  }
+
+  async function loadMissionSimulation() {
+    const missionId = Number($('#mission-select').value);
+    if (!missionId) { status('Select a mission first.', 'warning'); return; }
+    const payload = await apiAction('Load compiled mission simulation', () => state.api.getMissionSimulation(missionId));
+    if (!payload) return;
+    initMissionSimulator(); state.missionSimulation = state.missionPlayer.load(payload);
+    $('#mission-timeline').max = String(payload.timeline.length - 1); $('#mission-timeline').value = '0';
+    $('#mission-simulation-status').textContent = `${payload.timeline.length} compiled frames · ${payload.capture_points.length} capture points · source ${payload.source}`;
+  }
+
+  function toggleMissionPlayback() {
+    if (!state.missionSimulation) { status('Load a compiled mission first.', 'warning'); return; }
+    if (state.missionTimer) {
+      clearInterval(state.missionTimer); state.missionTimer = null;
+      $('#play-mission-simulation').textContent = 'Play'; return;
+    }
+    $('#play-mission-simulation').textContent = 'Pause';
+    state.missionTimer = setInterval(() => {
+      const slider = $('#mission-timeline'); let next = Number(slider.value) + 1;
+      if (next >= state.missionSimulation.timeline.length) next = 0;
+      slider.value = String(next); state.missionPlayer.setFrame(next);
+    }, 150);
+  }
+
+  async function createMissionShare(event) {
+    event.preventDefault();
+    if (!state.projectId) { status('Select a project first.', 'warning'); return; }
+    const form = new FormData(event.currentTarget);
+    const created = await apiAction('Create secure mission preview', () => state.api.createShare(state.projectId, {
+      expires_in_days: Number(form.get('expires_in_days')),
+      password: String(form.get('password') || ''), include_missions: true,
+      include_defects: false, allow_download: false,
+      note: 'Mission preview created in Hub'
+    }));
+    if (!created) return;
+    const apiUrl = `${state.api.baseUrl}/public/shares/${encodeURIComponent(created.url_token)}`;
+    $('#mission-share-result').classList.remove('empty');
+    $('#mission-share-result').innerHTML = record(
+      'View-only link created',
+      `${apiUrl} · token shown once · ${created.password_protected ? 'password protected' : 'no password'}`
+    );
+  }
+
+  async function persistAnnotation(payload) {
+    if (!state.api || !state.projectId) {
+      status('Connect and select a project before drawing an annotation.', 'warning');
+      return;
+    }
+    const created = await apiAction(
+      'Save annotation', () => state.api.createAnnotation(state.projectId, payload)
+    );
+    if (created) {
+      state.annotations.push(created); renderAnnotations();
+      $('#viewer2d-result').textContent = `${created.annotation_type} saved as annotation ${created.id}.`;
+    }
+  }
+
+  function startAnnotation(event) {
+    event.preventDefault();
+    if (!state.api || !state.projectId) {
+      status('Connect and select a project before drawing an annotation.', 'warning'); return;
+    }
+    initViewer2d();
+    const data = new FormData(event.currentTarget);
+    const type = String(data.get('annotation_type'));
+    state.viewer2d.setAnnotationMetadata({
+      source_type: 'map', source_id: `project:${state.projectId}:viewer2d`, crs_epsg: 4326,
+      annotation_type: type, severity: String(data.get('severity')),
+      status: String(data.get('status')), label: String(data.get('label')),
+      note: String(data.get('note') || ''), radius_m: Number(data.get('radius_m')),
+      include_in_report: true
+    });
+    state.viewer2d.setTool(`annotation-${type}`);
+    $('#viewer2d-result').textContent = `Draw the ${type} annotation on the map.`;
   }
 
   function coordinateBounds(geojson) {
@@ -493,6 +732,12 @@
       state.viewer2d.setLayerOpacity('comparison-b', value);
     };
     $$('[data-viewer-tool]').forEach((button) => { button.onclick = () => { initViewer2d(); state.viewer2d.setTool(button.dataset.viewerTool); }; });
+    $('#annotation-form').onsubmit = startAnnotation;
+    $('#refresh-annotations').onclick = loadAnnotations;
+    $('#prelabel-form').onsubmit = runPrelabel;
+    $('#merge-annotations').onclick = mergeSelectedAnnotations;
+    $('#annotation-list').onclick = handleAnnotationReview;
+    $('#annotation-list').onchange = handleAnnotationSelection;
     $('#scene-file').onchange = loadSceneFile;
     $('#scene-clip').oninput = (event) => { initSceneViewer(); if (state.sceneViewer) state.sceneViewer.setClipping(Number(event.target.value)); };
     $('#point-manifest-file').onchange = loadPointManifest;
@@ -505,6 +750,12 @@
     $('#thermal-opacity').oninput = (event) => { initThermalViewers(); state.thermalComparison.setOpacity(Number(event.target.value) / 100); };
     $('#thermal-swipe').oninput = (event) => { initThermalViewers(); state.thermalComparison.setSwipe(Number(event.target.value) / 100); };
     $('#digital-twin-file').onchange = loadDigitalTwin;
+    $('#load-mission-simulation').onclick = loadMissionSimulation;
+    $('#play-mission-simulation').onclick = toggleMissionPlayback;
+    $('#mission-timeline').oninput = (event) => {
+      if (state.missionPlayer) state.missionPlayer.setFrame(Number(event.target.value));
+    };
+    $('#mission-share-form').onsubmit = createMissionShare;
     window.addEventListener('resize', () => {
       if (state.layerMap) state.layerMap.resize();
       if (state.viewer2d) state.viewer2d.map.resize();
@@ -513,6 +764,7 @@
       if (state.thermalViewer) state.thermalViewer.render();
       if (state.thermalComparison) state.thermalComparison.render();
       if (state.thermalModelViewer) state.thermalModelViewer.resize();
+      if (state.missionPlayer) state.missionPlayer.render();
     });
   }
 

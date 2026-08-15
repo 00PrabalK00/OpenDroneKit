@@ -1,0 +1,16 @@
+{
+  "name": "OpenDroneKit",
+  "short_name": "OpenDroneKit",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#12161c",
+  "theme_color": "#12161c",
+  "icons": [
+    {
+      "src": "assets/brand/derived/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

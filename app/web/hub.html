@@ -4,13 +4,20 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenDroneKit Hub</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/brand/derived/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/brand/derived/favicon-16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/brand/derived/apple-touch-icon-180.png" />
+  <link rel="manifest" href="site.webmanifest" />
   <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
   <link rel="stylesheet" href="vendor/maplibre/maplibre-gl-draw.css" />
   <link rel="stylesheet" href="css/hub.css" />
 </head>
 <body>
   <header class="hub-header">
-    <a class="brand" href="index.html">OpenDroneKit <span>Hub</span></a>
+    <a class="brand" href="index.html" aria-label="OpenDroneKit Hub">
+      <img src="assets/brand/derived/wordmark-white-160.png" alt="OpenDroneKit" width="72" height="54" />
+      <span>Hub</span>
+    </a>
     <div class="connection-fields">
       <label>API URL <input id="hub-api-url" value="http://127.0.0.1:8000" /></label>
       <label>Token <input id="hub-token" type="password" autocomplete="off" /></label>
@@ -32,6 +39,7 @@
       <button data-panel="pointcloud">Point cloud</button>
       <button data-panel="digital-twin">Digital twin</button>
       <button data-panel="timeline">Timeline / 4D</button>
+      <button data-panel="missions">Mission preview</button>
     </nav>
     <main class="hub-main">
       <section class="hub-panel active" id="panel-overview">
@@ -114,7 +122,25 @@
       </section>
       <section class="hub-panel viewer-panel" id="panel-viewer2d">
         <div class="panel-heading"><div><h1>2D survey viewer</h1><p>Vector layers, measurements, annotations and A/B comparison.</p></div><div class="inline-controls"><input id="viewer2d-a" type="file" accept=".geojson,.json" /><input id="viewer2d-b" type="file" accept=".geojson,.json" /></div></div>
-        <div class="viewer-toolbar"><button data-viewer-tool="pan">Pan</button><button data-viewer-tool="measure-distance">Distance</button><button data-viewer-tool="measure-area">Area</button><button data-viewer-tool="aoi">Annotate polygon</button><label>Comparison <input id="comparison-slider" type="range" min="0" max="100" value="50" /></label><span id="viewer2d-result"></span></div>
+        <div class="viewer-toolbar"><button data-viewer-tool="pan">Pan</button><button data-viewer-tool="measure-distance">Distance</button><button data-viewer-tool="measure-area">Area</button><label>Comparison <input id="comparison-slider" type="range" min="0" max="100" value="50" /></label><span id="viewer2d-result"></span></div>
+        <form id="annotation-form" class="annotation-toolbar">
+          <label>Type<select name="annotation_type" id="annotation-type"><option>point</option><option>line</option><option>polygon</option><option>rectangle</option><option>circle</option><option>freehand</option><option>text</option></select></label>
+          <label>Severity<select name="severity" id="annotation-severity"><option>critical</option><option>high</option><option selected>medium</option><option>low</option><option>info</option></select></label>
+          <label>Status<select name="status" id="annotation-status"><option selected>open</option><option>in_review</option><option>resolved</option><option>dismissed</option></select></label>
+          <label>Label<input name="label" id="annotation-label" required placeholder="What is marked?" /></label>
+          <label>Circle radius m<input name="radius_m" id="annotation-radius" type="number" min="0.01" step="any" value="1" /></label>
+          <label>Note<input name="note" id="annotation-note" /></label>
+          <button type="submit" id="start-annotation">Draw annotation</button><button type="button" id="refresh-annotations">Refresh</button>
+        </form>
+        <form id="prelabel-form" class="assisted-annotation-toolbar">
+          <label>Inspection image<input id="prelabel-image" name="image" type="file" accept="image/jpeg,image/png,image/tiff" required /></label>
+          <label>Installed model<select id="prelabel-model" name="model_key"><option value="structural_multiclass_detector">YOLO11x structural defects (confidence-bearing boxes)</option><option value="crack_segmentation" disabled>SegFormer-B5 cracks (region confidence unavailable)</option></select></label>
+          <label>Review-default severity<select id="prelabel-severity" name="severity"><option selected>info</option><option>low</option><option>medium</option><option>high</option><option>critical</option></select></label>
+          <button type="submit" id="run-prelabel">Run installed model</button>
+          <button type="button" id="merge-annotations">Merge selected</button>
+          <small>Machine labels remain in review and outside reports until accepted. Model identity, file digest, original label, geometry and score are retained after every review edit.</small>
+        </form>
+        <div id="annotation-list" class="annotation-list empty">Connect and select a project to load annotations.</div>
         <div id="viewer2d-map" class="full-viewer" aria-label="2D artifact viewer"></div>
       </section>
       <section class="hub-panel viewer-panel" id="panel-viewer3d">
@@ -159,11 +185,32 @@
         <p>This view presents saved dated surveys and their measured change artifacts. It never compares incompatible rasters in the browser.</p>
         <div id="survey-timeline" class="timeline-list empty">Load a digital twin containing dated surveys.</div>
       </section>
+      <section class="hub-panel viewer-panel" id="panel-missions">
+        <div class="panel-heading"><div><h1>Mission preview and simulation</h1><p>Secure sharing and playback use the persisted compiled plan, never a browser-generated substitute.</p></div></div>
+        <div class="mission-controls">
+          <label>Mission<select id="mission-select"><option value="">Select a project and mission</option></select></label>
+          <button id="load-mission-simulation">Load compiled plan</button>
+          <button id="play-mission-simulation">Play</button>
+          <label>Timeline<input id="mission-timeline" type="range" min="0" max="0" value="0" /></label>
+        </div>
+        <p id="mission-simulation-status">No compiled mission loaded.</p>
+        <canvas id="mission-simulation-canvas" class="full-viewer" aria-label="3D mission trajectory simulation"></canvas>
+        <div class="three-column mission-readout"><div class="card"><h2>Frame</h2><div id="mission-frame">—</div></div><div class="card"><h2>Terrain</h2><div id="mission-terrain">—</div></div><div class="card"><h2>Battery</h2><div id="mission-battery">—</div></div></div>
+        <form id="mission-share-form" class="card form-card">
+          <h2>Secure preview link</h2>
+          <label>Expiry days<input name="expires_in_days" type="number" min="1" max="3650" value="30" /></label>
+          <label>Optional password<input name="password" type="password" /></label>
+          <button type="submit">Create view-only link</button>
+        </form>
+        <div id="mission-share-result" class="record-list empty">No link created in this browser session.</div>
+      </section>
     </main>
   </div>
   <footer><span id="hub-status">Ready.</span><span>Local-first: no request is made until you connect or select a provider.</span></footer>
   <script src="vendor/maplibre/maplibre-gl.js"></script>
   <script src="vendor/maplibre/maplibre-gl-draw.js"></script>
+  <script src="js/hub-annotations.js"></script>
+  <script src="js/hub-missions.js"></script>
   <script src="js/map.js"></script>
   <script src="js/hub-api.js"></script>
   <script src="js/hub-viewers.js"></script>

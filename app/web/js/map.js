@@ -162,6 +162,7 @@
       this.measurePoints = [];
       this.rasterLayers = new Map();
       this.vectorLayers = new Map();
+      this.annotationMetadata = null;
 
       this.map = new maplibregl.Map({
         container: container,
@@ -257,10 +258,17 @@
       this.tool = tool;
       this.measurePoints = [];
       this._setData('measure', { type: 'FeatureCollection', features: [] });
-      if (tool === 'aoi' || tool === 'nofly') this.draw.changeMode('draw_polygon');
+      const annotationType = tool.startsWith('annotation-') ? tool.slice(11) : '';
+      if (tool === 'aoi' || tool === 'nofly' || ['polygon', 'rectangle'].includes(annotationType)) this.draw.changeMode('draw_polygon');
+      else if (['line', 'freehand'].includes(annotationType)) this.draw.changeMode('draw_line_string');
+      else if (['point', 'circle', 'text'].includes(annotationType)) this.draw.changeMode('draw_point');
       else if (tool === 'delete') this.draw.trash();
       else this.draw.changeMode('simple_select');
       if (this.opts.onToolChange) this.opts.onToolChange(tool);
+    }
+
+    setAnnotationMetadata(metadata) {
+      this.annotationMetadata = Object.assign({}, metadata || {});
     }
 
     _onClick(e) {
@@ -290,8 +298,27 @@
     /* Drawn polygons are tagged by the tool that made them, so AOI and no-fly stay
        distinguishable after the fact. */
     _onDrawChange(event) {
+      const annotationEvent = this.tool.startsWith('annotation-') && event.type === 'draw.create';
+      if (annotationEvent) {
+        (event.features || []).forEach((feature) => {
+          const annotationType = this.tool.slice(11);
+          const payload = global.ODKHubAnnotations.buildAnnotation(
+            Object.assign({}, this.annotationMetadata || {}, { annotation_type: annotationType }),
+            feature.geometry
+          );
+          if (feature.id && this.draw.get(feature.id)) {
+            this.draw.setFeatureProperty(feature.id, 'odkAnnotationType', annotationType);
+            this.draw.setFeatureProperty(feature.id, 'odkSeverity', payload.severity);
+            this.draw.setFeatureProperty(feature.id, 'odkStatus', payload.status);
+          }
+          if (this.opts.onAnnotation) this.opts.onAnnotation(payload);
+        });
+        this.tool = 'pan';
+        this.draw.changeMode('simple_select');
+        if (this.opts.onToolChange) this.opts.onToolChange('pan');
+      }
       (event.features || []).forEach((feature) => {
-        if (feature.geometry.type === 'Polygon' && !feature.properties.odkRole) {
+        if (!annotationEvent && feature.geometry.type === 'Polygon' && !feature.properties.odkRole) {
           const role = this.tool === 'nofly' ? 'nofly' : 'aoi';
           this.draw.setFeatureProperty(feature.id, 'odkRole', role);
         }

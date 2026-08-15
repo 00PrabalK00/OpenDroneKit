@@ -153,6 +153,20 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border-bottom: 1px solid var(--border);
 }
 
+.app-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 4px;
+}
+
+.app-brand:hover { background: var(--bg-raised); }
+.app-brand:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.app-brand img { display: block; width: 28px; height: 28px; object-fit: contain; }
+
 .tool-group { display: flex; align-items: center; gap: 4px; }
 .tool-group.right { margin-left: auto; }
 

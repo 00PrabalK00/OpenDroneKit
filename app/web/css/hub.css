@@ -21,8 +21,9 @@ label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 h1, h2, p { margin-top: 0; }
 h1 { font-size: 25px; margin-bottom: 5px; }
 h2 { font-size: 15px; color: #cfe3ed; }
-.hub-header { height: 64px; display: flex; align-items: center; gap: 28px; padding: 10px 18px; border-bottom: 1px solid var(--line); background: #0a151e; }
-.brand { color: white; text-decoration: none; font-size: 20px; font-weight: 750; white-space: nowrap; }
+.hub-header { height: 64px; display: flex; align-items: center; gap: 28px; padding: 5px 18px; border-bottom: 1px solid var(--line); background: #0a151e; }
+.brand { display: inline-flex; align-items: center; gap: 6px; color: white; text-decoration: none; font-size: 18px; font-weight: 750; white-space: nowrap; }
+.brand img { display: block; width: 72px; height: 54px; object-fit: contain; flex: none; }
 .brand span { color: var(--accent); font-weight: 550; }
 .connection-fields { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(160px, .8fr) 100px auto auto; align-items: end; gap: 8px; width: 100%; }
 .connection-fields label { gap: 2px; }
@@ -58,6 +59,23 @@ h2 { font-size: 15px; color: #cfe3ed; }
 .viewer-toolbar { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 7px 0; color: var(--muted); }
 .viewer-toolbar label { display: flex; align-items: center; gap: 8px; }
 .viewer-toolbar input[type="range"] { width: 190px; padding: 0; }
+.annotation-toolbar { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)) auto auto; gap: 8px; align-items: end; margin-bottom: 8px; }
+.annotation-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 7px; overflow-x: auto; padding: 5px 0 9px; min-height: 38px; }
+.annotation-chip { white-space: nowrap; border: 1px solid var(--line); border-radius: 999px; padding: 5px 9px; background: var(--panel); font-size: 12px; }
+.annotation-chip strong { color: var(--accent); }
+.assisted-annotation-toolbar { display: grid; grid-template-columns: minmax(230px, 1.2fr) minmax(300px, 1.5fr) minmax(150px, .7fr) auto auto; gap: 8px; align-items: end; padding: 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.assisted-annotation-toolbar small { grid-column: 1 / -1; color: var(--muted); }
+.annotation-review-card { display: grid; gap: 7px; border: 1px solid var(--line); border-radius: 8px; padding: 9px; background: var(--panel); font-size: 12px; }
+.annotation-review-card[data-origin="model"] { border-left: 3px solid var(--warn); }
+.annotation-review-card header { display: flex; justify-content: space-between; gap: 8px; }
+.annotation-review-card small { color: var(--muted); overflow-wrap: anywhere; }
+.annotation-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.annotation-actions label { display: flex; grid: none; flex-direction: row; align-items: center; gap: 4px; }
+.annotation-actions input { width: auto; }
+.annotation-actions button { padding: 4px 7px; }
+.mission-controls { display: grid; grid-template-columns: minmax(220px, 1fr) auto auto minmax(260px, 2fr); gap: 10px; align-items: end; margin-bottom: 8px; }
+.mission-readout { margin: 10px 0; }
+.mission-readout .card { min-height: 84px; }
 .thermal-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .thermal-card { min-width: 0; }
 .thermal-card:last-child { grid-column: 1 / -1; }

@@ -45,6 +45,25 @@
       return body;
     }
 
+    async requestForm(path, form) {
+      const headers = { Accept: 'application/json' };
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      let response;
+      try {
+        response = await fetch(`${this.baseUrl}${path}`, { method: 'POST', headers, body: form });
+      } catch (error) {
+        throw new HubApiError(null, `OpenDroneKit API is unavailable: ${error.message}`, null);
+      }
+      const text = await response.text();
+      let body = null;
+      if (text) { try { body = JSON.parse(text); } catch (_) { body = text; } }
+      if (!response.ok) {
+        const detail = body && typeof body === 'object' ? body.detail : body;
+        throw new HubApiError(response.status, detail || response.statusText, body);
+      }
+      return body;
+    }
+
     listProjects(orgId) { return this.request('GET', `/organizations/${orgId}/projects`); }
     createProject(orgId, project) { return this.request('POST', `/organizations/${orgId}/projects`, project); }
     getProject(projectId) { return this.request('GET', `/projects/${projectId}`); }
@@ -52,7 +71,25 @@
     createAsset(orgId, asset) { return this.request('POST', `/organizations/${orgId}/assets`, asset); }
     listJobs(projectId) { return this.request('GET', `/projects/${projectId}/jobs`); }
     listMissions(projectId) { return this.request('GET', `/projects/${projectId}/missions`); }
+    getMissionPlan(missionId) { return this.request('GET', `/missions/${missionId}/plan`); }
+    getMissionSimulation(missionId) { return this.request('GET', `/missions/${missionId}/simulation`); }
+    createShare(projectId, options) { return this.request('POST', `/projects/${projectId}/shares`, options); }
+    listShares(projectId) { return this.request('GET', `/projects/${projectId}/shares`); }
     listDefects(projectId) { return this.request('GET', `/projects/${projectId}/defects`); }
+    listAnnotations(projectId) { return this.request('GET', `/projects/${projectId}/annotations`); }
+    createAnnotation(projectId, annotation) { return this.request('POST', `/projects/${projectId}/annotations`, annotation); }
+    updateAnnotation(annotationId, patch) { return this.request('PATCH', `/annotations/${annotationId}`, patch); }
+    reviewAnnotation(annotationId, review) { return this.request('POST', `/annotations/${annotationId}/review`, review); }
+    mergeAnnotations(projectId, merge) { return this.request('POST', `/projects/${projectId}/annotations/merge`, merge); }
+    splitAnnotation(annotationId, split) { return this.request('POST', `/annotations/${annotationId}/split`, split); }
+    prelabelAnnotations(projectId, file, modelKey, severity) {
+      const form = new FormData();
+      form.append('image', file, file.name);
+      form.append('model_key', modelKey || 'structural_multiclass_detector');
+      form.append('severity', severity || 'info');
+      return this.requestForm(`/projects/${projectId}/annotations/prelabel`, form);
+    }
+    deleteAnnotation(annotationId) { return this.request('DELETE', `/annotations/${annotationId}`); }
     listMembers(orgId) { return this.request('GET', `/organizations/${orgId}/members`); }
     auditLog(orgId) { return this.request('GET', `/organizations/${orgId}/audit`); }
     tileProviders() { return this.request('GET', '/tiles/providers'); }
