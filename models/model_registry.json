@@ -105,7 +105,7 @@
       ],
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
-      "input_size": 512,
+      "input_size": 1024,
       "description": "Trained in run crack_segformer_b2_local."
     }
   }

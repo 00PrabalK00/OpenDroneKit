@@ -38,3 +38,7 @@ test_api.db
 
 # Deployment secrets
 infrastructure/docker/.env
+
+# Training checkpoints: 338 MB each, reproducible from the run config.
+training/runs/*/best.pt
+training/runs/*/last.pt

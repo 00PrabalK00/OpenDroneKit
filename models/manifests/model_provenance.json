@@ -7,46 +7,6 @@
   },
   "files": [
     {
-      "registry_key": "crack_segmentation",
-      "path": "structural/crack_segmentation.onnx",
-      "sha256": "cda3b64828d7352a63bc2e0815c40d9d09d9668a5b358af7134485de87f157a8",
-      "bytes": 109908496,
-      "method": "trained_in_repo",
-      "source_run": "training\\runs\\crack_segformer_b2_local",
-      "architecture": "crack_segformer_b2_local",
-      "input_size": 512,
-      "opset": 17,
-      "onnx_parity_max_abs_diff": 6.288290023803711e-06,
-      "opencv_dnn_loadable": true,
-      "validation_metrics": {
-        "iou": 0.5849969550270064,
-        "dice": 0.7381679228740711,
-        "precision": 0.6500097729288257,
-        "recall": 0.853991239506912,
-        "pixel_accuracy": 0.9791654810613516,
-        "foreground_fraction": 0.034390016477935166
-      },
-      "training_data": {
-        "task": "crack_seg",
-        "sources": [
-          "crack_segmentation_kaggle",
-          "deepcrack",
-          "crackforest"
-        ],
-        "licenses": {
-          "crack_segmentation_kaggle": "See Kaggle dataset page; aggregates CFD, Crack500, GAPs384, DeepCrack, Rissbilder, Volker",
-          "deepcrack": "MIT (repository)",
-          "crackforest": "Research use; see repository"
-        },
-        "sample_counts": {
-          "train": 8439,
-          "val": 1568,
-          "test": 1946
-        }
-      },
-      "registered_utc": "2026-08-14T11:13:11Z"
-    },
-    {
       "registry_key": "foundation_dinov2_vitb14",
       "path": "pretrained/dinov2_vitb14_pretrain.pth",
       "sha256": "0b8b82f85de91b424aded121c7e1dcc2b7bc6d0adeea651bf73a13307fad8c73",
@@ -148,6 +108,46 @@
         }
       },
       "registered_utc": "2026-08-14T19:43:12Z"
+    },
+    {
+      "registry_key": "crack_segmentation",
+      "path": "structural/crack_segmentation.onnx",
+      "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "bytes": 340011769,
+      "method": "trained_in_repo",
+      "source_run": "training\\runs\\crack_segformer_b5",
+      "architecture": "crack_segformer_b5",
+      "input_size": 1024,
+      "opset": 17,
+      "onnx_parity_max_abs_diff": 1.2184386832814198e-07,
+      "opencv_dnn_loadable": true,
+      "validation_metrics": {
+        "iou": 0.6063392017988066,
+        "dice": 0.7549329570240426,
+        "precision": 0.6817009053350089,
+        "recall": 0.8457926435951258,
+        "pixel_accuracy": 0.9811132617142736,
+        "foreground_fraction": 0.03439430497130569
+      },
+      "training_data": {
+        "task": "crack_seg",
+        "sources": [
+          "crack_segmentation_kaggle",
+          "deepcrack",
+          "crackforest"
+        ],
+        "licenses": {
+          "crack_segmentation_kaggle": "See Kaggle dataset page; aggregates CFD, Crack500, GAPs384, DeepCrack, Rissbilder, Volker",
+          "deepcrack": "MIT (repository)",
+          "crackforest": "Research use; see repository"
+        },
+        "sample_counts": {
+          "train": 8439,
+          "val": 1568,
+          "test": 1946
+        }
+      },
+      "registered_utc": "2026-08-15T00:01:52Z"
     }
   ],
   "licensing_policy": [
