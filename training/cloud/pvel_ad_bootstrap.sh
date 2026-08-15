@@ -44,7 +44,9 @@ log "at commit $(git rev-parse --short HEAD)"
 log "fetch PVEL-AD from Drive (4.2 GB)"
 mkdir -p training/data/_archives
 if [ ! -s training/data/_archives/pvel_ad.rar ]; then
-  gdown --id 1EtteKnLhSFQ3XMCRXt5wKY-lDkIP7299 \
+  # gdown 5 removed --id; the file id is positional now. The Python API still accepts
+  # id=, which is why the local test passed and the shell form was never exercised.
+  gdown 1EtteKnLhSFQ3XMCRXt5wKY-lDkIP7299 \
         -O training/data/_archives/pvel_ad.rar || fail "gdown"
 fi
 # A RAR5 archive starts with these bytes. Google Drive serves an HTML interstitial when
