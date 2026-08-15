@@ -159,6 +159,23 @@ class TestGeoreferencing:
             assert -500.0 < float(finite.min()) < 9000.0
             assert float(finite.max() - finite.min()) < 2000.0
 
+    def test_the_real_orthomosaic_supports_metric_area_and_distance(self, survey):
+        rasterio = pytest.importorskip("rasterio")
+        from core.raster_measurement import measure_area, measure_distance
+
+        _, twin, out = survey
+        path = out / "orthomosaic.tif"
+        with rasterio.open(path) as raster:
+            assert raster.width >= 2 and raster.height >= 2
+            east = raster.width - 1
+            south = raster.height - 1
+
+        distance = measure_distance(path, [(0, 0), (east, 0)])
+        area = measure_area(path, [(0, 0), (east, 0), (east, south), (0, south)])
+        assert distance.value > 0 and distance.unit == "metre"
+        assert area.value > 0 and area.unit == "square metre"
+        assert distance.epsg == area.epsg == twin["crs_epsg"]
+
 
 class TestNoFabrication:
     def test_resolution_is_relaxed_openly_rather_than_interpolated_silently(self, survey):

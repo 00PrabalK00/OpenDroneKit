@@ -337,6 +337,65 @@ class Api:
         return ok(templates=templates, planner=MissionPlanner.__name__)
 
     @guard
+    def repeat_mission(self, version_num: int | None = None, mode: str = "exact",
+                       camera: str = "", terrain_source: str = "",
+                       name: str = "") -> dict[str, Any]:
+        """Plan a repeat of an earlier survey so the two can be compared.
+
+        A camera change moves the altitude to hold ground resolution rather than
+        holding altitude, because preserving the flight while losing the comparison is
+        the wrong thing to preserve.
+        """
+        from mission.repeat import repeat_mission as plan_repeat
+
+        source: dict[str, Any] | None = None
+        if version_num is None:
+            source = self._session.mission_plan_dict or None
+        else:
+            versions = self._session.store.list_mission_versions(
+                self._session.project_id(), name or None)
+            entry = next((v for v in versions
+                          if int(v.get("version_num", 0)) == int(version_num)), None)
+            if entry is None:
+                available = ", ".join(str(v.get("version_num")) for v in versions) or "none"
+                return fail(f"No version {version_num}. Saved versions: {available}.")
+            source = entry
+
+        if not source:
+            return fail("No mission to repeat. Plan one, or name a saved version.")
+
+        try:
+            repeat = plan_repeat(source, mode=mode, camera=camera,
+                                 terrain_source=terrain_source,
+                                 boundary=self._session.aoi_polygon or None)
+        except ValueError as exc:
+            return fail(str(exc))
+
+        self._session.audit("mission_repeat_planned",
+                            {"mode": mode, "camera": camera or "unchanged",
+                             "comparability": repeat.comparability})
+        return ok(repeat=repeat.to_dict())
+
+    @guard
+    def compare_survey_specifications(self, first_version: int,
+                                      second_version: int,
+                                      name: str = "") -> dict[str, Any]:
+        """Whether two surveys were flown to specifications that can be differenced."""
+        from mission.repeat import compare_specifications
+
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        by_num = {int(v.get("version_num", 0)): v for v in versions}
+
+        missing = [n for n in (first_version, second_version) if n not in by_num]
+        if missing:
+            available = ", ".join(str(n) for n in sorted(by_num)) or "none"
+            return fail(f"No such version(s): {missing}. Saved: {available}.")
+
+        return ok(comparison=compare_specifications(by_num[first_version],
+                                                    by_num[second_version]))
+
+    @guard
     def import_gcps(self, path: str, epsg: int | None = None) -> dict[str, Any]:
         """Load surveyed ground control points for this project."""
         from core.gcp import GcpError, read_gcp_file

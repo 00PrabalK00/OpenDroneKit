@@ -227,9 +227,18 @@ MISSION_PLANNING = [
     F("mp.sharing", "Mission preview sharing", "hub", "Mission engine",
       "Secure link showing path, area, altitude, duration, drone and safety areas.",
       "not_started", []),
-    F("mp.repeatable", "Repeatable missions", "hub", "Mission engine",
-      "Repeat exactly, with updated terrain, modified boundary, or a different aircraft.",
-      "not_started", []),
+    F("mp.repeatable", "Repeatable missions", "core", "Mission engine",
+      "Repeat exactly, with updated terrain, a modified boundary, or a different "
+      "aircraft, where a camera change adjusts altitude to hold ground resolution "
+      "rather than holding altitude, and every repeat states whether it can honestly be "
+      "compared against the original.",
+      "implemented", ["tests/test_repeat.py::TestExactRepeat",
+                      "tests/test_repeat.py::TestDifferentAircraft",
+                      "tests/test_repeat.py::TestUpdatedTerrain",
+                      "tests/test_repeat.py::TestModifiedBoundary",
+                      "tests/test_repeat.py::TestComparability",
+                      "tests/test_repeat.py::TestAgainstARealPlan"],
+      "mission/repeat.py; Api.repeat_mission and compare_survey_specifications."),
     F("mp.import", "Mission import", "hub", "Mission engine",
       "KML, KMZ, GeoJSON, GPX and CSV boundary import, each read in its own coordinate "
       "order, with out-of-range coordinates and headerless CSVs refused rather than "
@@ -588,21 +597,35 @@ INDIA_FIRST = [
     F("eng.anomaly", "Anomaly intelligence engine", "vision", "India: shared engines",
       "Find deviations from a validated normal baseline without assigning an unsupported "
       "named defect class.",
-      "not_started", []),
+      "implemented", ["tests/test_india_anomaly.py::TestValidatedBaseline",
+                      "tests/test_india_anomaly.py::TestGeospatialRefusals"],
+      "Robust per-band baseline statistics require named validation scope; outputs are georeferenced deviation candidates, never inferred defect names."),
 
     # Photogrammetry and geometry foundation
     F("india.foundation.orthomosaic", "Survey orthomosaic", "workers", "India: foundation",
       "A georeferenced site orthomosaic suitable for GIS and downstream analysis.",
-      "in_progress", [], "Writer and reconstruction path exist; end-to-end survey evidence is not automated."),
+      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing::test_rasters_are_written_as_georeferenced_geotiffs"],
+      "Real eight-frame Aukerman survey produces a CRS-bearing orthomosaic GeoTIFF."),
     F("india.foundation.dsm_dtm", "Survey DSM and DTM", "workers", "India: foundation",
       "Metric surface and terrain rasters in an explicit projected CRS.",
-      "in_progress", [], "Reconstruction path exists; end-to-end survey evidence is not automated."),
+      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing::test_rasters_are_written_as_georeferenced_geotiffs",
+                      "tests/test_reconstruction_colmap.py::TestGeoreferencing::test_the_dsm_holds_elevations_in_metres",
+                      "tests/test_reconstruction_colmap.py::TestGeoreferencing::test_the_dtm_holds_ground_elevations_in_metres",
+                      "tests/test_reconstruction_colmap.py::TestNoFabrication"],
+      "Real survey DSM and ground-filtered DTM are metric GeoTIFFs; sparse resolution is relaxed and disclosed rather than invented."),
     F("india.foundation.reconstruction", "Survey 3D reconstruction", "workers", "India: foundation",
       "Georeferenced point cloud and model from a real drone survey.",
-      "in_progress", [], "Verified manually on Aukerman; the registry requires an automated real-input test."),
+      "implemented", ["tests/test_reconstruction_colmap.py::TestStructureFromMotion",
+                      "tests/test_reconstruction_colmap.py::TestGeoreferencing",
+                      "tests/test_reconstruction_colmap.py::TestNoFabrication"],
+      "Automated COLMAP reconstruction runs on eight real Aukerman drone frames and reports registration, residuals, point count and limitations."),
     F("india.foundation.area", "Survey area and distance", "core", "India: foundation",
       "Metric area and distance measured from georeferenced survey products.",
-      "in_progress", [], "Core measurement functions exist; the mapped client workflow is incomplete."),
+      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing::test_the_real_orthomosaic_supports_metric_area_and_distance",
+                      "tests/test_raster_measurement.py::TestDistance",
+                      "tests/test_raster_measurement.py::TestArea",
+                      "tests/test_raster_measurement.py::TestRefusals"],
+      "Measured directly on projected rasters, including the real COLMAP orthomosaic; unreferenced and geographic inputs are refused."),
     F("india.foundation.volume", "Stockpile volume", "core", "India: foundation",
       "Volume against an explicit reference surface, exact on a known metric DSM/DTM.",
       "implemented", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",
@@ -615,8 +638,10 @@ INDIA_FIRST = [
     F("india.foundation.deliverable", "Georeferenced client deliverable", "core", "India: foundation",
       "A customer receives mapped vectors/rasters, quantities, method and honest limits "
       "rather than an isolated model prediction.",
-      "in_progress", ["tests/test_survey_intelligence.py::TestSurfaceChangePackage"],
-      "Complete for surface-change comparisons; each remaining mission pack needs its own deliverable."),
+      "implemented", ["tests/test_provenance.py::TestRealReconstruction",
+                      "tests/test_survey_intelligence.py::TestSurfaceChangePackage",
+                      "tests/test_reconstruction_colmap.py::TestGeoreferencing"],
+      "Real reconstruction artifacts carry verifiable lineage; survey-change packages add mapped quantities, method and explicit interpretation limits."),
 
     # Construction
     F("pack.construction.change", "Construction survey comparison", "core",
@@ -666,8 +691,8 @@ INDIA_FIRST = [
       "India pack: Solar",
       "Aligned RGB/radiometric thermal imagery with module-level hotspots, hot cells, "
       "string/module anomalies and temperature-backed severity.",
-      "in_progress", ["tests/test_thermal.py"],
-      "Radiometric conversion and single-frame mapping work; alignment and module association do not."),
+      "in_progress", ["tests/test_thermal.py", "tests/test_hub_thermal.py"],
+      "Radiometric mapping, validated-registration comparison and 3D surface projection work; automatic alignment and module-level association still do not."),
 
     # Land and property
     F("pack.land.gis", "Land-survey GIS extraction", "vision",
@@ -764,14 +789,21 @@ INSPECTION = [
     F("th.map_2d", "2D thermal map", "workers", "Thermal",
       "Temperature field written as a georeferenced raster in Celsius, so its units "
       "are unambiguous in GIS.",
-      "in_progress", ["tests/test_thermal.py::TestGeoreferencedOutput"],
-      "Single-frame georeferenced output done; mosaicking many frames is not."),
+      "implemented", ["tests/test_thermal.py::TestGeoreferencedOutput",
+                      "tests/test_hub_thermal.py::TestThermalMapArtifact",
+                      "tests/test_hub_thermal.py::TestThermalRealBrowser"],
+      "Measured Celsius cells are preserved in a projected GeoTIFF and rendered locally with CRS and interpolation status visible."),
     F("th.model_3d", "3D thermal model", "workers", "Thermal",
       "Thermal values projected onto reconstructed geometry.",
-      "not_started", []),
+      "implemented", ["tests/test_hub_thermal.py::TestThermalProjectionContract",
+                      "tests/test_hub_thermal.py::TestThermalRealBrowser"],
+      "Nearest measured thermal cells colour overlapping vertices; missing CRS, mismatches and unknown coordinate frames are refused."),
     F("th.comparison", "RGB and thermal comparison", "hub", "Thermal",
       "Side by side, swipe and opacity overlay with linked zoom.",
-      "not_started", []),
+      "implemented", ["tests/test_hub_thermal.py::TestThermalProjectionContract",
+                      "tests/test_hub_thermal.py::TestThermalRealBrowser",
+                      "tests/test_hub_web.py::TestHubPanels"],
+      "All three local comparison modes share pan/zoom and refuse dimension-only matching without explicit validated registration metadata."),
 ]
 
 # ---------------------------------------------------------------------------
