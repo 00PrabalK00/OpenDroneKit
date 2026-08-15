@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare00/odk-train-rail-obstacle-yolo11l",
+  "title": "ODK train rail_obstacle_yolo11l",
+  "code_file": "rail_obstacle_yolo11l.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare00/odk-rail-obstacle-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

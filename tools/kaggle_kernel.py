@@ -115,8 +115,30 @@ def report_environment() -> None:
         print("WARNING: no GPU visible. Check the kernel's accelerator setting.")
 
 
+def ensure_repo() -> None:
+    """Clone the code the kernel is supposed to run.
+
+    A kernel is a bare script on a fresh machine: nothing about the repository is
+    present unless it is fetched. Cloning at a pinned commit rather than tracking main
+    means a kernel re-run months later trains the same code, and a result can be traced
+    to a SHA rather than to whatever main happened to be that day.
+    """
+    if REPO.is_dir():
+        return
+    commit = os.environ.get("ODK_COMMIT", "main")
+    subprocess.run(
+        ["git", "clone", "--quiet", "https://github.com/00PrabalK00/OpenDroneKit.git", str(REPO)],
+        check=True,
+    )
+    subprocess.run(["git", "checkout", "--quiet", commit], cwd=REPO, check=True)
+    head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
+                          capture_output=True, text=True).stdout.strip()
+    print("repo at commit", head)
+
+
 def main() -> int:
     report_environment()
+    ensure_repo()
     if not CORPUS.is_dir():
         raise SystemExit(
             f"Corpus not attached at {{CORPUS}}. Add the dataset to the kernel's inputs."

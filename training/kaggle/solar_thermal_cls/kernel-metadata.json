@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare00/odk-train-solar-thermal-cls",
+  "title": "ODK train solar_thermal_cls",
+  "code_file": "solar_thermal_cls.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare00/odk-solar-thermal-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

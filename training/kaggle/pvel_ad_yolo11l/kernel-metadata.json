@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare/odk-train-pvel-ad-yolo11l",
+  "title": "ODK train pvel_ad_yolo11l",
+  "code_file": "pvel_ad_yolo11l.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare/odk-pvel-ad-yolo11l-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
