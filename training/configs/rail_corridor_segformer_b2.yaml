@@ -1,0 +1,42 @@
+# Rail corridor extent: UAV-RSOD V1, 630 samples from Indian railway UAV flights.
+#
+# The archive masks two things over the same imagery -- 'Rail Inside' (the corridor
+# surface between the rails) and 'Rail Lines' (the rails themselves) -- as independent
+# binary sets. The adapter emits both, salted on the image stem so an image's two
+# aspects always land in the same split and cannot leak across it.
+#
+# This config trains the corridor model. It is binary on purpose: the archive never
+# states an ordering between the two aspects, so merging them into a 3-class mask would
+# assert a hierarchy the labels do not contain. A rails model is a second run against
+# the same corpus, not a class added to this one.
+#
+# 630 samples over two aspects is around 315 distinct images. That is small, so a B2
+# encoder rather than a B5, and the test IoU should be read as a first indication rather
+# than a settled number.
+name: rail_corridor_segformer_b2
+data_root: training/data/prepared/rail_seg
+model_id: nvidia/mit-b2
+# num_classes: 2   (not a SegConfig field)
+# mask_aspect: railinside   (not a SegConfig field)
+image_size: 512
+batch_size: 8
+epochs: 60
+lr: 0.00006
+# encoder_lr: 0.000006   (not a SegConfig field)
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 4
+seed: 1337
+amp_dtype: bf16
+early_stop_patience: 10
+# A corridor runs in whatever direction the flight took, so rotation is fair here in a
+# way it is not for ground-level imagery.
+# fliplr: 0.5   (not a SegConfig field)
+# flipud: 0.5   (not a SegConfig field)
+# degrees: 180.0   (not a SegConfig field)
+output_dir: training/runs
+# release gates (checked by hand, not by the loader):
+#  - Report IoU on the held-out test split only.
+#  - State the sample count in the model manifest; 630 is small enough that a user
+#    deserves to know it before trusting the number.
+#  - Export to ONNX, verify torch parity, and confirm the runtime cv2.dnn load.

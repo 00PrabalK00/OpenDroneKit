@@ -9,12 +9,12 @@ holdout. Files are referenced, not copied, so a 25 GB source is never duplicated
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 PRODUCTION_LICENSE_ALLOWLIST = frozenset({
@@ -36,6 +36,12 @@ class SplitPolicy:
     validation: float = 0.15
     test: float = 0.15
     salt: str = 'opendronekit-shared-semantic-v1'
+    # Groups that must land in test whatever the hash says, each with the reason it
+    # was pinned. A random split is the right default, but it cannot guarantee that a
+    # specific region is held out, and "India-first" is a claim about a specific
+    # region. Pinning is recorded in the corpus so the holdout is auditable rather
+    # than an accident of the salt.
+    pinned_test_groups: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         values = (self.train, self.validation, self.test)
@@ -45,6 +51,30 @@ class SplitPolicy:
             raise SemanticCorpusError('Split ratios must sum to 1.0.')
         if not self.salt:
             raise SemanticCorpusError('Split salt cannot be empty.')
+        for group, reason in dict(self.pinned_test_groups).items():
+            if not str(reason).strip():
+                raise SemanticCorpusError(
+                    f'Pinned test group {group!r} needs a reason it was pinned.'
+                )
+
+
+# The India holdout for the shared semantic engine.
+#
+# No open dataset carries India land-cover labels at the 0.25-0.5 m resolution this
+# engine works at, so these four SpaceNet 7 tiles are what an India holdout can honestly
+# be built from today. Their coordinates were decoded from the slippy-map tile numbers
+# embedded in the site id, not assumed from the name.
+#
+# Read the resulting metric narrowly. SpaceNet 7 labels buildings and nothing else, so
+# these tiles measure one of the schema's six classes over Indian ground. They say
+# nothing about road, vegetation, water or bare_land transfer, and any report that
+# quotes them must say so.
+INDIA_HOLDOUT_GROUPS: dict[str, str] = {
+    'spacenet7::L15-1438E-1134N_5753_3655_13': 'India holdout: Mumbai (19.021N, 72.817E).',
+    'spacenet7::L15-1439E-1134N_5759_3655_13': 'India holdout: Kalyan/Thane (19.021N, 73.081E).',
+    'spacenet7::L15-1479E-1101N_5916_3785_13': 'India holdout: Tirupati (13.539N, 79.980E).',
+    'spacenet7::L15-1481E-1119N_5927_3715_13': 'India holdout: Vijayawada (16.510N, 80.464E).',
+}
 
 
 def _normalise_date(
@@ -69,6 +99,8 @@ def _normalise_date(
 
 
 def _split_for_group(group: str, policy: SplitPolicy) -> str:
+    if group in policy.pinned_test_groups:
+        return 'test'
     digest = hashlib.sha256(f'{policy.salt}\0{group}'.encode('utf-8')).digest()
     position = int.from_bytes(digest[:8], 'big') / float(2 ** 64)
     if position < policy.train:
@@ -189,6 +221,13 @@ def build_semantic_corpus(
             'label': str(resolved_label),
             'group': group,
             'split': _split_for_group(group, split_policy),
+            # Carried on the sample so a reader of one record can tell a deliberate
+            # holdout from a hash outcome without consulting the policy.
+            **(
+                {'pinned_test_reason': split_policy.pinned_test_groups[group]}
+                if group in split_policy.pinned_test_groups
+                else {}
+            ),
             **{
                 key: sample[key]
                 for key in (
@@ -272,6 +311,13 @@ def build_semantic_corpus(
             ),
             'samples_by_split': split_counts,
             'sites_by_split': site_counts,
+            # A pinned group that matched nothing is the quiet failure here: the corpus
+            # would look correct while the holdout it claims is empty. Counting what
+            # each pin actually captured makes that visible.
+            'pinned_test_samples': {
+                group: sum(item['group'] == group for item in accepted)
+                for group in sorted(split_policy.pinned_test_groups)
+            },
             'declared_class_sample_counts': {
                 str(class_id): declared_counts[class_id] for class_id in schema_ids
             },
@@ -306,12 +352,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--allow-license', action='append', dest='licenses')
     parser.add_argument('--no-require-files', action='store_true')
     parser.add_argument('--salt', default=SplitPolicy.salt)
+    parser.add_argument(
+        '--no-india-holdout',
+        action='store_true',
+        help=(
+            'Do not pin the India tiles into test. The engine is presented as '
+            'India-first, so holding them out is the default and switching it off '
+            'should be a deliberate act.'
+        ),
+    )
     args = parser.parse_args(argv)
     result = build_semantic_corpus(
         [args.source_manifest, *args.add_source],
         args.output_manifest,
         allowed_licenses=args.licenses or tuple(sorted(PRODUCTION_LICENSE_ALLOWLIST)),
-        policy=SplitPolicy(salt=args.salt),
+        policy=SplitPolicy(
+            salt=args.salt,
+            pinned_test_groups={} if args.no_india_holdout else dict(INDIA_HOLDOUT_GROUPS),
+        ),
         require_files=not args.no_require_files,
     )
     print(json.dumps(result['counts'], indent=2))

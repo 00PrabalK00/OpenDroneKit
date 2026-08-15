@@ -1,0 +1,65 @@
+# Electroluminescence cell defect detection: PVEL-AD, 4,500 annotated images.
+#
+# This is the model that names a defect. The existing solar_cell_severity model scores
+# ELPV cells into ordinal tiers and cannot say what is wrong, because ELPV ships defect
+# probability and nothing else. PVEL-AD ships 7,842 boxes over named classes, so a
+# finding here reads "black_core at these coordinates" rather than "probably defective".
+# Both models are kept: severity is the cheap first pass, this is the deep inspection.
+#
+# Eight classes, not twelve. The archive declares twelve, but printing_error (32 boxes),
+# corner (9), fragment (7) and scratch (5) cannot be learned from that support, and a
+# detector that lists a class will emit that class. Four names nobody can trust would
+# poison every report the model appears in, so they are dropped at corpus build time and
+# the model is honest about answering eight questions rather than twelve badly.
+#
+# The 19,150 test images in the archive are unlabelled -- test/Annotations is present and
+# empty -- so they are not in this corpus. They remain useful later as unlabelled data
+# for a semi-supervised pass, which is a separate decision.
+name: pvel_ad_yolo11l
+data_root: training/data/prepared/pvel_ad_det
+model_id: yolo11l.pt
+# Cells are 1024x1024 and the defects that matter are thin: a finger interruption is a
+# few pixels wide. Downscaling to the usual 640 is what makes those classes unlearnable,
+# so this trains at native-ish resolution and pays for it in batch size.
+image_size: 1024
+batch_size: 8
+# 60, not the 120 this corpus would ideally get, and the reason is budget rather than
+# convergence. Measured throughput for YOLO11l at 1024px is 6.10 img/s on an RTX 5060,
+# which scales to roughly 20-25 img/s on a 4090; 11,821 train images plus per-epoch
+# validation puts 120 epochs at 20-24 hours, or about $7-8.40 of rented time against
+# $5.35 of credit. A run that dies at epoch 70 produces no clean result and spends the
+# whole balance, so the epoch count is set to what can actually finish.
+#
+# patience below is the real stopping rule. If this plateaus at 45 it stops there, and
+# if the per-class AP for the thin classes is still climbing at 60 that is the evidence
+# for buying more time rather than a reason to have gambled it up front.
+epochs: 60
+patience: 25
+optimizer: auto
+lr: 0.001
+# lrf: 0.01   (not a DetConfig field)
+# warmup_epochs: 3   (not a DetConfig field)
+# weight_decay: 0.0005   (not a DetConfig field)
+seed: 1337
+amp: true
+# Cells are photographed in a fixed orientation on a production line, so vertical flips
+# and large rotations would invent geometry the sensor never sees. Horizontal flip only.
+# fliplr: 0.5   (not a DetConfig field)
+# flipud: 0.0   (not a DetConfig field)
+degrees: 0.0
+# scale: 0.3   (not a DetConfig field)
+mosaic: 0.8
+close_mosaic: 15
+# EL images are near-infrared greyscale; HSV jitter has little to act on and risks
+# washing out the low-contrast defects this model exists to find.
+hsv_h: 0.0
+hsv_s: 0.0
+hsv_v: 0.2
+output_dir: training/runs
+# val_split: val   (not a DetConfig field)
+# test_split: test   (not a DetConfig field)
+# release gates (checked by hand, not by the loader):
+#  - Report per-class AP, not only mAP50, because the class support spans 2958 to 135.
+#  - Confirm star_crack and vertical_dislocation are recalled at all before shipping.
+#  - Export to ONNX, verify torch parity, and confirm the runtime cv2.dnn load.
+#  - Record the checkpoint SHA-256 in models/model_registry.json.

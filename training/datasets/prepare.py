@@ -36,6 +36,7 @@ import re
 import shutil
 import sys
 import zipfile
+from xml.etree import ElementTree
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
@@ -225,6 +226,68 @@ def _write_classification(samples: Iterable[ClsSample], task: PreparedTask, salt
     task.class_names = sorted(classes)
 
 
+def _voc_to_yolo(
+    sample: DetSample,
+    merged: list[str],
+    index_of: dict[str, int],
+) -> list[str]:
+    """Convert one Pascal VOC annotation to YOLO lines, dropping unlisted classes.
+
+    RDD2022 and PVEL-AD both ship VOC xml rather than YOLO text. VOC boxes are absolute
+    pixel corners and YOLO wants a normalised centre and size, so the image dimensions
+    have to come from the annotation's own ``<size>`` element -- reading them from the
+    image file instead would silently disagree wherever the two differ, and a box
+    normalised against the wrong width lands somewhere else entirely.
+
+    A class not in ``sample.class_names`` is dropped. That is the mechanism by which the
+    long-tail PVEL-AD defects and the country-specific RDD2022 damage types leave the
+    corpus, so it has to stay a drop and never a fallback to class zero.
+    """
+    if not sample.label_path or not sample.label_path.exists():
+        return []
+    try:
+        root = ElementTree.parse(sample.label_path).getroot()
+    except ElementTree.ParseError:
+        return []
+
+    size = root.find("size")
+    width = float(size.findtext("width") or 0) if size is not None else 0.0
+    height = float(size.findtext("height") or 0) if size is not None else 0.0
+    if width <= 0 or height <= 0:
+        return []
+
+    allowed = set(sample.class_names)
+    lines: list[str] = []
+    for obj in root.findall("object"):
+        name = (obj.findtext("name") or "").strip()
+        if name not in allowed:
+            continue
+        box = obj.find("bndbox")
+        if box is None:
+            continue
+        try:
+            xmin = float(box.findtext("xmin") or 0)
+            ymin = float(box.findtext("ymin") or 0)
+            xmax = float(box.findtext("xmax") or 0)
+            ymax = float(box.findtext("ymax") or 0)
+        except ValueError:
+            continue
+        # Some RDD2022 boxes run a pixel or two past the stated image edge.
+        xmin, xmax = max(0.0, min(xmin, xmax)), min(width, max(xmin, xmax))
+        ymin, ymax = max(0.0, min(ymin, ymax)), min(height, max(ymin, ymax))
+        if xmax <= xmin or ymax <= ymin:
+            continue
+        if name not in index_of:
+            index_of[name] = len(merged)
+            merged.append(name)
+        cx = (xmin + xmax) / 2.0 / width
+        cy = (ymin + ymax) / 2.0 / height
+        bw = (xmax - xmin) / width
+        bh = (ymax - ymin) / height
+        lines.append(f"{index_of[name]} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+    return lines
+
+
 def _write_detection(samples: Iterable[DetSample], task: PreparedTask, salt: str) -> None:
     """Write YOLO-format detection data, remapping class ids into a merged space.
 
@@ -246,7 +309,9 @@ def _write_detection(samples: Iterable[DetSample], task: PreparedTask, salt: str
         shutil.copy2(sample.image_path, image_dir / f"{sample.sample_id}{sample.image_path.suffix}")
 
         lines: list[str] = []
-        if sample.label_path is not None and sample.label_path.exists():
+        if sample.label_path is not None and sample.label_path.suffix.lower() == ".xml":
+            lines = _voc_to_yolo(sample, merged, index_of)
+        elif sample.label_path is not None and sample.label_path.exists():
             for raw in sample.label_path.read_text(encoding="utf-8").splitlines():
                 parts = raw.split()
                 if len(parts) < 5:
@@ -255,6 +320,10 @@ def _write_detection(samples: Iterable[DetSample], task: PreparedTask, salt: str
                 if local_index >= len(sample.class_names):
                     continue
                 name = sample.class_names[local_index]
+                if not name:
+                    # A class the dataset declared and the adapter dropped: a duplicate
+                    # label under a second name, a negative class, or an export artefact.
+                    continue
                 if name not in index_of:
                     index_of[name] = len(merged)
                     merged.append(name)
@@ -617,7 +686,32 @@ def _read_yolo_class_names(root: Path) -> tuple[str, ...]:
     return ()
 
 
-def adapt_roboflow_yolo(raw: Path, *, prefix: str) -> Iterator[DetSample]:
+# Corrosion: the export carries the same label under two names, plus a negative class.
+# A detector trained on the unfixed space emits findings called "non-corrosion", which
+# is not a finding. Measured instance counts before the fix: Corrosion 805,
+# Corrosion-detection 3, non-corrosion 2.
+CORROSION_CLASS_MAP = {
+    "Corrosion-detection": "Corrosion",   # the same label under the project's own name
+    "non-corrosion": "",                  # a negative class is not a detection target
+}
+
+# Solar surface condition: two of the six declared classes have no instances at all, and
+# one of them is named after its own index. Measured before the fix: Clear 6033,
+# Snow-Covered 2010, Dusty 911, Physical-Damage 144, Bird-drop 0, "1" 0.
+#
+# "Clear" is kept deliberately. It is a healthy panel rather than a defect, but a
+# detector trained without it has never been shown a sound panel and will call every
+# module it sees something. What must not happen is a "Clear" box being reported to a
+# client as a finding, and that is a consumer's job to enforce, not a reason to discard
+# two thirds of the annotations.
+SOLAR_PANEL_CLASS_MAP = {
+    "Bird-drop": "",   # declared, zero instances: nothing was ever labelled with it
+    "1": "",           # an export artefact, not a class
+}
+
+
+def adapt_roboflow_yolo(raw: Path, *, prefix: str,
+                        class_map: dict[str, str] | None = None) -> Iterator[DetSample]:
     """Any Roboflow YOLO export: ``{train,valid,test}/{images,labels}`` + data.yaml.
 
     Some Universe projects ship a token validation split -- CODEBRIM's mirror has 90
@@ -625,10 +719,24 @@ def adapt_roboflow_yolo(raw: Path, *, prefix: str) -> Iterator[DetSample]:
     checkpoint on across six classes. When the native split is that thin, part of the
     training set is deterministically reassigned to validation. The test split is
     never touched, so published comparisons stay valid.
+
+    ``class_map`` renames or drops classes on the way in, and exists because Universe
+    exports arrive with label spaces that are wrong rather than merely untidy. Two real
+    cases from this project: a corrosion export carrying ``Corrosion`` and
+    ``Corrosion-detection`` as separate classes when they are the same label under two
+    names, and a solar export carrying a class literally named ``1`` alongside a
+    ``Bird-drop`` class with no instances at all. Mapping a name to an empty string drops
+    it. Doing this here, declared per dataset, keeps the decision visible next to the
+    dataset it belongs to -- a model trained on an unfixed label space produces findings
+    named ``non-corrosion``, which no downstream consumer can interpret.
     """
     class_names = _read_yolo_class_names(raw)
     if not class_names:
         return
+
+    if class_map:
+        # An empty name marks a dropped class; the detection writer skips those boxes.
+        class_names = tuple(class_map.get(name, name) for name in class_names)
 
     def count_images(split_name: str) -> int:
         directory = raw / split_name / "images"
@@ -657,6 +765,325 @@ def adapt_roboflow_yolo(raw: Path, *, prefix: str) -> Iterator[DetSample]:
                 class_names=class_names,
                 split=resolved,
             )
+
+
+# The four damage types the CRDDC2022 benchmark scores, and the only four both RDD2022
+# subsets have in common.
+#
+# The India annotations actually carry ten names: the benchmark four plus D01 (179),
+# D11 (45), D43 (57), D44 (1062), D50 (28) and a single 'D0w0' that is a typo of D00.
+# The China_Drone mirror carries the four plus 'Block crack' and 'Repair'.
+#
+# Keeping the union would give a model whose rarest classes appear in exactly one
+# country's imagery, so it would learn "which country" as readily as "which damage".
+# Restricting to the shared four costs about 1,372 India boxes and makes the corpus
+# comparable to published RDD2022 numbers. The dropped names are listed rather than
+# silently filtered so the loss is visible here.
+RDD2022_BENCHMARK_CLASSES = ("D00", "D10", "D20", "D40")
+RDD2022_DROPPED_CLASSES = ("D01", "D11", "D43", "D44", "D50", "D0w0", "Block crack", "Repair")
+RDD2022_CLASS_MAP = {name: "" for name in RDD2022_DROPPED_CLASSES}
+
+
+def adapt_rdd2022_india(raw: Path) -> Iterator[DetSample]:
+    """RDD2022 India: Pascal VOC xml over ``India/train`` with an unlabelled test set.
+
+    Only ``train`` carries annotations -- the 1,959 test images ship without xml because
+    the benchmark scored them on a server -- so the native split is unusable and this
+    derives train/val/test from the annotated images deterministically.
+    """
+    root = raw / "India" / "train"
+    image_dir = root / "images"
+    xml_dir = root / "annotations" / "xmls"
+    if not image_dir.is_dir() or not xml_dir.is_dir():
+        return
+
+    for image_path in _iter_images(image_dir):
+        annotation = xml_dir / f"{image_path.stem}.xml"
+        if not annotation.is_file():
+            continue
+        yield DetSample(
+            sample_id=f"rddindia_{image_path.stem}",
+            image_path=image_path,
+            label_path=annotation,
+            class_names=RDD2022_BENCHMARK_CLASSES,
+            split=deterministic_split(image_path.stem, salt="rdd2022-india"),
+        )
+
+
+def adapt_pvel_ad(raw: Path) -> Iterator[DetSample]:
+    """PVEL-AD electroluminescence defects: Pascal VOC xml over ``trainval``.
+
+    The archive holds 36,543 images but only 4,500 annotations. ``test/Annotations`` is
+    present and empty -- the project's README says the test labels were released, this
+    copy predates that -- so the 19,150 test images are unusable as supervision and are
+    not emitted here. ``othertypes/good`` holds 11,353 anomaly-free cells, which are
+    real negatives rather than unlabelled images, and are emitted with no boxes.
+
+    Four of the twelve classes have almost no support: scratch (5 boxes), fragment (7),
+    corner (9) and printing_error (32). They are dropped rather than trained on, because
+    a detector that lists a class it has seen five times will still emit that class, and
+    a named defect nobody can trust is worse than a refusal.
+    """
+    root = raw / "PVELAD" / "EL2021"
+    image_dir = root / "trainval" / "JPEGImages"
+    xml_dir = root / "trainval" / "Annotations"
+    if not image_dir.is_dir() or not xml_dir.is_dir():
+        return
+
+    for image_path in _iter_images(image_dir):
+        annotation = xml_dir / f"{image_path.stem}.xml"
+        if not annotation.is_file():
+            continue
+        yield DetSample(
+            sample_id=f"pvelad_{image_path.stem}",
+            image_path=image_path,
+            label_path=annotation,
+            class_names=PVEL_AD_TRAINABLE_CLASSES,
+            split=deterministic_split(image_path.stem, salt="pvel-ad"),
+        )
+
+    good_dir = root / "othertypes" / "good"
+    if good_dir.is_dir():
+        for image_path in _iter_images(good_dir):
+            yield DetSample(
+                sample_id=f"pveladgood_{image_path.stem}",
+                image_path=image_path,
+                label_path=None,
+                class_names=PVEL_AD_TRAINABLE_CLASSES,
+                split=deterministic_split(image_path.stem, salt="pvel-ad-good"),
+            )
+
+
+# Ordered by support in the trainval annotations, richest first.
+PVEL_AD_TRAINABLE_CLASSES = (
+    "finger",                  # 2958
+    "crack",                   # 1260
+    "black_core",              # 1028
+    "thick_line",              #  981
+    "horizontal_dislocation",  #  798
+    "short_circuit",           #  492
+    "vertical_dislocation",    #  137
+    "star_crack",              #  135
+)
+PVEL_AD_UNTRAINABLE_CLASSES = ("printing_error", "corner", "fragment", "scratch")
+
+
+def adapt_solar_pv_uav(raw: Path) -> Iterator[SegSample]:
+    """Duke UAV PV segmentation: ``<name>.JPG`` beside ``<name>.png`` binary masks.
+
+    Images are 4000x2250 and masks are three-channel 0/255, so the mask is reduced to a
+    single channel by the segmentation writer. ``moving_labeled`` holds frames pulled
+    from video in two flight modes; they are included but keep their mode in the sample
+    id, because frames from one pass are near-duplicates and a reader needs to see that.
+    """
+    for source_dir, split in ((raw / "train_val_set", None), (raw / "test_set", "test")):
+        if not source_dir.is_dir():
+            continue
+        for image_path in sorted(source_dir.glob("*.JPG")):
+            mask_path = image_path.with_suffix(".png")
+            if not mask_path.is_file():
+                continue
+            yield SegSample(
+                sample_id=f"solarpvuav_{image_path.stem}",
+                image_path=image_path,
+                mask=mask_path,
+                split=split or deterministic_split(image_path.stem, salt="solar-pv-uav"),
+            )
+
+    for mode in ("N_mode", "S_mode"):
+        image_dir = raw / "moving_labeled" / "img" / mode
+        label_dir = raw / "moving_labeled" / "labels" / mode
+        if not image_dir.is_dir() or not label_dir.is_dir():
+            continue
+        for image_path in _iter_images(image_dir):
+            mask_path = label_dir / f"{image_path.stem}.png"
+            if not mask_path.is_file():
+                continue
+            yield SegSample(
+                sample_id=f"solarpvuav_{mode}_{image_path.stem}",
+                image_path=image_path,
+                mask=mask_path,
+                # Frames from one video pass must not straddle a split, so the whole
+                # mode goes to train rather than being diced frame by frame.
+                split="train",
+            )
+
+
+RAIL_OBSTACLE_CLASSES = ("Branch", "IronRod", "Barrel", "Boulder", "Human", "Animal")
+
+
+def adapt_uav_rsod_obstacles(raw: Path) -> Iterator[DetSample]:
+    """UAV-RSOD obstacle detection: Pascal VOC xml beside each jpg in one flat folder.
+
+    Images and annotations share a directory rather than the usual images/labels pair,
+    and the split is the archive's own train/test with no validation set, so a validation
+    split is carved deterministically out of train. The class list is read from the
+    archive's class-names.txt rather than hardcoded, because a mismatch between the two
+    would silently renumber every box.
+    """
+    root = raw / "images"
+    names_file = root / "class-names.txt"
+    class_names = RAIL_OBSTACLE_CLASSES
+    if names_file.is_file():
+        declared = tuple(
+            line.strip() for line in names_file.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        if declared:
+            class_names = declared
+
+    for source_split in ("train", "test"):
+        split_dir = root / source_split
+        if not split_dir.is_dir():
+            continue
+        for image_path in _iter_images(split_dir):
+            annotation = image_path.with_suffix(".xml")
+            if not annotation.is_file():
+                continue
+            if source_split == "test":
+                split = "test"
+            else:
+                bucket = deterministic_split(image_path.stem, salt="uav-rsod-obstacles")
+                split = "val" if bucket == "val" else "train"
+            yield DetSample(
+                sample_id=f"railobs_{source_split}_{image_path.stem}",
+                image_path=image_path,
+                label_path=annotation,
+                class_names=class_names,
+                split=split,
+            )
+
+
+def adapt_uav_rsod(raw: Path) -> Iterator[SegSample]:
+    """UAV-RSOD segmentation: one image folder against two separate mask folders.
+
+    The archive masks 'Rail Inside' and 'Rail Lines' as two independent binary sets over
+    the same imagery. Only 'Rail Inside' is emitted.
+
+    Emitting both looked reasonable and was wrong: the segmentation trainer is binary and
+    has no notion of which aspect a mask belongs to, so it would receive the same image
+    twice carrying two different definitions of foreground and learn the average of two
+    contradictory tasks. Nothing would fail; the IoU would simply be poor for a reason
+    nobody could see. 'Rail Lines' needs either a second task of its own or a multiclass
+    trainer, and until one exists it is left in the archive rather than half-used.
+    """
+    image_dir = raw / "1 Images"
+    mask_root = raw / "2 Annotations" / "2.2 Masking"
+    if not image_dir.is_dir() or not mask_root.is_dir():
+        return
+
+    for aspect in ("Rail Inside",):
+        mask_dir = mask_root / aspect
+        if not mask_dir.is_dir():
+            continue
+        slug = aspect.lower().replace(" ", "")
+        for image_path in _iter_images(image_dir):
+            mask_path = mask_dir / image_path.name
+            if not mask_path.is_file():
+                mask_path = mask_dir / f"{image_path.stem}.png"
+            if not mask_path.is_file():
+                continue
+            yield SegSample(
+                sample_id=f"railseg_{slug}_{image_path.stem}",
+                image_path=image_path,
+                mask=mask_path,
+                # Salted on the stem alone so both aspects of one image share a split.
+                split=deterministic_split(image_path.stem, salt="uav-rsod-seg"),
+            )
+
+
+# WeedsGalore semantic ids. The archive's masks carry 0/1/3/5 rather than a dense range,
+# so remapping by position would relabel every pixel.
+WEEDSGALORE_CLASSES = {0: "soil", 1: "maize", 3: "weed", 5: "weed"}
+
+
+def adapt_weedsgalore(raw: Path) -> Iterator[SegSample]:
+    """WeedsGalore multispectral crop/weed segmentation, split by the archive's own lists.
+
+    Captures are named ``<date>_<id>`` and the archive ships splits/{train,val,test}.txt
+    naming 156 of them. Those lists are used rather than a fresh hash, because the same
+    field was flown on several dates and only the authors' split knows which captures
+    overlap on the ground.
+
+    There is no RGB file to read. Every capture ships as five separate single-band
+    images -- B, G, R, RE and NIR -- so the RGB composite is built here and cached under
+    the work root. That is also the limitation worth stating plainly: the red edge and
+    near infrared bands are where crop/weed separation actually lives, and stacking them
+    is a trainer change rather than an adapter one, so this corpus currently trains a
+    vegetation model on the three bands that discriminate least.
+    """
+    split_dir = raw / "splits"
+    assignments: dict[str, str] = {}
+    for split_name, file_name in (("train", "train.txt"), ("val", "val.txt"), ("test", "test.txt")):
+        listing = split_dir / file_name
+        if not listing.is_file():
+            continue
+        for line in listing.read_text(encoding="utf-8").splitlines():
+            key = line.strip()
+            if key:
+                assignments[key] = split_name
+    if not assignments:
+        return
+
+    for date_dir in sorted(p for p in raw.iterdir() if p.is_dir() and p.name[:2] == "20"):
+        semantics_dir = date_dir / "semantics"
+        images_dir = date_dir / "images"
+        if not semantics_dir.is_dir() or not images_dir.is_dir():
+            continue
+        for mask_path in sorted(semantics_dir.glob("*.png")):
+            key = mask_path.stem
+            split = assignments.get(key)
+            if split is None:
+                # A capture the authors left out of every list. Dropping it is safer
+                # than guessing which field it shares ground with.
+                continue
+            image_path = _weedsgalore_rgb(images_dir, key)
+            if image_path is None:
+                continue
+            yield SegSample(
+                sample_id=f"weeds_{key}",
+                image_path=image_path,
+                mask=mask_path,
+                split=split,
+            )
+
+
+def _weedsgalore_rgb(images_dir: Path, key: str) -> Path | None:
+    """Stack the R, G and B band files for one capture into a cached RGB png."""
+    cache_dir = WORK_ROOT / "weedsgalore_rgb"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    composite = cache_dir / f"{key}.png"
+    if composite.is_file():
+        return composite
+
+    bands = []
+    for suffix in ("R", "G", "B"):
+        band_path = images_dir / f"{key}_{suffix}.png"
+        if not band_path.is_file():
+            return None
+        bands.append(np.asarray(Image.open(band_path)))
+
+    shapes = {band.shape[:2] for band in bands}
+    if len(shapes) != 1:
+        # Bands that disagree on size cannot be stacked without resampling, and
+        # resampling one band against another silently shifts the spectral response.
+        return None
+
+    stacked = np.stack([_as_uint8(band) for band in bands], axis=-1)
+    Image.fromarray(stacked).save(composite)
+    return composite
+
+
+def _as_uint8(band: np.ndarray) -> np.ndarray:
+    """Reduce a band to single-channel uint8 without inventing dynamic range."""
+    if band.ndim == 3:
+        band = band[..., 0]
+    if band.dtype == np.uint8:
+        return band
+    # 16-bit multispectral captures are scaled by the fixed bit depth rather than by
+    # each image's own min and max: per-image normalisation would make brightness
+    # incomparable between captures, which is exactly what a vegetation index needs.
+    return (band.astype(np.float32) / 257.0).clip(0, 255).astype(np.uint8)
 
 
 # --------------------------------------------------------------------------
@@ -726,13 +1153,56 @@ TASKS: dict[str, TaskSpec] = {
         datasets=("corrosion_detection",),
         description="Metal corrosion and rust severity boxes for YOLO.",
     ),
+    "pvel_ad_det": TaskSpec(
+        name="pvel_ad_det",
+        kind="detection",
+        datasets=("pvel_ad",),
+        description=(
+            "Named and localised electroluminescence cell defects. Eight trainable "
+            "classes; four long-tail classes are dropped rather than guessed at."
+        ),
+    ),
+    "roads_det": TaskSpec(
+        name="roads_det",
+        kind="detection",
+        datasets=("rdd2022_india", "rdd2022_china_drone"),
+        description=(
+            "Road surface damage restricted to the four CRDDC2022 benchmark classes "
+            "that both the India and China_Drone subsets share."
+        ),
+    ),
+    "rail_obstacle_det": TaskSpec(
+        name="rail_obstacle_det",
+        kind="detection",
+        datasets=("uav_rsod_obstacles",),
+        description="Obstacles in the rail corridor from Indian UAV imagery.",
+    ),
+    "rail_seg": TaskSpec(
+        name="rail_seg",
+        kind="segmentation",
+        datasets=("uav_rsod",),
+        description="Rail corridor extent from Indian UAV imagery.",
+    ),
+    "agriculture_seg": TaskSpec(
+        name="agriculture_seg",
+        kind="segmentation",
+        datasets=("weedsgalore",),
+        description="Maize crop and weed separation from multispectral UAV imagery.",
+    ),
+    "solar_module_seg": TaskSpec(
+        name="solar_module_seg",
+        kind="segmentation",
+        datasets=("solar_pv_uav",),
+        description="Binary PV module extent from UAV imagery, for inventory and thermal association.",
+    ),
 }
 
 TASK_GROUPS: dict[str, tuple[str, ...]] = {
     "crack": ("crack_seg", "crack_cls"),
-    "solar": ("solar_cls", "solar_thermal_cls", "solar_det"),
+    "solar": ("solar_cls", "solar_thermal_cls", "solar_det", "pvel_ad_det", "solar_module_seg"),
     "structural": ("structural_det",),
     "corrosion": ("corrosion_det",),
+    "roads": ("roads_det",),
     "all": tuple(TASKS),
 }
 
@@ -749,9 +1219,19 @@ ADAPTERS: dict[str, Callable[[Path], Iterator]] = {
     "infrared_solar_modules": adapt_infrared_solar_modules,
     "sdnet2018": adapt_sdnet2018,
     "surface_crack": adapt_surface_crack,
-    "solar_panel_defects": lambda raw: adapt_roboflow_yolo(raw, prefix="solarpv"),
+    "solar_panel_defects": lambda raw: adapt_roboflow_yolo(
+        raw, prefix="solarpv", class_map=SOLAR_PANEL_CLASS_MAP),
     "codebrim_structural": lambda raw: adapt_roboflow_yolo(raw, prefix="codebrim"),
-    "corrosion_detection": lambda raw: adapt_roboflow_yolo(raw, prefix="corrosion"),
+    "corrosion_detection": lambda raw: adapt_roboflow_yolo(
+        raw, prefix="corrosion", class_map=CORROSION_CLASS_MAP),
+    "pvel_ad": adapt_pvel_ad,
+    "rdd2022_india": adapt_rdd2022_india,
+    "rdd2022_china_drone": lambda raw: adapt_roboflow_yolo(
+        raw, prefix="rddchina", class_map=RDD2022_CLASS_MAP),
+    "solar_pv_uav": adapt_solar_pv_uav,
+    "uav_rsod": adapt_uav_rsod,
+    "uav_rsod_obstacles": adapt_uav_rsod_obstacles,
+    "weedsgalore": adapt_weedsgalore,
 }
 
 
@@ -790,6 +1270,11 @@ SOURCE_PREFIXES: dict[str, str] = {
     "codebrim": "codebrim_structural",
     "solarpv": "solar_panel_defects",
     "corrosion": "corrosion_detection",
+    "pvelad": "pvel_ad",
+    "pveladgood": "pvel_ad",
+    "rddindia": "rdd2022_india",
+    "rddchina": "rdd2022_china_drone",
+    "solarpvuav": "solar_pv_uav",
 }
 
 

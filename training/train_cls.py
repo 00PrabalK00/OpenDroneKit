@@ -379,9 +379,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m training.train_cls")
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--epochs", type=int)
+    parser.add_argument("--batch-size", type=int)
+    parser.add_argument("--image-size", type=int)
+    # See train_det.main: the corpus and run directory move with the machine, the
+    # config should not have to.
+    parser.add_argument("--data-root", type=Path, help="Override the corpus location.")
+    parser.add_argument("--output-dir", type=Path, help="Override where runs are written.")
     args = parser.parse_args(argv)
 
     config = ClsConfig.load(args.config)
+    for key in ("epochs", "batch_size", "image_size", "data_root", "output_dir"):
+        value = getattr(args, key)
+        if value is not None:
+            setattr(config, key, value)
+
     train(config, resume=args.resume)
     return 0
 

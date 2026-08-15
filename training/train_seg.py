@@ -540,10 +540,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, help="Override the config batch size.")
     parser.add_argument("--image-size", type=int, help="Override the config image size.")
     parser.add_argument("--max-train-samples", type=int, help="Cap training samples (smoke test).")
+    # See train_det.main: the corpus and run directory move with the machine, the
+    # config should not have to.
+    parser.add_argument("--data-root", type=Path, help="Override the corpus location.")
+    parser.add_argument("--output-dir", type=Path, help="Override where runs are written.")
     args = parser.parse_args(argv)
 
     config = SegConfig.load(args.config)
-    for key in ("epochs", "batch_size", "image_size", "max_train_samples"):
+    for key in ("epochs", "batch_size", "image_size", "max_train_samples",
+                "data_root", "output_dir"):
         value = getattr(args, key)
         if value is not None:
             setattr(config, key, value)

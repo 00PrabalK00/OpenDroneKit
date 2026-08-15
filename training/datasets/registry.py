@@ -285,11 +285,32 @@ DATASETS: dict[str, DatasetSpec] = {
         target='solar',
         license='CC BY 4.0',
         description='Duke UAV imagery, masks and videos with 2,019 PV instances.',
-        approx_size_mb=2500,
-        url='https://figshare.com/ndownloader/articles/18093890/versions/1',
-        archive_name='solar_pv_uav.zip',
+        approx_size_mb=4140,
+        # The article-bundle URL answers 202 with an empty body while figshare assembles
+        # a 18.8 GB zip, of which 16 GB is video this project has no use for. This is the
+        # imgs.zip file within that record, fetched directly.
+        url='https://ndownloader.figshare.com/files/32825000',
+        archive_name='solar_pv_uav_imgs.zip',
         feeds=('solar_module_inventory',),
-        notes='Validate whether each annotation is a module or an array before label conversion.',
+        notes='Images and masks only; the 16 GB vid.zip in the same record is skipped. '
+              'Validate whether each annotation is a module or an array before label conversion.',
+    ),
+    'pvel_ad': DatasetSpec(
+        name='pvel_ad',
+        kind='http',
+        task='detection',
+        target='solar',
+        license='Apache-2.0 (repository); dataset released for research use',
+        description='PVEL-AD electroluminescence cell anomalies with named defect boxes.',
+        approx_size_mb=4210,
+        # The project's request form and institutional-email requirement were superseded
+        # by a public Drive link in its own README. The archive is RAR5, not zip.
+        url='https://drive.google.com/file/d/1EtteKnLhSFQ3XMCRXt5wKY-lDkIP7299',
+        archive_name='pvel_ad.rar',
+        feeds=('solar_cell_defect_detector',),
+        notes='Only trainval carries annotations: 4,500 images and 7,842 boxes. '
+              'test/Annotations is present and empty, so its 19,150 images are '
+              'unlabelled. Four classes have under 35 boxes and are not trainable.',
     ),
     'weedsgalore': DatasetSpec(
         name='weedsgalore',
@@ -305,28 +326,40 @@ DATASETS: dict[str, DatasetSpec] = {
     ),
     'rdd2022_india': DatasetSpec(
         name='rdd2022_india',
-        kind='http',
+        kind='kaggle',
         task='detection',
         target='roads',
         license='CC BY-SA 4.0',
         description='RDD2022 India road images with cracks and potholes.',
-        approx_size_mb=503,
-        url='https://bigdatacup.s3.ap-northeast-1.amazonaws.com/2022/CRDDC2022/RDD2022/Country_Specific_Data_CRDDC2022/RDD2022_India.zip',
-        archive_name='rdd2022_india.zip',
+        approx_size_mb=528,
+        # The CRDDC S3 bucket is gone. The maintainers now point at a single 13.2 GB
+        # figshare zip holding all seven countries, which is a poor trade for one of
+        # them, so this uses a mirror whose 528 MB matches the original 503 MB archive.
+        slug='hafsaesam/rdd2022-india',
         feeds=('road_damage_detector',),
-        notes='India subset is mostly ground imagery; validate drone transfer separately.',
+        notes='Mirror, not the maintainers\' copy: confirm it carries the documented 7,706 '
+              'India images and the D00/D10/D20/D40 schema before training on it. '
+              'India subset is mostly ground imagery; validate drone transfer separately.',
     ),
     'rdd2022_china_drone': DatasetSpec(
         name='rdd2022_china_drone',
-        kind='http',
+        kind='roboflow',
         task='detection',
         target='roads',
         license='CC BY-SA 4.0',
         description='RDD2022 UAV road-damage subset with four defect classes.',
         approx_size_mb=153,
-        url='https://bigdatacup.s3.ap-northeast-1.amazonaws.com/2022/CRDDC2022/RDD2022/Country_Specific_Data_CRDDC2022/RDD2022_China_Drone.zip',
-        archive_name='rdd2022_china_drone.zip',
+        # Same dead S3 bucket as the India subset. This mirror holds exactly the 2,401
+        # images the maintainers document for China_Drone, which is the strongest
+        # evidence available short of downloading both and comparing.
+        workspace='image-pro',
+        project='china-drone',
+        version=1,
+        export_format='yolov8',
         feeds=('road_damage_detector',),
+        notes='Carries two classes beyond the RDD2022 D00/D10/D20/D40 schema -- '
+              '"Block crack" and "Repair" -- so the adapter must map or drop them '
+              'rather than let the class count silently disagree with the India set.',
     ),
     'uav_rsod': DatasetSpec(
         name='uav_rsod',
@@ -336,7 +369,9 @@ DATASETS: dict[str, DatasetSpec] = {
         license='CC BY 4.0',
         description='Indian UAV railway rail, gauge and background segmentation.',
         approx_size_mb=810,
-        url='https://zenodo.org/records/12606374/files/UAV-RSOD_Dataset%20for%20Segmentation.zip?download=1',
+        # The record is alive; the filename was wrong. Zenodo names it with a "V1 "
+        # prefix, and without it the request 404s -- which read as a dead record.
+        url='https://zenodo.org/records/12606374/files/V1%20UAV-RSOD_Dataset%20for%20Segmentation.zip?download=1',
         archive_name='uav_rsod_segmentation.zip',
         feeds=('rail_corridor_segmentation',),
         notes='The Zenodo record separates segmentation and obstacle-detection archives.',

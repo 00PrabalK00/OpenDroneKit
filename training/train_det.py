@@ -42,6 +42,8 @@ class DetConfig:
     seed: int = 1337
     workers: int = 8
     output_dir: str = "training/runs"
+    # Warm-start weights. Empty means start from model_id's pretrained checkpoint.
+    init_weights: str = ""
     # Augmentation. Mosaic and copy-paste matter most for the rare CODEBRIM classes.
     mosaic: float = 1.0
     close_mosaic: int = 15
@@ -80,7 +82,30 @@ def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
         )
 
     run_root = REPO_ROOT / config.output_dir
-    model = YOLO(config.model_id)
+    # Two different ways to carry on, and confusing them wastes rented time.
+    #
+    # --resume finishes an interrupted run: ultralytics reloads last.pt with its
+    # optimizer and epoch index and trains up to the ORIGINAL epoch count. It cannot
+    # take a finished 60-epoch run to 100 -- it will simply report that training is
+    # already complete.
+    #
+    # --weights warm-starts a fresh run from a previous best.pt. That is what extends a
+    # budget-capped run once more credit exists, and it is also how training continues
+    # on a new rented box after the old one was destroyed, since the instance is gone
+    # but the downloaded weights are not. The optimizer state does not survive this, so
+    # the learning-rate schedule restarts; that is a real cost and the reason this is a
+    # deliberate flag rather than the default.
+    start_weights = config.model_id
+    if getattr(config, "init_weights", ""):
+        candidate = Path(config.init_weights)
+        if not candidate.is_absolute():
+            candidate = REPO_ROOT / candidate
+        if not candidate.is_file():
+            raise SystemExit(f"No weights to warm-start from at {candidate}.")
+        start_weights = str(candidate)
+        print(f"warm start from {candidate}", flush=True)
+
+    model = YOLO(start_weights)
 
     results = model.train(
         data=str(data_yaml),
@@ -165,10 +190,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--image-size", type=int)
+    # The corpus and the run directory move with the machine: Kaggle mounts inputs
+    # read-only under /kaggle/input and a rented box has its own disk layout, while the
+    # config's paths are repo-relative. Overriding them here keeps one config per model
+    # rather than a near-duplicate per venue, which is how the two drift apart.
+    parser.add_argument("--data-root", type=Path, help="Override the corpus location.")
+    parser.add_argument("--output-dir", type=Path, help="Override where runs are written.")
+    parser.add_argument(
+        "--weights",
+        dest="init_weights",
+        help=(
+            "Warm-start from an existing best.pt. Use this to extend a run past its "
+            "configured epochs, or to carry on from a destroyed instance's weights. "
+            "Use --resume instead to finish a run that was interrupted."
+        ),
+    )
     args = parser.parse_args(argv)
 
+    if args.resume and args.init_weights:
+        print(
+            "--resume and --weights do different things and cannot be combined: "
+            "--resume finishes an interrupted run up to its original epoch count, "
+            "--weights starts a new run from existing weights."
+        )
+        return 2
+
     config = DetConfig.load(args.config)
-    for key in ("epochs", "batch_size", "image_size"):
+    for key in ("epochs", "batch_size", "image_size", "data_root", "output_dir",
+                "init_weights"):
         value = getattr(args, key)
         if value is not None:
             setattr(config, key, value)

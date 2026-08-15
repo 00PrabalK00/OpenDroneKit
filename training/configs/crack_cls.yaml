@@ -1,0 +1,36 @@
+# Crack / no-crack tile classification: SDNET2018 and Surface Crack, 96,092 tiles.
+#
+# The largest prepared corpus in the repository and, until now, entirely unused. Its
+# value is not a shipped model -- crack segmentation is already served by SegFormer-B5 at
+# test IoU 0.637 -- but two things segmentation cannot get from its own training set:
+#
+# Hard negatives. SDNET2018 is dominated by sound surfaces photographed the same way as
+# the cracked ones, which is what teaches a model that a shadow, a joint or a stain is
+# not a crack. The segmentation corpus is mostly crack-bearing images and cannot teach
+# that distinction.
+#
+# A screening stage. A classifier over tiles is far cheaper than segmenting a whole
+# survey, so it can decide which tiles are worth the expensive model.
+#
+# Train it, measure it, and keep it as a component. Do not register it as the crack
+# detector: it answers a different question from the one crack_segmentation answers.
+name: crack_cls
+data_root: training/data/prepared/crack_cls
+model_id: resnet18
+pretrained: true
+image_size: 224
+batch_size: 128
+# 96k tiles is a large corpus; fewer epochs reach convergence than on the small ones.
+epochs: 20
+lr: 0.0003
+weight_decay: 0.0001
+warmup_fraction: 0.05
+num_workers: 6
+seed: 1337
+amp_dtype: bf16
+# SDNET2018 is roughly 8 sound tiles per cracked one, so this matters here too.
+class_weighting: true
+balanced_sampler: false
+label_smoothing: 0.0
+output_dir: training/runs
+early_stop_patience: 5

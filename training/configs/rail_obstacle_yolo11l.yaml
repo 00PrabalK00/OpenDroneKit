@@ -1,0 +1,48 @@
+# Rail corridor obstacles: UAV-RSOD V2, 2,002 images from Indian railway UAV flights.
+#
+# Six classes, read from the archive's own class-names.txt rather than assumed:
+# Branch, Barrel, Jerrycan, IronRod, Boulder, Person.
+#
+# This is a genuinely India-collected drone dataset, which makes it one of the few
+# capabilities here whose training data matches the deployment story exactly.
+#
+# Person is the class to watch. A model that misses a person on a railway line is a
+# different kind of failure from one that misses a branch, and it also carries a
+# standing obligation: detections of people are not a surveillance feature, and the
+# release gate below exists so that a per-class recall figure for Person is always
+# reported rather than folded into a mean.
+name: rail_obstacle_yolo11l
+data_root: training/data/prepared/rail_obstacle_det
+model_id: yolo11l.pt
+# Source frames are 1920x1080. 960 keeps the aspect ratio's information without the
+# memory cost of full resolution; obstacles here are large objects, not hairline cracks.
+image_size: 960
+batch_size: 12
+epochs: 100
+patience: 20
+optimizer: auto
+lr: 0.01
+# lrf: 0.01   (not a DetConfig field)
+# warmup_epochs: 3   (not a DetConfig field)
+# weight_decay: 0.0005   (not a DetConfig field)
+seed: 1337
+amp: true
+# Nadir-ish corridor imagery: horizontal flips are valid, vertical ones invert the
+# track's perspective and produce scenes the camera cannot capture.
+# fliplr: 0.5   (not a DetConfig field)
+# flipud: 0.0   (not a DetConfig field)
+degrees: 10.0
+# scale: 0.4   (not a DetConfig field)
+mosaic: 1.0
+close_mosaic: 10
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+output_dir: training/runs
+# val_split: val   (not a DetConfig field)
+# test_split: test   (not a DetConfig field)
+# release gates (checked by hand, not by the loader):
+#  - Report per-class recall, with Person stated separately and never averaged away.
+#  - Report mAP50 on the archive's native test split, which is held out unmodified.
+#  - Export to ONNX, verify torch parity, and confirm the runtime cv2.dnn load.
+#  - Record the checkpoint SHA-256 in models/model_registry.json.

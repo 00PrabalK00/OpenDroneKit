@@ -1,0 +1,49 @@
+# Road surface damage: RDD2022 India plus China_Drone, four benchmark classes.
+#
+# D00 longitudinal crack, D10 transverse crack, D20 alligator crack, D40 pothole.
+#
+# Both source subsets declare more than four classes and they do not agree on which.
+# India carries six extra Indian-specific damage types, China_Drone carries "Block crack"
+# and "Repair". Keeping the union would produce a model whose rarest classes only ever
+# appear in one country's imagery, which teaches it to recognise the country. Restricting
+# to the four they share costs roughly 1,372 India boxes and makes the numbers comparable
+# to published CRDDC2022 results.
+#
+# Read the imagery mix carefully before trusting this in a drone product: India RDD2022
+# is predominantly dashboard-height ground imagery, while China_Drone is genuinely aerial
+# at 2,401 images. A model trained on both and evaluated on the mixed test split will
+# report a number that is mostly about the ground imagery. The per-source breakdown in
+# the release gates below exists to stop that number being quoted as drone performance.
+name: roads_yolo11l
+data_root: training/data/prepared/roads_det
+model_id: yolo11l.pt
+image_size: 640
+batch_size: 16
+epochs: 100
+patience: 20
+optimizer: auto
+lr: 0.01
+# lrf: 0.01   (not a DetConfig field)
+# warmup_epochs: 3   (not a DetConfig field)
+# weight_decay: 0.0005   (not a DetConfig field)
+seed: 1337
+amp: true
+# Road damage has no meaningful vertical symmetry from either viewpoint: a pothole
+# photographed upside down is not a road scene the model will ever meet.
+# fliplr: 0.5   (not a DetConfig field)
+# flipud: 0.0   (not a DetConfig field)
+degrees: 0.0
+# scale: 0.5   (not a DetConfig field)
+mosaic: 1.0
+close_mosaic: 10
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+output_dir: training/runs
+# val_split: val   (not a DetConfig field)
+# test_split: test   (not a DetConfig field)
+# release gates (checked by hand, not by the loader):
+#  - Report mAP50 separately for the India and China_Drone portions of the test split.
+#  - Quote only the China_Drone figure as drone performance; the India figure is ground imagery.
+#  - Report per-class AP; D10 is the weakest class in both subsets.
+#  - Export to ONNX, verify torch parity, and confirm the runtime cv2.dnn load.

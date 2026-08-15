@@ -1,0 +1,37 @@
+# Solar cell defect severity from electroluminescence: ELPV, CC BY-NC-SA 4.0.
+#
+# 2,624 cells labelled by defect probability at four levels, kept as ordinal tiers --
+# none, possible, probable, certain -- rather than thresholded to binary, because the
+# middle tiers are exactly the ambiguous cases an inspection tool must flag for review
+# rather than silently resolve.
+#
+# This model judges cell health. It does not name a defect type and cannot localise one:
+# ELPV carries no class names and no boxes. Naming the defect needs a source with box
+# annotations, which at present means PVEL-AD and its institutional-access requirement.
+#
+# Licence note: CC BY-NC-SA is non-commercial. Under the project's standing licence
+# policy that is acceptable for a model shipped in open-source software, and the
+# obligation it creates falls on a downstream user doing paid work, not on this repo.
+name: solar_cell_cls
+data_root: training/data/prepared/solar_cls
+model_id: resnet18
+pretrained: true
+# EL cell images are around 300x300; 224 keeps a standard backbone's expected input
+# without discarding much.
+image_size: 224
+batch_size: 64
+epochs: 40
+lr: 0.0003
+weight_decay: 0.0001
+warmup_fraction: 0.05
+num_workers: 4
+seed: 1337
+amp_dtype: bf16
+# 1508 none against 106 probable: weighted, and balanced accuracy selects the checkpoint.
+class_weighting: true
+balanced_sampler: false
+# The tiers are ordinal and the boundaries between them are judgements, so a little
+# smoothing is honest about how sharp those boundaries really are.
+label_smoothing: 0.05
+output_dir: training/runs
+early_stop_patience: 8

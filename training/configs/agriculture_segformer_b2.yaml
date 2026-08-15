@@ -1,0 +1,51 @@
+# Maize crop and weed separation: WeedsGalore, 156 multispectral UAV captures.
+#
+# Read the size first: 104 train, 26 val, 26 test, on the authors' own split lists
+# rather than a fresh hash, because the same field was flown on four dates and only
+# their split knows which captures overlap on the ground. 104 training images is very
+# small. This is a demonstration of the capability, not a field-ready weeding model,
+# and the model manifest must say so.
+#
+# The larger caveat is spectral. Every capture ships five bands -- B, G, R, RE, NIR --
+# and crop/weed separation lives mostly in red edge and near infrared, because a weed
+# and a maize leaf differ far more in reflectance than in visible colour. The corpus
+# currently carries an RGB composite built from three of those five bands, so this model
+# is being trained on the bands that discriminate least. Wiring RE and NIR through is a
+# trainer change (input channels, normalisation, encoder stem) and is the single highest
+# value improvement available to this model.
+#
+# Six pretrained DeepLabv3+ checkpoints ship with the dataset. They are a baseline to
+# compare against, not weights to register: they were trained by the dataset authors on
+# their own band configuration, not on this corpus.
+name: agriculture_segformer_b2
+data_root: training/data/prepared/agriculture_seg
+model_id: nvidia/mit-b2
+# soil, maize, weed. The archive's mask ids are 0/1/3/5 rather than a dense range, and
+# both 3 and 5 are weed species, so the adapter's mapping is not a positional remap.
+# num_classes: 3   (not a SegConfig field)
+# class_names: [soil, maize, weed]   (not a SegConfig field)
+image_size: 512
+batch_size: 8
+# Small corpus, so more epochs with hard early stopping rather than fewer long ones.
+epochs: 80
+lr: 0.00006
+# encoder_lr: 0.000006   (not a SegConfig field)
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 4
+seed: 1337
+amp_dtype: bf16
+early_stop_patience: 12
+# Nadir field imagery has no canonical orientation.
+# fliplr: 0.5   (not a SegConfig field)
+# flipud: 0.5   (not a SegConfig field)
+# degrees: 180.0   (not a SegConfig field)
+# Weed pixels are a small fraction of a mostly-soil-and-maize scene.
+# class_weighting: true   (not a SegConfig field)
+output_dir: training/runs
+# release gates (checked by hand, not by the loader):
+#  - Report per-class IoU; a mean IoU here is dominated by soil and says little.
+#  - State the 104-image training size in the model manifest.
+#  - State that the model reads RGB only, not the RE and NIR bands the dataset provides.
+#  - Compare against the dataset's own DeepLabv3+ checkpoints before claiming the
+#    architecture choice was justified.

@@ -1,0 +1,43 @@
+# PV module extent from UAV imagery: Duke solar_pv_uav, binary segmentation.
+#
+# This model answers "where are the panels", which is the missing half of the thermal
+# pipeline. solar_thermal_cls classifies a module crop into an anomaly class but assumes
+# something already found the module; today that something is a hand-drawn polygon. With
+# this, a thermal survey can locate modules itself and associate each anomaly with one.
+#
+# Deliberately binary. The dataset's own paper warns that an annotation may cover a whole
+# array rather than one module, so a model trained here can honestly say "PV surface" and
+# cannot honestly say "module number 47". Splitting an array mask into modules is a
+# geometry problem for the processing side, not something to pretend the labels support.
+#
+# Corpus is small -- 322 stills plus 137 video frames -- so this fine-tunes a B2 rather
+# than the B5 used for cracks. A larger encoder on 459 images memorises them.
+name: solar_module_segformer_b2
+data_root: training/data/prepared/solar_module_seg
+model_id: nvidia/mit-b2
+# num_classes: 2   (not a SegConfig field)
+# Source imagery is 4000x2250. Tiles rather than whole-image downscaling, because a
+# module at 512px across a 4000px frame is a few pixels and vanishes when squashed.
+image_size: 512
+# tile_stride: 384   (not a SegConfig field)
+batch_size: 8
+epochs: 60
+lr: 0.00006
+# encoder_lr: 0.000006   (not a SegConfig field)
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 4
+seed: 1337
+amp_dtype: bf16
+early_stop_patience: 10
+# Overhead imagery has no up: a panel array is equally valid at any orientation.
+# fliplr: 0.5   (not a SegConfig field)
+# flipud: 0.5   (not a SegConfig field)
+# degrees: 90.0   (not a SegConfig field)
+output_dir: training/runs
+# release gates (checked by hand, not by the loader):
+#  - Report IoU on the held-out test_set flights, never on the moving_labeled frames.
+#  - The moving_labeled frames are consecutive video and stay in train; they are near
+#    duplicates and would inflate any split they leaked into.
+#  - State in the model manifest that a predicted region may be an array, not a module.
+#  - Export to ONNX, verify torch parity, and confirm the runtime cv2.dnn load.

@@ -87,6 +87,10 @@ def md5_file(path: Path, chunk: int = CHUNK) -> str:
     return digest.hexdigest()
 
 
+class _NotReadyYet(OSError):
+    """The server accepted the request but has no bytes to give yet."""
+
+
 def download_http(
     url: str,
     destination: Path,
@@ -115,6 +119,12 @@ def download_http(
             request.add_header("Range", f"bytes={existing}-")
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
+                # Figshare's article-bundle endpoint answers 202 with an empty body while
+                # it assembles the zip. Treating that as a download wrote a 0-byte file
+                # and reported success; the failure only surfaced later as "unsupported
+                # archive format", pointing at the wrong thing entirely.
+                if response.status == 202:
+                    raise _NotReadyYet(f"server is still preparing the file (HTTP 202): {url}")
                 # A server that ignores Range replies 200 and would otherwise be
                 # appended onto the partial file, corrupting it.
                 resuming = response.status == 206 and existing > 0
@@ -140,10 +150,24 @@ def download_http(
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
             if attempt == max_retries:
                 raise RuntimeError(f"Download failed after {max_retries} attempts: {url} ({exc})") from exc
-            delay = 2**attempt
+            # Rate limiting and "still preparing" are not errors, they are instructions to
+            # wait, and waiting eight seconds for a host that meters by the minute simply
+            # burns the remaining attempts. Back off far harder for those two.
+            status = getattr(exc, "code", None)
+            patient = isinstance(exc, _NotReadyYet) or status == 429
+            delay = min(300, 30 * 2 ** (attempt - 1)) if patient else 2**attempt
             if progress:
-                progress(f"  retry {attempt}/{max_retries - 1} in {delay}s after {type(exc).__name__}")
+                why = f"HTTP {status}" if status else type(exc).__name__
+                progress(f"  retry {attempt}/{max_retries - 1} in {delay}s after {why}")
             time.sleep(delay)
+
+    # A server can answer 200 with nothing in it. Extraction then fails with
+    # "unsupported archive format", which reads as a bad archive rather than as a
+    # download that never happened, so the empty file is rejected here at its source.
+    size = destination.stat().st_size if destination.exists() else 0
+    if size == 0:
+        destination.unlink(missing_ok=True)
+        raise RuntimeError(f"Download produced an empty file, so the source gave nothing: {url}")
 
     if expected_sha256:
         actual = sha256_file(destination)

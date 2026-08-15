@@ -1,0 +1,31 @@
+# Per-module infrared anomaly classification: Raptor Maps InfraredSolarModules, MIT.
+#
+# 20,000 crops, 12 classes, and the reason every setting below is what it is: the corpus
+# holds 10,000 No-Anomaly against 249 Hot-Spot. A model that answers "normal" to
+# everything scores 50 per cent accuracy here and finds nothing, so class weighting is on
+# and checkpoints are selected on balanced accuracy, not accuracy.
+#
+# The crops are 24x40 px. They are upsampled to 96 so a standard backbone's stride does
+# not reduce them to nothing, but no amount of upsampling adds detail that was never
+# captured -- this is a per-module classifier over polygons the thermal pack already
+# locates, not a localiser.
+name: solar_thermal_cls
+data_root: training/data/prepared/solar_thermal_cls
+model_id: resnet18
+pretrained: true
+image_size: 96
+batch_size: 128
+epochs: 40
+lr: 0.0003
+weight_decay: 0.0001
+warmup_fraction: 0.05
+num_workers: 4
+seed: 1337
+amp_dtype: bf16
+class_weighting: true
+# Weighting alone is usually enough. Turn the sampler on only if the rare classes stay
+# unrecalled after a run, and expect the common classes to be seen less as the price.
+balanced_sampler: false
+label_smoothing: 0.0
+output_dir: training/runs
+early_stop_patience: 8
