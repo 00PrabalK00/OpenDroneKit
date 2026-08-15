@@ -29,6 +29,7 @@ pyproj>=3.6
 # Photogrammetry
 pycolmap>=0.6
 open3d>=0.18
+laspy[lazrs]>=2.5
 
 # Flight / autopilot
 pymavlink>=2.4.41

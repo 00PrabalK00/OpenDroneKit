@@ -86,10 +86,12 @@ services:
       ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
       ODK_CORS_ORIGINS: ${ODK_CORS_ORIGINS:-}
+      ODK_LOG_LEVEL: ${ODK_LOG_LEVEL:-INFO}
     volumes:
       - api_storage:/data/storage
+    # Readiness verifies the live database and object store, not only ASGI liveness.
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status==200 else 1)\""]
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/ready', timeout=5).status==200 else 1)\""]
       interval: 10s
       timeout: 5s
       retries: 12

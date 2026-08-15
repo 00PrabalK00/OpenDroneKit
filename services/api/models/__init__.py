@@ -393,6 +393,80 @@ class Defect(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Measurement(Base):
+    """A persisted measurement with an explicit georeferenced source."""
+
+    __tablename__ = "measurements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(40), index=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String(30), nullable=False)
+    geometry_geojson: Mapped[str] = mapped_column(Text, nullable=False)
+    crs_epsg: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Report(Base):
+    """An immutable structured report snapshot made from API project records."""
+
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    format: Mapped[str] = mapped_column(String(30), default="structured_json")
+    status: Mapped[str] = mapped_column(String(30), default="complete")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AnnotationRecord(Base):
+    """A Hub annotation using the geometry contract in ``core.annotations``."""
+
+    __tablename__ = "annotations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    annotation_type: Mapped[str] = mapped_column(String(20), index=True)
+    geometry_geojson: Mapped[str] = mapped_column(Text, nullable=False)
+    crs_epsg: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    label: Mapped[str] = mapped_column(String(500), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    include_in_report: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Machine-origin claims are immutable JSON records. Human review changes the
+    # visible fields, never the model's original geometry, label or confidence.
+    origin: Mapped[str] = mapped_column(String(20), default="human", index=True)
+    machine_claims_json: Mapped[str] = mapped_column(Text, default="[]")
+    review_action: Mapped[str] = mapped_column(String(30), default="human_drawn")
+    parent_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    reviewed_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class ShareLink(Base):
     """A no-account, read-only link to one project.
 
@@ -556,10 +630,27 @@ class WebhookDelivery(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class LiveEvent(Base):
+    """A short-retention event envelope shared by every API worker.
+
+    This is the realtime broker's common store, not a claim of exactly-once delivery.
+    Connected WebSockets advance their own cursor through these rows; a disconnected
+    browser has no acknowledgement or replay cursor and must refresh the source resource.
+    """
+
+    __tablename__ = "live_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    event: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
 __all__ = [
-    "Aircraft", "ApiToken", "Asset", "AuditEntry", "Base", "Battery", "Dataset",
-    "Defect", "Job", "Maintenance", "Membership", "PilotProfile",
+    "Aircraft", "AnnotationRecord", "ApiToken", "Asset", "AuditEntry", "Base", "Battery", "Dataset",
+    "Defect", "Job", "LiveEvent", "Maintenance", "Measurement", "Membership", "PilotProfile",
     "Mission",
-    "Organization", "Project", "ROLE_RANK", "Role", "ShareAccess", "ShareLink",
+    "Organization", "Project", "Report", "ROLE_RANK", "Role", "ShareAccess", "ShareLink",
     "UploadSession", "User", "Webhook", "WebhookDelivery", "utcnow",
 ]

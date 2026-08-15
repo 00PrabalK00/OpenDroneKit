@@ -167,6 +167,9 @@ class MissionCreate(BaseModel):
     side_overlap_pct: float = 65.0
     gimbal_tilt_deg: float = -90.0
     crs_epsg: int = 4326
+    aircraft_model: str = Field(default="", max_length=200)
+    battery_start_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    battery_usable_minutes: float | None = Field(default=None, gt=0.0)
 
 
 class MissionOut(BaseModel):

@@ -7,14 +7,22 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
+import math
 from typing import Any, Literal
 
 ANNOTATION_TYPES = Literal[
-    "point", "rectangle", "polygon", "free_text",
-    "severity_tag", "defect_confirm", "false_positive", "report_highlight"
+    "point", "line", "polygon", "rectangle", "circle", "freehand", "text"
 ]
 
 SEVERITY_LEVELS = Literal["critical", "high", "medium", "low", "info"]
+ANNOTATION_STATUSES = Literal["open", "in_review", "resolved", "dismissed"]
+
+SUPPORTED_ANNOTATION_TYPES = {
+    "point", "line", "polygon", "rectangle", "circle", "freehand", "text",
+}
+SUPPORTED_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+SUPPORTED_STATUSES = {"open", "in_review", "resolved", "dismissed"}
+SUPPORTED_SOURCES = {"image", "map", "3d"}
 
 
 def _now_iso() -> str:
@@ -32,12 +40,23 @@ class Annotation:
     annotation_type: str  # see ANNOTATION_TYPES
     geometry: dict[str, Any]
     label: str
-    severity: str | None = None
+    severity: str
+    status: str
     note: str | None = None
     include_in_report: bool = True
     created_by: str = "user"
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+
+    def __post_init__(self) -> None:
+        validate_annotation(
+            source_type=self.source_type,
+            annotation_type=self.annotation_type,
+            geometry=self.geometry,
+            label=self.label,
+            severity=self.severity,
+            status=self.status,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -70,6 +89,76 @@ def _save_store(project_root: Path, items: list[dict[str, Any]]) -> None:
     _store_path(project_root).write_text(json.dumps(items, indent=2), encoding="utf-8")
 
 
+def _point(value: Any, name: str) -> list[float]:
+    if not isinstance(value, list) or len(value) < 2:
+        raise ValueError(f"{name} must contain at least two coordinates.")
+    point = [float(value[0]), float(value[1])]
+    if not all(math.isfinite(number) for number in point):
+        raise ValueError(f"{name} coordinates must be finite.")
+    return point
+
+
+def validate_annotation(
+    *,
+    source_type: str,
+    annotation_type: str,
+    geometry: dict[str, Any],
+    label: str,
+    severity: str,
+    status: str,
+) -> None:
+    """Validate the shared core/browser annotation contract."""
+
+    if source_type not in SUPPORTED_SOURCES:
+        raise ValueError(f"source_type must be one of: {', '.join(sorted(SUPPORTED_SOURCES))}.")
+    if annotation_type not in SUPPORTED_ANNOTATION_TYPES:
+        raise ValueError(
+            f"annotation_type must be one of: {', '.join(sorted(SUPPORTED_ANNOTATION_TYPES))}."
+        )
+    if severity not in SUPPORTED_SEVERITIES:
+        raise ValueError(f"severity must be one of: {', '.join(sorted(SUPPORTED_SEVERITIES))}.")
+    if status not in SUPPORTED_STATUSES:
+        raise ValueError(f"status must be one of: {', '.join(sorted(SUPPORTED_STATUSES))}.")
+    if not str(label).strip():
+        raise ValueError("Annotation label is required.")
+    if not isinstance(geometry, dict):
+        raise ValueError("Annotation geometry must be an object.")
+
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if annotation_type in {"point", "circle", "text"}:
+        if geometry_type != "Point":
+            raise ValueError(f"{annotation_type} annotations require Point geometry.")
+        _point(coordinates, "Point")
+        if annotation_type == "circle":
+            radius = float(geometry.get("radius_m", 0))
+            if not math.isfinite(radius) or radius <= 0:
+                raise ValueError("Circle annotations require a positive finite radius_m.")
+        return
+
+    if annotation_type in {"line", "freehand"}:
+        if geometry_type != "LineString" or not isinstance(coordinates, list) or len(coordinates) < 2:
+            raise ValueError(f"{annotation_type} annotations require a two-point LineString.")
+        for index, value in enumerate(coordinates):
+            _point(value, f"Line vertex {index + 1}")
+        return
+
+    if geometry_type != "Polygon" or not isinstance(coordinates, list) or not coordinates:
+        raise ValueError(f"{annotation_type} annotations require Polygon geometry.")
+    ring = coordinates[0]
+    if not isinstance(ring, list) or len(ring) < 4:
+        raise ValueError("Polygon annotations require a closed ring with at least four positions.")
+    checked = [_point(value, f"Polygon vertex {index + 1}") for index, value in enumerate(ring)]
+    if checked[0] != checked[-1]:
+        raise ValueError("Polygon annotation ring must be closed.")
+    if annotation_type == "rectangle":
+        unique = {tuple(point) for point in checked[:-1]}
+        xs = {point[0] for point in unique}
+        ys = {point[1] for point in unique}
+        if len(unique) != 4 or len(xs) != 2 or len(ys) != 2:
+            raise ValueError("Rectangle annotation must have four axis-aligned corners.")
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def create_annotation(
@@ -80,7 +169,8 @@ def create_annotation(
     annotation_type: str,
     geometry: dict[str, Any],
     label: str,
-    severity: str | None = None,
+    severity: str,
+    status: str,
     note: str | None = None,
     include_in_report: bool = True,
     created_by: str = "user",
@@ -94,6 +184,7 @@ def create_annotation(
         geometry=geometry,
         label=label,
         severity=severity,
+        status=status,
         note=note,
         include_in_report=include_in_report,
         created_by=created_by,
@@ -137,12 +228,13 @@ def update_annotation(
     for i, d in enumerate(items):
         if d.get("id") == annotation_id:
             for k, v in patch.items():
-                if k not in readonly:
+                if k in Annotation.__dataclass_fields__ and k not in readonly:
                     d[k] = v
             d["updated_at"] = _now_iso()
-            items[i] = d
+            validated = Annotation.from_dict(d)
+            items[i] = validated.to_dict()
             _save_store(project_root, items)
-            return Annotation.from_dict(d)
+            return validated
     return None
 
 

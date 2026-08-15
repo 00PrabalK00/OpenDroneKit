@@ -17,7 +17,7 @@ import json
 import os
 from typing import Any, Iterator
 
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 DEFAULT_SQLITE_URL = "sqlite:///./opendronekit.db"
@@ -125,6 +125,35 @@ def init_db() -> None:
                 # A managed database may forbid this; spatial_backend() will report it.
                 connection.rollback()
     Base.metadata.create_all(bind=engine)
+    _apply_additive_migrations(engine)
+
+
+def _apply_additive_migrations(engine) -> None:
+    """Keep existing self-hosted databases usable across additive API releases.
+
+    The project does not yet ship Alembic. ``create_all`` creates new tables but does
+    not add columns to an existing table, so the immutable assisted-review fields need
+    an idempotent, narrowly-scoped migration here instead of failing after upgrade.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("annotations"):
+        return
+    existing = {column["name"] for column in inspector.get_columns("annotations")}
+    columns = {
+        "origin": "VARCHAR(20) NOT NULL DEFAULT 'human'",
+        "machine_claims_json": "TEXT NOT NULL DEFAULT '[]'",
+        "review_action": "VARCHAR(30) NOT NULL DEFAULT 'human_drawn'",
+        "parent_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+        "reviewed_by": "INTEGER",
+        "reviewed_at": "TIMESTAMP",
+    }
+    with engine.begin() as connection:
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.execute(text(f"ALTER TABLE annotations ADD COLUMN {name} {definition}"))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_annotations_origin ON annotations (origin)"
+        ))
 
 
 def dumps_geometry(geometry: dict[str, Any] | None) -> str | None:

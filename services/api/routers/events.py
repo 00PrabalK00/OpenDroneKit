@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from ..audit import record
 from ..db import get_db, get_session_factory
 from ..models import Role, Webhook, WebhookDelivery
+from ..realtime import broker
 from ..security import CurrentUser, require_role
 
 router = APIRouter(tags=["events"])
@@ -51,6 +52,7 @@ EVENT_TYPES = [
     "defect.created", "defect.reviewed",
     "report.generated",
     "project.shared",
+    "telemetry.updated",
 ]
 
 DELIVERY_TIMEOUT_S = 10.0
@@ -291,70 +293,54 @@ def _send(webhook_id: int, event: str, payload: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# live streaming
+# live streaming and telemetry publication
 # ---------------------------------------------------------------------------
 
 
-class EventHub:
-    """In-process fan-out to connected browsers.
+class TelemetryPublish(BaseModel):
+    """One observed vehicle sample; absent sensors remain absent rather than guessed."""
 
-    In-process on purpose: with several API workers a client is only guaranteed to
-    see events produced by the worker it connected to. That is a real limitation of
-    running without a broker, and `describe` states it rather than leaving an operator
-    to discover it under load.
+    aircraft_id: str = Field(min_length=1, max_length=200)
+    observed_at: datetime
+    source: str = Field(min_length=1, max_length=200)
+    mission_id: int | None = None
+    connected: bool
+    latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+    altitude_m: float | None = None
+    battery_pct: float | None = Field(default=None, ge=0.0, le=100.0)
+    flight_mode: str = ""
+    satellites: int | None = Field(default=None, ge=0)
+    ground_speed_m_s: float | None = Field(default=None, ge=0.0)
+    heading_deg: float | None = Field(default=None, ge=0.0, le=360.0)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/organizations/{organization_id}/telemetry", status_code=202)
+def publish_telemetry(
+    organization_id: int, payload: TelemetryPublish,
+    user: CurrentUser, db: Annotated[Session, Depends(get_db)],
+) -> dict[str, Any]:
+    """Publish an authenticated telemetry sample into the shared live stream.
+
+    Acceptance means the shared broker committed the sample. It does not claim a
+    particular browser received it; WebSockets have no acknowledgement protocol.
     """
-
-    def __init__(self) -> None:
-        self._subscribers: dict[int, set[WebSocket]] = {}
-        self._lock = threading.Lock()
-
-    def subscribe(self, organization_id: int, socket: WebSocket) -> None:
-        with self._lock:
-            self._subscribers.setdefault(organization_id, set()).add(socket)
-
-    def unsubscribe(self, organization_id: int, socket: WebSocket) -> None:
-        with self._lock:
-            listeners = self._subscribers.get(organization_id)
-            if listeners:
-                listeners.discard(socket)
-
-    def listeners(self, organization_id: int) -> list[WebSocket]:
-        with self._lock:
-            return list(self._subscribers.get(organization_id, ()))
-
-    async def publish(self, organization_id: int, event: str, payload: dict[str, Any]) -> int:
-        message = {"event": event, "data": payload,
-                   "at": datetime.now(timezone.utc).isoformat()}
-        delivered = 0
-        for socket in self.listeners(organization_id):
-            try:
-                await socket.send_json(message)
-                delivered += 1
-            except Exception:
-                # A dropped client must not stop the others receiving the event.
-                self.unsubscribe(organization_id, socket)
-        return delivered
-
-    @staticmethod
-    def describe() -> dict[str, Any]:
-        return {
-            "transport": "websocket",
-            "scope": "one organization per connection",
-            "limitation": (
-                "Fan-out is in-process. With more than one API worker a client sees "
-                "only events produced by the worker it is connected to; a shared broker "
-                "is required for multi-worker deployments."
-            ),
-        }
-
-
-hub = EventHub()
+    require_role(db, user, organization_id, Role.pilot)
+    wire = payload.model_dump(mode="json")
+    event_id = broker.publish(organization_id, "telemetry.updated", wire)
+    return {
+        "accepted": True,
+        "broker_event_id": event_id,
+        "event": "telemetry.updated",
+        "delivery": "committed_to_shared_broker_not_acknowledged_by_clients",
+    }
 
 
 @router.get("/events/stream-info")
 def stream_info() -> dict[str, Any]:
     """What the live stream can and cannot promise."""
-    return EventHub.describe()
+    return broker.describe()
 
 
 @router.websocket("/ws/organizations/{organization_id}")
@@ -401,21 +387,27 @@ async def organization_stream(websocket: WebSocket, organization_id: int, token:
             await websocket.close(code=4403)
             return
 
+        cursor = broker.latest_id(organization_id)
         await websocket.send_json({
             "event": "stream.connected",
             "organization_id": organization_id,
-            "info": EventHub.describe(),
+            "info": broker.describe(),
         })
     finally:
         session.close()
 
-    hub.subscribe(organization_id, websocket)
     try:
         while True:
-            # The client is not required to say anything; this keeps the socket open
-            # and notices a disconnect.
-            await websocket.receive_text()
+            # Each worker polls the same database cursor, so an event produced by worker
+            # A reaches a browser connected to worker B. The short timeout also consumes
+            # pings and notices disconnects without requiring a chatty browser.
+            rows = await asyncio.to_thread(broker.read_after, organization_id, cursor)
+            for event in rows:
+                await websocket.send_json(event.to_wire())
+                cursor = event.id
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=0.15)
+            except TimeoutError:
+                pass
     except WebSocketDisconnect:
         pass
-    finally:
-        hub.unsubscribe(organization_id, websocket)

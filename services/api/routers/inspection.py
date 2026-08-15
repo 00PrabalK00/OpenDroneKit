@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from ..audit import record
 from ..db import get_db, dumps_geometry, loads_geometry
 from ..models import Defect, Job, Project, Role
-from ..security import CurrentUser, require_role
+from ..security import CurrentUser, require_project_role
 
 router = APIRouter(tags=["inspection"])
 
@@ -128,7 +128,7 @@ def list_defects(
     review_state: str = "", category: str = "",
 ) -> list[DefectOut]:
     project = _project_or_404(db, project_id)
-    require_role(db, user, project.organization_id, Role.viewer)
+    require_project_role(db, user, project, Role.viewer)
 
     statement = select(Defect).where(Defect.project_id == project_id)
     if review_state:
@@ -144,7 +144,7 @@ def create_defect(
     user: CurrentUser, db: Annotated[Session, Depends(get_db)],
 ) -> DefectOut:
     project = _project_or_404(db, project_id)
-    require_role(db, user, project.organization_id, Role.inspector)
+    require_project_role(db, user, project, Role.inspector)
 
     if payload.severity not in SEVERITIES:
         raise HTTPException(
@@ -215,7 +215,7 @@ def review_defect(
     if defect is None:
         raise HTTPException(status_code=404, detail="Defect not found.")
     project = _project_or_404(db, defect.project_id)
-    require_role(db, user, project.organization_id, Role.inspector)
+    require_project_role(db, user, project, Role.inspector)
 
     if payload.decision not in REVIEW_STATES or payload.decision == "unreviewed":
         raise HTTPException(
@@ -253,7 +253,7 @@ def defect_summary(
 ) -> dict[str, Any]:
     """Counts and quantities, separating what a model claimed from what a human confirmed."""
     project = _project_or_404(db, project_id)
-    require_role(db, user, project.organization_id, Role.viewer)
+    require_project_role(db, user, project, Role.viewer)
 
     defects = list(db.scalars(select(Defect).where(Defect.project_id == project_id)))
     by_category: dict[str, int] = {}
@@ -318,7 +318,7 @@ def measure_volume(
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found.")
     project = _project_or_404(db, job.project_id)
-    require_role(db, user, project.organization_id, Role.analyst)
+    require_project_role(db, user, project, Role.analyst)
 
     if job.status != "done":
         raise HTTPException(

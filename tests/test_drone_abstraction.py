@@ -130,7 +130,10 @@ class TestProtocolConformance:
             "upload_mission", "start_mission", "pause_mission", "resume_mission",
             "return_to_home", "abort_mission", "set_flight_mode",
         }
-        assert required <= set(DroneClient.__protocol_attrs__)
+        missing = sorted(
+            name for name in required if not callable(getattr(DroneClient, name, None))
+        )
+        assert not missing, f"DroneClient is missing ground-station commands: {missing}"
 
 
 class TestFactory:

@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from ..audit import record
 from ..db import get_db
 from ..models import Defect, Mission, Project, Role, ShareLink, ShareAccess
-from ..security import CurrentUser, hash_password, require_role, verify_password
+from ..security import CurrentUser, hash_password, require_project_role, verify_password
 
 router = APIRouter(tags=["sharing"])
 
@@ -102,7 +102,7 @@ def create_share(
 ) -> ShareCreated:
     """Mint a share link. The token is shown once and never recoverable."""
     project = _project_or_404(db, project_id)
-    require_role(db, user, project.organization_id, Role.engineer)
+    require_project_role(db, user, project, Role.engineer)
 
     token = secrets.token_urlsafe(32)
     expires_at = (
@@ -140,7 +140,7 @@ def list_shares(
     project_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
 ) -> list[ShareOut]:
     project = _project_or_404(db, project_id)
-    require_role(db, user, project.organization_id, Role.engineer)
+    require_project_role(db, user, project, Role.engineer)
     rows = db.scalars(select(ShareLink).where(ShareLink.project_id == project_id))
     return [_share_out(link) for link in rows]
 
@@ -154,7 +154,7 @@ def revoke_share(
     if link is None:
         raise HTTPException(status_code=404, detail="Share link not found.")
     project = _project_or_404(db, link.project_id)
-    require_role(db, user, project.organization_id, Role.engineer)
+    require_project_role(db, user, project, Role.engineer)
 
     link.revoked = True
     record(db, action="share_revoked", user_id=user.id,
@@ -171,7 +171,7 @@ def share_accesses(
     if link is None:
         raise HTTPException(status_code=404, detail="Share link not found.")
     project = _project_or_404(db, link.project_id)
-    require_role(db, user, project.organization_id, Role.engineer)
+    require_project_role(db, user, project, Role.engineer)
 
     rows = db.scalars(
         select(ShareAccess).where(ShareAccess.share_id == share_id)
@@ -258,12 +258,17 @@ def view_share(
 
     if link.include_missions:
         missions = db.scalars(select(Mission).where(Mission.project_id == project.id))
-        payload["missions"] = [
-            {"name": m.name, "template": m.template, "waypoints": m.waypoint_count,
-             "distance_m": m.distance_m, "duration_min": m.duration_min,
-             "crs_epsg": m.crs_epsg}
-            for m in missions
-        ]
+        from ..mission_views import mission_preview
+
+        payload["missions"] = []
+        for mission in missions:
+            try:
+                payload["missions"].append(mission_preview(mission))
+            except ValueError as exc:
+                payload["missions"].append({
+                    "mission_id": mission.id, "name": mission.name,
+                    "status": "unavailable", "reason": str(exc),
+                })
 
     if link.include_defects:
         defects = list(db.scalars(select(Defect).where(Defect.project_id == project.id)))

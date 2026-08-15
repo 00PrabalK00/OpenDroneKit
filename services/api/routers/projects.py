@@ -206,6 +206,24 @@ def create_mission(
         raise HTTPException(status_code=422, detail=f"Mission planning failed: {exc}") from exc
 
     plan_dict = plan.to_dict() if hasattr(plan, "to_dict") else {}
+    if (payload.battery_start_pct is None) != (payload.battery_usable_minutes is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Battery simulation needs both battery_start_pct and battery_usable_minutes.",
+        )
+    operator_inputs: dict[str, Any] = {}
+    if payload.aircraft_model.strip():
+        operator_inputs["aircraft"] = {
+            "model": payload.aircraft_model.strip(), "source": "operator_declared",
+        }
+    if payload.battery_start_pct is not None:
+        operator_inputs["battery"] = {
+            "start_pct": payload.battery_start_pct,
+            "usable_minutes": payload.battery_usable_minutes,
+            "source": "operator_declared_simulation_input",
+        }
+    if operator_inputs:
+        plan_dict["operator_inputs"] = operator_inputs
     version = 1 + (db.scalar(
         select(Mission).where(Mission.project_id == project_id).order_by(Mission.version.desc())
     ) or Mission(version=0)).version
@@ -249,6 +267,25 @@ def mission_plan(
         "version": mission.version, "crs_epsg": mission.crs_epsg,
         "aoi": loads_geometry(mission.aoi_geojson), "plan": plan,
     }
+
+
+@router.get("/missions/{mission_id}/simulation")
+def simulate_mission(
+    mission_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)]
+) -> dict[str, Any]:
+    """Timeline playback data derived only from the persisted compiled plan."""
+    from ..mission_views import mission_simulation
+    from ..security import require_project_role
+
+    mission = db.get(Mission, mission_id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found.")
+    project = _project_or_404(db, mission.project_id)
+    require_project_role(db, user, project, Role.viewer)
+    try:
+        return mission_simulation(mission)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/missions/{mission_id}/export/{fmt}")

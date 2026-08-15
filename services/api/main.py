@@ -14,17 +14,22 @@ Configuration is entirely environmental, so a deployment never needs a rebuild:
 from __future__ import annotations
 
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .db import init_db, spatial_backend
+from .db import init_db
+from .observability import (
+    LOGGER, METRICS, ObservabilityMiddleware, configure_logging,
+    database_readiness, observability_contract, storage_readiness,
+)
 from .security import secret_is_deployment_grade
-from .storage import describe_storage
 from .routers import (
-    auth, datasets, events, fleet, inspection, organizations, processing, projects,
+    annotations, auth, datasets, events, fleet, inspection, organizations, processing, projects, resources,
     sharing, tiles,
 )
 
@@ -33,8 +38,11 @@ VERSION = "0.1.0"
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    configure_logging()
     init_db()
+    LOGGER.info("API started", extra={"event": "api.started"})
     yield
+    LOGGER.info("API stopped", extra={"event": "api.stopped"})
 
 
 app = FastAPI(
@@ -58,6 +66,7 @@ if _origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+app.add_middleware(ObservabilityMiddleware)
 
 app.include_router(auth.router)
 app.include_router(organizations.router)
@@ -65,6 +74,8 @@ app.include_router(projects.router)
 app.include_router(datasets.router)
 app.include_router(processing.router)
 app.include_router(inspection.router)
+app.include_router(resources.router)
+app.include_router(annotations.router)
 app.include_router(sharing.router)
 app.include_router(fleet.router)
 app.include_router(events.router)
@@ -92,22 +103,55 @@ def health() -> dict[str, Any]:
             capabilities[key] = False
 
     warnings: list[str] = []
-    database = spatial_backend()
+    database = database_readiness()
     if not database.get("postgis"):
         warnings.append(database.get("note", "PostGIS unavailable."))
     secret_ok, secret_reason = secret_is_deployment_grade()
     if not secret_ok:
         warnings.append(secret_reason)
 
-    storage = describe_storage()
+    storage = storage_readiness()
     if storage.get("note"):
         warnings.append(storage["note"])
 
+    ready = bool(database.get("ready") and storage.get("ready"))
+
     return {
-        "status": "ok",
+        "status": "ok" if ready else "degraded",
         "version": VERSION,
         "database": database,
         "storage": storage,
         "capabilities": capabilities,
+        "observability": observability_contract(),
         "warnings": warnings,
     }
+
+
+@app.get("/health/live", tags=["system"])
+def health_live() -> dict[str, Any]:
+    """Process liveness only; it deliberately says nothing about dependencies."""
+    from .observability import PROCESS_STARTED  # noqa: PLC0415
+
+    return {
+        "status": "alive", "process_uptime_s": round(max(0.0, time.time() - PROCESS_STARTED), 3),
+        "scope": "this_api_worker",
+    }
+
+
+@app.get("/health/ready", tags=["system"])
+def health_ready() -> JSONResponse:
+    """Readiness based on live calls to the configured database and storage backend."""
+    database = database_readiness()
+    storage = storage_readiness()
+    ready = bool(database.get("ready") and storage.get("ready"))
+    payload = {
+        "status": "ready" if ready else "not_ready",
+        "database": database, "storage": storage,
+    }
+    return JSONResponse(payload, status_code=200 if ready else 503)
+
+
+@app.get("/metrics", tags=["system"], response_class=PlainTextResponse)
+def metrics() -> PlainTextResponse:
+    """Prometheus text for this worker; the body declares its non-aggregated scope."""
+    return PlainTextResponse(METRICS.render(), media_type="text/plain; version=0.0.4")

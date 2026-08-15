@@ -295,9 +295,11 @@ class TestHonestyAboutGuarantees:
         payload = client.get("/event-types").json()
         assert "HMAC-SHA256" in payload["signature"]
 
-    def test_the_stream_declares_its_multi_worker_limitation(self, client):
+    def test_the_stream_declares_its_delivery_limitation(self, client):
         info = client.get("/events/stream-info").json()
-        assert "in-process" in info["limitation"].lower()
+        assert info["multi_worker"] is True
+        assert "best-effort" in info["limitation"].lower()
+        assert "acknowledgement" in info["limitation"].lower()
 
 
 class TestLiveStream:

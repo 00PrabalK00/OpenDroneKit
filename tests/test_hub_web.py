@@ -39,8 +39,12 @@ class TestHubPanels:
             "panel-thermal", "panel-digital-twin", "panel-timeline",
         } <= parser.ids
         assert {
-            "js/map.js", "js/hub-api.js", "js/hub-viewers.js", "js/hub.js"
+            "js/hub-annotations.js", "js/map.js", "js/hub-api.js", "js/hub-viewers.js", "js/hub.js"
         } <= parser.scripts
+        assert {
+            "annotation-form", "annotation-type", "annotation-severity", "annotation-status",
+            "annotation-label", "start-annotation", "annotation-list",
+        } <= parser.ids
         assert "hub.html" in (WEB / "index.html").read_text(encoding="utf-8")
 
     def test_viewer_module_parses_real_scene_cloud_twin_and_map_sources(self, tmp_path):
@@ -209,6 +213,7 @@ class TestHubOfflineTiles:
 class _BrowserHandler(BaseHTTPRequestHandler):
     viewer_source = (WEB / "js" / "hub-viewers.js").read_bytes()
     map_source = (WEB / "js" / "map.js").read_bytes()
+    annotation_source = (WEB / "js" / "hub-annotations.js").read_bytes()
     maplibre_source = (WEB / "vendor" / "maplibre" / "maplibre-gl.js").read_bytes()
     draw_source = (WEB / "vendor" / "maplibre" / "maplibre-gl-draw.js").read_bytes()
 
@@ -220,6 +225,8 @@ class _BrowserHandler(BaseHTTPRequestHandler):
             body, content_type = self.viewer_source, "text/javascript"
         elif self.path == "/map.js":
             body, content_type = self.map_source, "text/javascript"
+        elif self.path == "/hub-annotations.js":
+            body, content_type = self.annotation_source, "text/javascript"
         elif self.path == "/maplibre-gl.js":
             body, content_type = self.maplibre_source, "text/javascript"
         elif self.path == "/maplibre-gl-draw.js":
@@ -244,6 +251,13 @@ window.addEventListener('load',async()=>{try{
 const survey={type:'FeatureCollection',features:[{type:'Feature',geometry:{type:'Polygon',coordinates:[[[77.59,12.97],[77.60,12.97],[77.60,12.98],[77.59,12.97]]]},properties:{survey:'T1'}}]};
 const localStyle={version:8,sources:{},layers:[{id:'background',type:'background',paint:{'background-color':'#0d1117'}}]};
 const viewer=new OdkMap('map',{center:[77.595,12.975],zoom:14,style:localStyle,onReady:()=>{try{viewer.addVector('survey-a',survey,0.4);viewer.addVector('survey-b',survey,0.6);viewer.setLayerOpacity('survey-a',0.25);viewer.setTool('measure-distance');document.body.dataset.result=`layers:${viewer.vectorLayers.size};tool:${viewer.tool}`;}catch(error){document.body.dataset.result='error:'+error.message;}}});
+</script></body>"""
+            content_type = "text/html"
+        elif self.path == "/annotation-harness.html":
+            body = b"""<!doctype html><body data-result="pending"><div id="map" style="width:640px;height:400px"></div><script src="/maplibre-gl.js"></script><script src="/maplibre-gl-draw.js"></script><script src="/hub-annotations.js"></script><script src="/map.js"></script><script>
+const shapes={point:{type:'Point',coordinates:[77.595,12.975]},line:{type:'LineString',coordinates:[[77.595,12.975],[77.596,12.976]]},polygon:{type:'Polygon',coordinates:[[[77.595,12.975],[77.596,12.975],[77.596,12.976],[77.595,12.975]]]},rectangle:{type:'Polygon',coordinates:[[[77.595,12.975],[77.597,12.9754],[77.5967,12.976],[77.595,12.975]]]},circle:{type:'Point',coordinates:[77.595,12.975]},freehand:{type:'LineString',coordinates:[[77.595,12.975],[77.5953,12.9754],[77.596,12.976]]},text:{type:'Point',coordinates:[77.595,12.975]}};
+const rows=[];const style={version:8,sources:{},layers:[{id:'background',type:'background',paint:{'background-color':'#0d1117'}}]};
+const viewer=new OdkMap('map',{center:[77.595,12.975],zoom:14,style,onAnnotation:(row)=>rows.push(row),onReady:()=>{try{Object.entries(shapes).forEach(([type,geometry])=>{viewer.setAnnotationMetadata({source_type:'map',source_id:'ortho:T1',crs_epsg:4326,label:type+' mark',severity:'high',status:'open',radius_m:2});viewer.setTool('annotation-'+type);viewer.map.fire('draw.create',{features:[{type:'Feature',id:'f-'+type,properties:{},geometry}]});});const types=rows.map(row=>row.annotation_type).join(',');const metadata=rows.every(row=>row.severity==='high'&&row.status==='open');document.body.dataset.result=`annotations:${rows.length};types:${types};metadata:${metadata}`;}catch(error){document.body.dataset.result='error:'+error.message;}}});
 </script></body>"""
             content_type = "text/html"
         else:
@@ -296,6 +310,31 @@ class TestHubRealBrowser:
                 f"http://127.0.0.1:{server.server_port}/map-harness.html",
             ], capture_output=True, text=True, timeout=40, check=True)
             assert 'data-result="layers:2;tool:measure-distance"' in completed.stdout
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_annotation_draw_events_cover_every_shape_with_metadata(self, tmp_path):
+        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+        if not edge.is_file():
+            edge_command = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
+            assert edge_command, "A Chromium browser is required for the annotation evidence test."
+            edge = Path(edge_command)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _BrowserHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            completed = subprocess.run([
+                str(edge), "--headless=new", "--enable-webgl", "--ignore-gpu-blocklist",
+                "--use-angle=swiftshader", f"--user-data-dir={tmp_path / 'annotation-profile'}",
+                "--virtual-time-budget=7000", "--dump-dom",
+                f"http://127.0.0.1:{server.server_port}/annotation-harness.html",
+            ], capture_output=True, text=True, timeout=40, check=True)
+            assert (
+                'data-result="annotations:7;types:point,line,polygon,rectangle,circle,freehand,text;metadata:true"'
+                in completed.stdout
+            )
         finally:
             server.shutdown()
             server.server_close()

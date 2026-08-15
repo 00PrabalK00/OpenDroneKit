@@ -135,8 +135,13 @@ MISSION_PLANNING = [
       "Circular and spiral paths, stacked orbits at multiple radii and heights.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.pylon_inspection", "Utility pylon inspection", "core", "Mission types",
-      "Body, crossarm, insulator and conductor capture at multiple elevations.",
-      "not_started", []),
+      "Body, crossarm, insulator and conductor capture at multiple elevations, each "
+      "flown at the height that element sits at with a gimbal angle framing it rather "
+      "than a nadir pass, and a structure whose element heights were not supplied "
+      "refused rather than approximated near energised conductors.",
+      "implemented", ["tests/test_special_mission_types.py::TestPylonInspection"],
+      "mission/mission_types.py; plan_pylon_inspection compiles one real orbit per "
+      "named element through the mission engine."),
     F("mp.type.orbit", "Orbit missions", "core", "Mission types",
       "Radius, altitude, rotations, direction and gimbal pitch with target lock.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -157,17 +162,50 @@ MISSION_PLANNING = [
       "Constant ground clearance survey grid with payload trigger and time sync.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.thermal", "Thermal missions", "core", "Mission types",
-      "Thermal mapping and inspection with paired RGB capture.",
-      "not_started", []),
+      "Thermal mapping and inspection with paired RGB capture, flown at the altitude "
+      "the thermal sensor needs for the requested GSD rather than the RGB one, with a "
+      "non-radiometric camera refused instead of producing ordinary photographs "
+      "labelled as a thermal survey.",
+      "implemented", ["tests/test_special_mission_types.py::TestThermalMission"],
+      "mission/mission_types.py; plan_thermal_mission."),
     F("mp.type.multispectral", "Multispectral missions", "core", "Mission types",
-      "Synchronised band capture for agricultural and vegetation survey.",
-      "not_started", []),
+      "Synchronised band capture for agricultural and vegetation survey, with the band "
+      "centres carried into the mission and reflectance-panel captures planned before "
+      "and after the flight, since indices from a flight without them cannot be "
+      "compared with any other survey.",
+      "implemented", ["tests/test_special_mission_types.py::TestMultispectralMission"],
+      "mission/mission_types.py; plan_multispectral_mission, reading the band set from "
+      "the payload database."),
     F("mp.linking", "Mission linking", "core", "Mission engine",
-      "Several mission types execute as one sequence with per-segment completion tracking.",
-      "in_progress", [], "generate_linked_mission exists; segment tracking unproven."),
+      "Several mission types execute as one sequence with per-segment completion "
+      "tracking: each capture point is attributed to the survey that produced it from "
+      "the stamp the compiler wrote at link time, a segment counts as complete only "
+      "when every one of its own points matched an image, completed segments are not "
+      "re-flown, and an attribution that cannot be trusted -- an unstamped pose, or a "
+      "declared segment count disagreeing with the poses -- is refused rather than "
+      "reported partially.",
+      "implemented", ["tests/test_linking.py::TestAttribution",
+                      "tests/test_linking.py::TestProgress",
+                      "tests/test_linking.py::TestResumingASortie",
+                      "tests/test_linking.py::TestRefusals"],
+      "mission/linking.py; Api.linked_mission_progress. Completion comes from the same "
+      "image matcher the single-mission resume uses, so an ambiguous point is re-flown "
+      "rather than assumed done."),
     F("mp.geometry_3d", "3D geometry based planning", "core", "Mission engine",
-      "Paths generated from imported OBJ/GLB/PLY/LAS/IFC surfaces.",
-      "not_started", []),
+      "Paths generated from imported OBJ/GLB/PLY/LAS/IFC surfaces: each capture point "
+      "stands off a face along that face's own normal and looks back at it, so a wall "
+      "is photographed rather than the roof above it; an unscaled surface is refused "
+      "because a stand-off in structure-from-motion units flies the wrong distance from "
+      "the structure; and a point cloud is refused because it has no normal to stand "
+      "off along.",
+      "in_progress", ["tests/test_geometry_3d.py::TestReadingSurfaces",
+                      "tests/test_geometry_3d.py::TestStandOffGeometry",
+                      "tests/test_geometry_3d.py::TestFiltering",
+                      "tests/test_geometry_3d.py::TestRefusals"],
+      "mission/geometry_3d.py reads OBJ, ASCII PLY and GLB/glTF and plans from them. "
+      "LAS/LAZ and IFC are named as unsupported with what would be needed rather than "
+      "failing obscurely, so this stays in progress until those two formats are read: "
+      "the criteria list five and three are implemented."),
     F("mp.standoff", "Stand-off distance planning", "core", "Mission engine",
       "Fixed, per-surface and adaptive stand-off with a minimum clearance guarantee, "
       "where a resolution that would require flying inside the clearance is reported as "
@@ -194,8 +232,24 @@ MISSION_PLANNING = [
       "whenever the plan degrades to flat earth.",
       "implemented", [], "Warning surfaced in app/api.py; needs a test."),
     F("mp.terrain_offline", "Offline terrain cache", "core", "Mission engine",
-      "Terrain tiles cached so terrain following works with no connectivity.",
-      "not_started", []),
+      "Terrain cached per project so terrain following works with no connectivity, with "
+      "the extent recorded so an area the cache does not fully contain is reported as "
+      "uncovered rather than quietly planned flat, and nothing cached, cached elsewhere "
+      "and cached-but-not-reaching distinguished.",
+      "implemented", ["tests/test_terrain_cache.py::TestReadingRasters",
+                      "tests/test_terrain_cache.py::TestCaching",
+                      "tests/test_terrain_cache.py::TestCoverage",
+                      "tests/test_terrain_cache.py::TestMissingFiles",
+                      "tests/test_terrain_cache.py::TestUnreadableIndex",
+                      "tests/test_terrain_cache.py::TestSourceCoversTheArea",
+                      "tests/test_terrain_cache.py::TestBounds",
+                      "tests/test_terrain_source_coverage.py::TestTerrainSourceIsCheckedAgainstTheArea",
+                      "tests/test_terrain_source_coverage.py::TestChoosingTheSourceAnswersImmediately"],
+      "core/terrain_cache.py; Api.cache_terrain, terrain_coverage, "
+      "describe_terrain_cache. Planning consults the chosen source: a DEM that stops "
+      "short of the area, or belongs to another site, is named at plan time instead of "
+      "silently degrading to flat earth. An unreadable index reports not knowing rather "
+      "than an empty cache."),
     F("mp.obstacles", "Obstacle planning", "core", "Mission engine",
       "Point, circular, polygon and 3D obstacles with route intersection detection and detours.",
       "implemented", ["tests/test_mission_constraints.py::TestNoFlyZones"]),
@@ -214,7 +268,11 @@ MISSION_PLANNING = [
       "mission/estimates.py; MissionPlan.estimates() and Api.mission_estimates."),
     F("mp.simulation", "3D mission simulation", "hub", "Mission engine",
       "Timeline playback of trajectory, gimbal, capture points, terrain and battery.",
-      "not_started", []),
+      "implemented", ["tests/test_mission_hub.py::TestCompiledMissionSimulation",
+                      "tests/test_mission_hub.py::TestMissionHubBrowser",
+                      "tests/test_mission_hub.py::TestMissionHubWiring"],
+      "Playback reads the persisted compiled plan. Missing terrain remains unavailable "
+      "with no synthetic flat surface; battery is labelled as an operator-input estimate."),
     F("mp.versioning", "Mission versioning", "hub", "Mission engine",
       "Version, author, timestamp, diff against previous and restore, with the diff "
       "stated in operator terms rather than as a raw field dump, and restore appending "
@@ -226,7 +284,9 @@ MISSION_PLANNING = [
       "mission/versioning.py; Api.diff_mission_versions and restore_mission_version."),
     F("mp.sharing", "Mission preview sharing", "hub", "Mission engine",
       "Secure link showing path, area, altitude, duration, drone and safety areas.",
-      "not_started", []),
+      "implemented", ["tests/test_mission_hub.py::TestMissionPreviewSharing"],
+      "Reuses the verified password, expiry, revocation and access-log ShareLink path; "
+      "preview fields are derived from the persisted compiled plan."),
     F("mp.repeatable", "Repeatable missions", "core", "Mission engine",
       "Repeat exactly, with updated terrain, a modified boundary, or a different "
       "aircraft, where a camera change adjusts altitude to hold ground resolution "
@@ -252,8 +312,17 @@ MISSION_PLANNING = [
                       "tests/test_boundary_import.py::TestDispatch"],
       "mission/boundary_import.py; Api.import_boundary sets the session AOI."),
     F("mp.fly_to_draw", "Fly to draw", "app", "Mission engine",
-      "Boundary defined by flying the aircraft to mark positions.",
-      "not_started", []),
+      "Boundary defined by flying the aircraft to mark positions, with a corner marked "
+      "without a 3D fix refused rather than recorded as a position the receiver itself "
+      "does not trust, a double press refused rather than becoming an edge, a crossed "
+      "outline refused even though its area still computes, and the weakest corner's fix "
+      "quality reported rather than an average.",
+      "implemented", ["tests/test_fly_to_draw.py::TestMarking",
+                      "tests/test_fly_to_draw.py::TestBuildingTheBoundary",
+                      "tests/test_fly_to_draw.py::TestRefusals",
+                      "tests/test_fly_to_draw.py::TestThroughTheApi"],
+      "mission/fly_to_draw.py; Api.mark_boundary_corner, boundary_from_marks, "
+      "clear_boundary_marks. The result never claims to be a surveyed boundary."),
     F("mp.camera_db", "Camera database", "core", "Mission engine",
       "Sensor dimensions, resolution, focal length, pixel size and thermal capability, "
       "with user-defined cameras, geometry validated as physically possible, and an "
@@ -268,8 +337,19 @@ MISSION_PLANNING = [
       "mission/cameras.py; 11 published profiles, planner reads them, "
       "Api.list_cameras/describe_camera/add_camera/altitude_for_gsd."),
     F("mp.payload_db", "Payload database", "core", "Mission engine",
-      "RGB, thermal, multispectral, LiDAR, magnetometer and custom payload commands.",
-      "not_started", []),
+      "RGB, thermal, multispectral, LiDAR, magnetometer and custom payload commands, "
+      "with a command the instrument does not declare refused rather than exported, and "
+      "an undescribed payload refused rather than planned as a generic camera.",
+      "implemented", ["tests/test_payloads.py::TestTheDatabaseItself",
+                      "tests/test_payloads.py::TestRefusals",
+                      "tests/test_payloads.py::TestCaptureCommand",
+                      "tests/test_payloads.py::TestPlanNotes",
+                      "tests/test_payloads.py::TestOperatorPayloads",
+                      "tests/test_payloads.py::TestPlanningWithAPayload"],
+      "mission/payloads.py; Api.list_payloads/describe_payload/add_payload and the "
+      "payload block on Api.plan_mission. Streaming payloads start a run where framing "
+      "ones trigger; mass and power are recorded as unknown rather than invented, so no "
+      "endurance penalty is claimed from a guessed figure."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -463,8 +543,21 @@ PROCESSING = [
       "core/gcp.py; Api.import_gcps, mark_gcp, gcp_accuracy_report. Fitting the "
       "transform itself belongs to the reconstruction engine."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
-      "RTK/PPK metadata and RINEX base station data with timestamp alignment.",
-      "not_started", []),
+      "RTK/PPK metadata and RINEX base station data with timestamp alignment: camera "
+      "events read from the aircraft's own event file with corrections in the units "
+      "they were written in, the base session window read from the RINEX header, every "
+      "event shown to be inside that window or named as outside it, the leap-second "
+      "offset stated because a wrong one shifts every event by a second, and an "
+      "accuracy claim gated on the recorded solution flag so a float flight is never "
+      "described as centimetre RTK.",
+      "implemented", ["tests/test_rtk.py::TestGpsTime",
+                      "tests/test_rtk.py::TestCameraEvents",
+                      "tests/test_rtk.py::TestBaseStation",
+                      "tests/test_rtk.py::TestAlignment",
+                      "tests/test_rtk.py::TestPositioningReport",
+                      "tests/test_rtk.py::TestThroughTheApi"],
+      "core/rtk.py; Api.check_ppk_inputs. Checks and describes the inputs; it does not "
+      "compute the PPK solution or rewrite a coordinate, and says so in every report."),
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Job queue with priorities, retries, cancellation, progress and resource limits.",
       "in_progress", ["tests/test_jobs.py", "tests/test_processing.py"],
@@ -491,8 +584,21 @@ PROCESSING = [
 
 VISION = [
     F("ai.registry", "AI model registry", "vision", "AI",
-      "Register, version, deploy and roll back models, with metrics and a real checksum.",
-      "implemented", [], "training/register.py; refuses an export that failed parity."),
+      "Register, version, deploy and roll back models, with metrics and a real checksum "
+      "that is checked rather than merely stored: the installed file is hashed and "
+      "compared against the digest recorded when the model was registered, a replaced "
+      "file is reported as a mismatch whose published metrics describe something else, "
+      "and a model with no recorded digest is reported as unrecorded rather than as "
+      "verified. A registered key with no weights behind it declares itself as awaiting "
+      "weights and is not counted as an available model, so a routing target is never "
+      "mistaken for a trained one.",
+      "implemented", ["tests/test_model_identity_verification.py::TestVerification",
+                      "tests/test_model_identity_verification.py::TestWholeRegistryReport",
+                      "tests/test_model_identity_verification.py::TestEntriesWithNoWeights",
+                      "tests/test_model_identity_verification.py::TestTheRealRegistry"],
+      "training/register.py refuses an export that failed parity; "
+      "core/models.py::verify_model_identity and verify_all_models compare installed "
+      "against recorded; Api.verify_models surfaces it and audits a mismatch."),
     F("ai.parity", "ONNX export parity", "vision", "AI",
       "An export is rejected unless it matches torch within a tolerance scaled to each "
       "value's magnitude -- absolute at probability scale, relative at pixel-coordinate "
@@ -536,7 +642,11 @@ VISION = [
       "in_progress", [], "Trainers exist; no labelling UI or user-facing dataset builder."),
     F("ai.assisted_annotation", "AI assisted annotation", "hub", "AI",
       "Model pre-labels imagery; a reviewer accepts, edits, merges, splits or reclassifies.",
-      "not_started", []),
+      "implemented", ["tests/test_assisted_annotations.py"],
+      "A public-domain concrete photograph exercises installed YOLO ONNX inference and "
+      "every review action. Original model geometry, label, confidence, key and sha256 "
+      "remain immutable. SegFormer pre-label persistence is refused because its current "
+      "result contract has no per-region confidence; no score is synthesised."),
     F("ai.human_validation", "Human validation record", "hub", "AI",
       "A model prediction is never stored as verified. The model's claim (key, sha256, "
       "confidence) and the reviewer's decision are separate fields, so reviewing never "
@@ -691,8 +801,16 @@ INDIA_FIRST = [
       "India pack: Solar",
       "Aligned RGB/radiometric thermal imagery with module-level hotspots, hot cells, "
       "string/module anomalies and temperature-backed severity.",
-      "in_progress", ["tests/test_thermal.py", "tests/test_hub_thermal.py"],
-      "Radiometric mapping, validated-registration comparison and 3D surface projection work; automatic alignment and module-level association still do not."),
+      "implemented", ["tests/test_thermal.py", "tests/test_hub_thermal.py",
+                      "tests/test_solar_thermal.py::TestRgbThermalRegistration",
+                      "tests/test_solar_thermal.py::TestModuleTemperatureAssociation",
+                      "tests/test_solar_thermal.py::TestSolarThermalRefusals"],
+      "At least six operator-supplied correspondences produce separate residual, inlier "
+      "and coverage components; this checks tie-point self-consistency, not image feature "
+      "matching. Radiometric cells are associated only where registered RGB module "
+      "polygons and projected inventory polygons agree, with a required named severity "
+      "convention. Tests use constructed RGB/radiometric fixtures, not a field capture, "
+      "so this is not field validation; all outputs remain review candidates."),
 
     # Land and property
     F("pack.land.gis", "Land-survey GIS extraction", "vision",
@@ -748,7 +866,12 @@ INDIA_FIRST = [
 INSPECTION = [
     F("in.annotations", "Annotations", "hub", "Inspection",
       "Point, line, polygon, rectangle, circle, freehand and text with severity and status.",
-      "in_progress", [], "core/annotations.py exists; no UI."),
+      "implemented", ["tests/test_annotations.py::TestAnnotationGeometry",
+                      "tests/test_annotations.py::TestAnnotationValidation",
+                      "tests/test_annotations.py::TestAnnotationApi",
+                      "tests/test_hub_web.py::TestHubRealBrowser::test_annotation_draw_events_cover_every_shape_with_metadata"],
+      "All seven shapes pass through the shared geometry validator, project-contained REST "
+      "storage and the MapLibre draw-event path with explicit severity and workflow status."),
     F("in.defect_library", "Defect library", "hub", "Inspection",
       "Default categories offered, with any organisation-defined category accepted; "
       "the default list is not a whitelist.",
@@ -767,15 +890,41 @@ INSPECTION = [
                       "tests/test_raster_measurement.py::TestHonestReporting"],
       "core/raster_measurement.py; Api.measure_on_raster."),
     F("me.3d", "3D measurements", "hub", "Measurement",
-      "Length, height, area and volume inside the 3D model.",
-      "not_started", []),
+      "Length, height, area and volume inside the 3D model, exact on a mesh of known "
+      "size, with the horizontal and vertical parts of a run reported separately, "
+      "surface area distinguished from planimetric footprint, a model whose provenance "
+      "records no CRS refused rather than measured in structure-from-motion units, and "
+      "volume refused on a surface that does not close.",
+      "implemented", ["tests/test_model_measurement.py::TestScaleMustBeRecorded",
+                      "tests/test_model_measurement.py::TestLength",
+                      "tests/test_model_measurement.py::TestHeight",
+                      "tests/test_model_measurement.py::TestArea",
+                      "tests/test_model_measurement.py::TestVolume",
+                      "tests/test_model_measurement.py::TestThroughTheApi",
+                      "tests/test_model_measurement.py::TestMeshReading"],
+      "core/model_measurement.py; Api.measure_in_model. Volume is the divergence "
+      "theorem over a closed mesh, so it is origin-independent; an open exterior with "
+      "no floor is refused instead of summed."),
     F("me.volume", "Volume and stockpile", "core", "Measurement",
       "Cut/fill against DTM, plane and lowest-point references, exact on a known surface.",
       "verified", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",
                    "tests/test_dsm_analysis.py::test_polygon_clip_halves_the_volume"]),
     F("me.slope", "Slope measurement", "core", "Measurement",
-      "Gradient for pitched roofs, pavements and ramps.",
-      "not_started", []),
+      "Gradient for pitched roofs, pavements and ramps, exact on a plane of known "
+      "pitch, with the cell size the gradient was measured across reported, a surface "
+      "that is not one facet said to be so rather than averaged into a single pitch, "
+      "and a geographic raster refused instead of dividing metres by degrees.",
+      "implemented", ["tests/test_slope.py::TestAKnownPlane",
+                      "tests/test_slope.py::TestAspect",
+                      "tests/test_slope.py::TestResolutionIsStated",
+                      "tests/test_slope.py::TestNonPlanarSurfaces",
+                      "tests/test_slope.py::TestClipping",
+                      "tests/test_slope.py::TestRefusals",
+                      "tests/test_slope.py::TestThroughTheApi",
+                      "tests/test_slope.py::TestGradientDescription"],
+      "core/slope.py; Api.measure_slope. Reports the per-cell distribution and a "
+      "fitted plane with its residual, since the residual is what says whether a "
+      "single quoted pitch describes the surface at all."),
     F("th.radiometric", "Radiometric thermal processing", "workers", "Thermal",
       "Raw counts converted to temperature through the camera's Planck constants with "
       "emissivity and reflected-temperature correction, verified by round trip within "
@@ -924,13 +1073,26 @@ PLATFORM = [
                    "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members"]),
     F("ex.model_formats", "3D export formats", "core", "Export",
       "OBJ, PLY, LAS/LAZ, GLB and GLTF.",
-      "in_progress", [], "OBJ and PLY only."),
+      "implemented", ["tests/test_model_formats.py::TestMeshFormats",
+                      "tests/test_model_formats.py::TestPointCloudFormats",
+                      "tests/test_model_formats.py::TestModelExportRefusals"],
+      "Independent readers round-trip geometry for every format. GLB/GLTF retain the "
+      "projected coordinate origin and CRS metadata; LAS/LAZ retain coordinates, colours "
+      "and their standard CRS VLR, with LAZ verified as compressed."),
     F("api.rest", "REST API", "hub", "API",
       "Documented endpoints for every resource in the specification.",
-      "in_progress", ["tests/test_api.py::TestProjectsAndMissions", "tests/test_api.py::TestAssets",
-                      "tests/test_uploads.py", "tests/test_processing.py"],
-      "Auth, orgs, projects, assets, missions, export, datasets, resumable upload and "
-      "processing jobs done. Defects, measurements, reports and AI jobs still to come."),
+      "implemented", ["tests/test_api.py::TestProjectsAndMissions", "tests/test_api.py::TestAssets",
+                      "tests/test_uploads.py", "tests/test_processing.py",
+                      "tests/test_rest_resources.py::TestRestDefects",
+                      "tests/test_rest_resources.py::TestRestMeasurements",
+                      "tests/test_rest_resources.py::TestRestReports",
+                      "tests/test_rest_resources.py::TestRestAIJobs",
+                      "tests/test_rest_resources.py::TestRestContainment",
+                      "tests/test_annotations.py::TestAnnotationApi"],
+      "Defects, source-attributed georeferenced measurements, immutable structured report "
+      "snapshots, project annotations and persistent AI-job submissions are documented in "
+      "OpenAPI and enforce project containment. AI jobs remain pending_worker until a real "
+      "inference worker produces attributed output; submission does not claim inference."),
     F("api.uploads", "Resumable dataset upload", "hub", "API",
       "A client declares a file with its size and sha256, sends chunks in any order, "
       "queries what is missing, and finalises; assembly is refused unless both the byte "
@@ -948,11 +1110,14 @@ PLATFORM = [
                       "tests/test_events.py::TestHonestyAboutGuarantees"]),
     F("api.realtime", "Real time communication", "hub", "API",
       "Per-organization WebSocket stream with the token verified as a normal request "
-      "would be, declaring that in-process fan-out only reaches clients on the same "
-      "worker.",
-      "in_progress", ["tests/test_events.py::TestLiveStream"],
-      "Authenticated stream works; a shared broker is needed for multi-worker "
-      "deployments and telemetry is not yet published into it."),
+      "would be, with organization-scoped telemetry delivered through a broker shared "
+      "by workers using the same database.",
+      "implemented", ["tests/test_events.py::TestLiveStream",
+                      "tests/test_realtime.py::TestSharedBroker",
+                      "tests/test_realtime.py::TestTelemetryStream"],
+      "The shared database buffer supports multi-worker fan-out. Delivery remains "
+      "best effort: there are no client acknowledgements, durable offline cursors or "
+      "exactly-once guarantee."),
     F("fm.fleet", "Fleet management", "hub", "Fleet",
       "Airframes with accumulating flight hours and a service interval that reports "
       "when maintenance is due, plus a fleet status view answering what needs "
@@ -1005,7 +1170,10 @@ PLATFORM = [
       "verified", ["tests/test_honesty.py::TestNoSilentNetworkCall"]),
     F("inf.observability", "Observability", "infra", "Deployment",
       "Structured logs, metrics, tracing and health endpoints.",
-      "not_started", []),
+      "implemented", ["tests/test_observability.py"],
+      "JSON request spans carry W3C trace context; Prometheus metrics explicitly declare "
+      "per-process scope; readiness performs live database and storage calls and returns "
+      "503 on failure. Trace export remains best-effort structured-log shipping."),
     F("sdk.plugin_system", "Plugin system", "plugins", "SDK",
       "Documented plugin points for drones, cameras, payloads, mission types, engines, "
       "models, exporters, report templates and map providers.",
