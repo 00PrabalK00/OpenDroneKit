@@ -108,6 +108,24 @@ class Api:
         available = sum(1 for r in rows if r.get("exists"))
         return ok(models=rows, available=available, total=len(rows))
 
+    @guard
+    def verify_models(self) -> dict[str, Any]:
+        """Whether each installed model is the file its recorded metrics were measured on.
+
+        A model replaced on disk keeps its registry entry, its labels and its published
+        accuracy, so every report it feeds continues to quote figures belonging to a
+        different file. This is the check that says so.
+        """
+        from core.models import verify_all_models
+
+        report = verify_all_models()
+        if report["any_mismatch"]:
+            self._session.audit("model_identity_mismatch", {
+                "keys": [row["model_key"] for row in report["models"]
+                         if row["status"] == "mismatch"],
+            })
+        return ok(**report)
+
     # -- projects --------------------------------------------------------
 
     @guard
@@ -171,7 +189,64 @@ class Api:
         if path and not source.exists():
             return fail(f"Terrain file not found: {path}")
         self._session.terrain_source_path = str(source) if path else ""
-        return ok(path=self._session.terrain_source_path)
+
+        # Selecting a terrain file says nothing about whether it covers the site, and a
+        # DEM for the wrong valley plans as quietly as the right one. Answer that here,
+        # while the operator is still choosing, rather than only at plan time.
+        coverage: dict[str, Any] | None = None
+        if self._session.terrain_source_path and len(self._session.aoi_polygon) >= 3:
+            from core.terrain_cache import source_covers_area
+
+            coverage = source_covers_area(
+                self._session.terrain_source_path, self._session.aoi_polygon)
+        return ok(path=self._session.terrain_source_path, coverage=coverage)
+
+    @guard
+    def mark_boundary_corner(self, note: str = "") -> dict[str, Any]:
+        """Record the aircraft's current position as a corner of the survey boundary.
+
+        For the field edge under canopy, or the stockpile toe that moved since the
+        basemap was flown: the boundary comes out of the flight rather than out of
+        imagery that may be years old.
+        """
+        from mission.fly_to_draw import BoundaryRefused, mark_from_telemetry
+
+        try:
+            mark = mark_from_telemetry(self._session.telemetry(), note=note)
+        except BoundaryRefused as exc:
+            # Written for an operator standing next to the aircraft, who can act on it.
+            return fail(str(exc))
+
+        marks = list(getattr(self._session, "boundary_marks", []))
+        marks.append(mark)
+        self._session.boundary_marks = marks
+        self._session.audit("boundary_corner_marked",
+                            {"corner": len(marks), "fix_type": mark.fix_type})
+        return ok(corner=len(marks), mark=mark.to_dict())
+
+    @guard
+    def clear_boundary_marks(self) -> dict[str, Any]:
+        self._session.boundary_marks = []
+        return ok(corner_count=0)
+
+    @guard
+    def boundary_from_marks(self, apply_as_aoi: bool = True) -> dict[str, Any]:
+        """Close the flown corners into an area of interest."""
+        from mission.fly_to_draw import BoundaryRefused, boundary_from_marks as build
+
+        marks = list(getattr(self._session, "boundary_marks", []))
+        try:
+            boundary = build(marks)
+        except BoundaryRefused as exc:
+            return fail(str(exc))
+
+        if apply_as_aoi:
+            self._session.aoi_polygon = [list(point) for point in boundary["polygon"]]
+            self._session.audit("boundary_flown", {
+                "corners": boundary["corner_count"],
+                "area_hectares": boundary["area_hectares"],
+            })
+        return ok(**boundary)
 
     @guard
     def search_places(self, query: str, provider: str = "") -> dict[str, Any]:
@@ -335,6 +410,41 @@ class Api:
             "roof_inspection", "magnetic_mapping", "linked_mission",
         ]
         return ok(templates=templates, planner=MissionPlanner.__name__)
+
+    @guard
+    def cache_terrain(self, path: str, name: str = "") -> dict[str, Any]:
+        """Copy a terrain raster into the project for use with no connectivity."""
+        from core.terrain_cache import TerrainCacheError, cache_terrain as store
+
+        try:
+            tile = store(path, self._session.project_root(), name=name)
+        except TerrainCacheError as exc:
+            return fail(str(exc))
+
+        self._session.audit("terrain_cached", {"tile": tile.name, "source": str(path)})
+        return ok(tile=tile.to_dict())
+
+    @guard
+    def terrain_coverage(self) -> dict[str, Any]:
+        """Whether the drawn area can be flown terrain-following offline.
+
+        A partially covered area is reported as uncovered on purpose: terrain following
+        that works over part of a site and silently flies level over the rest is worse
+        than not following at all, because the transition is invisible in the plan.
+        """
+        from core.terrain_cache import coverage_report
+
+        polygon = self._session.aoi_polygon
+        if len(polygon) < 3:
+            return fail("Draw an area of interest before checking terrain coverage.")
+        return ok(**coverage_report(polygon, self._session.project_root()))
+
+    @guard
+    def describe_terrain_cache(self) -> dict[str, Any]:
+        """What terrain is cached for this project, and whether the files are present."""
+        from core.terrain_cache import describe_cache
+
+        return ok(**describe_cache(self._session.project_root()))
 
     @guard
     def repeat_mission(self, version_num: int | None = None, mode: str = "exact",
@@ -660,6 +770,38 @@ class Api:
         return ok(resume=resumed, progress=state.to_dict())
 
     @guard
+    def linked_mission_progress(self, image_folder: str,
+                                resume: bool = False) -> dict[str, Any]:
+        """Which survey inside a linked sortie is finished, and which is part flown.
+
+        An overall percentage cannot distinguish "every survey is nearly done" from
+        "three are finished and the fourth was never started", and those call for
+        opposite actions on site.
+        """
+        from mission.linking import NotLinked, linked_progress, resume_linked_mission
+
+        plan = getattr(self._session, "mission_plan_dict", None)
+        if not plan:
+            return fail("Plan a mission before asking how much of it has been flown.")
+        if not Path(image_folder).is_dir():
+            return fail(f"Not a folder of images: {image_folder}")
+
+        try:
+            handler = resume_linked_mission if resume else linked_progress
+            report = handler(plan, image_folder)
+        except NotLinked as exc:
+            # Written for an operator; passing it through beats a generic message.
+            return fail(str(exc))
+        except (ValueError, NotADirectoryError) as exc:
+            return fail(str(exc))
+
+        self._session.audit("linked_progress_checked", {
+            "complete": report["complete_segments"],
+            "partial": report["partial_segments"],
+        })
+        return ok(**report)
+
+    @guard
     def list_cameras(self) -> dict[str, Any]:
         """Every camera profile available for planning, built-in and user-defined."""
         from mission.cameras import all_profiles
@@ -758,6 +900,97 @@ class Api:
             return fail(str(exc))
 
         return ok(measurement=measurement.to_dict())
+
+    @guard
+    def measure_slope(self, surface_path: str,
+                      polygon_xy: list[list[float]] | None = None) -> dict[str, Any]:
+        """Gradient over a DSM or DTM: roof pitch, pavement fall, ramp steepness.
+
+        The polygon is in the raster's own projected coordinates, because that is what
+        the elevation surface is in and converting here would hide which CRS the numbers
+        belong to.
+        """
+        from core.dsm_analysis import NotGeoreferenced
+        from core.slope import NotProjected, measure_slope as run_slope
+
+        region = [[float(p[0]), float(p[1])] for p in (polygon_xy or []) if len(p) >= 2]
+        try:
+            result = run_slope(surface_path, polygon_xy=region or None)
+        except (NotGeoreferenced, NotProjected) as exc:
+            # Written for an operator; passing them through beats a generic message.
+            return fail(str(exc))
+        except (FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+
+        if not result.get("ok"):
+            return fail(result["reason"], **{k: v for k, v in result.items() if k != "reason"})
+        return ok(**{k: v for k, v in result.items() if k != "ok"})
+
+    @guard
+    def check_ppk_inputs(self, events_path: str, rinex_path: str,
+                         leap_seconds: int = 18, margin_s: float = 0.0) -> dict[str, Any]:
+        """Whether the camera events and base observations can support a PPK survey.
+
+        Checked before processing rather than after, because a run over partial base
+        coverage still succeeds -- it just produces a deliverable that is centimetre
+        accurate in places and metre accurate in others.
+        """
+        from core.rtk import RtkError, positioning_report
+
+        try:
+            report = positioning_report(events_path, rinex_path,
+                                        leap_seconds=int(leap_seconds),
+                                        margin_s=float(margin_s))
+        except RtkError as exc:
+            # Written for an operator; passing them through beats a generic message.
+            return fail(str(exc))
+
+        self._session.audit("ppk_inputs_checked", {
+            "events": str(events_path), "rinex": str(rinex_path),
+            "usable": report["usable_for_ppk"],
+        })
+        return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def measure_in_model(self, model_path: str, kind: str = "length",
+                         points_xyz: list[list[float]] | None = None) -> dict[str, Any]:
+        """Length, height, area or volume inside a reconstructed 3D model.
+
+        Refused unless the model's provenance records the CRS it was aligned to, since
+        an ungeoreferenced reconstruction is in structure-from-motion units that read
+        exactly like metres.
+        """
+        from core.model_measurement import (
+            NotClosed,
+            NotMetric,
+            measure_area,
+            measure_height,
+            measure_length,
+            measure_volume,
+        )
+
+        points = [[float(v) for v in p[:3]] for p in (points_xyz or []) if len(p) >= 3]
+        try:
+            if kind == "volume":
+                measurement = measure_volume(model_path)
+            elif kind == "area":
+                measurement = measure_area(model_path, points)
+            elif kind in {"length", "height"}:
+                if len(points) < 2:
+                    return fail(f"A {kind} needs two picked points.")
+                handler = measure_length if kind == "length" else measure_height
+                measurement = handler(model_path, points[0], points[1])
+            else:
+                return fail(
+                    f"Unknown measurement kind {kind!r}. Use length, height, area or volume."
+                )
+        except (NotMetric, NotClosed) as exc:
+            # Written for an operator; passing them through beats a generic message.
+            return fail(str(exc))
+        except (FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+
+        return ok(measurement=measurement)
 
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:
@@ -879,6 +1112,35 @@ class Api:
                 "inside the area is not represented."
             )
 
+        # What is actually fitted decides what the aircraft is told at a capture point.
+        # A LiDAR sent a shutter trigger flies the whole mission and lands with nothing.
+        payload_block: dict[str, Any] | None = None
+        if opts.get("payload"):
+            from mission.payloads import UnknownPayload, get_payload, payload_plan_notes
+
+            try:
+                fitted = get_payload(str(opts["payload"]))
+            except UnknownPayload as exc:
+                return fail(str(exc))
+            payload_block = {
+                **fitted.to_dict(),
+                "plan_notes": payload_plan_notes(fitted),
+            }
+            self._session.mission_plan_dict["payload"] = payload_block
+            warnings.extend(payload_block["plan_notes"])
+
+        # A terrain source that loads perfectly well but stops short of the area is the
+        # case none of the checks above can see: the model is real, the plan is clean,
+        # and the aircraft flies level over whatever the DEM does not reach.
+        if self._session.terrain_source_path and terrain.get("source") != "missing_terrain_source":
+            from core.terrain_cache import source_covers_area
+
+            extent = source_covers_area(self._session.terrain_source_path, polygon)
+            if not extent["covered"]:
+                warnings.append(
+                    f"Terrain source does not cover the planned area: {extent['detail']}"
+                )
+
         return ok(
             summary={
                 "template": kwargs["mode"],
@@ -891,7 +1153,56 @@ class Api:
             },
             geojson=plan.geojson,
             warnings=warnings,
+            payload=payload_block,
         )
+
+    @guard
+    def list_payloads(self) -> dict[str, Any]:
+        """Every payload the engine can plan for, built-in and operator-defined."""
+        from mission.payloads import list_payloads as read_payloads
+
+        return ok(payloads=read_payloads())
+
+    @guard
+    def describe_payload(self, key: str) -> dict[str, Any]:
+        """One payload, with what fitting it changes about the mission."""
+        from mission.payloads import UnknownPayload, get_payload, payload_plan_notes
+
+        try:
+            profile = get_payload(key)
+        except UnknownPayload as exc:
+            return fail(str(exc))
+        return ok(payload=profile.to_dict(), plan_notes=payload_plan_notes(profile))
+
+    @guard
+    def add_payload(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """Describe a payload this operator actually owns."""
+        from mission.payloads import PayloadProfile, save_user_profile
+
+        fields = dict(spec or {})
+        try:
+            profile = PayloadProfile(
+                key=str(fields.get("key", "")).strip().lower(),
+                name=str(fields.get("name", "")),
+                kind=str(fields.get("kind", "custom")),
+                commands=tuple(fields.get("commands") or ()),
+                mass_g=None if fields.get("mass_g") in (None, "") else float(fields["mass_g"]),
+                power_w=None if fields.get("power_w") in (None, "") else float(fields["power_w"]),
+                mount=str(fields.get("mount", "")),
+                bands_nm=tuple(float(b) for b in (fields.get("bands_nm") or ())),
+                continuous=bool(fields.get("continuous", False)),
+                requires_calibration=bool(fields.get("requires_calibration", False)),
+                source="user", notes=str(fields.get("notes", "")),
+            )
+        except (TypeError, ValueError) as exc:
+            return fail(str(exc))
+
+        try:
+            store = save_user_profile(profile)
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("payload_added", {"key": profile.key, "kind": profile.kind})
+        return ok(payload=profile.to_dict(), stored_at=str(store))
 
     @guard
     def mission_geojson(self) -> dict[str, Any]:

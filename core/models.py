@@ -19,6 +19,14 @@ class ModelSpec:
     iou_threshold: float = 0.45
     input_size: int = 640
     description: str = ""
+    # The digest of the file whose metrics were measured. Empty means nobody recorded
+    # one, which is a different statement from the file having changed.
+    sha256: str = ""
+    # "installed" when weights exist and were measured; "awaiting_weights" when the entry
+    # is a training or routing target with nothing behind it yet. A registry whose whole
+    # purpose is to say what is real must not list the second as though it were the first.
+    status: str = "installed"
+    status_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +38,9 @@ class ModelSpec:
             "iou_threshold": float(self.iou_threshold),
             "input_size": int(self.input_size),
             "description": self.description,
+            "sha256": self.sha256,
+            "status": self.status,
+            "status_note": self.status_note,
         }
 
 
@@ -200,6 +211,9 @@ def get_model_spec(model_key: str) -> ModelSpec | None:
         iou_threshold=float(row.get("iou_threshold", 0.45)),
         input_size=int(row.get("input_size", 640)),
         description=str(row.get("description", "")),
+        sha256=str(row.get("sha256", "") or "").strip().lower(),
+        status=str(row.get("status", "installed") or "installed"),
+        status_note=str(row.get("status_note", "")),
     )
 
 
@@ -363,3 +377,96 @@ def model_identity(model_key: str) -> dict[str, str]:
         _DIGEST_CACHE[cache_key] = digest
 
     return {"model_key": model_key, "model_sha256": digest, "model_path": path_str}
+
+
+def verify_model_identity(model_key: str) -> dict[str, Any]:
+    """Compare the installed file against the digest the registry recorded for it.
+
+    The registry's ``sha256`` is the digest of the file whose metrics were measured. The
+    runtime digest is of the file about to answer. They diverge exactly when a model has
+    been retrained, replaced or copied in by hand -- at which point the metrics on record
+    describe a different file, and any report quoting them is quoting the wrong model.
+
+    Four outcomes, deliberately distinct:
+
+    ``verified``
+        Recorded and installed digests agree.
+    ``unrecorded``
+        The file is installed but no digest was recorded. Not a failure; a gap. Saying
+        "verified" here would be a claim nobody has earned.
+    ``mismatch``
+        A digest was recorded and the installed file is not it.
+    ``missing``
+        Nothing is installed at the registered path.
+    """
+    spec = get_model_spec(model_key)
+    if spec is None:
+        return {"model_key": model_key, "status": "unknown_model_key", "verified": False}
+
+    identity = model_identity(model_key)
+    actual = identity.get("model_sha256", "")
+    expected = spec.sha256
+
+    if not actual and spec.status == "awaiting_weights":
+        # Declared empty rather than found empty. The distinction matters: one is a plan,
+        # the other is a model that has gone.
+        status = "awaiting_weights"
+        detail = spec.status_note or (
+            f"{model_key} is a registered target with no weights trained or obtained "
+            "yet. It is not an available model."
+        )
+    elif not actual:
+        status = "missing"
+        detail = (
+            f"No file is installed at the registered path for {model_key}, so there is "
+            "nothing to verify and nothing to run."
+        )
+    elif not expected:
+        status = "unrecorded"
+        detail = (
+            f"{model_key} has no recorded digest, so the installed file cannot be shown "
+            "to be the one its metrics were measured on. Record the digest when the "
+            "model is registered."
+        )
+    elif expected == actual:
+        status = "verified"
+        detail = f"{model_key} matches the digest recorded when it was registered."
+    else:
+        status = "mismatch"
+        detail = (
+            f"{model_key} on disk is not the file that was registered. Recorded "
+            f"{expected[:16]}..., found {actual[:16]}.... Any accuracy figure on record "
+            "for this key describes a different file."
+        )
+
+    return {
+        "model_key": model_key,
+        "status": status,
+        "verified": status == "verified",
+        "expected_sha256": expected,
+        "actual_sha256": actual,
+        "model_path": identity.get("model_path", ""),
+        "detail": detail,
+    }
+
+
+def verify_all_models() -> dict[str, Any]:
+    """Verification status for every registered model, worst news first."""
+    payload = load_registry()
+    rows = [verify_model_identity(key) for key in sorted(payload.get("models", {}))]
+    order = {"mismatch": 0, "missing": 1, "unrecorded": 2, "awaiting_weights": 3,
+             "verified": 4}
+    rows.sort(key=lambda row: order.get(row["status"], 4))
+    counts: dict[str, int] = {}
+    for row in rows:
+        counts[row["status"]] = counts.get(row["status"], 0) + 1
+    return {
+        "models": rows,
+        "counts": counts,
+        "any_mismatch": any(row["status"] == "mismatch" for row in rows),
+        # A registered key with no weights is not an available model, and anything that
+        # counts models should count these separately or not at all.
+        "available": [row["model_key"] for row in rows if row["status"] == "verified"],
+        "awaiting_weights": [row["model_key"] for row in rows
+                             if row["status"] == "awaiting_weights"],
+    }

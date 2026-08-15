@@ -467,6 +467,49 @@ def adapt_elpv(raw: Path) -> Iterator[ClsSample]:
         )
 
 
+def adapt_infrared_solar_modules(raw: Path) -> Iterator[ClsSample]:
+    """Raptor Maps InfraredSolarModules: 20,000 IR module crops, 12 anomaly classes.
+
+    This is the only openly licensed source found that carries the anomaly classes the
+    solar pack actually declares -- hot spots, cracking, offline modules, soiling -- as
+    named classes rather than as a defect probability. The classes are kept exactly as
+    published rather than collapsed into the declared schema here, because a mapping is
+    a decision about what counts as which defect and belongs where a reviewer can see
+    it, not buried in a corpus adapter.
+
+    Two properties of this set matter downstream and are not fixed here. The crops are
+    24x40 pixels, so anything trained on them is a per-module classifier and not a
+    localiser. And the distribution is severely imbalanced -- 10,000 No-Anomaly against
+    249 Hot-Spot -- so a model trained without class weighting will score well by
+    predicting "normal" and find nothing.
+    """
+    root = raw / "InfraredSolarModules"
+    metadata_path = root / "module_metadata.json"
+    if not metadata_path.exists():
+        # The GitHub archive ships an inner zip; extract it once, in place.
+        inner = next(raw.glob("*InfraredSolarModules.zip"), None)
+        if inner is None:
+            return
+        _safe_extract(inner, raw)
+    if not metadata_path.exists():
+        return
+
+    records = json.loads(metadata_path.read_text(encoding="utf-8"))
+    for key, record in records.items():
+        relative = str(record.get("image_filepath", ""))
+        anomaly = str(record.get("anomaly_class", "")).strip()
+        if not relative or not anomaly:
+            continue
+        image_path = root / relative
+        if not image_path.exists():
+            continue
+        yield ClsSample(
+            sample_id=f"irsm_{key}",
+            image_path=image_path,
+            class_name=_clean_class_name(anomaly),
+        )
+
+
 def adapt_sdnet2018(raw: Path) -> Iterator[ClsSample]:
     """SDNET2018: 56k concrete tiles under Decks / Pavements / Walls.
 
@@ -650,11 +693,26 @@ TASKS: dict[str, TaskSpec] = {
         datasets=("elpv",),
         description="Solar cell defect severity tiers. CC BY-NC-SA: non-commercial only.",
     ),
+    "solar_thermal_cls": TaskSpec(
+        name="solar_thermal_cls",
+        kind="classification",
+        datasets=("infrared_solar_modules",),
+        description=(
+            "Per-module infrared anomaly classes -- hot spot, cracking, offline module, "
+            "diode, soiling, shadowing and vegetation -- as published by Raptor Maps. "
+            "MIT licensed. The crops are 24x40 px, so this trains a classifier over "
+            "module polygons rather than a localiser."
+        ),
+    ),
     "solar_det": TaskSpec(
         name="solar_det",
         kind="detection",
         datasets=("solar_panel_defects",),
-        description="Aerial/thermal solar panel defect boxes for YOLO.",
+        description=(
+            "Solar panel surface condition boxes for YOLO. Despite the source's title "
+            "these are soiling and obstruction classes, not electrical faults, and two "
+            "of its six classes carry no instances at all."
+        ),
     ),
     "structural_det": TaskSpec(
         name="structural_det",
@@ -672,7 +730,7 @@ TASKS: dict[str, TaskSpec] = {
 
 TASK_GROUPS: dict[str, tuple[str, ...]] = {
     "crack": ("crack_seg", "crack_cls"),
-    "solar": ("solar_cls", "solar_det"),
+    "solar": ("solar_cls", "solar_thermal_cls", "solar_det"),
     "structural": ("structural_det",),
     "corrosion": ("corrosion_det",),
     "all": tuple(TASKS),
@@ -688,6 +746,7 @@ ADAPTERS: dict[str, Callable[[Path], Iterator]] = {
     "crack_segmentation_combined": adapt_crack_segmentation_combined,
     "crack_segmentation_kaggle": adapt_crack_segmentation_kaggle,
     "elpv": adapt_elpv,
+    "infrared_solar_modules": adapt_infrared_solar_modules,
     "sdnet2018": adapt_sdnet2018,
     "surface_crack": adapt_surface_crack,
     "solar_panel_defects": lambda raw: adapt_roboflow_yolo(raw, prefix="solarpv"),
@@ -727,6 +786,7 @@ SOURCE_PREFIXES: dict[str, str] = {
     "sdnet": "sdnet2018",
     "surfacecrack": "surface_crack",
     "elpv": "elpv",
+    "irsm": "infrared_solar_modules",
     "codebrim": "codebrim_structural",
     "solarpv": "solar_panel_defects",
     "corrosion": "corrosion_detection",

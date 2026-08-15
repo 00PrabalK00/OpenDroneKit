@@ -15,7 +15,9 @@
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
       "input_size": 640,
-      "description": "Primary multi-class structural defect detector."
+      "description": "Primary multi-class structural defect detector.",
+      "sha256": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+      "status": "installed"
     },
     "structural_codebrim_detector": {
       "kind": "onnx_yolo",
@@ -30,7 +32,9 @@
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
       "input_size": 640,
-      "description": "CODEBRIM-style structural defects baseline (no delamination/moisture classes)."
+      "description": "CODEBRIM-style structural defects baseline (no delamination/moisture classes).",
+      "status": "awaiting_weights",
+      "status_note": "No weights have been trained or obtained for this key. Registered as a target for training/register.py, not as an available model."
     },
     "structural_concrete_yolov8_baseline": {
       "kind": "onnx_yolo",
@@ -43,7 +47,9 @@
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
       "input_size": 640,
-      "description": "YOLOv8 concrete defects quick-start baseline."
+      "description": "YOLOv8 concrete defects quick-start baseline.",
+      "status": "awaiting_weights",
+      "status_note": "Quick-start baseline slot. No weights obtained; nothing routes to it."
     },
     "solar_defect_detector": {
       "kind": "onnx_yolo",
@@ -58,7 +64,9 @@
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
       "input_size": 640,
-      "description": "Primary solar defect detector for panel inspections."
+      "description": "Primary solar defect detector for panel inspections.",
+      "status": "awaiting_weights",
+      "status_note": "Routing target for the solar pipeline. Weights are being trained as solar_det on Kaggle; until they are installed and measured, solar detection falls back to the heuristic path and says so."
     },
     "solar_pv_multidefect_detector": {
       "kind": "onnx_yolo",
@@ -73,7 +81,9 @@
       "score_threshold": 0.25,
       "iou_threshold": 0.45,
       "input_size": 640,
-      "description": "PV-Multi-Defect baseline mapped to toolkit solar label schema."
+      "description": "PV-Multi-Defect baseline mapped to toolkit solar label schema.",
+      "status": "awaiting_weights",
+      "status_note": "Registered as a training target fed by the PV-Multi-Defect corpora. No weights installed."
     },
     "legacy_swin_unet": {
       "kind": "pytorch_checkpoint",
@@ -84,7 +94,9 @@
       "score_threshold": 0.5,
       "iou_threshold": 0.0,
       "input_size": 512,
-      "description": "Legacy Swin-UNet crack segmentation checkpoint."
+      "description": "Legacy Swin-UNet crack segmentation checkpoint.",
+      "status": "awaiting_weights",
+      "status_note": "Historical Swin-UNet checkpoint slot, kept for migrate_legacy_models. No file present; superseded by SegFormer-B5 as crack_segmentation."
     },
     "legacy_crack_segmentation_unet": {
       "kind": "pytorch_checkpoint",
@@ -95,7 +107,9 @@
       "score_threshold": 0.5,
       "iou_threshold": 0.0,
       "input_size": 512,
-      "description": "Alternative crack segmentation checkpoint slot."
+      "description": "Alternative crack segmentation checkpoint slot.",
+      "status": "awaiting_weights",
+      "status_note": "Alternative historical checkpoint slot. No file present; superseded by SegFormer-B5."
     },
     "crack_segmentation": {
       "kind": "onnx_segmentation",
@@ -106,7 +120,9 @@
       "score_threshold": 0.85,
       "iou_threshold": 0.45,
       "input_size": 1024,
-      "description": "SegFormer-B5 @1024, run crack_segformer_b5. Decision threshold 0.85 chosen by sweep on the validation split (val IoU 0.5962 against 0.5582 at the previous 0.25)."
+      "description": "SegFormer-B5 @1024, run crack_segformer_b5. Decision threshold 0.85 chosen by sweep on the validation split (val IoU 0.5962 against 0.5582 at the previous 0.25).",
+      "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "status": "installed"
     }
   }
 }
