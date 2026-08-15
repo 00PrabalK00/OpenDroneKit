@@ -29,6 +29,20 @@ LOCAL_RUNS = ROOT / "training" / "runs"
 REMOTE_STATE = "/workspace/state"
 WANTED = ("best.pt", "last.pt")
 
+# The key registered with Vast as "claude-code-access". ssh only auto-discovers the
+# conventional names (id_ed25519, id_rsa) and neither exists here, so without an
+# explicit -i every retrieval fails with "Permission denied" -- after the training has
+# already finished and been paid for. IdentitiesOnly stops ssh offering other keys and
+# tripping the server's auth attempt limit before it reaches this one.
+SSH_KEY = str(Path.home() / ".ssh" / "claude_remote_key")
+SSH_OPTS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+    "-o", "IdentitiesOnly=yes",
+    "-i", SSH_KEY,
+]
+
 
 def vast(*args: str) -> str:
     result = subprocess.run(["vastai", *args], capture_output=True, text=True)
@@ -57,8 +71,7 @@ def remote(info: dict, command: str, timeout: int = 120) -> tuple[int, str]:
     if not host or not port:
         return 1, "no ssh endpoint yet"
     result = subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-         "-o", "LogLevel=ERROR", "-p", port, f"root@{host}", command],
+        ["ssh", *SSH_OPTS, "-p", port, f"root@{host}", command],
         capture_output=True, text=True, timeout=timeout,
     )
     return result.returncode, (result.stdout or result.stderr).strip()
@@ -142,8 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         source = f"root@{host}:{REMOTE_STATE}/runs/{args.run_name}/weights/{name}"
         print(f"  scp {name}", flush=True)
         result = subprocess.run(
-            ["scp", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-             "-o", "LogLevel=ERROR", "-P", port, source, str(local_path)],
+            ["scp", *SSH_OPTS, "-P", port, source, str(local_path)],
             capture_output=True, text=True,
         )
         if result.returncode != 0 or not local_path.is_file():
