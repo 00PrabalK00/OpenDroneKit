@@ -89,6 +89,12 @@ PLANS: list[ModelPlan] = [
     ModelPlan("agriculture_crop_weed", "segmentation", "agriculture_seg",
               "agriculture_segformer_b2.yaml",
               "Maize crop and weed separation from multispectral UAV imagery.",
+              # The config-loads check cannot catch this one, and that is worth stating:
+              # the config only loads BECAUSE its num_classes and class_names lines are
+              # commented out, so it is syntactically fine and semantically wrong. Run it
+              # and train_seg.py collapses maize and weed into one foreground class and
+              # reports a believable IoU for a model that cannot tell a crop from a weed.
+              blocked_by="train_seg.py is binary; this corpus has 3 classes.",
               notes="WeedsGalore, 156 captures on the authors' own splits. Trains on an "
                     "RGB composite built from 3 of the 5 bands; RE and NIR, where the "
                     "separation actually lives, need a trainer change to use."),
@@ -158,12 +164,47 @@ def _corpus_state(name: str) -> dict[str, Any]:
     return {"ready": True, "detail": f"{images} images", "splits": splits}
 
 
+def _config_loads(config_path: Path, kind: str) -> str:
+    """Return an error string if the trainer cannot actually load this config.
+
+    Checking only that a file exists is how this report came to call a model ready when
+    no trainer could train it: agriculture_seg has three classes and train_seg.py is
+    binary, so its config carried num_classes into a loader that rejects unknown keys.
+    Every detection and segmentation config in the repo failed this way at one point,
+    which on a rented machine is a paid instance dying in its first second.
+
+    Import failures are not treated as config errors -- a missing torch on the machine
+    running the audit says nothing about the config -- so the check reports what it
+    could not verify rather than inventing a verdict.
+    """
+    loaders = {
+        "classification": ("training.train_cls", "ClsConfig"),
+        "detection": ("training.train_det", "DetConfig"),
+        "segmentation": ("training.train_seg", "SegConfig"),
+    }
+    if kind not in loaders:
+        return ""
+    module_name, class_name = loaders[kind]
+    try:
+        module = __import__(module_name, fromlist=[class_name])
+    except Exception:
+        return "unverified: trainer could not be imported here"
+    try:
+        getattr(module, class_name).load(config_path)
+    except SystemExit as exc:
+        return str(exc).strip() or "config rejected by the trainer"
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"
+    return ""
+
+
 def audit() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for plan in PLANS:
         corpus = _corpus_state(plan.corpus)
         config_path = CONFIGS / plan.config if plan.config else None
         has_config = bool(config_path and config_path.exists())
+        config_error = _config_loads(config_path, plan.kind) if has_config else ""
         trainer = TRAINERS.get(plan.kind, "")
         has_trainer = bool(trainer and (ROOT / trainer).exists())
         trained = bool(plan.trained_run and (RUNS / plan.trained_run).exists())
@@ -180,6 +221,9 @@ def audit() -> list[dict[str, Any]]:
             state = "trained"
         elif plan.blocked_by:
             state = "blocked"
+        elif config_error and not config_error.startswith("unverified"):
+            # A config the trainer refuses is worse than a missing one: it looks done.
+            state = "config rejected"
         elif not missing:
             state = "ready to train"
         else:
@@ -190,7 +234,7 @@ def audit() -> list[dict[str, Any]]:
             "corpus": plan.corpus, "corpus_detail": corpus["detail"],
             "config": plan.config or "-", "trainer": trainer or "-",
             "blocked_by": plan.blocked_by, "notes": plan.notes,
-            "registry_key": plan.registry_key,
+            "registry_key": plan.registry_key, "config_error": config_error,
         })
     return rows
 
@@ -215,6 +259,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {row['model']:<{width}}  {row['state']:<22} {row['corpus_detail']}")
         if row["blocked_by"]:
             print(f"  {'':<{width}}  blocked: {row['blocked_by']}")
+        if row.get("config_error"):
+            print(f"  {'':<{width}}  config: {row['config_error'][:110]}")
 
     counts: dict[str, int] = {}
     for row in rows:
