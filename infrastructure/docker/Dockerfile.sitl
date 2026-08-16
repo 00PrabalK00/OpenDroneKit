@@ -74,9 +74,13 @@ RUN ./waf configure --board sitl && ./waf copter
 
 # Test-side dependencies. pymavlink and MAVProxy come from ArduPilot's own install, but
 # the repo's tests need pytest and the client stack too.
+# opencv-python-headless, not opencv-python: core/detection.py imports cv2 at module
+# scope, so collecting the SITL tests imports it even though no test decodes an image,
+# and the GUI build needs an X server this container will never have. Headless is the
+# same cv2 without the highgui window code.
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
     && python3 -m pip install --no-cache-dir \
-        pytest pymavlink MAVProxy pyyaml numpy
+        pytest pymavlink MAVProxy pyyaml numpy opencv-python-headless
 
 WORKDIR /workspace
 # The repository is bind-mounted at run time rather than copied in, so a test run always

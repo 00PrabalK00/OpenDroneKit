@@ -222,6 +222,56 @@ def import_mission_planner_waypoints(file_path: Path | str) -> dict[str, Any]:
     }
 
 
+def _with_home_slot(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepend the home item MAVLink reserves at mission sequence 0, and renumber.
+
+    ArduPilot stores its own home at sequence 0 and overwrites whatever arrives there.
+    A plan uploaded without allowing for it loses its first command silently -- see
+    upload_mission. The placeholder copies the first positional waypoint's coordinates
+    so a vehicle that has not yet set home has something sane rather than Null Island;
+    the autopilot replaces it either way.
+    """
+    if not items:
+        return []
+    first = next(
+        (it for it in items if int(it.get("command", 16)) not in _NON_POSITIONAL_COMMANDS),
+        items[0],
+    )
+    home = {
+        "seq": 0,
+        "command": 16,  # NAV_WAYPOINT, which is what ArduPilot reports home as
+        "frame": 0,     # MAV_FRAME_GLOBAL: home altitude is AMSL, not relative
+        "param1": 0.0,
+        "param2": 0.0,
+        "param3": 0.0,
+        "param4": 0.0,
+        "lat": float(first.get("lat", 0.0)),
+        "lon": float(first.get("lon", 0.0)),
+        "alt": 0.0,
+        "autocontinue": 1,
+        "current": 1,
+    }
+    renumbered = []
+    for index, item in enumerate(items, start=1):
+        copied = dict(item)
+        copied["seq"] = index
+        copied["current"] = 0
+        renumbered.append(copied)
+    return [home, *renumbered]
+
+
+def _without_home_slot(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the vehicle's home item and renumber, so a download mirrors the upload.
+
+    The caller uploaded a plan and should read back that plan. Home is protocol
+    bookkeeping owned by the autopilot, not part of anyone's flight plan, and callers
+    that want it have it on telemetry as home_lat/home_lon/home_alt.
+    """
+    if not items:
+        return []
+    return [dict(item, seq=index) for index, item in enumerate(items[1:])]
+
+
 def export_mission_planner_waypoints(
     file_path: Path | str,
     waypoints: list[list[float]],
@@ -421,7 +471,14 @@ class MissionPlannerDroneClient:
                 eph = float(getattr(msg, "eph", 9999.0))
                 tel.hdop = eph / 100.0 if eph < 9999.0 else tel.hdop
             elif t == "MISSION_CURRENT":
-                tel.waypoint_index = int(getattr(msg, "seq", tel.waypoint_index))
+                # Reported in the plan's own numbering, not the vehicle's. ArduPilot
+                # counts from its reserved home item at sequence 0, so its indices run
+                # one ahead of the plan the operator uploaded. download_mission already
+                # hides that slot; a waypoint_index that did not would mean the API
+                # answered "which waypoint" in two different numbering schemes
+                # depending on which call you asked -- and the one place that shows up
+                # is an operator watching progress against the plan they drew.
+                tel.waypoint_index = max(0, int(getattr(msg, "seq", tel.waypoint_index + 1)) - 1)
             elif t == "MISSION_COUNT":
                 tel.waypoint_total = int(getattr(msg, "count", tel.waypoint_total))
             elif t == "HOME_POSITION":
@@ -595,10 +652,27 @@ class MissionPlannerDroneClient:
             self._transfer_lock.release()
 
     def upload_mission(self, mission_items: list[dict[str, Any]]) -> CommandResult:
-        """Upload the flight plan, including gimbal, yaw, dwell, and trigger items."""
+        """Upload the flight plan, including gimbal, yaw, dwell, and trigger items.
+
+        A home slot is prepended, because MAVLink reserves mission sequence 0 for the
+        home position and ArduPilot overwrites whatever is stored there with the
+        vehicle's own home. Without it the first real command is swallowed: SITL showed
+        a plan whose NAV_TAKEOFF (22) was sent at seq 0 and read back as NAV_WAYPOINT
+        (16). Nothing errored. The upload reported success, the item count matched, and
+        the aircraft simply would not have taken off -- it would have proceeded to the
+        first waypoint at whatever altitude it happened to be at.
+
+        This is the defect the SITL harness was built to find, and it was invisible to
+        every test that did not talk to a real autopilot.
+        """
         return self._upload_list(
-            mission_items, mission_type=MAV_MISSION_TYPE_MISSION, name="upload_mission"
+            _with_home_slot(mission_items),
+            mission_type=MAV_MISSION_TYPE_MISSION,
+            name="upload_mission",
         )
+
+    # Fence and rally have no home slot -- the reservation is specific to the mission
+    # mission-type -- so they upload their items unchanged.
 
     def upload_geofence(self, fence_items: list[dict[str, Any]]) -> CommandResult:
         """Upload inclusion/exclusion fence polygons as MAV_MISSION_TYPE_FENCE."""
@@ -704,7 +778,7 @@ class MissionPlannerDroneClient:
                 MAV_MISSION_ACCEPTED,
                 MAV_MISSION_TYPE_MISSION,
             )
-            return items
+            return _without_home_slot(items)
         finally:
             self._transfer_lock.release()
 

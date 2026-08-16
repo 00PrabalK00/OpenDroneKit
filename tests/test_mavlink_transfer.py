@@ -206,7 +206,13 @@ def test_mission_upload_is_acknowledged(linked_vehicle):
     result = client.upload_mission(items)
 
     assert result.success, result.message
-    assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == len(items)
+    # One more than the plan: MAVLink reserves sequence 0 for home, and ArduPilot
+    # overwrites whatever is stored there. This assertion used to read `== len(items)`
+    # and passed against a mock that simply stored what it was given -- which is why
+    # the plan's NAV_TAKEOFF sat in the home slot until SITL flew it.
+    assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == len(items) + 1
+    stored = vehicle.stored[MAV_MISSION_TYPE_MISSION]
+    assert int(stored[1].command) == int(items[0]["command"])
 
 
 def test_capture_commands_reach_the_vehicle(linked_vehicle):
@@ -234,7 +240,9 @@ def test_each_list_lands_in_its_own_slot(linked_vehicle):
     assert report["fence"]["success"], report["fence"]["message"]
     assert report["rally"]["success"], report["rally"]["message"]
 
-    assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == report["mission"]["count"]
+    # The report counts the plan; the vehicle also holds the reserved home item at
+    # sequence 0. Fence and rally have no such reservation, so they match exactly.
+    assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == report["mission"]["count"] + 1
     assert len(vehicle.stored[MAV_MISSION_TYPE_FENCE]) == report["fence"]["count"]
     assert len(vehicle.stored[MAV_MISSION_TYPE_RALLY]) == report["rally"]["count"]
     # The flight plan must still be there after the other two uploads.
