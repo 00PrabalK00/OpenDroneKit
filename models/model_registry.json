@@ -123,6 +123,26 @@
       "description": "SegFormer-B5 @1024, run crack_segformer_b5. Decision threshold 0.85 chosen by sweep on the validation split (val IoU 0.5962 against 0.5582 at the previous 0.25).",
       "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
       "status": "installed"
+    },
+    "solar_cell_defect_detector": {
+      "kind": "onnx_detection",
+      "path": "solar/solar_cell_defect_detector.onnx",
+      "labels": [
+        "black_core",
+        "finger",
+        "crack",
+        "star_crack",
+        "thick_line",
+        "horizontal_dislocation",
+        "vertical_dislocation",
+        "short_circuit"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 1024,
+      "description": "YOLO11l @1024 on PVEL-AD electroluminescence cells, run pvel_ad_yolo11l, 60 epochs. Validation mAP50 0.8835, mAP50-95 0.5434, P 0.812, R 0.856. Per-class mAP50-95: short_circuit 0.918, black_core 0.847, finger 0.540, horizontal_dislocation 0.504, thick_line 0.485, star_crack 0.393, vertical_dislocation 0.335, crack 0.325. SCOPE: this is an EL cell-level defect detector for module manufacturing and lab inspection imagery. It is NOT an aerial or thermal model and must not be applied to drone photographs of installed panels. Four of the twelve classes PVEL-AD declares (printing_error, corner, fragment, scratch) had under 35 boxes each and were dropped rather than trained, so this model answers eight questions and cannot see those four defect types at all. Label order is the model checkpoint order, which predates the sorted-index fix in the corpus builder; any re-validation must use these labels rather than a freshly prepared data.yaml.",
+      "sha256": "a57676a7141baba3605fa81dd3a817405ee28522aff9edbc3e74e12755c6783b",
+      "status": "installed"
     }
   }
 }
