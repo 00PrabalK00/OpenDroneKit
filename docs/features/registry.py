@@ -246,7 +246,12 @@ MISSION_PLANNING = [
     F("mp.terrain_follow", "Terrain following", "core", "Mission engine",
       "AGL/AMSL follow from GeoTIFF, ASC, CSV or fitted plane, with an explicit warning "
       "whenever the plan degrades to flat earth.",
-      "implemented", [], "Warning surfaced in app/api.py; needs a test."),
+      "verified", ["tests/test_terrain_follow_warnings.py::TestNoTerrainLoaded",
+                   "tests/test_terrain_follow_warnings.py::TestUnreadableTerrainSource",
+                   "tests/test_terrain_follow_warnings.py::TestTerrainActuallyFollowed"],
+      "Tests plan real missions through the Api and assert on the returned warnings, "
+      "because the warning had already failed silently once: the resolved terrain model "
+      "lives under the recipe's metadata and reading it from the root returned None."),
     F("mp.terrain_offline", "Offline terrain cache", "core", "Mission engine",
       "Terrain cached per project so terrain following works with no connectivity, with "
       "the extent recorded so an area the cache does not fully contain is reported as "
@@ -410,7 +415,11 @@ FLIGHT = [
       "which the bridge now keeps instead of discarding."),
     F("fl.telemetry", "Live telemetry", "core", "Flight",
       "Position, battery, GPS, RC link and mission progress streamed to subscribers.",
-      "implemented", [], "subscribe() added to the bridge; no UI consumer test."),
+      "verified", ["tests/test_telemetry_subscribers.py::TestDelivery",
+                   "tests/test_telemetry_subscribers.py::TestOneBadSubscriberCannotStopTheFeed",
+                   "tests/test_telemetry_subscribers.py::TestTelemetrySnapshot"],
+      "Callbacks run on the MAVLink listener thread, so a subscriber that raises must "
+      "not take the feed down: a dead listener looks like a quiet aircraft, not a fault."),
     F("fl.manual_override", "Manual override", "app", "Flight",
       "The pilot can interrupt autonomy at any time, and the control state is displayed, "
       "with a mode change confirmed against the vehicle's own heartbeat rather than "
@@ -550,7 +559,13 @@ PROCESSING = [
       "post-processing turns a sparse cloud into a dense one."),
     F("pr.mesh", "Textured mesh", "workers", "Processing",
       "Poisson surface reconstruction with density trimming and orthophoto texture.",
-      "implemented", []),
+      "verified", ["tests/test_mesh_reconstruction.py::TestRefusals",
+                   "tests/test_mesh_reconstruction.py::TestRealMesh",
+                   "tests/test_mesh_reconstruction.py::TestDensityTrimming"],
+      "The trim test is measured against the untrimmed pipeline: without it 0.42 per "
+      "cent of vertices land outside the surveyed patch, so the assertion is zero "
+      "rather than a tolerance. A tolerant version passed on trimmed and untrimmed "
+      "meshes alike, which is to say it tested nothing."),
     F("pr.gps_denied", "GPS denied reconstruction", "workers", "Processing",
       "Indoor, handheld and ground-robot imagery reconstructed without geotags, with "
       "the resulting model's spatial validity stated rather than assumed.",
