@@ -67,6 +67,33 @@ class DetConfig:
         return cls(**raw)
 
 
+def _localise_data_yaml(data_yaml: Path) -> None:
+    """Point a corpus's data.yaml at where the corpus actually is.
+
+    Older corpora recorded an absolute path from the machine that built them, so a
+    dataset prepared on Windows and unpacked on Kaggle sent ultralytics hunting for
+    "D:/Projects/..." beneath /kaggle/working. The generator now writes a relative path;
+    this repairs the ones already published, so they do not all need rebuilding and
+    re-uploading to be usable.
+    """
+    try:
+        text = data_yaml.read_text(encoding="utf-8")
+    except OSError:
+        return
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("path:"):
+            continue
+        recorded = line.split(":", 1)[1].strip()
+        if recorded in {".", str(data_yaml.parent)}:
+            return
+        lines[index] = "path: ."
+        data_yaml.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+        print(f"corpus path was {recorded!r}; using the corpus directory instead",
+              flush=True)
+        return
+
+
 def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
     try:
         from ultralytics import YOLO
@@ -80,6 +107,8 @@ def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
             f"Run: python -m training.datasets.prepare {Path(config.data_root).name}\n"
             "Roboflow sets need ROBOFLOW_API_KEY to download first."
         )
+
+    _localise_data_yaml(data_yaml)
 
     run_root = REPO_ROOT / config.output_dir
     # Two different ways to carry on, and confusing them wastes rented time.

@@ -378,7 +378,11 @@ def _write_detection(samples: Iterable[DetSample], task: PreparedTask, salt: str
 
     task.class_names = merged
     yaml_lines = [
-        f"path: {task.root.as_posix()}",
+        # Relative, not absolute. An absolute path bakes the build machine into the
+        # corpus: a data.yaml written on Windows and unpacked on Kaggle sent ultralytics
+        # looking for "D:/Projects/..." under /kaggle/working. Ultralytics resolves a
+        # relative path against the yaml's own directory, which is what travels.
+        "path: .",
         "train: train/images",
         "val: val/images",
         "test: test/images",
