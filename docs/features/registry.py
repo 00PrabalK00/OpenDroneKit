@@ -88,7 +88,19 @@ MISSION_PLANNING = [
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.mapping_3d", "3D modelling mission", "core", "Mission types",
       "Cross-hatch plus oblique capture at multiple gimbal angles and altitude bands.",
-      "in_progress", [], "double_grid gives cross-hatch; oblique bands not implemented."),
+      "verified", ["tests/test_mapping_3d_oblique.py::TestTheBandsAreOblique",
+                   "tests/test_mapping_3d_oblique.py::TestOnlyAskedForMissionsPayForIt",
+                   "tests/test_mapping_3d_oblique.py::TestTheCostStaysProportionate",
+                   "tests/test_mapping_3d_oblique.py::TestRefusals"],
+      "mapping_3d compiles as a double grid plus oblique perimeter rings at -45 and -60 "
+      "degrees, standing off by altitude/tan(tilt) so the camera looks across the site "
+      "rather than into it. The bands are opt-in: a plain double_grid stays nadir and "
+      "does not grow. Cost on a 400 m site is 64.5 to 73.1 minutes. "
+      "The bands first compiled as a SECOND FULL NADIR GRID -- 6,120 poses instead of "
+      "48, tripling the mission to 179 minutes -- because the primitive dispatcher "
+      "normalises its kind through the template alias table, which maps anything "
+      "unrecognised to grid rather than failing. Primitive kinds that are not templates "
+      "are now matched before normalisation, and a test asserts the pose count."),
     F("mp.type.roof_mapping", "Roof mapping", "core", "Mission types",
       "Nadir and oblique capture over a roof outline with GSD-driven altitude.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates",

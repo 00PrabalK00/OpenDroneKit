@@ -46,6 +46,16 @@ CAMERA_PRESETS = {
 DOUBLE_GRID_MIN_FRONT_OVERLAP_PCT = 85.0
 DOUBLE_GRID_MIN_SIDE_OVERLAP_PCT = 80.0
 DOUBLE_GRID_DEFAULT_CROSS_ANGLE_DEG = 90.0
+# Two tilts, not one. The shallow band reaches wall bases and the ground beside
+# them; the steep band keeps roof edges in frame and ties the obliques to the nadir
+# block, without which the two sets can register as separate models.
+OBLIQUE_BAND_DEFAULT_TILTS_DEG = (-45.0, -60.0)
+# Names that mean "model this in 3D" rather than "map this area".
+MAPPING_3D_ALIASES = frozenset({"mapping_3d", "3d_modelling", "3d_mapping"})
+# Primitive kinds that are NOT mission templates. _normalize_template sends anything
+# it does not know to "grid", so these must be matched on the raw kind or they
+# compile as a full nadir grid without erroring.
+_NON_TEMPLATE_PRIMITIVE_KINDS = frozenset({"oblique_bands"})
 FACADE_MAPPING_MIN_FRONT_OVERLAP_PCT = 85.0
 FACADE_MAPPING_MIN_SIDE_OVERLAP_PCT = 80.0
 FACADE_MAPPING_SPACING_SCALE = 0.75
@@ -263,6 +273,11 @@ def _normalize_template(mode: str) -> str:
     table = {
         "grid": "grid",
         "double_grid": "double_grid",
+        # A 3D modelling mission compiles as a double grid and adds oblique bands;
+        # the alias is kept distinct here only so the request can be recognised.
+        "mapping_3d": "double_grid",
+        "3d_modelling": "double_grid",
+        "3d_mapping": "double_grid",
         "roof": "roof_inspection",
         "inspection": "roof_inspection",
         "roof_inspection": "roof_inspection",
@@ -2221,6 +2236,23 @@ class MissionPlanner:
         if isinstance(metadata, dict) and "double_grid_cross_angle_deg" in metadata:
             cross_angle_deg = float(np.clip(float(metadata.get("double_grid_cross_angle_deg", cross_angle_deg)), 30.0, 150.0))
 
+        # Asking for a 3D modelling mission turns the oblique bands on; asking for a
+        # double grid does not. Both compile through the same branch, so the requested
+        # name is what separates "map this area" from "model these buildings", and a
+        # plain double grid must not silently grow the extra flight time.
+        requested_mode = str(mode or "").strip().lower()
+        oblique_bands_enabled = requested_mode in MAPPING_3D_ALIASES
+        oblique_tilts_deg: list[float] | None = None
+        oblique_points_per_ring = 24
+        if isinstance(metadata, dict):
+            if "oblique_bands" in metadata:
+                oblique_bands_enabled = bool(metadata.get("oblique_bands"))
+            tilts = metadata.get("oblique_tilts_deg")
+            if isinstance(tilts, (list, tuple)) and tilts:
+                oblique_tilts_deg = [float(v) for v in tilts]
+            if "oblique_points_per_ring" in metadata:
+                oblique_points_per_ring = int(metadata.get("oblique_points_per_ring", 24))
+
         front_overlap_pct = requested_front_overlap_pct
         side_overlap_pct = requested_side_overlap_pct
         overlap_floor_applied = False
@@ -2566,6 +2598,9 @@ class MissionPlanner:
             facade_curvature_alignment=facade_curvature_alignment,
             facade_curve_local=facade_curve_local,
             double_grid_cross_angle_deg=cross_angle_deg,
+            oblique_bands_enabled=oblique_bands_enabled,
+            oblique_tilts_deg=oblique_tilts_deg,
+            oblique_points_per_ring=oblique_points_per_ring,
             adaptive_interest_regions_local=adaptive_regions_local,
             adaptive_prior_defects_local=adaptive_defects_local,
             adaptive_density_factor=adaptive_density_factor,
@@ -4137,6 +4172,9 @@ class MissionPlanner:
         facade_curvature_alignment: bool = False,
         facade_curve_local: list[list[float]] | None = None,
         double_grid_cross_angle_deg: float = DOUBLE_GRID_DEFAULT_CROSS_ANGLE_DEG,
+        oblique_bands_enabled: bool = False,
+        oblique_tilts_deg: list[float] | None = None,
+        oblique_points_per_ring: int = 24,
         adaptive_interest_regions_local: list[list[list[float]]] | None = None,
         adaptive_prior_defects_local: list[list[float]] | None = None,
         adaptive_density_factor: float = 2.5,
@@ -4214,10 +4252,29 @@ class MissionPlanner:
                     "capture_set": "cross",
                 }
             )
-            return [
+            primitives = [
                 MissionPrimitive(kind="grid", params=primary_params),
                 MissionPrimitive(kind="grid", params=secondary_params),
             ]
+            # Oblique bands turn a cross-hatch into a 3D modelling mission. Off by
+            # default: they add flight time, and a plan that silently grew longer than
+            # the operator budgeted is its own kind of failure.
+            if oblique_bands_enabled:
+                primitives.append(
+                    MissionPrimitive(
+                        kind="oblique_bands",
+                        params={
+                            "polygon_local": local_polygon,
+                            "altitude_m": altitude_m,
+                            "oblique_tilts_deg": list(
+                                oblique_tilts_deg or OBLIQUE_BAND_DEFAULT_TILTS_DEG
+                            ),
+                            "oblique_points_per_ring": int(oblique_points_per_ring),
+                            "inspection_dwell_s": float(inspection_dwell_s),
+                        },
+                    )
+                )
+            return primitives
 
         if template == "roof_inspection":
             return [
@@ -4943,6 +5000,17 @@ class MissionPlanner:
         return arr
 
     def _compile_primitive(self, primitive: MissionPrimitive) -> list[_CapturePose]:
+        # Matched before normalisation, and deliberately so. _normalize_template maps
+        # anything it does not recognise to "grid", so a primitive kind that is not in
+        # its alias table does not fail -- it quietly compiles as a full grid over the
+        # whole polygon. That is how the oblique bands first arrived: 6,120 nadir poses
+        # instead of 48 oblique ones, tripling the mission to 179 minutes while looking
+        # like a plausible 3D plan.
+        raw_kind = str(primitive.kind or "").strip().lower()
+        if raw_kind in _NON_TEMPLATE_PRIMITIVE_KINDS:
+            if raw_kind == "oblique_bands":
+                return self._compile_oblique_bands_primitive(primitive.params)
+
         kind = _normalize_template(primitive.kind)
         if kind in {"grid", "double_grid"}:
             return self._compile_grid_primitive(primitive.params)
@@ -4974,6 +5042,8 @@ class MissionPlanner:
             return self._compile_facade_primitive(primitive.params)
         if kind == "multi_facade":
             return self._compile_multi_facade_primitive(primitive.params)
+        if kind == "oblique_bands":
+            return self._compile_oblique_bands_primitive(primitive.params)
         if kind == "closed_loop":
             return self._compile_closed_loop_primitive(primitive.params)
         if kind == "wind_turbine":
@@ -5054,6 +5124,67 @@ class MissionPlanner:
                         primitive="facade_face_%d" % index, dwell_s=dwell_s,
                         camera_yaw_locked=True,
                     ))
+        return poses
+
+    def _compile_oblique_bands_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """Oblique perimeter rings that complete a 3D modelling mission.
+
+        A cross-hatch alone photographs every roof and every road, and almost no wall.
+        Nadir imagery sees vertical surfaces at a grazing angle or not at all, so a
+        reconstruction built from it produces buildings whose sides are stretched texture
+        over guessed geometry -- the model looks finished and its facades are invented.
+        The oblique bands are what put real observations on those surfaces.
+
+        Rings rather than more grid lines, because the point is angular diversity: every
+        wall needs to be seen from more than one bearing for its geometry to be
+        constrained, and a ring gives each facade the full range of views as the aircraft
+        passes. Two tilts by default (-45 and -60): the shallower one reaches wall bases
+        and the ground beside them, the steeper one keeps roof edges in frame and ties the
+        obliques back to the nadir block. Without that tie the two sets can register as
+        separate models.
+
+        The ring radius clears the site rather than sitting over it, so the camera looks
+        inward across the area at the requested tilt instead of down into it.
+        """
+        polygon_local = params.get("polygon_local", [])
+        if not polygon_local or len(polygon_local) < 3:
+            return []
+        ring = np.asarray(_ensure_closed_xy(polygon_local), dtype=np.float64)[:-1]
+        centre_xy = ring.mean(axis=0)
+        extent = float(np.linalg.norm(ring - centre_xy, axis=1).max())
+
+        altitude = float(params.get("altitude_m", 40.0))
+        tilts = [float(t) for t in (params.get("oblique_tilts_deg") or [])]
+        if not tilts:
+            tilts = list(OBLIQUE_BAND_DEFAULT_TILTS_DEG)
+        # Clamped to genuinely oblique angles. A "band" at -85 is a nadir pass with extra
+        # flying, and one at -10 photographs the horizon.
+        tilts = [float(np.clip(t, -75.0, -20.0)) for t in tilts]
+
+        points_per_ring = int(np.clip(int(params.get("oblique_points_per_ring", 24)), 8, 240))
+        dwell_s = float(max(0.0, params.get("inspection_dwell_s", 0.0)))
+
+        poses: list[_CapturePose] = []
+        for band_index, tilt in enumerate(tilts):
+            # Stand the ring off by the horizontal distance implied by the tilt, so the
+            # camera axis lands near the middle of the site rather than short of it.
+            reach = altitude / max(0.2, math.tan(math.radians(abs(tilt))))
+            radius = max(extent + reach, extent + 5.0)
+            # Alternate direction per band so the aircraft does not fly back to the start
+            # of the ring between bands.
+            clockwise = band_index % 2 == 0
+            for step in range(points_per_ring):
+                fraction = step / points_per_ring
+                angle = 2.0 * math.pi * (-fraction if clockwise else fraction)
+                x = centre_xy[0] + radius * math.cos(angle)
+                y = centre_xy[1] + radius * math.sin(angle)
+                yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                poses.append(_CapturePose(
+                    x_m=float(x), y_m=float(y), alt_m=altitude,
+                    yaw_deg=yaw, gimbal_pitch_deg=float(tilt),
+                    primitive="oblique_band_%d" % band_index, dwell_s=dwell_s,
+                    camera_yaw_locked=True,
+                ))
         return poses
 
     def _compile_closed_loop_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
