@@ -226,14 +226,25 @@ MISSION_PLANNING = [
       "because a stand-off in structure-from-motion units flies the wrong distance from "
       "the structure; and a point cloud is refused because it has no normal to stand "
       "off along.",
-      "in_progress", ["tests/test_geometry_3d.py::TestReadingSurfaces",
-                      "tests/test_geometry_3d.py::TestStandOffGeometry",
-                      "tests/test_geometry_3d.py::TestFiltering",
-                      "tests/test_geometry_3d.py::TestRefusals"],
-      "mission/geometry_3d.py reads OBJ, ASCII PLY and GLB/glTF and plans from them. "
-      "LAS/LAZ and IFC are named as unsupported with what would be needed rather than "
-      "failing obscurely, so this stays in progress until those two formats are read: "
-      "the criteria list five and three are implemented."),
+      "verified", ["tests/test_geometry_3d.py::TestReadingSurfaces",
+                   "tests/test_geometry_3d.py::TestStandOffGeometry",
+                   "tests/test_geometry_3d.py::TestFiltering",
+                   "tests/test_geometry_3d.py::TestRefusals",
+                   "tests/test_las_surface.py::TestReadingTheFormat",
+                   "tests/test_las_surface.py::TestRefusals",
+                   "tests/test_las_surface.py::TestPlanningFromACloud"],
+      "mission/geometry_3d.py plans from OBJ, ASCII PLY, GLB/glTF and now LAS. LAS is "
+      "read directly rather than through a package, because a survey should not need a "
+      "package index to open a cloud already on its disk, and the tests build the files "
+      "byte by byte -- a reader tested only against its own writer agrees with itself "
+      "about a format it may have misunderstood. "
+      "The old refusal said a cloud has no normals to stand off along. That was right "
+      "about the physics and wrong about the conclusion: orientation is recovered from "
+      "the data by meshing rather than assumed, so a cloud now plans. "
+      "STILL REFUSED, deliberately: LAZ needs laszip vendored or implemented, and is a "
+      "conversion away; IFC is a building-information schema whose walls are "
+      "parameterised objects, so producing triangles from it is a modelling decision "
+      "rather than a file conversion. Both say so and say what to do instead."),
     F("mp.standoff", "Stand-off distance planning", "core", "Mission engine",
       "Fixed, per-surface and adaptive stand-off with a minimum clearance guarantee, "
       "where a resolution that would require flying inside the clearance is reported as "

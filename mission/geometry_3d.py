@@ -34,15 +34,17 @@ import numpy as np
 
 from core.model_measurement import NotMetric, model_scale, read_mesh
 
-SUPPORTED_SUFFIXES = (".obj", ".ply", ".glb", ".gltf")
+SUPPORTED_SUFFIXES = (".obj", ".ply", ".glb", ".gltf", ".las")
 # Named so the refusal can say what would be needed rather than only what failed.
 UNSUPPORTED_SUFFIXES = {
-    ".ifc": "IFC is a building-information schema rather than a triangulated surface; "
-            "export the geometry to OBJ, PLY or GLB first.",
-    ".las": "LAS and LAZ carry points with no faces, so no surface normal exists to "
-            "stand off along. Mesh the cloud first, or plan from an outline.",
-    ".laz": "LAS and LAZ carry points with no faces, so no surface normal exists to "
-            "stand off along. Mesh the cloud first, or plan from an outline.",
+    ".ifc": "IFC is a building-information schema, not a triangulated surface: its walls "
+            "are parameterised objects with materials and storeys, and turning those into "
+            "the triangles a stand-off plan needs is a modelling decision rather than a "
+            "file conversion. Export the geometry to OBJ, PLY or GLB, where that decision "
+            "has already been made by someone who knows the building.",
+    ".laz": "LAZ is LAS through a specialised arithmetic coder, so reading it means "
+            "implementing or vendoring laszip. Convert to uncompressed LAS -- which this "
+            "planner reads directly -- rather than having the toolkit half-decode it.",
 }
 
 
@@ -204,6 +206,141 @@ def _read_glb(path: Path) -> tuple[np.ndarray, np.ndarray]:
             np.concatenate(faces, axis=0) if faces else np.zeros((0, 3), dtype=np.int64))
 
 
+def read_las_points(path: str | Path, *, max_points: int = 2_000_000) -> np.ndarray:
+    """Read point coordinates from a LAS file, without a third-party reader.
+
+    LAS is a fixed-layout binary format: a header giving scale factors and offsets, then
+    fixed-length records whose first twelve bytes are the scaled integer X, Y and Z.
+    Reading it directly keeps the toolkit's offline-first promise -- a survey should not
+    need a package index to open a point cloud it already has on disk.
+
+    Only the geometry is read. Intensity, returns, classification and colour are left
+    where they are: planning needs shape, and parsing fields nothing uses is surface area
+    for bugs rather than capability.
+
+    LAZ is deliberately not handled here. It is LAS through a specialised arithmetic
+    coder, and decoding it means implementing or vendoring laszip -- a different problem
+    from reading a documented header, and one this function refuses honestly rather than
+    half-solving.
+    """
+    source = Path(path)
+    raw = source.read_bytes()
+    if len(raw) < 227 or raw[:4] != b"LASF":
+        raise UnsupportedSurface(
+            f"{source.name} does not begin with the LASF signature, so it is not a LAS "
+            "file whatever its extension says."
+        )
+
+    version = (raw[24], raw[25])
+    point_offset = struct.unpack_from("<I", raw, 96)[0]
+    record_format = raw[104] & 0b0011_1111  # top bits flag LAZ compression
+    record_length = struct.unpack_from("<H", raw, 105)[0]
+    legacy_count = struct.unpack_from("<I", raw, 107)[0]
+
+    if raw[104] & 0b1100_0000:
+        raise UnsupportedSurface(
+            f"{source.name} is LAZ-compressed inside a LAS container. Convert it to "
+            "uncompressed LAS first."
+        )
+    # Formats 0-10 are all defined with X, Y, Z as the first three int32 fields, which is
+    # the only part read here -- so an unfamiliar high format number is still usable.
+    if record_format > 10:
+        raise UnsupportedSurface(
+            f"{source.name} declares point data record format {record_format}, which is "
+            "not defined in any published LAS specification."
+        )
+
+    scale = struct.unpack_from("<3d", raw, 131)
+    offset = struct.unpack_from("<3d", raw, 155)
+
+    count = legacy_count
+    if version >= (1, 4) and len(raw) >= 255:
+        # 1.4 moved the count to a 64-bit field; the legacy one is zero for large files.
+        extended = struct.unpack_from("<Q", raw, 247)[0]
+        if extended:
+            count = extended
+    if not count:
+        # Some writers leave both counts at zero. The record length divides the payload
+        # exactly, so the file itself answers the question.
+        available = len(raw) - point_offset
+        count = available // record_length if record_length else 0
+    if not count:
+        raise NoUsableSurface(f"{source.name} contains no points.")
+
+    if count > max_points:
+        raise NoUsableSurface(
+            f"{source.name} holds {count:,} points, above the {max_points:,} this reader "
+            "will load at once. Decimate or tile the cloud first; loading it whole would "
+            "exhaust memory rather than fail cleanly."
+        )
+
+    needed = point_offset + count * record_length
+    if needed > len(raw):
+        raise NoUsableSurface(
+            f"{source.name} declares {count:,} points but the file ends early. It is "
+            "truncated, and a partial cloud would plan a partial structure."
+        )
+
+    # One strided view over the payload rather than a Python loop per point.
+    payload = np.frombuffer(raw, dtype=np.uint8, count=count * record_length,
+                            offset=point_offset).reshape(count, record_length)
+    coordinates = payload[:, :12].copy().view(np.int32).astype(np.float64)
+    return coordinates * np.asarray(scale) + np.asarray(offset)
+
+
+def surface_from_points(points: np.ndarray, *, depth: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    """Mesh a point cloud so it has the normals a stand-off plan needs.
+
+    This is the honest way to plan from a cloud. The module's refusal was always about
+    orientation rather than file format: points carry no direction, so a plan built
+    straight from them would invent the facing of every surface. Meshing produces those
+    normals from the data instead of assuming them.
+
+    The mesh is a planning aid and not a deliverable. Poisson closes surfaces past the
+    data, and the trim below removes the worst of that, but nothing here should be
+    measured -- use the reconstruction pipeline for a mesh anyone reports from.
+    """
+    try:
+        import open3d as o3d
+    except ImportError as exc:
+        raise UnsupportedSurface(
+            "Planning from a point cloud needs Open3D to estimate surface orientation "
+            "(pip install open3d). Without it there is no normal to stand off along, and "
+            "guessing one would produce a flight that looks purposeful and photographs "
+            "nothing in particular."
+        ) from exc
+
+    if points.shape[0] < 100:
+        raise NoUsableSurface(
+            f"{points.shape[0]} points is too few to recover surface orientation from."
+        )
+
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
+    cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
+    span = float(np.linalg.norm(np.ptp(np.asarray(cloud.points), axis=0)))
+    cloud.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=max(span / 100.0, 0.1), max_nn=30)
+    )
+    cloud.orient_normals_consistent_tangent_plane(30)
+
+    mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        cloud, depth=int(depth)
+    )
+    density = np.asarray(densities)
+    if density.size:
+        mesh.remove_vertices_by_mask(density < np.quantile(density, 0.05))
+
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.triangles, dtype=np.int64)
+    if faces.size == 0:
+        raise NoUsableSurface(
+            "The cloud did not produce a surface. It is probably too sparse or too "
+            "uneven in density for the orientation to be recovered."
+        )
+    return vertices, faces
+
+
 def read_surface(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     """Vertices and triangles from a supported surface file."""
     source = Path(path)
@@ -219,6 +356,12 @@ def read_surface(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
         return _read_ply(source)
     if suffix in {".glb", ".gltf"}:
         return _read_glb(source)
+    if suffix == ".las":
+        # A cloud is meshed on the way in. The refusal this replaces was about
+        # orientation, not about the file format: points carry no facing, so planning
+        # straight from them would invent the direction of every surface. Meshing
+        # recovers that facing from the data.
+        return surface_from_points(read_las_points(source))
     raise UnsupportedSurface(
         f"{source.name} is not a surface this planner reads. Supported: "
         f"{', '.join(SUPPORTED_SUFFIXES)}."

@@ -95,14 +95,31 @@ class TestReadingSurfaces:
         path = tmp_path / "building.ifc"
         path.write_text("not really ifc", encoding="utf-8")
 
-        with pytest.raises(UnsupportedSurface, match="export the geometry to OBJ"):
+        # IFC walls are parameterised objects, not triangles. Turning them into a
+        # surface is a modelling decision, so the refusal points at an export rather
+        # than pretending it is a file conversion.
+        with pytest.raises(UnsupportedSurface, match="Export the geometry to OBJ"):
             read_surface(path)
 
-    def test_las_is_refused_because_points_have_no_normals(self, tmp_path):
+    def test_a_malformed_las_is_refused_rather_than_misread(self, tmp_path):
+        """LAS is read now, so the interesting case is a file that only looks like one.
+
+        The old assertion here was that LAS was refused outright for having no normals.
+        That was right about the physics -- points carry no facing -- and wrong about
+        the conclusion: orientation can be recovered from the data by meshing instead
+        of being assumed. See tests/test_las_surface.py for the reading path.
+        """
         path = tmp_path / "cloud.las"
         path.write_bytes(b"LASF")
 
-        with pytest.raises(UnsupportedSurface, match="no faces"):
+        with pytest.raises(UnsupportedSurface):
+            read_surface(path)
+
+    def test_laz_is_refused_because_it_needs_a_codec(self, tmp_path):
+        path = tmp_path / "cloud.laz"
+        path.write_bytes(b"LASF")
+
+        with pytest.raises(UnsupportedSurface, match="laszip"):
             read_surface(path)
 
     def test_a_binary_ply_is_refused_rather_than_misread(self, tmp_path):
