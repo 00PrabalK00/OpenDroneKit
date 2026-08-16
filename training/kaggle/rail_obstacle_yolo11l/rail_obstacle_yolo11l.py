@@ -23,7 +23,7 @@ OUT = SCRATCH / "artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
-def report_environment() -> None:
+def report_environment() -> str:
     """Print the environment before training rather than after it fails.
 
     A torch build that does not support the assigned GPU's compute capability still
@@ -44,11 +44,47 @@ def report_environment() -> None:
         print("torch arch:", ", ".join(supported))
         if f"sm_{major}{minor}" not in supported:
             print(
-                "WARNING: this torch build does not list the device's compute "
-                "capability. Training will be far slower than the hardware allows."
+                f"This torch does not support sm_{major}{minor}; every CUDA kernel "
+                "launch will fail with 'no kernel image is available'."
             )
+            return f"sm_{major}{minor}"
     else:
         print("WARNING: no GPU visible. Check the kernel's accelerator setting.")
+    return ""
+
+
+def install_compatible_torch(capability: str) -> None:
+    """Replace the preinstalled torch with one that has kernels for this GPU.
+
+    Kaggle's P100 is sm_60 (Pascal) and the preinstalled torch 2.10+cu128 ships
+    sm_70 upward, so the first convolution dies with cudaErrorNoKernelImageForDevice.
+    It is not a slowdown and not a fallback -- nothing runs at all.
+
+    The cu121 wheels are the last ones built with Pascal kernels, so that is what gets
+    installed. This is a real cost, roughly two minutes and a couple of gigabytes per
+    run, and it is only paid when the check above finds a mismatch.
+    """
+    print(f"installing a torch build with {capability} kernels", flush=True)
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-q",
+         "torch==2.4.1", "torchvision==0.19.1",
+         "--index-url", "https://download.pytorch.org/whl/cu121"],
+    )
+    if result.returncode != 0:
+        raise SystemExit("Could not install a torch build compatible with this GPU.")
+
+    # Verify in a fresh interpreter: the already-imported torch cannot be swapped in
+    # place, and asserting the new build actually carries the capability is the only
+    # way to know the reinstall did what it claimed.
+    check = subprocess.run(
+        [sys.executable, "-c",
+         "import torch;a=torch.cuda.get_device_capability(0);"
+         "s=f'sm_{a[0]}{a[1]}';print(s, s in torch.cuda.get_arch_list())"],
+        capture_output=True, text=True,
+    )
+    print("after reinstall:", check.stdout.strip() or check.stderr.strip()[:200])
+    if "True" not in check.stdout:
+        raise SystemExit(f"Reinstalled torch still lacks {capability} kernels.")
 
 
 def resolve_corpus() -> Path:
@@ -132,7 +168,9 @@ def ensure_repo() -> None:
 
 
 def main() -> int:
-    report_environment()
+    missing = report_environment()
+    if missing:
+        install_compatible_torch(missing)
     ensure_repo()
     corpus = resolve_corpus()
 
