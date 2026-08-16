@@ -74,16 +74,31 @@ class TestClaimsMatchTheCode:
             assert endpoint in main, f"{endpoint} is documented but not defined"
             assert endpoint in guide
 
-    def test_the_deployment_guide_does_not_promise_native_geometry(self) -> None:
-        """The schema stores GeoJSON text on both backends. Sizing depends on knowing it."""
+    def test_the_deployment_guide_describes_the_spatial_storage_accurately(self) -> None:
+        """This assertion was inverted once, and deliberately.
+
+        It used to require the guide to say native geometry was NOT available, which was
+        true while every column was Text. Native columns now exist, so the guide must
+        describe the mirror -- and must still say the text column is authoritative, since
+        a reader concluding their data lives in geom would be wrong on SQLite.
+        """
         from services.api import db as db_module
 
         guide = read("DEPLOYMENT.md")
-        assert "native_geometry_columns: false" in guide
-        assert "geojson_text" in guide
-        # And the code still agrees.
+        assert "geojson_text_with_native_mirror" in guide
+        assert "source of truth" in guide
+        assert "sqlite" in guide.lower()
+        # And the code still agrees about the SQLite answer.
         report = db_module.spatial_backend()
-        assert report["geometry_storage"] == "geojson_text"
+        assert report["geometry_storage"] in {
+            "geojson_text", "geojson_text_with_native_mirror",
+        }
+
+    def test_the_guide_says_a_bad_geometry_is_still_stored(self) -> None:
+        # Losing a row to gain an index would be the wrong trade, and a reader deciding
+        # whether to trust the migration needs to know which way it went.
+        guide = read("DEPLOYMENT.md").lower()
+        assert "still" in guide and "stored" in guide
 
     def test_the_plugin_guide_lists_the_real_plugin_kinds(self) -> None:
         from sdk.plugins import PluginKind

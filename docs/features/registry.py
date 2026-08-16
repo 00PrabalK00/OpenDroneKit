@@ -1349,18 +1349,29 @@ PLATFORM = [
       "only: no helm binary is available here, so nothing has rendered the templates. "
       "Reaching verified needs helm lint and helm template against a real cluster."),
     F("inf.postgis", "PostgreSQL and PostGIS", "infra", "Deployment",
-      "Spatial data in native PostGIS types, with the API reporting which backend is "
-      "actually live so a development database is never mistaken for a deployment.",
-      "in_progress", ["tests/test_api.py::TestHealth",
-                      "tests/test_spatial_backend_honesty.py"],
-      "Schema and CRS columns are in place. STAYS IN PROGRESS: every geometry column is "
-      "Text holding GeoJSON on both backends, so spatial filtering happens in Python and "
-      "there are no spatial indexes. The backend report used to call this "
-      "native_geometry whenever the PostGIS extension answered -- a claim about the "
-      "server's potential rather than this schema -- and an operator could have sized a "
-      "workload around indexed queries that do not exist. Now reported accurately and "
-      "pinned by tests. Native geometry columns need a migration that cannot be verified "
-      "without a running PostGIS instance."),
+      "Spatial data in native geometry types with spatial indexes, so the database "
+      "answers 'which assets are inside this polygon' rather than the application "
+      "loading everything and filtering in Python.",
+      "verified", ["tests/test_api.py::TestHealth",
+                   "tests/test_spatial_backend_honesty.py",
+                   "tests/test_postgis_spatial.py"],
+      "GeoJSON text is mirrored into GIST-indexed PostGIS geometry columns on assets, "
+      "defects, measurements and annotations, kept in step by a trigger. Verified "
+      "against a real PostGIS 3.4 in Docker -- ST_Intersects finds the asset, a distant "
+      "polygon finds nothing, ST_Area returns metres, and the migration is idempotent "
+      "across restarts. The tests SKIP without a live instance rather than passing "
+      "against SQLite, which would prove nothing about the thing they check. "
+      "The text column stays the SOURCE OF TRUTH and that is not a shortcut: SQLite is "
+      "a supported backend and cannot hold a geometry type, so making the native column "
+      "authoritative would fork the schema and give the two backends different answers. "
+      "The geom column is a derived index. "
+      "A row whose GeoJSON will not parse is still STORED, with geom NULL -- it stays "
+      "visible to every non-spatial query and falls back to the text path. Rejecting the "
+      "write instead would lose data to gain an index. "
+      "The health report reads the columns rather than the extension: it used to say "
+      "native_geometry whenever PostGIS answered a version query, while every column was "
+      "Text, which would have had an operator sizing a workload around indexes that did "
+      "not exist."),
     F("inf.storage", "Storage abstraction", "infra", "Deployment",
       "Local filesystem and S3-compatible backends behind one interface, with keys "
       "that cannot escape the storage root and an unknown backend refused rather than "

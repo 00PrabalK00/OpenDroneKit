@@ -67,26 +67,57 @@ the storage root, and an unknown backend is **refused rather than silently falli
 to local disk** — a fallback that writes survey data somewhere unexpected is worse than
 a startup failure.
 
-## Database: what PostGIS does and does not give you today
+## Database and spatial storage
 
 Set `ODK_DATABASE_URL` to a PostgreSQL instance for multi-user deployment. `init_db()`
-creates the PostGIS extension where the database permits it.
+creates the PostGIS extension where the database permits it, then applies the spatial
+migration.
 
-**Geometry is stored as GeoJSON text on both backends.** Every geometry column in
-`services/api/models` is `Text`, and spatial filtering happens in Python, row by row.
-PostGIS being installed gives you the extension and its functions — it does not give
-this schema native geometry columns or spatial indexes.
+**Geometry is stored as GeoJSON text and mirrored into GIST-indexed PostGIS geometry
+columns** on `assets`, `defects`, `measurements` and `annotations`. A trigger keeps the
+mirror in step, so no application path can forget it — writes arrive through several
+routers and a plugin SDK, and one that skipped the mirror would leave a row findable by
+text and invisible to spatial queries.
 
-Check what you actually have:
+The text column remains the **source of truth**. That is deliberate: SQLite is a
+supported backend and cannot hold a geometry type, so making the native column
+authoritative would fork the schema and give the two backends different answers to the
+same question. The `geom` column is a derived index.
+
+A row whose GeoJSON will not parse is still **stored**, with `geom` NULL. It stays
+visible to every non-spatial query and falls back to the text path. Rejecting the write
+would lose data in order to gain an index.
+
+Check what you have:
 
 ```bash
 curl localhost:8000/health | jq '.spatial'
 ```
 
-Both backends report `geometry_storage: geojson_text`, and
-`native_geometry_columns: false` is the current, accurate answer. Native columns need a
-migration that has not shipped, and the registry row `inf.postgis` stays `in_progress`
-for exactly this reason. Size query-heavy workloads with this in mind.
+```json
+{"backend": "postgresql", "postgis": true,
+ "geometry_storage": "geojson_text_with_native_mirror",
+ "native_geometry_columns": true,
+ "indexed_tables": ["annotations", "assets", "defects", "measurements"]}
+```
+
+The report reads the columns, not the extension. It used to say `native_geometry`
+whenever PostGIS answered a version query while every column was still Text — which
+would have had you sizing a query-heavy workload around indexes that did not exist.
+
+On SQLite, `native_geometry_columns` is `false` and spatial filtering happens in Python.
+That is the honest answer for a development database, and the API says so rather than
+letting you assume otherwise.
+
+### Verifying it yourself
+
+```bash
+docker run -d --name odk-postgis -e POSTGRES_PASSWORD=odk -e POSTGRES_DB=odk     -p 55432:5432 postgis/postgis:16-3.4
+ODK_TEST_POSTGIS=postgresql+psycopg://postgres:odk@127.0.0.1:55432/odk python -m pytest     tests/test_postgis_spatial.py
+```
+
+Those tests skip without a live instance rather than passing against SQLite, because a
+spatial test that never touches PostGIS proves nothing about spatial behaviour.
 
 ## Observability
 
