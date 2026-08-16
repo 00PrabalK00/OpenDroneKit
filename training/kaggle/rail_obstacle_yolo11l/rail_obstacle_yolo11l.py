@@ -11,9 +11,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path("/kaggle/working/OpenDroneKit")
+# Everything under /kaggle/working is packaged as the kernel's output when the run
+# ends. The repo checkout and the unpacked corpus therefore must NOT live there: for
+# crack_cls that is 96,092 files Kaggle tries to archive, and the run dies packaging
+# them with an empty log, which looks like a crash with no cause. Scratch goes to
+# /kaggle/temp, and only the named artefacts are copied into working at the end.
+SCRATCH = Path("/kaggle/temp")
+REPO = SCRATCH / "OpenDroneKit"
 CORPUS = Path("/kaggle/input/odk-rail-obstacle-corpus")
-OUT = Path("/kaggle/working/artifacts")
+OUT = SCRATCH / "artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -45,6 +51,65 @@ def report_environment() -> None:
         print("WARNING: no GPU visible. Check the kernel's accelerator setting.")
 
 
+def resolve_corpus() -> Path:
+    """Find the attached corpus, and say what IS there when it is missing.
+
+    Kaggle mounts a dataset under /kaggle/input using a name derived from the dataset,
+    and guessing that name wrongly produces "corpus not attached" -- which reads as a
+    missing dataset rather than a wrong path, and sends you to fix the wrong thing.
+    Directories are also zipped per-split by the uploader, so the mount may hold
+    train.zip rather than train/, and those are unpacked here.
+    """
+    root = Path("/kaggle/input")
+    if not root.is_dir():
+        raise SystemExit("No /kaggle/input at all; the kernel has no attached data.")
+
+    # Search for the directory that actually holds the corpus rather than trusting a
+    # guessed name. Kaggle nests the mount (observed: /kaggle/input/datasets/<name>),
+    # and the depth is not something to hardcode -- the marker is the content.
+    def looks_like_corpus(path: Path) -> bool:
+        if any((path / split).is_dir() for split in ("train", "val", "test")):
+            return True
+        return bool(list(path.glob("*.zip")))
+
+    found = None
+    if CORPUS.is_dir() and looks_like_corpus(CORPUS):
+        found = CORPUS
+    else:
+        for depth in range(4):
+            for candidate in sorted(root.glob("/".join(["*"] * (depth + 1)))):
+                if candidate.is_dir() and looks_like_corpus(candidate):
+                    found = candidate
+                    break
+            if found is not None:
+                break
+    if found is None:
+        listing = [str(q.relative_to(root)) for q in root.rglob("*") if q.is_dir()][:40]
+        raise SystemExit(f"No corpus under /kaggle/input. Directories seen: {listing}")
+    if found != CORPUS:
+        print(f"corpus expected at {CORPUS}, found at {found}")
+
+    archives = sorted(found.glob("*.zip"))
+    if archives:
+        # Kaggle serves the zips as-is; the trainer wants split directories.
+        import zipfile
+
+        unpacked = SCRATCH / "corpus"
+        unpacked.mkdir(parents=True, exist_ok=True)
+        for archive in archives:
+            target = unpacked / archive.stem
+            if target.is_dir():
+                continue
+            print(f"unpacking {archive.name}", flush=True)
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(target)
+        for extra in found.glob("*.yaml"):
+            shutil.copy2(extra, unpacked / extra.name)
+        print("corpus ready at", unpacked, sorted(p.name for p in unpacked.iterdir()))
+        return unpacked
+    return found
+
+
 def ensure_repo() -> None:
     """Clone the code the kernel is supposed to run.
 
@@ -69,15 +134,12 @@ def ensure_repo() -> None:
 def main() -> int:
     report_environment()
     ensure_repo()
-    if not CORPUS.is_dir():
-        raise SystemExit(
-            f"Corpus not attached at {CORPUS}. Add the dataset to the kernel's inputs."
-        )
+    corpus = resolve_corpus()
 
     command = [
         sys.executable, "-m", "training.train_det",
         "--config", str(REPO / "training" / "configs" / "rail_obstacle_yolo11l.yaml"),
-        "--data-root", str(CORPUS),
+        "--data-root", str(corpus),
         "--output-dir", str(OUT),
     ]
     print("running:", " ".join(command), flush=True)

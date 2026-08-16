@@ -11,9 +11,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path("/kaggle/working/OpenDroneKit")
+# Everything under /kaggle/working is packaged as the kernel's output when the run
+# ends. The repo checkout and the unpacked corpus therefore must NOT live there: for
+# crack_cls that is 96,092 files Kaggle tries to archive, and the run dies packaging
+# them with an empty log, which looks like a crash with no cause. Scratch goes to
+# /kaggle/temp, and only the named artefacts are copied into working at the end.
+SCRATCH = Path("/kaggle/temp")
+REPO = SCRATCH / "OpenDroneKit"
 CORPUS = Path("/kaggle/input/odk-solar-thermal-corpus")
-OUT = Path("/kaggle/working/artifacts")
+OUT = SCRATCH / "artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -88,7 +94,7 @@ def resolve_corpus() -> Path:
         # Kaggle serves the zips as-is; the trainer wants split directories.
         import zipfile
 
-        unpacked = Path("/kaggle/working/corpus")
+        unpacked = SCRATCH / "corpus"
         unpacked.mkdir(parents=True, exist_ok=True)
         for archive in archives:
             target = unpacked / archive.stem
