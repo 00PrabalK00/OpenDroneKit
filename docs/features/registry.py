@@ -542,8 +542,18 @@ PROCESSING = [
       "Poisson surface reconstruction with density trimming and orthophoto texture.",
       "implemented", []),
     F("pr.gps_denied", "GPS denied reconstruction", "workers", "Processing",
-      "Indoor, handheld and ground-robot imagery reconstructed without geotags.",
-      "not_started", []),
+      "Indoor, handheld and ground-robot imagery reconstructed without geotags, with "
+      "the resulting model's spatial validity stated rather than assumed.",
+      "verified", ["tests/test_spatial_reference.py",
+                   "tests/test_api_measurements.py::TestSpatialReferenceCapability"],
+      "Structure-from-motion recovers geometry only up to a similarity transform, so "
+      "without geotags or control the model has arbitrary position, rotation and SCALE. "
+      "It still renders and meshes convincingly, which is exactly the trap: every "
+      "distance in it is wrong by an unknown factor. api.check_spatial_reference() "
+      "reports the mode up front, no CRS is carried through for an arbitrary model, and "
+      "require_measurable() refuses distance, area and volume rather than returning "
+      "them in model units a reader would treat as metres. Three or more GCPs, or "
+      "enough geotags, restore measurability."),
     F("pr.gcp", "Ground control points", "workers", "Processing",
       "GCP import, image marking, and a reprojection error report that states per-point "
       "residuals rather than a verdict, refuses to quote an accuracy when no control was "

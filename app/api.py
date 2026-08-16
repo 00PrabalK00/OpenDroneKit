@@ -902,6 +902,31 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    def check_spatial_reference(self, image_paths: list[str],
+                                gcp_count: int = 0,
+                                epsg: int | None = None) -> dict[str, Any]:
+        """What a reconstruction of these images will mean, before running it.
+
+        GPS-denied work -- indoor, handheld, under-bridge, ground robot -- is a
+        legitimate use and reconstructs fine. The catch is that structure-from-motion
+        recovers geometry only up to a similarity transform, so without geotags or
+        control the model has arbitrary position, rotation and SCALE. It still renders
+        and still meshes; every distance in it is simply wrong by an unknown factor.
+
+        Reported up front so a user knows whether the deliverable they want is a survey
+        or a shape.
+        """
+        from core.spatial_reference import assess_spatial_reference
+
+        try:
+            reference = assess_spatial_reference(
+                [str(p) for p in image_paths], gcp_count=int(gcp_count), epsg=epsg
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(**reference.to_dict())
+
+    @guard
     def reconstruction_capabilities(self) -> dict[str, Any]:
         """What this machine can actually reconstruct, before anyone starts a job.
 

@@ -177,3 +177,62 @@ class TestReconstructionCapabilities:
         caps = api.reconstruction_capabilities()["capabilities"]
         for key in ("pycolmap", "colmap_binary", "pycolmap_cuda", "dense_stereo"):
             assert key in caps
+
+
+class TestSpatialReferenceCapability:
+    """GPS-denied reconstruction, and the refusal that keeps it honest.
+
+    The model reconstructs fine without geotags. What it cannot do is carry a metre, and
+    a user who measures in it gets numbers wrong by an unknown factor with nothing on
+    screen to say so.
+    """
+
+    def test_geotagged_imagery_is_reported_measurable(self, api: Api, tmp_path, monkeypatch) -> None:
+        from core import geo
+
+        paths = []
+        for i in range(10):
+            p = tmp_path / f"g{i}.jpg"
+            p.write_bytes(b"stub")
+            paths.append(str(p))
+        monkeypatch.setattr(geo, "read_exif_gps", lambda path: object())
+
+        result = api.check_spatial_reference(paths, epsg=32643)
+        assert result["ok"] is True
+        assert result["mode"] == "georeferenced"
+        assert result["measurements_allowed"] is True
+
+    def test_gps_denied_imagery_refuses_measurement(self, api: Api, tmp_path, monkeypatch) -> None:
+        from core import geo
+
+        paths = []
+        for i in range(10):
+            p = tmp_path / f"n{i}.jpg"
+            p.write_bytes(b"stub")
+            paths.append(str(p))
+        monkeypatch.setattr(geo, "read_exif_gps", lambda path: None)
+
+        result = api.check_spatial_reference(paths)
+        assert result["ok"] is True, "assessment succeeds; it is the MEASURING that is refused"
+        assert result["mode"] == "arbitrary"
+        assert result["measurements_allowed"] is False
+        assert "SCALE" in result["note"]
+
+    def test_control_points_restore_measurability(self, api: Api, tmp_path, monkeypatch) -> None:
+        from core import geo
+
+        paths = []
+        for i in range(10):
+            p = tmp_path / f"c{i}.jpg"
+            p.write_bytes(b"stub")
+            paths.append(str(p))
+        monkeypatch.setattr(geo, "read_exif_gps", lambda path: None)
+
+        result = api.check_spatial_reference(paths, gcp_count=4)
+        assert result["mode"] == "control_referenced"
+        assert result["measurements_allowed"] is True
+
+    def test_no_images_is_refused(self, api: Api) -> None:
+        result = api.check_spatial_reference([])
+        assert result["ok"] is False
+        assert "nothing to reconstruct" in result["error"]
