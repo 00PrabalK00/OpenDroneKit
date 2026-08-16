@@ -130,3 +130,59 @@ class TestVocConversion:
         for line in lines:
             values = [float(v) for v in line.split()[1:]]
             assert all(0.0 <= v <= 1.0 for v in values), line
+
+
+class TestMulticlassMasksSurvivePreparation:
+    """Multiclass labels must not be thresholded away.
+
+    _write_segmentation binarises by default, which is right for crack and PV extent and
+    catastrophic for anything else: source class ids are small integers, so `> 127` maps
+    every one of them to background. WeedsGalore ships {0, 1, 3, 5} and produced a corpus
+    of 156 all-zero masks that still reported success -- the labels were gone and nothing
+    said so until a trainer refused to start.
+    """
+
+    def test_a_label_map_preserves_classes(self, tmp_path) -> None:
+        import numpy as np
+        from PIL import Image
+
+        from training.datasets.prepare import PreparedTask, SegSample, _write_segmentation
+
+        Image.new("RGB", (16, 16)).save(tmp_path / "img.png")
+        mask = np.zeros((16, 16), dtype=np.uint8)
+        mask[2:6, 2:6] = 1
+        mask[8:12, 8:12] = 3
+        mask[12:15, 2:6] = 5
+        Image.fromarray(mask).save(tmp_path / "mask.png")
+
+        out = tmp_path / "out"
+        task = PreparedTask(task="t", kind="segmentation", root=out)
+        _write_segmentation(
+            [SegSample("s", tmp_path / "img.png", tmp_path / "mask.png", split="train",
+                       label_map={0: 0, 1: 1, 3: 2, 5: 2})],
+            task, salt="s")
+
+        written = np.array(Image.open(out / "train" / "masks" / "s.png"))
+        assert set(np.unique(written).tolist()) == {0, 1, 2}, (
+            "class ids were lost in preparation; the corpus would train on empty labels"
+        )
+
+    def test_without_a_label_map_the_mask_is_binarised(self, tmp_path) -> None:
+        # The existing behaviour, kept deliberately for genuinely binary corpora.
+        import numpy as np
+        from PIL import Image
+
+        from training.datasets.prepare import PreparedTask, SegSample, _write_segmentation
+
+        Image.new("RGB", (16, 16)).save(tmp_path / "img.png")
+        mask = np.zeros((16, 16), dtype=np.uint8)
+        mask[4:10, 4:10] = 255
+        Image.fromarray(mask).save(tmp_path / "mask.png")
+
+        out = tmp_path / "out"
+        task = PreparedTask(task="t", kind="segmentation", root=out)
+        _write_segmentation(
+            [SegSample("s", tmp_path / "img.png", tmp_path / "mask.png", split="train")],
+            task, salt="s")
+        written = np.array(Image.open(out / "train" / "masks" / "s.png"))
+        assert set(np.unique(written).tolist()) == {0, 255}

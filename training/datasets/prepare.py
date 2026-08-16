@@ -94,12 +94,20 @@ def deterministic_split(sample_id: str, *, salt: str) -> str:
 
 @dataclass
 class SegSample:
-    """One image with a binary mask, ready to be written out."""
+    """One image with its mask, ready to be written out.
+
+    ``label_map`` turns this into a MULTICLASS sample. Without it the mask is binarised,
+    which is correct for crack and PV extent and catastrophic for anything else: source
+    class ids are small integers, and thresholding at 127 silently maps every one of
+    them to background. WeedsGalore ships {0,1,3,5} and produced an all-zero corpus that
+    still reported 156 prepared samples.
+    """
 
     sample_id: str
     image_path: Path
     mask: np.ndarray | Path
     split: str | None = None
+    label_map: dict[int, int] | None = None
 
 
 @dataclass
@@ -155,6 +163,21 @@ def _binarise(array: np.ndarray) -> np.ndarray:
     return ((array > 127) * 255).astype(np.uint8)
 
 
+def _remap_labels(array: np.ndarray, label_map: dict[int, int]) -> np.ndarray:
+    """Translate source class ids into contiguous training ids.
+
+    Source ids are rarely 0..n-1: WeedsGalore uses {0, 1, 3, 5} with two of those both
+    meaning weed. Anything unmapped becomes background rather than being passed through,
+    so an id the adapter never declared cannot appear as a phantom class in training.
+    """
+    if array.ndim == 3:
+        array = array[..., 0]
+    out = np.zeros(array.shape[:2], dtype=np.uint8)
+    for source_id, train_id in label_map.items():
+        out[array == int(source_id)] = int(train_id)
+    return out
+
+
 def _safe_extract(archive: Path, destination: Path) -> Path:
     """Extract a zip, refusing entries that would escape the destination."""
     destination.mkdir(parents=True, exist_ok=True)
@@ -187,9 +210,14 @@ def _write_segmentation(samples: Iterable[SegSample], task: PreparedTask, salt: 
 
         if isinstance(sample.mask, Path):
             with Image.open(sample.mask) as raw:
-                mask_array = _binarise(np.asarray(raw))
+                source_mask = np.asarray(raw)
         else:
-            mask_array = _binarise(sample.mask)
+            source_mask = sample.mask
+
+        if sample.label_map:
+            mask_array = _remap_labels(source_mask, sample.label_map)
+        else:
+            mask_array = _binarise(source_mask)
 
         mask_image = Image.fromarray(mask_array, mode="L")
         if mask_image.size != size:
@@ -1012,6 +1040,11 @@ def adapt_uav_rsod(raw: Path) -> Iterator[SegSample]:
 # WeedsGalore semantic ids. The archive's masks carry 0/1/3/5 rather than a dense range,
 # so remapping by position would relabel every pixel.
 WEEDSGALORE_CLASSES = {0: "soil", 1: "maize", 3: "weed", 5: "weed"}
+# Source id -> contiguous training id. Both weed species map to one class: the corpus
+# distinguishes them, the capability does not, and collapsing here is a stated decision
+# rather than an accident of thresholding.
+WEEDSGALORE_LABEL_MAP = {0: 0, 1: 1, 3: 2, 5: 2}
+WEEDSGALORE_TRAIN_CLASSES = ("soil", "maize", "weed")
 
 
 def adapt_weedsgalore(raw: Path) -> Iterator[SegSample]:
@@ -1066,6 +1099,9 @@ def adapt_weedsgalore(raw: Path) -> Iterator[SegSample]:
                 image_path=image_path,
                 mask=mask_path,
                 split=split,
+                # Without this the mask is binarised and every class id -- all of which
+                # are below the 127 threshold -- collapses to background.
+                label_map=WEEDSGALORE_LABEL_MAP,
             )
 
 
