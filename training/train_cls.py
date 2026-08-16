@@ -391,8 +391,16 @@ def main(argv: list[str] | None = None) -> int:
     config = ClsConfig.load(args.config)
     for key in ("epochs", "batch_size", "image_size", "data_root", "output_dir"):
         value = getattr(args, key)
-        if value is not None:
-            setattr(config, key, value)
+        if value is None:
+            continue
+        # argparse hands back a Path for these, but the dataclass field is a str and the
+        # summary is written as JSON. Assigning the Path straight through survives all of
+        # training and then raises "Object of type PosixPath is not JSON serializable"
+        # while writing the metrics card -- after the run, on a machine billed by the
+        # hour, with the weights saved but no summary and no completion marker.
+        if isinstance(value, Path):
+            value = str(value)
+        setattr(config, key, value)
 
     train(config, resume=args.resume)
     return 0
