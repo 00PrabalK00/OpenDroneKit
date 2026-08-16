@@ -13,7 +13,10 @@
 # silently changes behaviour between runs would make a green test meaningless.
 FROM ubuntu:22.04
 
-ENV DEBIAN_FRONTEND=noninteractive \
+# USER is set because ArduPilot's prereq script runs `usermod -a -G dialout $USER`,
+# and a container has no USER in its environment: the call degrades to usermod printing
+# its usage and exiting 2, which surfaces as an unexplained build failure.
+ENV USER=sitl     DEBIAN_FRONTEND=noninteractive \
     ARDUPILOT_HOME=/opt/ardupilot \
     PATH="/opt/ardupilot/Tools/autotest:${PATH}" \
     PYTHONUNBUFFERED=1
@@ -30,7 +33,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # A non-root user because ArduPilot's setup scripts refuse to run as root, and because
 # a simulator that can write anywhere in the image is a poor default.
-RUN useradd -ms /bin/bash sitl && echo "sitl ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# dialout exists on desktop Ubuntu but not in the minimal image, and the prereq script
+# assumes it when granting serial access.
+RUN groupadd -f dialout     && useradd -ms /bin/bash -G dialout sitl && echo "sitl ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 USER sitl
 WORKDIR /home/sitl
 
