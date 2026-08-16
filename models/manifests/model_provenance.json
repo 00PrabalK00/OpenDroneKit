@@ -177,6 +177,37 @@
       },
       "training_data": {},
       "registered_utc": "2026-08-16T13:14:28Z"
+    },
+    {
+      "registry_key": "rail_obstacle_detector",
+      "path": "structural/rail_obstacle_detector.onnx",
+      "sha256": "7a53c8b9eaeabf956a1f2fc3a25ca3ff39f6217c5cb3a3b744f54e017e8ced23",
+      "bytes": 101514362,
+      "method": "trained_in_repo",
+      "source_run": "training\\runs\\kaggle_v7\\rail",
+      "architecture": "rail",
+      "input_size": 640,
+      "opset": 17,
+      "onnx_parity_max_abs_diff": 0.00048828125,
+      "opencv_dnn_loadable": true,
+      "validation_metrics": {
+        "map50_95": 0.4931992733373978,
+        "map50": 0.8240893047583088,
+        "map75": 0.5307344528742529,
+        "precision": 0.7623264536213094,
+        "recall": 0.743278085000122,
+        "per_class_map50_95": {
+          "Barrel": 0.5902296773475522,
+          "Boulder": 0.5322092270449084,
+          "Branch": 0.39492324820544633,
+          "IronRod": 0.5307403696786137,
+          "Jerrycan": 0.4181741385597445,
+          "Person": 0.49291897918812133
+        },
+        "classes_without_predictions": []
+      },
+      "training_data": {},
+      "registered_utc": "2026-08-16T15:56:03Z"
     }
   ],
   "licensing_policy": [
