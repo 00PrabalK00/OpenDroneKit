@@ -1,0 +1,259 @@
+/* The parts every workspace is built from.
+ *
+ * Thirteen workspaces composed from a dozen primitives, rather than thirteen hand-built
+ * pages. That is not only less code -- it is why selecting a defect in one panel updates
+ * the image, the 3D location and the properties in three others without any of them
+ * knowing about each other. They all speak through the selection bus below.
+ */
+
+/* ------------------------------------------------------------ selection bus */
+
+/** One selection model for the whole application.
+ *
+ * The rule the spec sets is that selecting anything anywhere updates everything related.
+ * Implemented as a topic bus rather than direct wiring: a panel publishes what the user
+ * picked and subscribes to what it cares about, so adding a panel never means editing
+ * another one.
+ */
+export class SelectionBus {
+  constructor() {
+    this.current = {};
+    this.listeners = new Map();
+  }
+
+  select(kind, value) {
+    this.current[kind] = value;
+    for (const fn of this.listeners.get(kind) || []) {
+      // A throwing subscriber must not stop the others: half-updated panels are worse
+      // than one stale one, and a broken inspector should not freeze the map.
+      try { fn(value); } catch (error) { console.error(`selection ${kind}`, error); }
+    }
+    for (const fn of this.listeners.get("*") || []) {
+      try { fn(kind, value); } catch (error) { console.error("selection *", error); }
+    }
+  }
+
+  on(kind, fn) {
+    if (!this.listeners.has(kind)) this.listeners.set(kind, []);
+    this.listeners.get(kind).push(fn);
+    return () => {
+      const list = this.listeners.get(kind) || [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    };
+  }
+
+  get(kind) { return this.current[kind]; }
+}
+
+export const selection = new SelectionBus();
+
+/* -------------------------------------------------------------------- utils */
+
+export function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else if (key === "html") node.innerHTML = value;
+    else if (key === "text") node.textContent = value;
+    else if (key.startsWith("on") && typeof value === "function") {
+      node.addEventListener(key.slice(2).toLowerCase(), value);
+    } else if (value != null) node.setAttribute(key, value);
+  }
+  for (const child of [].concat(children)) {
+    if (child == null) continue;
+    node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+  }
+  return node;
+}
+
+/* --------------------------------------------------------------------- tree */
+
+export function tree(nodes, { selectKind, onSelect } = {}) {
+  const root = el("div", { class: "tree" });
+  const expanded = new Set(nodes.filter((n) => n.expanded !== false).map((n) => n.id));
+
+  const draw = () => {
+    root.innerHTML = "";
+    const walk = (list, depth) => {
+      for (const node of list) {
+        const hasChildren = node.children && node.children.length;
+        const row = el("div", {
+          class: "tree-node" + (node.selected ? " selected" : ""),
+          style: `padding-left:${8 + depth * 12}px`,
+        }, [
+          el("span", { class: "twisty", text: hasChildren ? (expanded.has(node.id) ? "▾" : "▸") : "" }),
+          el("span", { class: "ico", text: node.icon || "" }),
+          el("span", { class: "label", text: node.label }),
+          node.meta ? el("span", { class: "meta", text: node.meta }) : null,
+        ]);
+        row.onclick = (event) => {
+          if (hasChildren && event.offsetX < 16 + depth * 12) {
+            expanded.has(node.id) ? expanded.delete(node.id) : expanded.add(node.id);
+            draw();
+            return;
+          }
+          root.querySelectorAll(".tree-node").forEach((n) => n.classList.remove("selected"));
+          row.classList.add("selected");
+          if (selectKind) selection.select(selectKind, node);
+          if (onSelect) onSelect(node);
+        };
+        root.appendChild(row);
+        if (hasChildren && expanded.has(node.id)) walk(node.children, depth + 1);
+      }
+    };
+    walk(nodes, 0);
+  };
+  draw();
+  return root;
+}
+
+/* -------------------------------------------------------------------- table */
+
+export function table(columns, rows, { selectKind, onSelect } = {}) {
+  const head = el("tr", {}, columns.map((c) => el("th", { text: c.title })));
+  const body = el("tbody");
+  for (const row of rows) {
+    const tr = el("tr", {}, columns.map((c) => {
+      const value = typeof c.value === "function" ? c.value(row) : row[c.key];
+      if (value instanceof Node) return el("td", {}, [value]);
+      return el("td", { class: c.num ? "num" : "", text: value == null ? "—" : String(value) });
+    }));
+    tr.onclick = () => {
+      body.querySelectorAll("tr").forEach((r) => r.classList.remove("selected"));
+      tr.classList.add("selected");
+      if (selectKind) selection.select(selectKind, row);
+      if (onSelect) onSelect(row);
+    };
+    body.appendChild(tr);
+  }
+  return el("table", { class: "grid" }, [el("thead", {}, [head]), body]);
+}
+
+/* --------------------------------------------------------------- properties */
+
+/** A property inspector. `spec` is a list of {group} or {label, value, unit}. */
+export function properties(spec) {
+  const body = el("tbody");
+  for (const item of spec) {
+    if (item.group) {
+      body.appendChild(el("tr", { class: "group" }, [el("th", { colspan: "2", text: item.group })]));
+      continue;
+    }
+    const value = item.value instanceof Node
+      ? el("td", {}, [item.value])
+      : el("td", { text: item.value == null ? "—" : `${item.value}${item.unit ? " " + item.unit : ""}` });
+    body.appendChild(el("tr", {}, [el("th", { text: item.label }), value]));
+  }
+  return el("table", { class: "props" }, [body]);
+}
+
+export function fields(spec, onChange) {
+  const wrap = el("div");
+  for (const item of spec) {
+    if (item.group) {
+      wrap.appendChild(el("div", {
+        class: "readout", style: "padding-top:8px",
+      }, [el("span", { class: "k", text: item.group })]));
+      continue;
+    }
+    const input = item.options
+      ? el("select", {}, item.options.map((o) =>
+          el("option", { value: o, text: o, ...(o === item.value ? { selected: "" } : {}) })))
+      : el("input", { type: item.type || "text", value: item.value ?? "" });
+    input.addEventListener("change", () => onChange && onChange(item.key, input.value));
+    wrap.appendChild(el("div", { class: "field" }, [
+      el("label", { text: item.label }),
+      input,
+      el("span", { class: "unit", text: item.unit || "" }),
+    ]));
+  }
+  return wrap;
+}
+
+/* ----------------------------------------------------------------- readouts */
+
+export function readouts(items) {
+  return el("div", { class: "readout-grid" }, items.map((item) =>
+    el("div", { class: "readout" }, [
+      el("span", { class: "k", text: item.k }),
+      el("span", { class: "v", style: item.tone ? `color:var(--${item.tone})` : "", text: item.v }),
+    ])));
+}
+
+export function chip(text, tone = "") {
+  return el("span", { class: `chip ${tone}`, text });
+}
+
+export function meter(fraction, tone = "") {
+  return el("div", { class: `meter ${tone}` }, [
+    el("span", { style: `width:${Math.max(0, Math.min(1, fraction)) * 100}%` }),
+  ]);
+}
+
+/* ------------------------------------------------------------------ console */
+
+export function consoleView(lines) {
+  return el("div", { class: "console" }, lines.map((line) =>
+    el("div", { class: `line ${line.level || ""}` }, [
+      el("span", { class: "t", text: line.t }),
+      el("span", { text: line.text }),
+    ])));
+}
+
+/* ------------------------------------------------------------------- canvas */
+
+/** The central view. `kind` only changes the placeholder wording and overlays --
+ *  a real map or 3D viewport mounts into the same element. */
+export function canvas({ kind = "map", title, note, tools = [], overlays = [] } = {}) {
+  const root = el("div", { class: "canvas" });
+
+  if (tools.length) {
+    const bar = el("div", { class: "canvas-overlay tl" }, [
+      el("div", { class: "canvas-tools" }, tools.map((tool, index) => {
+        const button = el("button", {
+          class: "tool" + (index === 0 ? " active" : ""),
+          title: tool.title,
+          text: tool.icon,
+        });
+        button.onclick = () => {
+          bar.querySelectorAll(".tool").forEach((t) => t.classList.remove("active"));
+          button.classList.add("active");
+          if (tool.onSelect) tool.onSelect();
+        };
+        return button;
+      })),
+    ]);
+    root.appendChild(bar);
+  }
+
+  for (const overlay of overlays) {
+    root.appendChild(el("div", { class: `canvas-overlay ${overlay.at || "tr"}`, html: overlay.html }));
+  }
+
+  root.appendChild(el("div", { class: "placeholder" }, [
+    el("div", {}, [
+      el("div", { class: "big", text: title || kind }),
+      el("div", { class: "small", text: note || "" }),
+    ]),
+  ]));
+  return root;
+}
+
+/** Several synchronised viewers side by side -- the AI inspection pattern, where a
+ *  finding must be visible as an image, a zoom and a 3D location at the same time. */
+export function splitCanvas(views) {
+  const root = el("div", { class: "canvas", style: "display:flex;gap:1px;background:var(--line)" });
+  for (const view of views) {
+    root.appendChild(el("div", {
+      class: "canvas",
+      style: "margin:0;border:0;border-radius:0;flex:1 1 0",
+    }, [
+      el("div", { class: "canvas-overlay tl", html: `<strong>${view.title}</strong>` }),
+      el("div", { class: "placeholder" }, [
+        el("div", {}, [el("div", { class: "small", text: view.note || "" })]),
+      ]),
+    ]));
+  }
+  return root;
+}

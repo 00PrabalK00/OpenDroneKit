@@ -106,6 +106,12 @@ def resolve_corpus() -> Path:
     def looks_like_corpus(path: Path) -> bool:
         if any((path / split).is_dir() for split in ("train", "val", "test")):
             return True
+        # A semantic corpus is a manifest plus flat image and label directories -- there
+        # are no per-split folders, because the split lives in the manifest. Without this
+        # the search walked straight past a perfectly good corpus and reported it missing,
+        # which reads as a failed upload rather than a detector that only knows one shape.
+        if (path / "corpus.json").is_file():
+            return True
         return bool(list(path.glob("*.zip")))
 
     found = None
