@@ -13,12 +13,16 @@
 # silently changes behaviour between runs would make a green test meaningless.
 FROM ubuntu:22.04
 
+# PATH includes /home/sitl/.local/bin because pip --user puts mavproxy.py there and
+# it is not on the default PATH. sim_vehicle.py started the autopilot cleanly and
+# then died with "No such file or directory: mavproxy.py", which read as a SITL
+# failure when SITL itself was working.
 # USER is set because ArduPilot's prereq script runs `usermod -a -G dialout $USER`,
 # and a container has no USER in its environment: the call degrades to usermod printing
 # its usage and exiting 2, which surfaces as an unexplained build failure.
 ENV USER=sitl     DEBIAN_FRONTEND=noninteractive \
     ARDUPILOT_HOME=/opt/ardupilot \
-    PATH="/opt/ardupilot/Tools/autotest:${PATH}" \
+    PATH="/opt/ardupilot/Tools/autotest:/home/sitl/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
     SITL_RITW_TERMINAL=nohup
 
