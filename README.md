@@ -71,6 +71,7 @@ Useful flags: `--engine {auto,colmap,custom}`, `--dense` / `--no-dense`, `--epsg
 
 | Guide | For |
 |---|---|
+| [UI guide](docs/UI_GUIDE.md) | The workspace cockpit: fourteen workspaces, dockable panels, shared selection |
 | [Installation](docs/INSTALLATION.md) | Setup, and what each optional dependency costs you if it is missing |
 | [Architecture](docs/ARCHITECTURE.md) | How the layers fit, and the refusal-over-fabrication rule that shapes them |
 | [User guide](docs/USER_GUIDE.md) | Plan, fly, process, measure |

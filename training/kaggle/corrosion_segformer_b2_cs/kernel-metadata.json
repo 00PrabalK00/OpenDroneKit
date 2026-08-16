@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare00/odk-train-corrosion-segformer-b2-cs",
+  "title": "ODK train corrosion_segformer_b2_cs",
+  "code_file": "corrosion_segformer_b2_cs.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare00/odk-corrosion-seg-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

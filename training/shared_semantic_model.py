@@ -165,17 +165,35 @@ def build_dinov2_vitb14_upernet(
     pass that directory as ``dinov2_source`` and set ``source='local'``.
     '''
     checkpoint = Path(checkpoint_path)
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f'DINOv2 checkpoint not found: {checkpoint}')
+    # The retained local checkpoint is the offline path and stays the default: an
+    # air-gapped site should not need a network to train. But the weights are not in the
+    # repository -- they are a 350 MB binary -- so a fresh clone on a hosted GPU has the
+    # code and not the file, and refusing there would make the whole rented session a
+    # FileNotFoundError. When the encoder is being fetched from GitHub anyway, letting
+    # torch.hub bring its own pretrained weights is the same Apache-2.0 artefact from the
+    # same publisher, so it is fetched rather than demanded.
+    fetch_weights = not checkpoint.is_file()
+    if fetch_weights and source != 'github':
+        raise FileNotFoundError(
+            f'DINOv2 checkpoint not found: {checkpoint}. With source={source!r} there is '
+            'no way to fetch it -- point --dinov2-source at a local clone with the '
+            'weights beside it, or use --source github to download them.'
+        )
     encoder = torch.hub.load(
         dinov2_source,
         'dinov2_vitb14',
         source=source,
-        pretrained=False,
+        pretrained=fetch_weights,
         trust_repo=True,
     )
-    state = torch.load(checkpoint, map_location='cpu', weights_only=True)
-    encoder.load_state_dict(state, strict=True)
+    if not fetch_weights:
+        state = torch.load(checkpoint, map_location='cpu', weights_only=True)
+        encoder.load_state_dict(state, strict=True)
+    else:
+        print(
+            'DINOv2 encoder weights fetched from torch.hub (Apache-2.0). The local '
+            f'checkpoint at {checkpoint} was absent.', flush=True
+        )
     return DinoV2UPerNet(
         encoder,
         num_classes,

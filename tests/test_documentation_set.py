@@ -28,6 +28,7 @@ GUIDES = {
     "PLUGIN_GUIDE.md": "plugin",
     "API_GUIDE.md": "api",
     "DEPLOYMENT.md": "deployment",
+    "UI_GUIDE.md": "ui",
 }
 
 
@@ -121,6 +122,26 @@ class TestClaimsMatchTheCode:
         for name in ("USER_GUIDE.md", "PILOT_GUIDE.md"):
             text = read(name).lower()
             assert "corridor is clear" in text or "track is safe" in text
+
+
+class TestTheUiGuideMatchesTheUi:
+    def test_it_names_every_workspace_the_code_defines(self) -> None:
+        """A guide listing twelve workspaces for a fourteen-workspace product misleads."""
+        source = (Path(__file__).resolve().parents[1] / "app" / "web" / "js" /
+                  "workspace" / "workspaces.js").read_text(encoding="utf-8")
+        guide = read("UI_GUIDE.md")
+        for title in ("Mission Planning", "Verification", "Digital Twin",
+                      "AI Inspection", "Thermal", "Measurements", "Fleet",
+                      "Reports", "Developers"):
+            assert title in source
+            assert title in guide, f"{title} is a workspace but is undocumented"
+
+    def test_it_says_the_data_is_not_measured(self) -> None:
+        # The shell says so permanently; the guide must not imply otherwise.
+        assert "sample data" in read("UI_GUIDE.md")
+
+    def test_it_admits_the_toolbar_is_not_wired(self) -> None:
+        assert "not wired" in read("UI_GUIDE.md")
 
 
 class TestTheGuidesCarryTheProjectsRule:
