@@ -528,9 +528,16 @@ PROCESSING = [
                       "tests/test_reconstruction_colmap.py::TestGeoreferencing",
                       "tests/test_reconstruction_colmap.py::TestNoFabrication"]),
     F("pr.dense", "Dense point cloud", "workers", "Processing",
-      "Patch-match multi-view stereo. Never synthesised from the sparse cloud.",
-      "not_started", ["tests/test_honesty.py::TestNoSyntheticDensification"],
-      "Blocked: pycolmap wheels are CPU-only. The fake was removed."),
+      "Patch-match multi-view stereo. Never synthesised from the sparse cloud, and the "
+      "environment is asked before a job starts rather than discovered mid-run.",
+      "implemented", ["tests/test_honesty.py::TestNoSyntheticDensification",
+                      "tests/test_api_measurements.py::TestReconstructionCapabilities"],
+      "The densification fake -- cloning sparse points with Gaussian jitter and calling "
+      "it MVS -- was removed and a test guards its absence. api.reconstruction_"
+      "capabilities() now reports dense_available honestly with the specific missing "
+      "piece named. Reaching verified needs a CUDA COLMAP binary or CUDA-enabled "
+      "pycolmap in the environment; that is a dependency, not code to write, and no "
+      "post-processing turns a sparse cloud into a dense one."),
     F("pr.mesh", "Textured mesh", "workers", "Processing",
       "Poisson surface reconstruction with density trimming and orthophoto texture.",
       "implemented", []),

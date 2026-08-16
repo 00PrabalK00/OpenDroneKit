@@ -902,6 +902,36 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    def reconstruction_capabilities(self) -> dict[str, Any]:
+        """What this machine can actually reconstruct, before anyone starts a job.
+
+        Dense point clouds need patch-match multi-view stereo, which needs a CUDA
+        COLMAP -- either the native binary or CUDA-enabled pycolmap bindings. Without
+        one, only the sparse cloud is available and no amount of post-processing
+        changes that: densifying a sparse cloud by cloning points adds no observations,
+        it only inflates the point count. That fake existed here once and was removed.
+
+        Reported rather than discovered mid-job, because a user deserves to know before
+        a long reconstruction whether the deliverable they want is possible at all.
+        """
+        from core.reconstruction_colmap import engine_capabilities
+
+        caps = engine_capabilities()
+        dense = bool(caps.get("dense_stereo"))
+        return ok(
+            capabilities=caps,
+            dense_available=dense,
+            note=(
+                "Dense patch-match stereo is available; a dense cloud can be produced."
+                if dense else
+                "Dense point clouds are NOT available in this environment: no CUDA "
+                "COLMAP binary and no CUDA-enabled pycolmap. Sparse reconstruction, "
+                "mesh and orthomosaic still work. The sparse cloud is never inflated "
+                "to imitate a dense one."
+            ),
+        )
+
+    @guard
     def find_ponding(self, surface_path: str,
                      vertical_accuracy_m: float | None = None) -> dict[str, Any]:
         """Where water can collect on a surface, from the DSM.

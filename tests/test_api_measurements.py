@@ -142,3 +142,38 @@ class TestDemoCapability:
 
         with pytest.raises(DemoDataRefused):
             refuse_if_demo(api.demo_workflow(), action="publish an inspection report")
+
+
+class TestReconstructionCapabilities:
+    """Dense reconstruction is a dependency question, answered before a job starts.
+
+    pr.dense was blocked for a real reason: patch-match stereo needs a CUDA COLMAP, and
+    the previous code faked it by cloning sparse points with Gaussian jitter. That fake
+    was removed and tests/test_honesty.py guards its absence. What was missing is a way
+    for a caller to ASK, rather than discovering it partway through a long job.
+    """
+
+    def test_it_reports_whether_dense_is_possible(self, api: Api) -> None:
+        result = api.reconstruction_capabilities()
+        assert result["ok"] is True
+        assert isinstance(result["dense_available"], bool)
+
+    def test_the_note_matches_the_answer(self, api: Api) -> None:
+        result = api.reconstruction_capabilities()
+        if result["dense_available"]:
+            assert "is available" in result["note"]
+        else:
+            assert "NOT available" in result["note"]
+
+    def test_it_never_promises_densification_from_a_sparse_cloud(self, api: Api) -> None:
+        # The honesty rule this capability exists to hold: no post-processing turns a
+        # sparse cloud into a dense one, and the report must not imply otherwise.
+        result = api.reconstruction_capabilities()
+        if not result["dense_available"]:
+            assert "never inflated" in result["note"]
+
+    def test_the_underlying_capability_flags_are_exposed(self, api: Api) -> None:
+        # A user debugging a deployment needs to see WHICH piece is missing.
+        caps = api.reconstruction_capabilities()["capabilities"]
+        for key in ("pycolmap", "colmap_binary", "pycolmap_cuda", "dense_stereo"):
+            assert key in caps
