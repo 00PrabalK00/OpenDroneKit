@@ -128,3 +128,94 @@ class TestTheKernelReportsRatherThanVanishing:
     def test_resources_are_printed_around_training(self, kernel_script) -> None:
         # So an OOM can be told apart from a crash without guessing.
         assert "report_resources" in kernel_script
+
+
+class TestEveryConfigReachesATrainerThatAcceptsIt:
+    """The check that generalises past shared_semantic.
+
+    Routing used to be substring matching over the config text, which failed three ways:
+    it read words out of COMMENTS (a comment mentioning class_names sent a binary
+    PV-extent config to the multiclass trainer), it could not tell change detection from
+    segmentation because they share an encoder, and it sent a corrosion severity config
+    to the binary trainer, which rejected num_classes after the corpus had uploaded and
+    the GPU had been paid for.
+
+    Every one of those surfaces identically -- "Unknown config keys" on a rented machine,
+    minutes into a session. This runs on a laptop in under a second.
+    """
+
+    @staticmethod
+    def _configs():
+        return sorted((REPO_ROOT / "training" / "configs").glob("*.yaml"))
+
+    def test_there_are_configs_to_check(self) -> None:
+        # Guards the whole class: a glob that silently matched nothing would pass every
+        # test below while checking nothing at all.
+        assert len(self._configs()) >= 10
+
+    def test_every_config_routes_to_a_trainer_that_accepts_all_its_keys(self) -> None:
+        import dataclasses
+        import importlib
+        import sys
+
+        yaml = pytest.importorskip("yaml")
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from tools.kaggle_kernel import TRAINER_FOR_KIND, infer_kind
+
+        failures = []
+        for path in self._configs():
+            text = path.read_text(encoding="utf-8")
+            kind = infer_kind(text)
+            module = importlib.import_module(TRAINER_FOR_KIND[kind])
+            config_class = next(
+                (v for v in vars(module).values()
+                 if dataclasses.is_dataclass(v) and v.__name__.endswith("Config")),
+                None,
+            )
+            if config_class is None:
+                continue
+            unknown = set(yaml.safe_load(text) or {}) - set(config_class.__dataclass_fields__)
+            if unknown:
+                failures.append(f"{path.stem} -> {kind} rejects {sorted(unknown)}")
+        assert not failures, "configs routed to a trainer that will refuse them:\n" + "\n".join(failures)
+
+    def test_a_segformer_config_never_routes_to_the_classifier(self) -> None:
+        """A nvidia/mit encoder is a segmentation backbone. That is not up for inference.
+
+        The classifier's config happens to accept every key a SegFormer config sets, so
+        matching on keys alone sent segmentation work to the classifier.
+        """
+        import sys
+
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from tools.kaggle_kernel import infer_kind
+
+        for path in self._configs():
+            text = path.read_text(encoding="utf-8")
+            if "model_id: nvidia/mit-" in text:
+                assert infer_kind(text) in {"segmentation", "segmentation_multiclass", "change"}, (
+                    f"{path.stem} routed away from the segmentation family"
+                )
+
+    def test_change_detection_is_recognised(self) -> None:
+        import sys
+
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from tools.kaggle_kernel import infer_kind
+
+        mining = REPO_ROOT / "training" / "configs" / "mining_change_b2.yaml"
+        assert infer_kind(mining.read_text(encoding="utf-8")) == "change"
+
+    def test_a_multiclass_config_is_not_sent_to_the_binary_trainer(self) -> None:
+        """The corrosion failure, pinned."""
+        import sys
+
+        if str(REPO_ROOT) not in sys.path:
+            sys.path.insert(0, str(REPO_ROOT))
+        from tools.kaggle_kernel import infer_kind
+
+        corrosion = REPO_ROOT / "training" / "configs" / "corrosion_segformer_b2_cs.yaml"
+        assert infer_kind(corrosion.read_text(encoding="utf-8")) == "segmentation_multiclass"

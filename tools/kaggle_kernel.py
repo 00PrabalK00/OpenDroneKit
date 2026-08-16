@@ -41,6 +41,8 @@ TRAINER_FOR_KIND = {
     "classification": "training.train_cls",
     "detection": "training.train_det",
     "segmentation": "training.train_seg",
+    "segmentation_multiclass": "training.train_seg_multiclass",
+    "change": "training.train_change",
     "semantic": "training.train_shared_semantic",
 }
 
@@ -49,19 +51,79 @@ class KernelError(ValueError):
     pass
 
 
+def _trainer_fields(module_name: str) -> set[str] | None:
+    """The config keys a trainer will actually accept, read from its own dataclass."""
+    import dataclasses
+    import importlib
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:  # noqa: BLE001 - a trainer whose deps are absent cannot be checked
+        return None
+    for value in vars(module).values():
+        if dataclasses.is_dataclass(value) and value.__name__.endswith("Config"):
+            return set(value.__dataclass_fields__)
+    return None
+
+
 def infer_kind(config_text: str) -> str:
-    """Work out which trainer a config belongs to from what it declares."""
-    if "model_id: yolo" in config_text:
-        return "detection"
+    """Work out which trainer a config belongs to from what it declares.
+
+    Decided by MATCHING KEYS against each trainer's own config dataclass rather than by
+    grepping the text. Substring matching read words out of comments -- a comment
+    mentioning class_names routed a binary PV-extent config to the multiclass trainer --
+    and it could not tell change detection from segmentation at all, because they share
+    an encoder and differ only in the keys they accept.
+
+    Getting this wrong is expensive in a specific way: the mistake surfaces as "Unknown
+    config keys" on a rented GPU, after the repo clone, the torch reinstall and the
+    corpus download have all been paid for.
+    """
+    import yaml
+
+    try:
+        keys = set(yaml.safe_load(config_text) or {})
+    except Exception:  # noqa: BLE001
+        keys = set()
+
     if "encoder: dinov2" in config_text:
         return "semantic"
+
+    # The architecture decides the FAMILY, and only then do keys choose within it. Key
+    # matching alone is not enough: the classifier's config happens to accept every key
+    # a SegFormer config sets, so "whichever trainer accepts the keys" sent segmentation
+    # configs to the classifier. A nvidia/mit encoder is never a classifier, and that
+    # fact is not up for inference.
+    if "model_id: yolo" in config_text:
+        return "detection"
+    if re.search(r"^model_id: (resnet|efficientnet|convnext|vit)", config_text, re.MULTILINE):
+        return "classification"
+
     if "model_id: nvidia/mit-" in config_text:
-        return "segmentation"
+        # Three trainers share this encoder, so the choice is made on POSITIVE evidence
+        # rather than on which dataclass happens to accept the keys. Scoring by "fewest
+        # spare fields" sent plain segmentation configs to the change trainer, because a
+        # superset config can always swallow a smaller one.
+        #
+        # Change detection is the only one that splits its own corpus -- it takes pairs
+        # of images per site and has to keep a site whole -- so those keys are what
+        # identify it. num_classes then separates multiclass from binary.
+        if keys & {"split_salt", "val_fraction", "test_fraction"}:
+            return "change"
+        return "segmentation_multiclass" if "num_classes" in keys else "segmentation"
+
+    # Fallback for a config whose trainer cannot be imported here (missing optional
+    # dependency), so generation still works on a machine without torch installed.
+    if "model_id: yolo" in config_text:
+        return "detection"
+    if "model_id: nvidia/mit-" in config_text:
+        multiclass = re.search(r"^num_classes:", config_text, re.MULTILINE)
+        return "segmentation_multiclass" if multiclass else "segmentation"
     if re.search(r"^model_id: (resnet|efficientnet|convnext|vit)", config_text, re.MULTILINE):
         return "classification"
     raise KernelError(
-        "Cannot tell which trainer this config needs. Expected a model_id naming a YOLO "
-        "checkpoint, a SegFormer encoder, a torchvision backbone, or a dinov2 encoder."
+        "Cannot tell which trainer this config needs. Its keys match no trainer's "
+        "config, and no model_id names a known architecture."
     )
 
 
