@@ -196,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
     # rather than a near-duplicate per venue, which is how the two drift apart.
     parser.add_argument("--data-root", type=Path, help="Override the corpus location.")
     parser.add_argument("--output-dir", type=Path, help="Override where runs are written.")
+    # Dataloader workers are a per-machine property, not a property of the model.
+    # On Windows each worker is a fresh process that loads torch's CUDA DLLs, and four
+    # of them exhausted the page file on an 8 GB laptop with WinError 1455 -- a failure
+    # that says nothing about the config and everything about where it ran.
+    parser.add_argument("--workers", type=int, help="Override dataloader worker count.")
     parser.add_argument(
         "--weights",
         dest="init_weights",
@@ -217,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
 
     config = DetConfig.load(args.config)
     for key in ("epochs", "batch_size", "image_size", "data_root", "output_dir",
-                "init_weights"):
+                "init_weights", "workers"):
         value = getattr(args, key)
         if value is not None:
             setattr(config, key, value)
