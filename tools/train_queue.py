@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+
 import subprocess
 import sys
 import time
@@ -41,6 +42,10 @@ class QueueItem:
     config: str
     kind: str
     note: str = ""
+    # Generous by default: this is a deadlock guard, not a performance budget. A model
+    # legitimately slower than this should get its own value rather than a shorter one
+    # here, since a killed-but-healthy run wastes everything it had done.
+    timeout_s: int = 6 * 60 * 60
 
 
 # Ordered cheapest first. A queue that front-loads the short runs means an interrupted
@@ -59,6 +64,32 @@ QUEUES: dict[str, tuple[QueueItem, ...]] = {
         QueueItem("solar_yolo11l", "detection", "1,483 images, ~90 min."),
     ),
 }
+
+
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Kill a stuck run and the workers it spawned.
+
+    Terminating the parent alone leaves ultralytics' dataloader workers alive holding
+    the GPU, so the next model in the queue starts against a card that is not actually
+    free. psutil is used when present because walking the child list is the only
+    reliable way to catch them; the plain terminate is the fallback.
+    """
+    try:
+        import psutil
+
+        parent = psutil.Process(process.pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except Exception:  # noqa: BLE001 - a child that already exited is fine
+                pass
+    except Exception:  # noqa: BLE001 - psutil absent or process already gone
+        pass
+    try:
+        process.kill()
+        process.wait(timeout=30)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _detect_kind(config_path: Path) -> str:
@@ -92,15 +123,28 @@ def run_one(item: QueueItem, *, dry_run: bool = False) -> dict[str, object]:
     log_path = LOGS / f"{item.config}.log"
     print(f"  running -> {log_path}", flush=True)
     with open(log_path, "w", encoding="utf-8") as log:
-        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+        try:
+            returncode = process.wait(timeout=item.timeout_s)
+        except subprocess.TimeoutExpired:
+            # "Continue past failures" only works if the failing process actually dies.
+            # A YOLO run whose spawned dataloader workers fail to load torch's CUDA DLLs
+            # leaves those workers hung, the parent waiting on them, and the whole queue
+            # blocked behind a model that will never finish. Killing the tree is what
+            # lets the remaining models run.
+            _kill_tree(process)
+            record.update(status="timed_out", minutes=round((time.time() - started) / 60.0, 1),
+                          log=str(log_path))
+            return record
 
+    result_code = returncode
     record["log"] = str(log_path)
     record["minutes"] = round((time.time() - started) / 60.0, 1)
-    if result.returncode == 0:
+    if result_code == 0:
         record["status"] = "ok"
     else:
         record["status"] = "failed"
-        record["exit_code"] = result.returncode
+        record["exit_code"] = result_code
         # The last lines are what a person actually needs; the full log stays on disk.
         tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]
         record["tail"] = tail
