@@ -67,6 +67,20 @@ python run_pipeline.py --images <dataset_dir> --engine colmap --output final_too
 Useful flags: `--engine {auto,colmap,custom}`, `--dense` / `--no-dense`, `--epsg <code>`,
 `--recon-profile {fast_preview,standard,inspection_high_accuracy}`.
 
+## Documentation
+
+| Guide | For |
+|---|---|
+| [Installation](docs/INSTALLATION.md) | Setup, and what each optional dependency costs you if it is missing |
+| [Architecture](docs/ARCHITECTURE.md) | How the layers fit, and the refusal-over-fabrication rule that shapes them |
+| [User guide](docs/USER_GUIDE.md) | Plan, fly, process, measure |
+| [Pilot guide](docs/PILOT_GUIDE.md) | What preflight checks, what it cannot, and what the software refuses |
+| [Plugin guide](docs/PLUGIN_GUIDE.md) | Extending the toolkit without forking it |
+| [API guide](docs/API_GUIDE.md) | The desktop `Api` and the HTTP service |
+| [Deployment](docs/DEPLOYMENT.md) | Compose, Helm, storage, and what PostGIS does not yet give you |
+| [SITL](docs/SITL.md) | Verifying flight code against a real autopilot |
+| [Features](docs/FEATURES.md) | All 167 capabilities with computed status |
+
 ## Repository layout
 
 ```

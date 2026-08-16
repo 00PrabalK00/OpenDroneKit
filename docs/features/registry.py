@@ -1326,7 +1326,17 @@ PLATFORM = [
       "The SDK delegates planning to the shared core, validates real drone adapters and provides authenticated REST job helpers."),
     F("doc.guides", "Documentation set", "infra", "Docs",
       "Installation, architecture, user, pilot, plugin, API and deployment guides.",
-      "in_progress", [], "README and training/cloud docs only."),
+      "verified", ["tests/test_documentation_set.py::TestTheSetIsComplete",
+                   "tests/test_documentation_set.py::TestClaimsMatchTheCode",
+                   "tests/test_documentation_set.py::TestTheGuidesCarryTheProjectsRule"],
+      "Seven guides: INSTALLATION, ARCHITECTURE, USER_GUIDE, PILOT_GUIDE, PLUGIN_GUIDE, "
+      "API_GUIDE, DEPLOYMENT. The tests do what tests can do for prose -- check the set "
+      "is present and unstubbed, then pin the specific claims that would misdirect a "
+      "reader if they went stale: that failures carry `error` and not `reason`, that "
+      "documented endpoints exist, that the plugin kinds listed are the real enum, that "
+      "recommended mission modes actually plan, and that the deployment guide does not "
+      "promise native geometry columns the schema does not have. Prose cannot be checked "
+      "for truth; these are the statements that would cost someone a day."),
     F("demo.mode", "Demo mode", "hub", "Docs",
       "Full workflow explorable with no hardware, marked synthetic throughout.",
       "verified", ["tests/test_demo_mode.py",
