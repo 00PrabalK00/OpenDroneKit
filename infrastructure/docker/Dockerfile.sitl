@@ -1,0 +1,63 @@
+# ArduPilot SITL plus the project's test dependencies, so fl.sitl can be verified
+# without a Linux host.
+#
+# The flight code has never been exercised against a real autopilot. The harness exists
+# -- tools/sitl and tests/sitl are written and committed -- but its tests SKIP when
+# sim_vehicle.py is absent, and feature status is computed from PASSING tests, so
+# fl.sitl correctly reads not_started. That is not a bookkeeping problem to be argued
+# away; nothing about mission upload or the arm/takeoff/RTL lifecycle has actually been
+# checked against ArduPilot's real behaviour.
+#
+# SITL is Linux-only in practice, which is why this image exists. Building ArduPilot
+# from source is slow (roughly 15-25 minutes) and deliberately pinned: an autopilot that
+# silently changes behaviour between runs would make a green test meaningless.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ARDUPILOT_HOME=/opt/ardupilot \
+    PATH="/opt/ardupilot/Tools/autotest:${PATH}" \
+    PYTHONUNBUFFERED=1
+
+# ArduPilot's own prerequisites plus what the repo's tests import. python3-wxgtk and the
+# GUI stack are deliberately omitted: MAVProxy pulls them for its map window, which
+# nothing here uses and which needs an X server the container will not have.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates sudo lsb-release tzdata \
+        python3 python3-pip python3-dev python3-setuptools \
+        build-essential ccache g++ gawk make wget \
+        libtool libxml2-dev libxslt1-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# A non-root user because ArduPilot's setup scripts refuse to run as root, and because
+# a simulator that can write anywhere in the image is a poor default.
+RUN useradd -ms /bin/bash sitl && echo "sitl ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+USER sitl
+WORKDIR /home/sitl
+
+# Pinned to a release tag rather than tracking master. A simulator whose behaviour moves
+# under the tests turns a red run into an unanswerable question.
+ARG ARDUPILOT_REF=Copter-4.5.7
+RUN sudo git clone --depth 1 --branch ${ARDUPILOT_REF} \
+        https://github.com/ArduPilot/ardupilot.git ${ARDUPILOT_HOME} \
+    && sudo chown -R sitl:sitl ${ARDUPILOT_HOME}
+
+WORKDIR ${ARDUPILOT_HOME}
+RUN git submodule update --init --recursive --depth 1
+
+# SKIP_AP_GIT_CHECK because the shallow clone above has no full history for the script
+# to inspect; the checkout is already pinned by tag.
+RUN SKIP_AP_EXT_ENV=1 SKIP_AP_GRAPHIC_ENV=1 SKIP_AP_COV_ENV=1 SKIP_AP_GIT_CHECK=1 \
+    Tools/environment_install/install-prereqs-ubuntu.sh -y
+
+RUN ./waf configure --board sitl && ./waf copter
+
+# Test-side dependencies. pymavlink and MAVProxy come from ArduPilot's own install, but
+# the repo's tests need pytest and the client stack too.
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir \
+        pytest pymavlink MAVProxy pyyaml numpy
+
+WORKDIR /workspace
+# The repository is bind-mounted at run time rather than copied in, so a test run always
+# exercises the working tree rather than a stale snapshot baked at build time.
+CMD ["python3", "-m", "pytest", "-m", "sitl", "tests/sitl", "-v"]
