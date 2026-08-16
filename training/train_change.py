@@ -39,6 +39,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from training.train_seg import _read_config  # noqa: E402  (shared config reader)
+
+# Pillow refuses images past ~179 megapixels as a decompression-bomb guard. MineNetCD
+# rasters reach 212 MP, and that guard is designed for untrusted uploads rather than a
+# scientific corpus fetched from a known source and already on disk. Raised deliberately
+# and only here, so the protection stays in place for anything user-supplied.
+Image.MAX_IMAGE_PIXELS = 400_000_000
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
