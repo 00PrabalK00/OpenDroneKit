@@ -73,6 +73,20 @@ class SegConfig:
     max_train_samples: int = 0   # 0 means all; used for smoke tests
     val_interval: int = 1
     early_stop_patience: int = 0  # 0 disables
+    # Foreground-anchored cropping. Zero keeps the previous behaviour.
+    #
+    # RandomResizedCrop takes 50-100% of the frame and resizes it to image_size, which
+    # is fine when the target covers a useful share of the image. It is useless when it
+    # does not: the Duke PV masks are ~0.15% foreground on 4000x2250 frames, so most
+    # crops contain no panel at all and the few that do shrink a panel to a handful of
+    # pixels. That model reached IoU 0.189 for exactly this reason.
+    #
+    # With this set, that fraction of training crops are taken as a native-resolution
+    # window centred on a real foreground pixel, so the model sees panels at the scale
+    # they were photographed. Validation is untouched -- it must keep measuring whole
+    # images, or the number stops describing what the model will be asked to do.
+    foreground_crop_prob: float = 0.0
+    foreground_crop_size: int = 0  # 0 means use image_size
 
     @classmethod
     def load(cls, path: Path) -> "SegConfig":
@@ -129,7 +143,8 @@ class CrackSegDataset(Dataset):
     augmentation strength rather than stopping the run.
     """
 
-    def __init__(self, root: Path, split: str, image_size: int, *, train: bool, limit: int = 0):
+    def __init__(self, root: Path, split: str, image_size: int, *, train: bool, limit: int = 0,
+                 foreground_crop_prob: float = 0.0, foreground_crop_size: int = 0):
         self.image_dir = root / split / "images"
         self.mask_dir = root / split / "masks"
         if not self.image_dir.is_dir():
@@ -142,6 +157,8 @@ class CrackSegDataset(Dataset):
             self.items = self.items[:limit]
         self.image_size = image_size
         self.train = train
+        self.foreground_crop_prob = foreground_crop_prob if train else 0.0
+        self.foreground_crop_size = foreground_crop_size or image_size
         self.transform = self._build_transform()
 
     def _build_transform(self):
@@ -180,6 +197,9 @@ class CrackSegDataset(Dataset):
         else:
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
 
+        if self.foreground_crop_prob and random.random() < self.foreground_crop_prob:
+            image, mask = _foreground_crop(image, mask, self.foreground_crop_size)
+
         if self.transform is not None:
             augmented = self.transform(image=image, mask=mask)
             image, mask = augmented["image"], augmented["mask"]
@@ -193,6 +213,30 @@ class CrackSegDataset(Dataset):
             torch.from_numpy(tensor.transpose(2, 0, 1).copy()),
             torch.from_numpy(mask.astype(np.float32)),
         )
+
+
+def _foreground_crop(image: np.ndarray, mask: np.ndarray, size: int):
+    """Cut a native-resolution window centred on a randomly chosen foreground pixel.
+
+    Returns the pair unchanged when the mask has no foreground, which is the common case
+    for background-only tiles and must not be turned into a crop of nothing.
+    """
+    ys, xs = np.nonzero(mask)
+    if ys.size == 0:
+        return image, mask
+
+    height, width = mask.shape[:2]
+    if height <= size or width <= size:
+        return image, mask
+
+    pick = random.randrange(ys.size)
+    half = size // 2
+    # Centre on the chosen pixel, then push the window back inside the image. Clamping
+    # rather than rejecting keeps panels near an edge represented; sampling only from
+    # centres that fit would quietly drop them.
+    top = int(np.clip(ys[pick] - half, 0, height - size))
+    left = int(np.clip(xs[pick] - half, 0, width - size))
+    return image[top:top + size, left:left + size], mask[top:top + size, left:left + size]
 
 
 def _resize_pair(image: np.ndarray, mask: np.ndarray, size: int):
@@ -367,7 +411,9 @@ def train(config: SegConfig, *, resume: bool = False) -> dict[str, Any]:
     data_root = REPO_ROOT / config.data_root
 
     train_set = CrackSegDataset(
-        data_root, "train", config.image_size, train=True, limit=config.max_train_samples
+        data_root, "train", config.image_size, train=True, limit=config.max_train_samples,
+        foreground_crop_prob=config.foreground_crop_prob,
+        foreground_crop_size=config.foreground_crop_size,
     )
     val_set = CrackSegDataset(data_root, "val", config.image_size, train=False)
     print(f"train={len(train_set)} val={len(val_set)} device={device}")

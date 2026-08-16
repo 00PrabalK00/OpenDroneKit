@@ -30,6 +30,13 @@ num_workers: 4
 seed: 1337
 amp_dtype: bf16
 early_stop_patience: 10
+# The masks are ~0.15% foreground on 4000x2250 frames. Without this, RandomResizedCrop
+# takes half the frame or more and resizes to 512, so most crops hold no panel and the
+# rest hold one a few pixels across -- which is why the first run reached IoU 0.189.
+# 0.8 keeps a fifth of crops whole-frame so the model still sees panels in context and
+# does not learn that a panel always sits in the middle of its input.
+foreground_crop_prob: 0.8
+foreground_crop_size: 768
 # Overhead imagery has no up: a panel array is equally valid at any orientation.
 # fliplr: 0.5   (not a SegConfig field)
 # flipud: 0.5   (not a SegConfig field)
