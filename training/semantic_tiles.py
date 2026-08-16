@@ -156,8 +156,25 @@ class SemanticTileDataset:
             raise SemanticTileError(f'Unknown semantic split: {split!r}')
         if tile_size < 16:
             raise SemanticTileError('tile_size must be at least 16.')
-        payload = json.loads(Path(corpus_manifest).read_text(encoding='utf-8'))
-        self.samples = [item for item in payload.get('samples', []) if item.get('split') == split]
+        manifest_path = Path(corpus_manifest)
+        payload = json.loads(manifest_path.read_text(encoding='utf-8'))
+        # Relative sample paths resolve against the manifest, not the working directory.
+        # A corpus built on one machine and read on another -- which is the whole point
+        # of packing one for a hosted GPU -- carries relative paths, and resolving those
+        # against CWD makes the corpus work or fail depending on where python was
+        # started from. That failure arrives as 'file not found' several minutes into a
+        # rented run.
+        root = manifest_path.parent
+        self.samples = []
+        for item in payload.get('samples', []):
+            if item.get('split') != split:
+                continue
+            item = dict(item)
+            for key in ('image', 'label'):
+                value = Path(str(item.get(key, '')))
+                if not value.is_absolute():
+                    item[key] = str((root / value).resolve())
+            self.samples.append(item)
         if not self.samples:
             raise SemanticTileError(f'Corpus has no samples in split {split!r}.')
         classes = list((payload.get('schema') or {}).get('classes') or [])
