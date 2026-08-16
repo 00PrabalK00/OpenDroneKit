@@ -1013,6 +1013,62 @@ class Api:
         return ok(**reference.to_dict())
 
     @guard
+    def build_asset_inventory(self, instances: list[dict[str, Any]],
+                              model_key: str = "",
+                              model_sha256: str = "",
+                              crs: str = "",
+                              min_confidence: float = 0.0) -> dict[str, Any]:
+        """Inventory detected assets across packs, in one vocabulary.
+
+        Every pack grew its own class set -- power knows "pole", rail knows "signal",
+        solar knows "module" -- so a survey covering a substation and the rail line
+        beside it produced two inventories with no shared terms.
+
+        The refusals are the substance. An instance with no location, no confidence or
+        no model digest is rejected rather than counted, because a count is a claim
+        somebody acts on -- a crew sent to seventeen poles, a client invoiced for a
+        module count -- and a claim whose origin cannot be checked a month later is
+        indistinguishable from a guess.
+        """
+        from core.asset_taxonomy import AssetRefused, build_asset_inventory, filter_by_confidence
+
+        try:
+            inventory = build_asset_inventory(
+                instances,
+                model={"key": model_key, "sha256": model_sha256},
+                crs=crs,
+            )
+            if float(min_confidence) > 0.0:
+                inventory = filter_by_confidence(inventory, float(min_confidence))
+        except AssetRefused as exc:
+            return fail(str(exc))
+        return ok(**inventory)
+
+    @guard
+    def asset_taxonomy(self, domain: str = "") -> dict[str, Any]:
+        """The shared asset vocabulary, so a caller can see it before detecting anything."""
+        from core.asset_taxonomy import ASSET_TYPES, AssetRefused, DOMAINS, assets_for_domain
+
+        try:
+            types = assets_for_domain(domain) if str(domain).strip() else ASSET_TYPES
+        except AssetRefused as exc:
+            return fail(str(exc))
+        return ok(
+            domains=list(DOMAINS),
+            asset_types=[
+                {
+                    "name": asset.name,
+                    "domain": asset.domain,
+                    "geometry": asset.geometry,
+                    "countable": asset.countable,
+                    "description": asset.description,
+                    "aliases": list(asset.aliases),
+                }
+                for asset in types
+            ],
+        )
+
+    @guard
     def reconstruction_capabilities(self) -> dict[str, Any]:
         """What this machine can actually reconstruct, before anyone starts a job.
 

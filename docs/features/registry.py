@@ -805,8 +805,24 @@ INDIA_FIRST = [
     F("eng.assets", "Object and asset detection engine", "vision", "India: shared engines",
       "Count and individually locate assets such as trees, modules, equipment, poles "
       "and insulators with model provenance and confidence.",
-      "in_progress", [],
-      "Defect-specific detection exists; a shared asset taxonomy and geospatial output do not."),
+      "verified", ["tests/test_asset_taxonomy.py::TestTheTaxonomyIsShared",
+                   "tests/test_asset_taxonomy.py::TestProvenanceIsMandatory",
+                   "tests/test_asset_taxonomy.py::TestLocationAndConfidence",
+                   "tests/test_asset_taxonomy.py::TestGeometryMatchesTheAssetKind",
+                   "tests/test_asset_taxonomy.py::TestCountingIsHonest",
+                   "tests/test_asset_taxonomy.py::TestThresholdingStaysVisible",
+                   "tests/test_asset_taxonomy.py::TestTheApiExposesIt"],
+      "core/asset_taxonomy.py holds one vocabulary across power, rail, solar, "
+      "vegetation, agriculture and the built environment, grounded in the class sets "
+      "the packs already use rather than invented. Output is a single GeoJSON form "
+      "carrying model key, sha256 and per-instance confidence, reachable through "
+      "Api.build_asset_inventory and Api.asset_taxonomy. "
+      "An instance with no geometry, no confidence or no model digest is REFUSED rather "
+      "than counted -- a count is something a crew is dispatched on. Continuous types "
+      "(conductor, track, road) are never counted and appear under "
+      "present_but_not_counted, so their absence from the counts does not read as their "
+      "absence from the site. Point assets cannot arrive as polygons, which is how a "
+      "report ends up quoting a footprint for a pole."),
     F("eng.change", "Survey change intelligence engine", "core", "India: shared engines",
       "Aligned T1/T2 DSMs produce a georeferenced difference raster, contiguous change "
       "polygons, exact rise/fall volumes and an interpretation-safe report.",
