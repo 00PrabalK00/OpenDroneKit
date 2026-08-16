@@ -99,6 +99,24 @@ services:
     ports:
       - "${ODK_API_PORT:-8000}:8000"
 
+  redis:
+    # The processing broker. Open source, no managed service, no licence: a queue that
+    # survives a restart is the difference between a backlog and a silent loss, because
+    # an in-process queue does not fail its jobs when the process dies -- they simply
+    # cease to exist and nothing reports their absence.
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly so a restart of the broker itself does not drop the queue it exists to
+    # protect. An unpersisted Redis reintroduces exactly the failure it was added for.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   worker:
     build:
       context: ../..
@@ -109,8 +127,11 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       ODK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-odk}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-opendronekit}
+      ODK_BROKER_URL: redis://redis:6379/0
       ODK_STORAGE_BACKEND: ${ODK_STORAGE_BACKEND:-s3}
       ODK_STORAGE_PATH: /data/storage
       ODK_S3_ENDPOINT: http://minio:9000
@@ -127,6 +148,7 @@ services:
       start_period: 30s
 
 volumes:
+  redis_data:
   postgis_data:
   minio_data:
   api_storage:
