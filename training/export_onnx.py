@@ -214,10 +214,121 @@ def export_yolo(run_dir: Path, *, opset: int = 17, image_size: int | None = None
     return report
 
 
+def export_classification(
+    run_dir: Path, *, opset: int = 17, image_size: int | None = None
+) -> dict[str, Any]:
+    """Export a train_cls checkpoint with ImageNet normalisation folded into the graph.
+
+    The normalisation is inside the wrapper on purpose. train_cls applies mean/std from
+    torchvision before the network sees a pixel, and an exported graph that omits it
+    takes raw 0..1 images and returns confident nonsense -- no error, no warning, just
+    wrong classes. Baking it in means the caller passes RGB in 0..1 and cannot get this
+    wrong, and the parity check below compares against the same wrapper, so a mismatch
+    between the training transform and the exported one shows up as a failed export
+    rather than as a quietly bad model.
+
+    Softmax is folded in for the same reason: raw logits look like scores and are not.
+    """
+    import torch
+
+    from training.train_cls import ClsConfig, build_model
+
+    checkpoint_path = run_dir / "best.pt"
+    if not checkpoint_path.exists():
+        raise SystemExit(f"No checkpoint at {checkpoint_path}. Train first.")
+
+    state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config = ClsConfig(**state["config"])
+    size = int(image_size or config.image_size)
+
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+    classes = summary.get("classes") or state.get("classes")
+    if not classes:
+        raise SystemExit(
+            f"No class list in {summary_path} or the checkpoint. Refusing to export a "
+            "classifier whose output columns cannot be named: an ONNX file with "
+            "anonymous logits is one relabelling away from silently wrong predictions."
+        )
+
+    model = build_model(config.model_id, len(classes), pretrained=False)
+    model.load_state_dict(state["model"])
+    model.eval()
+
+    class ClsWrapper(torch.nn.Module):
+        def __init__(self, inner: torch.nn.Module) -> None:
+            super().__init__()
+            self.inner = inner
+            # Registered as buffers so they travel into the ONNX graph as constants.
+            self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+            self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+        def forward(self, images: torch.Tensor) -> torch.Tensor:
+            return torch.softmax(self.inner((images - self.mean) / self.std), dim=1)
+
+    wrapper = ClsWrapper(model).eval()
+    # 0..1 rather than randn: this graph's input contract is a normalised RGB image, and
+    # parity should be measured on inputs of the shape it will actually receive.
+    example = torch.rand(1, 3, size, size)
+    output_path = run_dir / f"{config.name}.onnx"
+
+    torch.onnx.export(
+        wrapper,
+        (example,),
+        str(output_path),
+        input_names=["images"],
+        output_names=["probabilities"],
+        opset_version=opset,
+        dynamo=False,
+        dynamic_axes={"images": {0: "batch"}, "probabilities": {0: "batch"}},
+    )
+
+    with torch.no_grad():
+        torch_output = wrapper(example).numpy()
+    session = _onnx_session(output_path)
+    onnx_output = session.run(None, {"images": example.numpy()})[0]
+
+    violation = parity_violation(torch_output, onnx_output)
+    report = {
+        "name": config.name,
+        "kind": "onnx_classification",
+        "onnx_path": str(output_path),
+        "input_size": size,
+        "opset": opset,
+        "classes": list(classes),
+        "max_abs_diff": float(np.abs(torch_output - onnx_output).max()),
+        "parity_violation": violation,
+        "parity_ok": violation <= 1.0,
+        "output_shape": list(onnx_output.shape),
+        "preprocessing": "images are RGB in 0..1; ImageNet mean/std and softmax are in the graph",
+        "train_metrics": summary.get("per_class", {}),
+    }
+
+    if report["output_shape"][-1] != len(classes):
+        report["parity_ok"] = False
+        report["class_count_mismatch"] = (
+            f"graph emits {report['output_shape'][-1]} columns for {len(classes)} classes"
+        )
+
+    try:
+        import cv2
+
+        net = cv2.dnn.readNetFromONNX(str(output_path))
+        net.setInput(example.numpy())
+        cv_output = net.forward()
+        report["opencv_dnn_loadable"] = True
+        report["opencv_max_abs_diff"] = float(np.abs(torch_output - cv_output).max())
+    except Exception as exc:
+        report["opencv_dnn_loadable"] = False
+        report["opencv_error"] = str(exc)
+
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m training.export_onnx")
     parser.add_argument("--run", required=True, type=Path, help="Run directory to export.")
-    parser.add_argument("--kind", choices=["seg", "yolo"], default="seg")
+    parser.add_argument("--kind", choices=["seg", "yolo", "cls"], default="seg")
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument("--image-size", type=int)
     args = parser.parse_args(argv)
@@ -225,6 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.run if args.run.is_absolute() else REPO_ROOT / args.run
     if args.kind == "seg":
         report = export_segmentation(run_dir, opset=args.opset, image_size=args.image_size)
+    elif args.kind == "cls":
+        report = export_classification(run_dir, opset=args.opset, image_size=args.image_size)
     else:
         report = export_yolo(run_dir, opset=args.opset, image_size=args.image_size)
 

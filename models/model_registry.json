@@ -178,6 +178,17 @@
       "description": "SegFormer-B2 @512 on UAV-RSOD, run rail_corridor_segformer_b2, 60 epochs. Validation IoU 0.681, Dice 0.810, precision 0.752, recall 0.878. ONNX parity max_abs_diff 2.4e-07 and cv2.dnn loads it. CORPUS SIZE IS THE CAVEAT: about 315 distinct Indian UAV images, emitted as 315 samples after one mask aspect was selected. That is small enough that 0.681 is a first indication rather than a settled figure, and it has not been tested outside the flights it was trained on. SCOPE: segments the rail CORRIDOR surface only. The archive also masks Rail Lines as a separate binary aspect over the same imagery; that was deliberately excluded rather than merged, because the source states no ordering between the two and training on both would have given the model two contradictory definitions of foreground for the same pixel. A rails model is a separate run, not a class here.",
       "sha256": "1885757000e89f396c16ead68ccc4c8ce14a46f593e42abdabcbdeba6312ada1",
       "status": "installed"
+    },
+    "crack_presence_classifier": {
+      "kind": "onnx_classification",
+      "path": "structural/crack_presence_classifier.onnx",
+      "labels": [
+        "crack"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "input_size": 224,
+      "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (IoU 0.637). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface."
     }
   }
 }

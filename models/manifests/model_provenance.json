@@ -148,6 +148,35 @@
         }
       },
       "registered_utc": "2026-08-15T00:01:52Z"
+    },
+    {
+      "registry_key": "crack_presence_classifier",
+      "path": "structural/crack_presence_classifier.onnx",
+      "sha256": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "bytes": 44701863,
+      "method": "trained_in_repo",
+      "source_run": "training\\runs\\kaggle_v5\\odk-train-crack-cls",
+      "architecture": "crack_cls",
+      "input_size": 224,
+      "opset": 17,
+      "onnx_parity_max_abs_diff": 1.1920928955078125e-07,
+      "opencv_dnn_loadable": true,
+      "validation_metrics": {
+        "cracked": {
+          "recall": 0.9308,
+          "precision": 0.9544,
+          "val_support": 4322,
+          "train_instances": 21242
+        },
+        "uncracked": {
+          "recall": 0.9809,
+          "precision": 0.9706,
+          "val_support": 10077,
+          "train_instances": 50793
+        }
+      },
+      "training_data": {},
+      "registered_utc": "2026-08-16T13:14:28Z"
     }
   ],
   "licensing_policy": [

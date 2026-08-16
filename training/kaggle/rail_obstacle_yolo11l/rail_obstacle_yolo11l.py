@@ -223,7 +223,45 @@ def ensure_ultralytics() -> None:
         raise SystemExit('ultralytics installed but the torch build no longer matches the GPU.')
 
 
+class _Tee:
+    """Mirror stdout into /kaggle/working/run.log, flushing every line.
+
+    This exists because four detector kernels failed in a row and left NOTHING to read:
+    Kaggle's own captured log came back zero bytes, and everything the kernel writes goes
+    to /kaggle/temp, which is not packaged as output. A run that dies is exactly the run
+    whose log matters, and it was the only one that produced none.
+
+    The file lives under /kaggle/working so it is packaged even when the run fails, and it
+    is flushed per line so a hard kill -- an OOM, a timeout -- still leaves everything
+    printed up to the moment of death.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.stream = sys.__stdout__
+        self.handle = open(path, "a", encoding="utf-8", buffering=1)
+
+    def write(self, text: str) -> int:
+        self.stream.write(text)
+        self.handle.write(text)
+        self.handle.flush()
+        try:
+            os.fsync(self.handle.fileno())
+        except OSError:
+            pass
+        return len(text)
+
+    def flush(self) -> None:
+        self.stream.flush()
+        self.handle.flush()
+
+
 def main() -> int:
+    log_path = Path("/kaggle/working") / "run.log"
+    tee = _Tee(log_path)
+    sys.stdout = tee
+    sys.stderr = tee
+    print(f"tee: mirroring this run to {log_path}", flush=True)
+
     missing = report_environment()
     if missing:
         install_compatible_torch(missing)
@@ -239,13 +277,61 @@ def main() -> int:
         "--output-dir", str(OUT),
     ]
     command += gpu_memory_overrides()
+    report_resources("before training")
     print("running:", " ".join(command), flush=True)
-    result = subprocess.run(command, cwd=REPO)
-    if result.returncode != 0:
-        raise SystemExit(f"Training failed with exit code {result.returncode}.")
+
+    # Piped rather than inherited so the child's output goes through the tee above. With
+    # inherited handles it writes straight to the real descriptor and never reaches
+    # run.log -- which would leave the failing runs just as silent as before.
+    process = subprocess.Popen(
+        command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1, errors="replace",
+    )
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line.rstrip("\n"), flush=True)
+    returncode = process.wait()
+
+    report_resources("after training")
+    if returncode != 0:
+        raise SystemExit(f"Training failed with exit code {returncode}.")
 
     collect_outputs()
     return 0
+
+
+def report_resources(when: str) -> None:
+    """Print free disk and RAM, so a silent kill can be attributed afterwards.
+
+    A kernel killed for exhausting memory or disk leaves no message of its own. Printing
+    the headroom on either side of training turns "it died" into a number that says which
+    one ran out, or rules both out.
+    """
+    usage = shutil.disk_usage("/kaggle/temp")
+    line = (
+        f"resources {when}: disk free {usage.free / 1e9:.1f} GB "
+        f"of {usage.total / 1e9:.1f} GB"
+    )
+    try:
+        meminfo = {}
+        for entry in Path("/proc/meminfo").read_text().splitlines():
+            key, _, value = entry.partition(":")
+            meminfo[key] = float(value.strip().split()[0]) / 1e6  # kB -> GB
+        line += (
+            f"; RAM available {meminfo.get('MemAvailable', 0):.1f} GB "
+            f"of {meminfo.get('MemTotal', 0):.1f} GB"
+        )
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            line += f"; VRAM free {free / 1e9:.1f} GB of {total / 1e9:.1f} GB"
+    except Exception:
+        pass
+    print(line, flush=True)
 
 
 def collect_outputs() -> None:
