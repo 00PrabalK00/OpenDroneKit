@@ -85,22 +85,34 @@ def spatial_backend() -> dict[str, Any]:
             "backend": "sqlite",
             "postgis": False,
             "geometry_storage": "geojson_text",
+            "native_geometry_columns": False,
             "note": (
                 "SQLite fallback: geometry is stored as GeoJSON text and spatial queries "
-                "are performed in Python. Set ODK_DATABASE_URL to a PostGIS instance for "
-                "native spatial indexing."
+                "are performed in Python. Pointing ODK_DATABASE_URL at PostGIS gives the "
+                "extension and its functions, but not native geometry columns -- the "
+                "schema stores GeoJSON text on either backend."
             ),
         }
 
     try:
         with get_engine().connect() as connection:
             version = connection.execute(text("SELECT PostGIS_Version()")).scalar()
+        # geometry_storage describes THIS SCHEMA, not what the server could do. Every
+        # geometry column in services/api/models is Text holding GeoJSON, so reporting
+        # "native_geometry" here because the extension answered was a claim about the
+        # wrong thing: an operator reading it would believe their spatial queries were
+        # indexed by PostGIS when they are still filtered in Python.
         return {
             "backend": "postgresql",
             "postgis": True,
             "postgis_version": str(version),
-            "geometry_storage": "native_geometry",
-            "note": "",
+            "geometry_storage": "geojson_text",
+            "native_geometry_columns": False,
+            "note": (
+                "PostGIS is available, but geometry is still stored as GeoJSON text and "
+                "spatial filtering happens in Python. Native geometry columns and "
+                "spatial indexes are not yet part of the schema."
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         return {

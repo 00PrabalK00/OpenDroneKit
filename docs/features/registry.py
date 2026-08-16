@@ -739,9 +739,16 @@ VISION = [
       "implemented", ["tests/test_change_detection.py::TestDefectComparison"]),
     F("ai.progress_tracking", "Construction progress tracking", "vision", "AI",
       "Baseline versus current model with progress percentage and change regions.",
-      "in_progress", ["tests/test_change_detection.py::TestSurfaceComparison"],
-      "Volume added/removed and changed area between two surveys are computed; "
-      "progress percentage against a design model is not."),
+      "verified", ["tests/test_change_detection.py::TestSurfaceComparison",
+                   "tests/test_india_construction_pack.py::"
+                   "test_approved_design_progress_measures_observed_surface_not_contract_completion"],
+      "Two halves, both measured: volume added/removed and changed area between surveys, "
+      "and observed coverage inside each approved design element. The note that design "
+      "progress was not computed went stale when core/india_construction.py landed. "
+      "What is deliberately NOT produced is a contractual percentage complete -- the "
+      "summary reports that as unavailable, because schedule, quantities, hidden work "
+      "and sign-off are not visible from the air and a number that implied otherwise "
+      "would be read as one."),
     F("ai.model_version_recorded", "Every AI result stores model version and confidence",
       "vision", "AI",
       "No detection is stored without its model identity and confidence, where identity "
@@ -1239,9 +1246,16 @@ PLATFORM = [
     F("inf.postgis", "PostgreSQL and PostGIS", "infra", "Deployment",
       "Spatial data in native PostGIS types, with the API reporting which backend is "
       "actually live so a development database is never mistaken for a deployment.",
-      "in_progress", ["tests/test_api.py::TestHealth"],
-      "Schema and CRS columns are in place and the backend is reported honestly; native "
-      "geometry columns and spatial indexes still to come."),
+      "in_progress", ["tests/test_api.py::TestHealth",
+                      "tests/test_spatial_backend_honesty.py"],
+      "Schema and CRS columns are in place. STAYS IN PROGRESS: every geometry column is "
+      "Text holding GeoJSON on both backends, so spatial filtering happens in Python and "
+      "there are no spatial indexes. The backend report used to call this "
+      "native_geometry whenever the PostGIS extension answered -- a claim about the "
+      "server's potential rather than this schema -- and an operator could have sized a "
+      "workload around indexed queries that do not exist. Now reported accurately and "
+      "pinned by tests. Native geometry columns need a migration that cannot be verified "
+      "without a running PostGIS instance."),
     F("inf.storage", "Storage abstraction", "infra", "Deployment",
       "Local filesystem and S3-compatible backends behind one interface, with keys "
       "that cannot escape the storage root and an unknown backend refused rather than "
