@@ -685,10 +685,27 @@ VISION = [
       "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124."),
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
       "Trained detector for corrosion and rust with published validation metrics.",
-      "in_progress", [], "Data prepared; not yet trained."),
+      "in_progress", [],
+      "TRAINED AND REJECTED, not untried: YOLO11l on 498 images reached mAP50 0.254, "
+      "precision 0.343, recall 0.257. At that recall three corrosion sites in four are "
+      "missed, which is not a detector, and registering it would have put a number in "
+      "front of an inspector that the model cannot support. The corpus is the limit -- "
+      "498 training images of a defect whose appearance varies enormously with substrate, "
+      "lighting and stage. Needs a larger and more varied corpus, not more epochs."),
     F("ai.solar", "Solar defect detection", "vision", "AI",
       "Trained detector for panel defects with published validation metrics.",
-      "in_progress", [], "Data prepared; not yet trained."),
+      "verified", ["tests/test_trained_defect_models.py::TestTheWeightsAreReallyThere",
+                   "tests/test_trained_defect_models.py::TestTheNumbersArePublished",
+                   "tests/test_trained_defect_models.py::TestLabelsMatchTheModel"],
+      "Two models, answering different questions. solar_cell_defect_detector reads "
+      "electroluminescence imagery of individual cells at mAP50 0.884; "
+      "solar_thermal_anomaly_classifier reads aerial infrared of whole modules across 12 "
+      "classes at balanced accuracy 0.724, and is the drone-capturable one. Soiling is "
+      "its weakest class at 0.367 recall and the entry says so. "
+      "A third attempt, an RGB detector over panel condition (Clear/Dusty/Damage/Snow), "
+      "reached only mAP50 0.318 with Dusty its WORST class at 0.073 -- the one class "
+      "Indian sites most need -- and was deliberately NOT registered. Soiling looks like "
+      "a radiometric comparison problem rather than a detection one."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "
       "with the survey's vertical accuracy carried through. Refuses without an accuracy "

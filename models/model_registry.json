@@ -120,7 +120,7 @@
       "score_threshold": 0.85,
       "iou_threshold": 0.45,
       "input_size": 1024,
-      "description": "SegFormer-B5 @1024, run crack_segformer_b5. Decision threshold 0.85 chosen by sweep on the validation split (val IoU 0.5962 against 0.5582 at the previous 0.25).",
+      "description": "SegFormer-B5 @1024, run crack_segformer_b5, 40 epochs. Best validation IoU 0.6063 during training; the shipped decision threshold of 0.85 was chosen by sweep on the validation split, scoring 0.5962 against 0.5582 at the previous 0.25. The higher threshold trades recall for precision on purpose: at 0.25 the model painted crack over enough sound surface to make the masks hard to trust. READ THE THRESHOLD BEFORE READING A MASK. At 0.85 thin and faint cracks are missed, so an empty mask is not evidence of a sound surface. SCOPE: this locates crack extent for measurement; it is NOT a triage model and is the weaker of the two crack models. crack_presence_classifier answers 'is there a crack here' far more reliably (balanced accuracy 0.958) and should gate which tiles reach this one. Crack WIDTH is not measured by this model -- width at survey GSD is usually below one pixel, and a width read off these masks would be a statement about the resolution rather than the crack. Not measured on Indian sites.",
       "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
       "status": "installed"
     },
