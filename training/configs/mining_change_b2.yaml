@@ -1,0 +1,48 @@
+# Mine and quarry scene change: MineNetCD, 100 co-registered site pairs.
+#
+# This config exists because the mining pack was never blocked on data. MineNetCD has
+# been on disk and usable throughout; what was missing is that every other trainer in
+# this repository takes one image per sample and change detection takes two.
+#
+# Read the size before the metric: 100 sites, split by site into roughly 70 train, 15
+# validation and 15 test. That is a small number of scenes, and a scene is not an
+# independent sample in the way an image is -- the two frames of a site are the same
+# ground at two dates. Whatever IoU comes out is a first indication over about fifteen
+# held-out mines, not a settled figure, and the model manifest must say so.
+#
+# Splitting is by SITE, never by tile. Crops from one mine overlap heavily, so a
+# tile-level split would put near-duplicates on both sides of the wall and report
+# memorisation as generalisation.
+name: mining_change_b2
+data_root: training/data/minenetcd
+model_id: nvidia/mit-b2
+# Source pairs are 4352x3328. Training samples random 512 windows at native resolution;
+# validation resizes the whole scene, so the metric describes the scene rather than a
+# lucky crop of it.
+image_size: 512
+batch_size: 4
+grad_accum: 4
+epochs: 60
+lr: 0.00006
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 2
+seed: 1337
+amp_dtype: bf16
+dice_weight: 0.5
+# MineNetCD is about 11 per cent changed pixels -- far less skewed than the crack
+# corpora, which is why this is 2.0 rather than train_seg's 4.0. Still enough that
+# pixel accuracy is useless: predicting no change anywhere scores about 89 per cent.
+pos_weight: 2.0
+early_stop_patience: 10
+val_fraction: 0.15
+test_fraction: 0.15
+split_salt: opendronekit-change-v1
+output_dir: training/runs
+# release gates (checked by hand, not by the loader):
+#  - Report IoU, precision and recall together, never pixel accuracy alone.
+#  - Check predicted_change_fraction against the ~0.11 label rate; a model predicting
+#    near zero has collapsed to "no change" and its accuracy is meaningless.
+#  - State the 100-site corpus size and the ~15-site test split in the model manifest.
+#  - This is scene change, not volume. It cannot measure how much material moved, and
+#    must not be wired into anything that reports stockpile quantities.
