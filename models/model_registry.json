@@ -143,6 +143,28 @@
       "description": "YOLO11l @1024 on PVEL-AD electroluminescence cells, run pvel_ad_yolo11l, 60 epochs. Validation mAP50 0.8835, mAP50-95 0.5434, P 0.812, R 0.856. Per-class mAP50-95: short_circuit 0.918, black_core 0.847, finger 0.540, horizontal_dislocation 0.504, thick_line 0.485, star_crack 0.393, vertical_dislocation 0.335, crack 0.325. SCOPE: this is an EL cell-level defect detector for module manufacturing and lab inspection imagery. It is NOT an aerial or thermal model and must not be applied to drone photographs of installed panels. Four of the twelve classes PVEL-AD declares (printing_error, corner, fragment, scratch) had under 35 boxes each and were dropped rather than trained, so this model answers eight questions and cannot see those four defect types at all. Label order is the model checkpoint order, which predates the sorted-index fix in the corpus builder; any re-validation must use these labels rather than a freshly prepared data.yaml.",
       "sha256": "a57676a7141baba3605fa81dd3a817405ee28522aff9edbc3e74e12755c6783b",
       "status": "installed"
+    },
+    "solar_thermal_anomaly_classifier": {
+      "kind": "onnx_classification",
+      "path": "solar/solar_thermal_anomaly_cls.onnx",
+      "labels": [
+        "Cell",
+        "Cell-Multi",
+        "Cracking",
+        "Diode",
+        "Diode-Multi",
+        "Hot-Spot",
+        "Hot-Spot-Multi",
+        "No-Anomaly",
+        "Offline-Module",
+        "Shadowing",
+        "Soiling",
+        "Vegetation"
+      ],
+      "input_size": 96,
+      "description": "ResNet18 @96 on Raptor Maps InfraredSolarModules, run solar_thermal_cls, 26 epochs (early-stopped). Validation balanced accuracy 0.724, plain accuracy 0.815. Every one of the 12 classes is recalled; none is ignored. READ PER-CLASS RECALL, NOT THE MEAN. The corpus is 10,000 No-Anomaly against 249 Hot-Spot and 204 Soiling, so a single averaged figure hides exactly the rare classes the model exists to find. Recall by class: Diode 0.969, Diode-Multi 0.957, No-Anomaly 0.926, Shadowing 0.809, Vegetation 0.722, Hot-Spot-Multi 0.719, Offline-Module 0.707, Hot-Spot 0.650, Cracking 0.646, Cell 0.635, Cell-Multi 0.537, SOILING 0.367. SOILING IS THE WEAK CLASS at 0.367 recall and 0.344 precision on 30 validation samples: roughly two in three soiled modules are missed, and a third of soiling calls are wrong. Do not report soiling findings from this model without saying so. SCOPE: the source crops are 24x40 px upsampled to 96, so this is a PER-MODULE CLASSIFIER over polygons something else must already have located. It is not a localiser and cannot find modules in a survey image. Balanced accuracy selected the checkpoint; plain accuracy would have chosen a model that answers No-Anomaly to everything.",
+      "sha256": "6933a09abff99bf8d4e2619a50a64498432d2877b9abd55ccab7a87ac357fd42",
+      "status": "installed"
     }
   }
 }
