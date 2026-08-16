@@ -179,8 +179,20 @@ def build_dinov2_vitb14_upernet(
             'no way to fetch it -- point --dinov2-source at a local clone with the '
             'weights beside it, or use --source github to download them.'
         )
+    # source and dinov2_source have to agree, and the config supplies a LOCAL PATH
+    # because offline training is the default. Handing that path to torch.hub with
+    # source='github' makes it try to read 'training/sources/dinov2' as owner/repo and
+    # die on `too many values to unpack` -- an error that says nothing about the actual
+    # mistake. Reconciled here rather than at every call site.
+    reference = str(dinov2_source)
+    if source == 'github' and reference.count('/') != 1:
+        print(
+            f'source=github but dinov2_source is {reference!r}, which is a path rather '
+            "than owner/repo; using 'facebookresearch/dinov2'.", flush=True
+        )
+        reference = 'facebookresearch/dinov2'
     encoder = torch.hub.load(
-        dinov2_source,
+        reference,
         'dinov2_vitb14',
         source=source,
         pretrained=fetch_weights,
