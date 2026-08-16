@@ -167,10 +167,43 @@ def ensure_repo() -> None:
     print("repo at commit", head)
 
 
+def ensure_ultralytics() -> None:
+    """Install ultralytics if the trainer will need it.
+
+    Kaggle preinstalls torch and torchvision but NOT ultralytics, so the detection
+    kernels failed with "train_det needs ultralytics" after the torch self-heal had
+    already succeeded -- the fix worked and the run died on the next line.
+
+    --no-deps matters: ultralytics depends on torch and pip would happily pull the
+    latest wheel back in, undoing the sm_60-compatible build installed moments earlier
+    and returning the kernel to the exact failure it just escaped.
+    """
+    try:
+        import ultralytics  # noqa: F401
+        return
+    except ImportError:
+        pass
+    print('installing ultralytics (--no-deps to protect the torch build)', flush=True)
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps',
+                    'ultralytics', 'ultralytics-thop'], check=True)
+    # Runtime imports ultralytics needs that Kaggle may not carry.
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-deps',
+                    'py-cpuinfo'], check=False)
+    check = subprocess.run([sys.executable, '-c',
+                            'import ultralytics,torch;a=torch.cuda.get_device_capability(0);'
+                            'print(ultralytics.__version__, f"sm_{a[0]}{a[1]}" in torch.cuda.get_arch_list())'],
+                           capture_output=True, text=True)
+    print('ultralytics check:', check.stdout.strip() or check.stderr.strip()[:200])
+    if 'True' not in check.stdout:
+        raise SystemExit('ultralytics installed but the torch build no longer matches the GPU.')
+
+
 def main() -> int:
     missing = report_environment()
     if missing:
         install_compatible_torch(missing)
+    if 'training.train_det' == 'training.train_det':
+        ensure_ultralytics()
     ensure_repo()
     corpus = resolve_corpus()
 

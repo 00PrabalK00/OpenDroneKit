@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare00/odk-train-solar-yolo11l",
+  "title": "ODK train solar_yolo11l",
+  "code_file": "solar_yolo11l.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare00/odk-solar-det-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
