@@ -631,9 +631,19 @@ PROCESSING = [
       "compute the PPK solution or rewrite a coordinate, and says so in every report."),
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Job queue with priorities, retries, cancellation, progress and resource limits.",
-      "in_progress", ["tests/test_jobs.py", "tests/test_processing.py"],
-      "Submit/poll/cancel over the API with cooperative cancellation and honest failure "
-      "reporting. Still single-process: no multi-worker queue, priorities or retries."),
+      "in_progress", ["tests/test_jobs.py", "tests/test_processing.py",
+                      "tests/test_job_queue.py"],
+      "Submit/poll/cancel with cooperative cancellation and honest failure reporting, "
+      "now over a bounded worker pool (core/job_queue.py) with strict priority, "
+      "FIFO within a level, and opt-in retries that keep every attempt's own error -- "
+      "three different failures is a different problem from the same one three times. "
+      "A job out of attempts reports failed, never queued, so work that will never run "
+      "again does not read as work still to come. Wait time is reported because strict "
+      "priority can starve and the only other symptom is a job that never starts. "
+      "STAYS IN PROGRESS, and the name is why: this is bounded concurrency in ONE "
+      "process, not distribution. There is no cross-machine scheduling and no durable "
+      "queue -- a restart loses everything queued. Calling that distributed would "
+      "promise a property an operator would plan capacity around."),
     F("pr.large_datasets", "Large dataset processing", "workers", "Processing",
       "Thousands of images via chunking and memory-aware scheduling, with the job sized "
       "against the machine before it starts.",

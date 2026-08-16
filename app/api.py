@@ -1045,6 +1045,23 @@ class Api:
         return ok(**inventory)
 
     @guard
+    def processing_queue_report(self) -> dict[str, Any]:
+        """What the processing queue is doing, including how long work has waited.
+
+        The wait time is reported because priority here is strict: a steady stream of
+        high-priority jobs will hold a low-priority one indefinitely, and the only
+        symptom is a job that never starts. A number makes that visible instead of
+        leaving it to be inferred.
+        """
+        queue = getattr(self._session, "processing_queue", None)
+        if queue is None:
+            return fail(
+                "No processing queue is attached to this session. The desktop shell runs "
+                "jobs directly; the queue is for batch and service deployments."
+            )
+        return ok(**queue.report())
+
+    @guard
     def asset_taxonomy(self, domain: str = "") -> dict[str, Any]:
         """The shared asset vocabulary, so a caller can see it before detecting anything."""
         from core.asset_taxonomy import ASSET_TYPES, AssetRefused, DOMAINS, assets_for_domain
