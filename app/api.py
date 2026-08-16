@@ -902,6 +902,96 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    def find_ponding(self, surface_path: str,
+                     vertical_accuracy_m: float | None = None) -> dict[str, Any]:
+        """Where water can collect on a surface, from the DSM.
+
+        ``vertical_accuracy_m`` has no default on purpose. Without it there is no way to
+        separate a real basin from reconstruction noise, and a list of depressions with
+        no error bound is exactly the confident-but-uncheckable output this refuses to
+        produce. The caller must state what the survey was capable of.
+
+        Reports where water CAN collect, not whether water is there now. A dry
+        depression and a flooded one are identical to this.
+        """
+        from core.dsm_analysis import NotGeoreferenced, load_surface
+        from core.ponding import PondingRefused, find_ponding as run_ponding
+        from core.slope import NotProjected
+
+        try:
+            surface = load_surface(surface_path)
+            report = run_ponding(surface, vertical_accuracy_m=vertical_accuracy_m)
+        except (NotGeoreferenced, NotProjected, PondingRefused) as exc:
+            return fail(str(exc))
+        except (FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        return ok(**report.to_dict())
+
+    @guard
+    def compare_surveys(self, earlier_path: str, later_path: str,
+                        earlier_accuracy_m: float | None = None,
+                        later_accuracy_m: float | None = None,
+                        registration_residual_m: float | None = None) -> dict[str, Any]:
+        """Vertical movement between two surveys of the same ground.
+
+        All three uncertainties are required. Two surveys of unchanged ground never
+        difference to zero, so without them this cannot tell movement from measurement
+        error -- and a subsidence figure nobody can check is worse than none.
+        """
+        from core.deformation import DeformationRefused, compare_surfaces
+        from core.dsm_analysis import NotGeoreferenced, load_surface
+        from core.slope import NotProjected
+
+        try:
+            report = compare_surfaces(
+                load_surface(earlier_path), load_surface(later_path),
+                earlier_accuracy_m=earlier_accuracy_m,
+                later_accuracy_m=later_accuracy_m,
+                registration_residual_m=registration_residual_m,
+            )
+        except (NotGeoreferenced, NotProjected, DeformationRefused) as exc:
+            return fail(str(exc))
+        except (FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        return ok(**report.to_dict())
+
+    @guard
+    def plan_irregular_facade(self, polygon_xy: list[list[float]],
+                              standoff_m: float = 10.0) -> dict[str, Any]:
+        """Facade passes around an L-shaped or otherwise concave footprint.
+
+        Reports reflex corners rather than smoothing them, and drops any pass that would
+        fall inside the building -- which is what a naive offset ring does at a concave
+        corner, silently, until the aircraft reaches the wall.
+        """
+        from mission.footprints import (
+            FootprintRefused, analyse_footprint, facade_segments,
+        )
+
+        try:
+            analysis = analyse_footprint(polygon_xy)
+            segments = facade_segments(polygon_xy, standoff_m=float(standoff_m))
+        except FootprintRefused as exc:
+            return fail(str(exc))
+        return ok(
+            footprint=analysis.to_dict(),
+            segments=[s.to_dict() for s in segments],
+            segment_count=len(segments),
+        )
+
+    @guard
+    def demo_workflow(self, name: str = "Demo inspection") -> dict[str, Any]:
+        """A complete workflow with no hardware, marked synthetic throughout.
+
+        Every artefact carries ``synthetic: True`` recursively, so a single finding
+        lifted out of this still declares itself. Demo output exists to show what the
+        software does, never to be reported as a survey result.
+        """
+        from core.demo_mode import demo_project
+
+        return ok(**demo_project(name=name))
+
+    @guard
     def measure_slope(self, surface_path: str,
                       polygon_xy: list[list[float]] | None = None) -> dict[str, Any]:
         """Gradient over a DSM or DTM: roof pitch, pavement fall, ramp steepness.

@@ -120,8 +120,14 @@ MISSION_PLANNING = [
       "the camera always facing the structure.",
       "implemented", ["tests/test_mission_types.py::TestClosedLoop"]),
     F("mp.type.l_shaped", "L-shaped and irregular buildings", "core", "Mission types",
-      "Facade planning maintains coverage on non-rectangular footprints.",
-      "not_started", []),
+      "Facade planning maintains coverage on non-rectangular footprints. Reflex corners "
+      "are reported rather than smoothed, and any pass falling inside the building is "
+      "dropped.",
+      "verified", ["tests/test_footprints.py",
+                   "tests/test_api_measurements.py::TestIrregularFacadeCapability"],
+      "A naive offset ring folds back THROUGH the structure at a concave corner, "
+      "silently: the mission uploads and the aircraft flies it. Passes are built per "
+      "wall and checked against the footprint by ray casting."),
     F("mp.type.linear_mapping", "Linear mapping", "core", "Mission types",
       "Corridor following a polyline with configurable width and parallel passes, "
       "compiling to the corridor primitive rather than gridding the bounding area.",
@@ -632,11 +638,24 @@ VISION = [
       "Trained detector for panel defects with published validation metrics.",
       "in_progress", [], "Data prepared; not yet trained."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
-      "Trained detector for standing water on roofs.",
-      "not_started", []),
+      "Closed depressions measured from the DSM, reported as area, depth and volume "
+      "with the survey's vertical accuracy carried through. Refuses without an accuracy "
+      "estimate and reports nothing shallower than twice it.",
+      "verified", ["tests/test_ponding.py",
+                   "tests/test_api_measurements.py::TestPondingCapability"],
+      "Deliberately not a trained detector. A model shown a photograph would infer "
+      "ponding from colour and specularity and answer confidently on wet-but-not-ponded "
+      "membrane, shadow and glare. This measures where water CAN collect; whether water "
+      "is present now is a separate claim and is never merged into it."),
     F("ai.deformation", "Surface deformation detection", "vision", "AI",
-      "Trained detector for visible deformation.",
-      "not_started", []),
+      "Vertical displacement between two surveys of the same ground, gated on a "
+      "detection floor built from both surveys' vertical accuracies and the "
+      "co-registration residual.",
+      "verified", ["tests/test_deformation.py",
+                   "tests/test_api_measurements.py::TestDeformationCapability"],
+      "Deliberately not a trained detector: a model shown one survey has nothing to "
+      "compare against. Needs two flights and cannot say anything from one. Absence of "
+      "a finding means no movement was RESOLVABLE, not that none occurred."),
     F("ai.custom_training", "Custom defect training", "vision", "AI",
       "Users label, split, train, review metrics and deploy their own model.",
       "in_progress", [], "Trainers exist; no labelling UI or user-facing dataset builder."),
@@ -1187,8 +1206,13 @@ PLATFORM = [
       "Installation, architecture, user, pilot, plugin, API and deployment guides.",
       "in_progress", [], "README and training/cloud docs only."),
     F("demo.mode", "Demo mode", "hub", "Docs",
-      "Full workflow explorable with no hardware.",
-      "not_started", []),
+      "Full workflow explorable with no hardware, marked synthetic throughout.",
+      "verified", ["tests/test_demo_mode.py",
+                   "tests/test_api_measurements.py::TestDemoCapability"],
+      "Every artefact carries synthetic: True recursively, so a single finding lifted "
+      "out still declares itself. Sites are at Null Island and timestamps at the epoch, "
+      "so a reader who misses the flag still cannot mistake it for a survey. "
+      "refuse_if_demo() lets any publish or register path reject it."),
 ]
 
 ALL_FEATURES: list[Feature] = [
