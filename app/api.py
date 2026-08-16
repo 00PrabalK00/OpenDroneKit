@@ -1062,6 +1062,33 @@ class Api:
         return ok(**queue.report())
 
     @guard
+    def build_training_corpus(self, labelled: list[dict[str, Any]],
+                              salt: str = "custom-corpus-v1") -> dict[str, Any]:
+        """Turn a user's labelled images into splits, or refuse and say what is missing.
+
+        Someone labelling their own defects is doing the most valuable thing here and
+        the most fragile. The failure modes are silent: a corpus builds, trains and
+        reports without anyone noticing that a class had four examples or that the same
+        photograph sat in both training and validation. None of those look like errors
+        -- they look like a model that did unusually well.
+        """
+        from core.custom_training import CorpusRefused, LabelledImage, build_custom_corpus
+
+        try:
+            samples = [
+                LabelledImage(path=Path(str(entry.get("path", ""))),
+                              label=str(entry.get("label", "")))
+                for entry in labelled
+            ]
+            splits, report = build_custom_corpus(samples, salt=salt)
+        except CorpusRefused as exc:
+            return fail(str(exc))
+        return ok(
+            splits={name: [str(s.path) for s in entries] for name, entries in splits.items()},
+            **report.to_dict(),
+        )
+
+    @guard
     def asset_taxonomy(self, domain: str = "") -> dict[str, Any]:
         """The shared asset vocabulary, so a caller can see it before detecting anything."""
         from core.asset_taxonomy import ASSET_TYPES, AssetRefused, DOMAINS, assets_for_domain

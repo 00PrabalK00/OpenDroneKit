@@ -770,7 +770,21 @@ VISION = [
       "a finding means no movement was RESOLVABLE, not that none occurred."),
     F("ai.custom_training", "Custom defect training", "vision", "AI",
       "Users label, split, train, review metrics and deploy their own model.",
-      "in_progress", [], "Trainers exist; no labelling UI or user-facing dataset builder."),
+      "in_progress", ["tests/test_custom_training.py"],
+      "Trainers exist, and core/custom_training.py is now the dataset builder they were "
+      "missing: labelled images become splits or the corpus is REFUSED with the reason. "
+      "Refused rather than warned, because a corpus is built once and its metric read "
+      "many times -- a class too thin to learn, a class with too few held-out examples "
+      "to measure (one gives a recall of 0.0 or 1.0), a single-class corpus that scores "
+      "perfectly by answering the only thing it knows, the same image under two labels, "
+      "and leakage detected by content digest rather than filename since a renamed copy "
+      "is the usual case. "
+      "Splitting is stratified per class after a whole-corpus hash was found handing a "
+      "30-image class ONE validation example -- which would have been refused as 'label "
+      "more' when the images were sufficient and the split was not. "
+      "STAYS IN PROGRESS: this is the builder, not the labelling UI. A user still cannot "
+      "draw a box in this product, and until they can, custom training is a capability "
+      "for someone who already has labelled files."),
     F("ai.assisted_annotation", "AI assisted annotation", "hub", "AI",
       "Model pre-labels imagery; a reviewer accepts, edits, merges, splits or reclassifies.",
       "implemented", ["tests/test_assisted_annotations.py"],
