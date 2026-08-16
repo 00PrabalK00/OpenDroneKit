@@ -421,8 +421,22 @@ FLIGHT = [
       "Fence and rally land in their own MAV_MISSION_TYPE without overwriting the flight plan.",
       "verified", ["tests/test_mavlink_transfer.py::test_each_list_lands_in_its_own_slot"]),
     F("fl.sitl", "SITL verified flight", "core", "Flight",
-      "A mission uploads, arms and flies to completion in ArduPilot or PX4 SITL.",
-      "not_started", [], "Loopback peer is tested; a real SITL flight is not."),
+      "The flight path exercised against a real ArduPilot autopilot rather than a mock.",
+      "not_started", [],
+      "PASSES IN DOCKER, and cannot count locally. Both tests go green against ArduPilot "
+      "Copter-4.5.7 in infrastructure/docker/Dockerfile.sitl -- and they SKIP under a "
+      "plain pytest, because SITL needs the container. Status is computed from passing "
+      "tests and a skip is not a pass, so this row reads not_started on any laptop no "
+      "matter how many times the container succeeds. That is the honest reading, not a "
+      "bookkeeping problem to argue away. "
+      ".github/workflows/ci.yml is the fix: it builds the image and runs the suite, and "
+      "FAILS if the tests skipped rather than ran -- a green tick over a skip would hide "
+      "this permanently. The row moves when CI has run on a push. "
+      "Worth recording what SITL already caught, since it is the argument for the whole "
+      "harness: our missions put NAV_TAKEOFF at sequence 0, which MAVLink reserves for "
+      "home, so ArduPilot silently overwrote it and the aircraft would never have taken "
+      "off. Every mock-based test passed throughout -- a mock stores what it is given, "
+      "and only a real autopilot has an opinion about sequence 0."),
     F("fl.preflight", "Preflight checks", "app", "Flight",
       "Connection, battery, GPS, compass, IMU, home point, storage, camera, gimbal and "
       "mission-vs-geofence conflicts checked before arming, with a sensor the vehicle "

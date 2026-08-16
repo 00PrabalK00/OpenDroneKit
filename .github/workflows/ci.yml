@@ -1,0 +1,138 @@
+# CI for OpenDroneKit.
+#
+# Three jobs, because three kinds of thing here cannot be checked the same way.
+#
+# `tests` is the fast one and runs on every push. It covers the whole suite except the
+# parts that need infrastructure, and it is the gate that must stay green.
+#
+# `spatial` and `sitl` exist because of a specific failure mode this project keeps
+# hitting: a test that skips when its dependency is absent reports success while
+# checking nothing. Locally that is the right behaviour -- a developer without Docker
+# should not be blocked. In CI it would be a lie, so both jobs assert that their tests
+# actually RAN rather than skipped.
+#
+# fl.sitl is the reason the sitl job exists at all. The flight tests pass against real
+# ArduPilot in a container and skip under a plain pytest, so the registry row reads
+# not_started on a laptop no matter how many times the container goes green. CI is the
+# only place that gap can close.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # The workspace UI is executed rather than eyeballed, and that needs Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test
+        run: python -m pytest -q --durations=15
+
+      - name: Feature status must not regress
+        # --strict exits non-zero when any row drops below what it claims, which is the
+        # only automated defence against a capability quietly breaking: status is computed
+        # from passing tests, so a broken test silently downgrades a row.
+        run: python tools/feature_status.py --strict
+
+  spatial:
+    name: PostGIS spatial
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_PASSWORD: odk
+          POSTGRES_DB: odk
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Spatial tests
+        env:
+          ODK_TEST_POSTGIS: postgresql+psycopg://postgres:odk@127.0.0.1:5432/odk
+        run: python -m pytest tests/test_postgis_spatial.py -q
+
+      - name: They must have run, not skipped
+        # Without this the job is green when the database never came up, which is the
+        # exact failure the tests exist to catch.
+        env:
+          ODK_TEST_POSTGIS: postgresql+psycopg://postgres:odk@127.0.0.1:5432/odk
+        run: |
+          python -m pytest tests/test_postgis_spatial.py -q --collect-only >/dev/null
+          python - <<'PY'
+          import subprocess, sys
+          out = subprocess.run(
+              [sys.executable, "-m", "pytest", "tests/test_postgis_spatial.py", "-q"],
+              capture_output=True, text=True).stdout
+          if "skipped" in out and "passed" not in out:
+              sys.exit("spatial tests skipped in CI: PostGIS was not reachable")
+          print(out.strip().splitlines()[-1])
+          PY
+
+  sitl:
+    name: SITL flight tests
+    runs-on: ubuntu-latest
+    # Building ArduPilot from source takes 15-25 minutes and is pinned to a release tag,
+    # because a simulator whose behaviour moves under the tests turns a red run into an
+    # unanswerable question.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the SITL image
+        run: docker build -f infrastructure/docker/Dockerfile.sitl -t opendronekit-sitl:ci .
+
+      - name: Fly the tests against real ArduPilot
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/workspace" \
+            opendronekit-sitl:ci | tee sitl.log
+
+      - name: They must have run, not skipped
+        # The whole point of this job. A skipped SITL suite is what makes fl.sitl read
+        # not_started, and a green tick over a skip would hide that permanently.
+        run: |
+          if grep -qE "no tests ran|all skipped" sitl.log; then
+            echo "SITL tests did not run"; exit 1
+          fi
+          grep -E "[0-9]+ passed" sitl.log
