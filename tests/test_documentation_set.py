@@ -139,6 +139,37 @@ class TestClaimsMatchTheCode:
             assert "corridor is clear" in text or "track is safe" in text
 
 
+class TestTheReadmeMatchesTheRegistry:
+    """The README quoted solar at mAP50 0.262 and "two models installed" long after seven
+    were registered and that solar run had been rejected. A stale README is not a
+    cosmetic problem -- it is the first thing a reader believes."""
+
+    def test_every_installed_model_is_named(self) -> None:
+        import json
+
+        registry = json.loads(
+            (Path(__file__).resolve().parents[1] / "models" / "model_registry.json")
+            .read_text(encoding="utf-8"))
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        installed = [k for k, v in registry["models"].items() if v.get("status") == "installed"]
+        assert installed, "no installed models to check against"
+        for key in installed:
+            assert key in readme, f"{key} is installed but the README does not mention it"
+
+    def test_it_does_not_still_claim_two_models(self) -> None:
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        assert "Two installed, two still missing" not in readme
+
+    def test_rejected_models_are_recorded_not_hidden(self) -> None:
+        # A reader deciding whether to trust the suite needs to know what was thrown away.
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        assert "REJECTED" in readme
+
+    def test_the_rail_model_limit_is_stated(self) -> None:
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8").lower()
+        assert "not that the corridor is clear" in readme
+
+
 class TestTheUiGuideMatchesTheUi:
     def test_it_names_every_workspace_the_code_defines(self) -> None:
         """A guide listing twelve workspaces for a fourteen-workspace product misleads."""
