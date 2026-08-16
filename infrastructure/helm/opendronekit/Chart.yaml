@@ -1,0 +1,12 @@
+apiVersion: v2
+name: opendronekit
+description: >-
+  OpenDroneKit on Kubernetes: API, processing workers, PostGIS and object storage.
+  Packages the same images the compose stack runs, so a cluster deployment and a
+  laptop deployment are the same software rather than two builds that drift.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/00PrabalK00/OpenDroneKit
+sources:
+  - https://github.com/00PrabalK00/OpenDroneKit

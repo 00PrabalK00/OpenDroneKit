@@ -1,0 +1,71 @@
+# Defaults are deliberately conservative and deliberately incomplete.
+#
+# There is no default secret in this file. A chart that ships a working password is a
+# chart that gets deployed with it, and "change this in production" has never once been
+# read in time. Rendering fails without an explicit secret rather than starting something
+# insecure that appears to work.
+
+image:
+  repository: opendronekit/api
+  tag: ""            # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+worker:
+  repository: opendronekit/worker
+  tag: ""
+  replicas: 2
+  resources:
+    # Photogrammetry is memory-bound before it is CPU-bound: feature matching holds the
+    # match graph for the whole block. A worker without a memory limit will be evicted
+    # mid-job, which loses hours rather than degrading.
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      memory: 16Gi
+
+api:
+  replicas: 2
+  port: 8000
+  resources:
+    requests:
+      cpu: "500m"
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+
+# Secrets. No defaults; see the note at the top of this file.
+secrets:
+  # Either set these, or set existingSecret to the name of one you manage yourself.
+  existingSecret: ""
+  odkSecretKey: ""
+  postgresPassword: ""
+  s3AccessKey: ""
+  s3SecretKey: ""
+
+postgis:
+  enabled: true
+  image: postgis/postgis:16-3.4
+  database: opendronekit
+  user: odk
+  storage: 50Gi
+
+storage:
+  backend: s3
+  bucket: opendronekit
+  endpoint: http://minio:9000
+  # Persistent volume for the API's local artefact cache.
+  size: 100Gi
+
+logLevel: INFO
+corsOrigins: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+ingress:
+  enabled: false
+  className: ""
+  host: opendronekit.local
+  tls: []

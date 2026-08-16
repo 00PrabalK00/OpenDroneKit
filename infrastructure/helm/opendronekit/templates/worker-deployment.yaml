@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "odk.fullname" . }}-worker
+  labels: {{- include "odk.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "odk.name" . }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "odk.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: worker
+    spec:
+      containers:
+        - name: worker
+          image: "{{ .Values.worker.repository }}:{{ .Values.worker.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: ODK_DATABASE_URL
+              value: "postgresql+psycopg://{{ .Values.postgis.user }}:$(POSTGRES_PASSWORD)@{{ include "odk.fullname" . }}-postgis:5432/{{ .Values.postgis.database }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: POSTGRES_PASSWORD}
+            - name: ODK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_SECRET_KEY}
+            - name: ODK_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_ACCESS_KEY}
+            - name: ODK_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_SECRET_KEY}
+            - name: ODK_S3_ENDPOINT
+              value: {{ .Values.storage.endpoint | quote }}
+            - name: ODK_S3_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+            - name: ODK_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+          # A memory limit is not optional here. Photogrammetry is memory-bound before
+          # it is CPU-bound -- feature matching holds the match graph for the whole
+          # block -- so an unlimited worker gets OOM-killed mid-reconstruction and loses
+          # hours of work rather than degrading gracefully. core.job_sizing estimates
+          # what a given image count needs; keep this above that for the jobs you run.
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}

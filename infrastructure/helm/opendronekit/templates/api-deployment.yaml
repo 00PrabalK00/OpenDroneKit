@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "odk.fullname" . }}-api
+  labels: {{- include "odk.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "odk.name" . }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "odk.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: api
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          env:
+            - name: ODK_DATABASE_URL
+              value: "postgresql+psycopg://{{ .Values.postgis.user }}:$(POSTGRES_PASSWORD)@{{ include "odk.fullname" . }}-postgis:5432/{{ .Values.postgis.database }}"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: POSTGRES_PASSWORD}
+            - name: ODK_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_SECRET_KEY}
+            - name: ODK_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_ACCESS_KEY}
+            - name: ODK_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_SECRET_KEY}
+            - name: ODK_STORAGE_BACKEND
+              value: {{ .Values.storage.backend | quote }}
+            - name: ODK_S3_ENDPOINT
+              value: {{ .Values.storage.endpoint | quote }}
+            - name: ODK_S3_BUCKET
+              value: {{ .Values.storage.bucket | quote }}
+            - name: ODK_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: ODK_CORS_ORIGINS
+              value: {{ .Values.corsOrigins | quote }}
+          # Liveness only asks whether the process is up. Readiness asks whether the
+          # database and object store actually answer, which is the difference between
+          # "running" and "able to do the job" -- a pod that cannot reach PostGIS must
+          # not receive traffic, and restarting it would not help.
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources: {{- toYaml .Values.api.resources | nindent 12 }}
