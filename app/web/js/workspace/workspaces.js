@@ -73,6 +73,7 @@ const home = {
       ]) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Operations map",
     note: "Projects, active missions and fleet positions. Select a marker to load it into every panel.",
     tools: MAP_TOOLS,
@@ -137,7 +138,7 @@ const projects = {
     { id: "proj.archived", title: "Archived", height: 110, grow: false,
       render: () => tree([{ id: "ar1", label: "Pune Depot 2025", icon: "▤", meta: "closed" }]) },
   ],
-  canvas: () => canvas({ title: "Project extent", note: "Boundary, survey history and asset locations.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
+  canvas: () => canvas({ map: true, title: "Project extent", note: "Boundary, survey history and asset locations.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
   right: [
     { id: "proj.props", title: "Project Properties", tabs: [
       { title: "General", render: () => properties([
@@ -200,6 +201,7 @@ const planning = {
     ]) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Mission map",
     note: "Flight lines, capture points, camera footprints, geofence, terrain and obstacles.",
     tools: MAP_TOOLS,
@@ -306,6 +308,7 @@ const flight = {
     ]) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Live flight",
     note: "Aircraft position and heading, completed and remaining route, geofence, rally points and obstacles.",
     tools: MAP_TOOLS,
@@ -363,6 +366,7 @@ const verification = {
       { selectKind: "image" }) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Planned against actual",
     note: "Planned capture positions, actual positions, deviation vectors and coverage footprints.",
     tools: MAP_TOOLS,
@@ -637,6 +641,7 @@ const thermal = {
     ], { selectKind: "array" }) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Thermal map",
     note: "Module boundaries, anomaly overlays and temperature labels over the array.",
     tools: MAP_TOOLS,
@@ -694,6 +699,7 @@ const measurements = {
     ]) },
   ],
   canvas: () => canvas({
+    map: true,
     title: "Measurement canvas",
     note: "Orthomosaic, terrain and point cloud with measurement overlays.",
     tools: MAP_TOOLS,
@@ -749,7 +755,7 @@ const fleet = {
       { id: "p2", label: "R. Iyer", icon: "◉", meta: "88 h" },
     ], { selectKind: "pilot" }) },
   ],
-  canvas: () => canvas({ title: "Fleet map", note: "Aircraft locations, assignments and operational state.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
+  canvas: () => canvas({ map: true, title: "Fleet map", note: "Aircraft locations, assignments and operational state.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
   right: [
     { id: "fl.details", title: "Aircraft Details", render: () => properties([
       { group: "M350-01" },

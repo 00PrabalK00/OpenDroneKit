@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>OpenDroneKit</title>
   <link rel="icon" type="image/png" sizes="32x32" href="assets/brand/derived/favicon-32.png" />
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
   <link rel="stylesheet" href="css/workspace.css" />
 </head>
 <body>
   <div id="app"></div>
+  <!-- Loaded before the shell so a workspace can mount a map on first render. Not a
+       module: the vendored build attaches maplibregl to window. -->
+  <script src="vendor/maplibre/maplibre-gl.js"></script>
   <script type="module">
     import { Shell } from "./js/workspace/shell.js";
     new Shell(document.getElementById("app"));

@@ -205,7 +205,7 @@ export function consoleView(lines) {
 
 /** The central view. `kind` only changes the placeholder wording and overlays --
  *  a real map or 3D viewport mounts into the same element. */
-export function canvas({ kind = "map", title, note, tools = [], overlays = [] } = {}) {
+export function canvas({ kind = "map", title, note, tools = [], overlays = [], map = null } = {}) {
   const root = el("div", { class: "canvas" });
 
   if (tools.length) {
@@ -237,6 +237,16 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [] } 
       el("div", { class: "small", text: note || "" }),
     ]),
   ]));
+
+  if (map) {
+    // Deferred: MapLibre measures its container, and the canvas has no size until the
+    // dock has put it in the document. Mounting synchronously gives a map 0px wide.
+    queueMicrotask(async () => {
+      if (!root.isConnected) return;
+      const { mountMap } = await import("./mapview.js");
+      mountMap(root, typeof map === "object" ? map : {});
+    });
+  }
   return root;
 }
 
