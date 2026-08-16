@@ -1,0 +1,58 @@
+# Corrosion extent and severity on steel: Virginia Tech Corrosion Condition State, CC0.
+#
+# 440 annotated 512x512 frames of steel bridge elements, photographed with a drone and a
+# DSLR and rated against AASHTO/BIRM condition states. Split 330 train, 66 validation,
+# 44 test -- the archive ships train and test only, so validation is carved out of train
+# by salted hash rather than selecting checkpoints on the test set.
+#
+# This replaces a single-class corrosion DETECTOR that reached mAP50 0.254 with recall
+# 0.257, which was rejected rather than registered. The change is not only a bigger
+# corpus: a box around rust is the wrong output. An inspector acts on how much of a
+# member is corroded and how badly, and that is extent and severity, which is a
+# segmentation question.
+#
+# Source masks are the VOC palette; the adapter maps colours to dense ids:
+#   0 good (sound metal), 1 fair, 2 poor, 3 severe
+# These are ORDERED. Confusing severe with fair is a worse error than confusing fair
+# with good, and any reported metric should be read with that in mind.
+name: corrosion_segformer_b2_cs
+data_root: training/data/prepared/corrosion_seg
+model_id: nvidia/mit-b2
+num_classes: 4
+class_names: [good, fair, poor, severe]
+image_size: 512
+batch_size: 8
+grad_accum: 1
+epochs: 80
+lr: 0.00006
+encoder_lr: 0.000006
+weight_decay: 0.01
+warmup_fraction: 0.05
+num_workers: 0
+seed: 1337
+amp_dtype: bf16
+ema_decay: 0.999
+# The corpus is 82 per cent sound metal, 12 per cent fair, 4.9 per cent poor and 0.9
+# per cent SEVERE. Without weighting, cross-entropy can ignore severe entirely and still
+# report a respectable mean -- and severe is the class that puts a bridge on a repair
+# list. Log-inverse weighting keeps those pixels visible to the loss.
+class_weighting: log_inverse
+# Close-range inspection photographs of girders and bearings have no canonical
+# orientation; a corroded flange is corroded upside down.
+fliplr: 0.5
+flipud: 0.5
+degrees: 180.0
+early_stop_patience: 12
+val_interval: 1
+output_dir: training/runs
+max_train_samples: 0
+# Release gates, checked by hand rather than by the loader:
+#  - Report per-class IoU AND per-class recall. Mean IoU alone hides severe, which is
+#    0.9 per cent of pixels and the reason the model exists.
+#  - A model that never predicts severe has failed regardless of its mean. Check that
+#    the class appears in the predictions at all before reading any other number.
+#  - State the corpus size (330 training frames) in the model manifest. This is a small
+#    corpus and the figure is a first indication, not a settled result.
+#  - SCOPE: close-range inspection imagery, metres from the steel. Nothing here
+#    establishes transfer to a structure seen from survey altitude, and the manifest
+#    must say so rather than leaving a reader to assume a drone survey is covered.

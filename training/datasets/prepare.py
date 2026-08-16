@@ -108,6 +108,11 @@ class SegSample:
     mask: np.ndarray | Path
     split: str | None = None
     label_map: dict[int, int] | None = None
+    # For corpora whose masks encode classes as COLOURS rather than ids -- the VOC
+    # palette, most commonly. Read from the RGB triple rather than a single band,
+    # because taking band 0 of a VOC mask maps (0,128,0) and (0,0,0) to the same value
+    # and silently merges two classes.
+    colour_map: dict[tuple[int, int, int], int] | None = None
 
 
 @dataclass
@@ -163,6 +168,27 @@ def _binarise(array: np.ndarray) -> np.ndarray:
     return ((array > 127) * 255).astype(np.uint8)
 
 
+def _remap_colours(array: np.ndarray, colour_map: dict[tuple[int, int, int], int]) -> np.ndarray:
+    """Translate an RGB-palette mask into contiguous training ids.
+
+    Separate from _remap_labels on purpose. A VOC-palette mask cannot be read one band
+    at a time: (0,128,0) and (0,0,0) share a red channel, so taking band 0 merges Poor
+    into background and reports success. The whole triple has to match.
+    """
+    if array.ndim != 3 or array.shape[2] < 3:
+        raise ValueError(
+            "A colour_map needs an RGB mask; this one has shape "
+            f"{array.shape}, so the palette cannot be read."
+        )
+    rgb = array[..., :3].astype(np.int32)
+    packed = (rgb[..., 0] << 16) | (rgb[..., 1] << 8) | rgb[..., 2]
+    out = np.zeros(packed.shape, dtype=np.uint8)
+    for colour, train_id in colour_map.items():
+        key = (int(colour[0]) << 16) | (int(colour[1]) << 8) | int(colour[2])
+        out[packed == key] = int(train_id)
+    return out
+
+
 def _remap_labels(array: np.ndarray, label_map: dict[int, int]) -> np.ndarray:
     """Translate source class ids into contiguous training ids.
 
@@ -214,7 +240,9 @@ def _write_segmentation(samples: Iterable[SegSample], task: PreparedTask, salt: 
         else:
             source_mask = sample.mask
 
-        if sample.label_map:
+        if sample.colour_map:
+            mask_array = _remap_colours(source_mask, sample.colour_map)
+        elif sample.label_map:
             mask_array = _remap_labels(source_mask, sample.label_map)
         else:
             mask_array = _binarise(source_mask)
@@ -1051,6 +1079,77 @@ WEEDSGALORE_LABEL_MAP = {0: 0, 1: 1, 3: 2, 5: 2}
 WEEDSGALORE_TRAIN_CLASSES = ("soil", "maize", "weed")
 
 
+# The VOC colormap the annotators used, mapped to contiguous training ids. Read as
+# severity, not as four unrelated things: Fair, Poor and Severe are one phenomenon
+# getting worse, which is why they are ordered and why collapsing them would throw away
+# the part an inspector acts on.
+CORROSION_CS_COLOURS: dict[tuple[int, int, int], int] = {
+    (0, 0, 0): 0,        # no corrosion / good
+    (128, 0, 0): 1,      # fair
+    (0, 128, 0): 2,      # poor
+    (128, 128, 0): 3,    # severe
+}
+
+
+def adapt_corrosion_cs(raw: Path) -> Iterator[SegSample]:
+    """Corrosion condition state segmentation, Virginia Tech, CC0.
+
+    440 annotated 512x512 pairs of steel bridge elements, photographed with a drone and
+    a DSLR and rated against AASHTO/BIRM condition states. The archive ships its own
+    train/test division, which is used rather than a fresh hash: the same bridge appears
+    in several frames, and only the authors' split knows which of them are the same
+    steel from a different angle.
+
+    Two things to carry forward into any model trained on this.
+
+    The class balance is brutal and the rare class is the one that matters. Across the
+    corpus roughly 81 per cent of pixels are sound metal, 11 per cent fair, 6.5 per cent
+    poor and 1.1 per cent SEVERE. A model scored on mean IoU can ignore severe entirely
+    and still look competent, so per-class recall is the only honest reading.
+
+    It is close-range inspection imagery, not survey imagery. These are photographs of a
+    girder from a few metres, and nothing here establishes that the model transfers to a
+    structure seen from a survey altitude.
+    """
+    root = raw / "Corrosion Condition State Classification" / "512x512"
+    if not root.is_dir():
+        # The archive nests one directory deeper than its name suggests; say so rather
+        # than yielding nothing and letting the corpus report zero samples as success.
+        raise FileNotFoundError(
+            f"Expected {root}. The corrosion_cs archive should extract to "
+            "'Corrosion Condition State Classification/512x512/{Train,Test}'."
+        )
+
+    # The archive ships train and test only. A validation split is carved out of train
+    # by salted hash rather than reusing test for checkpoint selection: selecting on the
+    # test set is how a reported number stops being held out, and the corpus is small
+    # enough that the temptation is real.
+    for source_split, split in (("Train", None), ("Test", "test")):
+        images = root / source_split / "images_512"
+        masks = root / source_split / "mask_512"
+        if not images.is_dir() or not masks.is_dir():
+            continue
+        for image_path in sorted(images.iterdir()):
+            if image_path.suffix.lower() not in {".jpeg", ".jpg", ".png"}:
+                continue
+            mask_path = masks / f"{image_path.stem}.png"
+            if not mask_path.is_file():
+                continue
+            sample_id = f"corrosion_cs_{source_split.lower()}_{image_path.stem}"
+            resolved = split
+            if resolved is None:
+                # Roughly one in ten of the archive's training frames becomes validation.
+                bucket = deterministic_split(sample_id, salt="corrosion-cs-val")
+                resolved = "val" if bucket == "val" else "train"
+            yield SegSample(
+                sample_id=sample_id,
+                image_path=image_path,
+                mask=mask_path,
+                split=resolved,
+                colour_map=CORROSION_CS_COLOURS,
+            )
+
+
 def adapt_weedsgalore(raw: Path) -> Iterator[SegSample]:
     """WeedsGalore multispectral crop/weed segmentation, split by the archive's own lists.
 
@@ -1286,6 +1385,16 @@ TASKS: dict[str, TaskSpec] = {
         datasets=("weedsgalore",),
         description="Maize crop and weed separation from multispectral UAV imagery.",
     ),
+    "corrosion_seg": TaskSpec(
+        name="corrosion_seg",
+        kind="segmentation",
+        datasets=("corrosion_cs",),
+        description=(
+            "Corrosion extent and severity on steel, as four ordered condition states. "
+            "Replaces a single-class detector that reached mAP50 0.254 -- extent and "
+            "severity are what an inspector acts on, and a box around rust is neither."
+        ),
+    ),
     "solar_module_seg": TaskSpec(
         name="solar_module_seg",
         kind="segmentation",
@@ -1328,6 +1437,7 @@ ADAPTERS: dict[str, Callable[[Path], Iterator]] = {
     "solar_pv_uav": adapt_solar_pv_uav,
     "uav_rsod": adapt_uav_rsod,
     "uav_rsod_obstacles": adapt_uav_rsod_obstacles,
+    "corrosion_cs": adapt_corrosion_cs,
     "weedsgalore": adapt_weedsgalore,
 }
 
