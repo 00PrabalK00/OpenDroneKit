@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -67,7 +68,7 @@ class DetConfig:
         return cls(**raw)
 
 
-def _localise_data_yaml(data_yaml: Path) -> None:
+def _localise_data_yaml(data_yaml: Path, workdir: Path | None = None) -> Path:
     """Point a corpus's data.yaml at where the corpus actually is.
 
     Older corpora recorded an absolute path from the machine that built them, so a
@@ -75,23 +76,50 @@ def _localise_data_yaml(data_yaml: Path) -> None:
     "D:/Projects/..." beneath /kaggle/working. The generator now writes a relative path;
     this repairs the ones already published, so they do not all need rebuilding and
     re-uploading to be usable.
+
+    Returns the yaml to actually train from, which is not always the one passed in. A
+    Kaggle dataset is mounted read-only under /kaggle/input, so repairing it in place
+    fails with EROFS -- which is what killed four detector kernels, each reported as a
+    bare exit code with no log. When the corpus cannot be written to, the repaired copy
+    goes to ``workdir`` and records the corpus location as an absolute path, since a
+    relative one would resolve against the copy's directory rather than the data.
     """
     try:
         text = data_yaml.read_text(encoding="utf-8")
     except OSError:
-        return
+        return data_yaml
     lines = text.splitlines()
     for index, line in enumerate(lines):
         if not line.startswith("path:"):
             continue
         recorded = line.split(":", 1)[1].strip()
         if recorded in {".", str(data_yaml.parent)}:
-            return
-        lines[index] = "path: ."
-        data_yaml.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
-        print(f"corpus path was {recorded!r}; using the corpus directory instead",
-              flush=True)
-        return
+            return data_yaml
+
+        writable = os.access(data_yaml.parent, os.W_OK)
+        if writable:
+            lines[index] = "path: ."
+            try:
+                data_yaml.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+            except OSError:
+                writable = False  # reported writable, was not; fall through to the copy
+            else:
+                print(f"corpus path was {recorded!r}; using the corpus directory instead",
+                      flush=True)
+                return data_yaml
+
+        target_dir = workdir or REPO_ROOT / "training" / "runs"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "data.yaml"
+        lines[index] = f"path: {data_yaml.parent.resolve().as_posix()}"
+        target.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+        print(
+            f"corpus path was {recorded!r} and {data_yaml.parent} is not writable; "
+            f"training from a repaired copy at {target}",
+            flush=True,
+        )
+        return target
+    return data_yaml
 
 
 def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
@@ -108,9 +136,9 @@ def train(config: DetConfig, *, resume: bool = False) -> dict[str, Any]:
             "Roboflow sets need ROBOFLOW_API_KEY to download first."
         )
 
-    _localise_data_yaml(data_yaml)
-
     run_root = REPO_ROOT / config.output_dir
+    data_yaml = _localise_data_yaml(data_yaml, run_root)
+
     # Two different ways to carry on, and confusing them wastes rented time.
     #
     # --resume finishes an interrupted run: ultralytics reloads last.pt with its
