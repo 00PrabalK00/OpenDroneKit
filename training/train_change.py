@@ -144,19 +144,34 @@ class ChangePairDataset(Dataset):
         from PIL import Image
 
         site = self.sites[index]
-        first = np.asarray(Image.open(site / "im1.jpg").convert("RGB"))
-        second = np.asarray(Image.open(site / "im2.jpg").convert("RGB"))
-        mask = (np.asarray(Image.open(site / "ref.png").convert("L")) > 127).astype(np.uint8)
+        # Opened lazily: PIL reads the header for .size without decoding pixels, so the
+        # crop window is chosen before anything large exists in memory.
+        with Image.open(site / "im1.jpg") as first_img,              Image.open(site / "im2.jpg") as second_img,              Image.open(site / "ref.png") as mask_img:
+            if first_img.size != second_img.size or first_img.size != mask_img.size:
+                # A misaligned pair would train the model on a change that is really a
+                # registration error, which is exactly the wrong lesson.
+                raise SystemExit(
+                    f"{site.name}: im1 {first_img.size}, im2 {second_img.size} and ref "
+                    f"{mask_img.size} disagree; the pair is not co-registered."
+                )
 
-        if first.shape[:2] != second.shape[:2] or first.shape[:2] != mask.shape[:2]:
-            # A misaligned pair would train the model on a change that is really a
-            # registration error, which is exactly the wrong lesson.
-            raise SystemExit(
-                f"{site.name}: im1 {first.shape[:2]}, im2 {second.shape[:2]} and ref "
-                f"{mask.shape[:2]} disagree; the pair is not co-registered."
-            )
+            width, height = first_img.size
+            size = self.image_size
+            box = self._window(width, height, size)
 
-        first, second, mask = self._sample_window(first, second, mask)
+            # Cropping in PIL space is the whole point of this rewrite. Loading three
+            # full arrays first and slicing afterwards meant ~1.9 GB resident per sample
+            # on this corpus, whose largest sites are 212 megapixels, and the run died
+            # with MemoryError. Only the window ever becomes an array.
+            first = np.asarray(first_img.convert("RGB").crop(box))
+            second = np.asarray(second_img.convert("RGB").crop(box))
+            mask = (np.asarray(mask_img.convert("L").crop(box)) > 127).astype(np.uint8)
+
+        if not self.train or box[2] - box[0] != size or box[3] - box[1] != size:
+            # Validation, and any scene smaller than the window, are resized whole so the
+            # metric describes the scene rather than a lucky crop of it.
+            first, second, mask = self._resize_triple(first, second, mask, size)
+
         stacked = np.concatenate(
             [self._normalise(first), self._normalise(second)], axis=2
         )
@@ -165,24 +180,23 @@ class ChangePairDataset(Dataset):
             torch.from_numpy(mask.astype(np.float32)),
         )
 
-    def _sample_window(self, first, second, mask):
+    def _window(self, width: int, height: int, size: int) -> tuple[int, int, int, int]:
+        """The PIL crop box for this sample: a random window in training, else the lot."""
+        if self.train and height > size and width > size:
+            left = random.randrange(0, width - size)
+            top = random.randrange(0, height - size)
+            return (left, top, left + size, top + size)
+        return (0, 0, width, height)
+
+    @staticmethod
+    def _resize_triple(first, second, mask, size: int):
         from PIL import Image
 
-        size = self.image_size
-        height, width = mask.shape[:2]
-        if self.train and height > size and width > size:
-            top = random.randrange(0, height - size)
-            left = random.randrange(0, width - size)
-            return (first[top:top + size, left:left + size],
-                    second[top:top + size, left:left + size],
-                    mask[top:top + size, left:left + size])
-        # Validation sees the whole scene resized, so the metric describes the scene
-        # rather than a lucky crop of it.
-        resize = lambda a, mode: np.asarray(  # noqa: E731
-            Image.fromarray(a).resize((size, size), mode)
+        return (
+            np.asarray(Image.fromarray(first).resize((size, size), Image.BILINEAR)),
+            np.asarray(Image.fromarray(second).resize((size, size), Image.BILINEAR)),
+            np.asarray(Image.fromarray(mask).resize((size, size), Image.NEAREST)),
         )
-        return (resize(first, Image.BILINEAR), resize(second, Image.BILINEAR),
-                resize(mask, Image.NEAREST))
 
     @staticmethod
     def _normalise(image: np.ndarray) -> np.ndarray:
