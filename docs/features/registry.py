@@ -948,12 +948,27 @@ INDIA_FIRST = [
       "India pack: Mining",
       "Automatically propose georeferenced stockpile boundaries for human review before "
       "the geometry engine measures them.",
-      "not_started", []),
+      "not_started", [],
+      "OUT OF v1 SCOPE by decision, 2026-08-17. No corpus exists at drone resolution. "
+      "Note that stockpile MEASUREMENT already ships and is verified -- me.volume and "
+      "india.foundation.volume measure a stockpile the operator outlines, with the "
+      "survey's vertical accuracy carried through. What is dropped is proposing the "
+      "outline automatically, which is a convenience on top of a capability that works."),
     F("pack.mining.scene", "Mine and quarry segmentation", "vision",
       "India pack: Mining",
       "Pit, bench, haul road, stockpile, water, vegetation, excavated region and "
       "restricted-boundary layers.",
-      "not_started", []),
+      "not_started", [],
+      "OUT OF v1 SCOPE by decision, 2026-08-17, rather than shipping something weak. "
+      "Two attempts, both measured and both rejected. MineNetCD change detection reached "
+      "IoU 0.2955 on ~15 held-out mines: 60 per cent of what it flagged was wrong and it "
+      "missed 47 per cent of real change, which is a coin flip an operator would dig "
+      "against. The largest open alternative -- a global mining dataset of 1,210 sites -- "
+      "is Sentinel-2 at 10 m per pixel, and this product surveys in centimetres, so a "
+      "model trained on it cannot be pointed at drone imagery at all. "
+      "The blocker is a corpus at drone resolution, not epochs or architecture. Reopen "
+      "when one exists; retraining on what is available would only produce the same "
+      "number with more confidence."),
     F("pack.mining.change", "Mine and stockpile change", "core",
       "India pack: Mining",
       "Per-pile and per-pit area/volume change between dated surveys.",
