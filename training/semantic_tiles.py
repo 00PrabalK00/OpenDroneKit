@@ -90,6 +90,16 @@ def read_semantic_sample(sample: dict[str, Any]) -> tuple[np.ndarray, np.ndarray
         image = source.read((1, 2, 3))
         source_dtype = np.dtype(source.dtypes[0])
         height, width = source.height, source.width
+        # Band 4 on SpaceNet 7 is a validity mask, not decoration: a mosaic tile that
+        # does not fully cover its footprint marks the uncovered pixels transparent.
+        # Reading only RGB leaves those pixels looking like dark ground, and because the
+        # building labels contain no polygons there, they are learned as background --
+        # so the model is taught that no-data is a confident negative.
+        invalid = None
+        if source.count >= 4:
+            alpha = source.read(4)
+            if np.any(alpha == 0):
+                invalid = alpha == 0
     if np.issubdtype(source_dtype, np.integer):
         image = image.astype(np.float32) / float(np.iinfo(source_dtype).max)
     else:
@@ -122,6 +132,12 @@ def read_semantic_sample(sample: dict[str, Any]) -> tuple[np.ndarray, np.ndarray
         for source_id, target_id in class_map.items():
             remapped[label == int(source_id)] = int(target_id)
         label = remapped
+    if invalid is not None:
+        # Marked ignore rather than dropped: the pixels still occupy their position in
+        # the tile, and the loss simply does not score them.
+        label = np.asarray(label).copy()
+        if label.shape == invalid.shape:
+            label[invalid] = IGNORE_INDEX
     return image, label
 
 
