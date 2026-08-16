@@ -236,3 +236,38 @@ class TestSpatialReferenceCapability:
         result = api.check_spatial_reference([])
         assert result["ok"] is False
         assert "nothing to reconstruct" in result["error"]
+
+
+class TestLargeDatasetCapability:
+    """Sizing a job before it runs, so a big capture fails fast or not at all."""
+
+    def test_a_large_job_is_told_to_chunk(self, api: Api) -> None:
+        result = api.size_reconstruction_job(5000)
+        assert result["ok"] is True
+        assert result["chunking_required"] is True
+        assert 0 < result["recommended_chunk_size"] < 5000
+
+    def test_zero_images_is_refused(self, api: Api) -> None:
+        result = api.size_reconstruction_job(0)
+        assert result["ok"] is False
+        assert "at least one image" in result["error"]
+
+    def test_chunks_overlap_so_they_can_be_merged(self, api: Api) -> None:
+        images = [f"i{n}" for n in range(120)]
+        result = api.plan_job_chunks(images, 30, overlap=8)
+        assert result["ok"] is True
+        chunks = result["chunks"]
+        assert len(chunks) > 1
+        for first, second in zip(chunks, chunks[1:]):
+            assert set(first) & set(second), "chunks share nothing; sub-models cannot merge"
+
+    def test_no_image_is_dropped_by_chunking(self, api: Api) -> None:
+        images = [f"i{n}" for n in range(97)]
+        result = api.plan_job_chunks(images, 25, overlap=5)
+        seen = {image for chunk in result["chunks"] for image in chunk}
+        assert seen == set(images)
+
+    def test_an_overlap_that_cannot_advance_is_refused(self, api: Api) -> None:
+        result = api.plan_job_chunks([f"i{n}" for n in range(40)], 10, overlap=10)
+        assert result["ok"] is False
+        assert "never advance" in result["error"]

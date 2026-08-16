@@ -587,8 +587,18 @@ PROCESSING = [
       "Submit/poll/cancel over the API with cooperative cancellation and honest failure "
       "reporting. Still single-process: no multi-worker queue, priorities or retries."),
     F("pr.large_datasets", "Large dataset processing", "workers", "Processing",
-      "Thousands of images via chunking, resumable jobs and memory-aware scheduling.",
-      "not_started", []),
+      "Thousands of images via chunking and memory-aware scheduling, with the job sized "
+      "against the machine before it starts.",
+      "implemented", ["tests/test_job_sizing.py",
+                      "tests/test_api_measurements.py::TestLargeDatasetCapability"],
+      "api.size_reconstruction_job() estimates peak memory and disk against what is "
+      "actually free and recommends a chunk size; api.plan_job_chunks() splits a "
+      "capture with mandatory overlap, because chunks reconstructed independently share "
+      "no geometry and without shared views the merge produces several disconnected "
+      "models rather than one survey. Feature matching grows with the SQUARE of the "
+      "image count, so past a few hundred images chunking is a requirement not a "
+      "preference. Estimates are labelled rough. Reaching verified needs the resumable "
+      "job execution and chunk merge to be built on top of this sizing."),
     F("pr.provenance", "Derived file provenance", "workers", "Processing",
       "Every derived artifact records its source, engine, CRS and parameters in a "
       "sidecar that travels with the file, and the record can be checked against the "

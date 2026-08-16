@@ -902,6 +902,52 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    def size_reconstruction_job(self, image_count: int,
+                                work_dir: str = ".") -> dict[str, Any]:
+        """Whether this machine can finish a reconstruction of this size.
+
+        Asked up front because the failure it prevents is expensive: a job that runs for
+        hours, exhausts memory during bundle adjustment, and dies having produced
+        nothing. Feature matching is the binding constraint and grows with the SQUARE of
+        the image count, so past a few hundred images chunking is a requirement rather
+        than a tuning choice.
+
+        Estimates are rough and say so. A wrong estimate costs a conversation; no
+        estimate costs an afternoon.
+        """
+        from core.job_sizing import size_job
+
+        try:
+            estimate = size_job(int(image_count), work_dir=work_dir)
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(**estimate.to_dict())
+
+    @guard
+    def plan_job_chunks(self, image_paths: list[str], chunk_size: int,
+                        overlap: int = 10) -> dict[str, Any]:
+        """Split a large capture into overlapping chunks that can be merged.
+
+        Overlap is not optional: chunks reconstructed independently share no geometry,
+        so without images appearing in both the result is several disconnected models
+        rather than one survey.
+        """
+        from core.job_sizing import chunk_images
+
+        try:
+            chunks = chunk_images([str(p) for p in image_paths], int(chunk_size),
+                                  overlap=int(overlap))
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(
+            chunk_count=len(chunks),
+            chunks=chunks,
+            overlap=int(overlap),
+            note=("Consecutive chunks share images on purpose; those shared views are "
+                  "what lets the sub-models be tied into one reconstruction."),
+        )
+
+    @guard
     def check_spatial_reference(self, image_paths: list[str],
                                 gcp_count: int = 0,
                                 epsg: int | None = None) -> dict[str, Any]:
