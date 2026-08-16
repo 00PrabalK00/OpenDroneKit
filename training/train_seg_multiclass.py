@@ -80,6 +80,16 @@ class SegMulticlassConfig:
     model_id: str = "nvidia/mit-b2"
     num_classes: int = 3
     class_names: list[str] | None = None
+    # Multispectral input. Empty keeps the trainer on the corpus's RGB images, which is
+    # what every existing config expects.
+    #
+    # WeedsGalore ships five bands and the corpus carries an RGB composite of three of
+    # them, because PNG cannot hold five. Crop and weed separation lives mostly in red
+    # edge and near infrared -- a weed and a maize leaf differ far more in reflectance
+    # than in visible colour -- so an RGB-only model is using the bands that
+    # discriminate least. Point this at the cached stacks to use all five.
+    band_root: str = ""
+    band_names: list[str] | None = None
     image_size: int = 512
     batch_size: int = 8
     grad_accum: int = 1
@@ -178,7 +188,9 @@ class MulticlassSegDataset(Dataset):
         fliplr: float = 0.5,
         flipud: float = 0.3,
         degrees: float = 90.0,
+        band_root: str = "",
     ) -> None:
+        self.band_root = band_root
         self.image_dir = root / split / "images"
         self.mask_dir = root / split / "masks"
         if not self.image_dir.is_dir() or not self.mask_dir.is_dir():
@@ -213,6 +225,21 @@ class MulticlassSegDataset(Dataset):
             )[: self.num_classes]
             self.items.append((image_path, mask_path))
         self.transform = self._build_transform()
+
+    def _band_path(self, image_path: Path) -> Path | None:
+        """The cached multispectral stack for this sample, when one is configured.
+
+        Sample ids carry a source prefix (weeds_2023-05-25_0109) while the cached stacks
+        are keyed by the capture id, so both are tried rather than assuming one shape.
+        """
+        if not getattr(self, "band_root", None):
+            return None
+        stem = image_path.stem
+        for candidate in (stem, stem.split("_", 1)[-1]):
+            path = Path(self.band_root) / f"{candidate}.npy"
+            if path.is_file():
+                return path
+        return None
 
     def _load_mask(self, mask_path: Path) -> np.ndarray:
         from PIL import Image
@@ -251,14 +278,23 @@ class MulticlassSegDataset(Dataset):
         ]
         if self.degrees > 0:
             transforms.append(A.Rotate(limit=self.degrees, p=0.5))
-        transforms.extend(
-            [
-                A.RandomBrightnessContrast(0.25, 0.25, p=0.5),
-                A.HueSaturationValue(10, 20, 15, p=0.3),
-                A.OneOf([A.GaussianBlur(blur_limit=(3, 7)), A.GaussNoise()], p=0.25),
-                A.CoarseDropout(p=0.15),
-            ]
-        )
+        # Colour augmentation is dropped for multispectral input, and not only because
+        # HueSaturationValue rejects a 5-channel array. Hue and saturation are defined
+        # over visible colour; applying them across a stack that includes red edge and
+        # near infrared would alter the very reflectance ratios the model is meant to
+        # separate crop from weed by. Geometric augmentation and noise stay, since those
+        # are band-agnostic.
+        if getattr(self, "band_root", ""):
+            transforms.append(A.OneOf([A.GaussianBlur(blur_limit=(3, 7)), A.GaussNoise()], p=0.25))
+        else:
+            transforms.extend(
+                [
+                    A.RandomBrightnessContrast(0.25, 0.25, p=0.5),
+                    A.HueSaturationValue(10, 20, 15, p=0.3),
+                    A.OneOf([A.GaussianBlur(blur_limit=(3, 7)), A.GaussNoise()], p=0.25),
+                    A.CoarseDropout(p=0.15),
+                ]
+            )
         return A.Compose(transforms)
 
     def __len__(self) -> int:
@@ -268,8 +304,12 @@ class MulticlassSegDataset(Dataset):
         from PIL import Image
 
         image_path, mask_path = self.items[index]
-        with Image.open(image_path) as source:
-            image = np.asarray(source.convert("RGB")).copy()
+        stacked = self._band_path(image_path)
+        if stacked is not None:
+            image = np.load(stacked)
+        else:
+            with Image.open(image_path) as source:
+                image = np.asarray(source.convert("RGB")).copy()
         mask = self._load_mask(mask_path)
         if image.shape[:2] != mask.shape:
             raise ValueError(
@@ -298,7 +338,18 @@ class MulticlassSegDataset(Dataset):
                 f"Mask {mask_path} contains class id(s) {values} after augmentation, "
                 f"outside 0..{self.num_classes - 1}."
             )
-        tensor = (image.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+        # ImageNet statistics only describe three visible bands. Extra bands are
+        # normalised with the mean of those statistics rather than invented per-band
+        # values: it keeps them on the same scale as RGB without asserting a
+        # distribution nobody measured. Per-band statistics computed from this corpus
+        # would be better and are worth doing once the model is shown to be worth it.
+        mean, std = IMAGENET_MEAN, IMAGENET_STD
+        bands = image.shape[2]
+        if bands != mean.shape[0]:
+            extra = bands - mean.shape[0]
+            mean = np.concatenate([mean, np.full(extra, float(mean.mean()), np.float32)])
+            std = np.concatenate([std, np.full(extra, float(std.mean()), np.float32)])
+        tensor = (image.astype(np.float32) / 255.0 - mean) / std
         return (
             torch.from_numpy(tensor.transpose(2, 0, 1).copy()),
             torch.from_numpy(mask.astype(np.int64, copy=False).copy()),
@@ -422,16 +473,59 @@ class MulticlassIoU:
         }
 
 
-def build_model(model_id: str, num_classes: int, class_names: Sequence[str]):
+def build_model(model_id: str, num_classes: int, class_names: Sequence[str],
+                in_channels: int = 3):
     from transformers import SegformerForSemanticSegmentation
 
     id2label = {index: str(name) for index, name in enumerate(class_names)}
-    return SegformerForSemanticSegmentation.from_pretrained(
+    model = SegformerForSemanticSegmentation.from_pretrained(
         model_id,
         num_labels=num_classes,
         id2label=id2label,
         label2id={name: index for index, name in id2label.items()},
         ignore_mismatched_sizes=True,
+    )
+    if in_channels != 3:
+        _widen_stem(model, in_channels)
+    return model
+
+
+def _widen_stem(model, in_channels: int) -> None:
+    """Accept more than three input bands without discarding the pretrained stem.
+
+    The extra bands are initialised from the mean of the pretrained RGB filters and the
+    whole stem is rescaled by 3/in_channels, so the initial activation magnitude matches
+    what the pretrained encoder expects. Initialising them randomly instead would put
+    noise into the first layer of an otherwise pretrained network.
+
+    Located by shape rather than attribute path: transformers has moved this between
+    segformer.encoder.patch_embeddings[0] and segformer.stages[0].patch_embeddings, and
+    a hardcoded path fails on some versions and finds the wrong conv on others.
+    """
+    import torch
+
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Conv2d) and module.in_channels == 3:
+            owner_path, _, attribute = name.rpartition(".")
+            parent = model.get_submodule(owner_path) if owner_path else model
+            widened = torch.nn.Conv2d(
+                in_channels, module.out_channels, kernel_size=module.kernel_size,
+                stride=module.stride, padding=module.padding,
+                bias=module.bias is not None,
+            )
+            with torch.no_grad():
+                average = module.weight.mean(dim=1, keepdim=True)
+                extra = average.repeat(1, in_channels - 3, 1, 1)
+                widened.weight.copy_(
+                    torch.cat([module.weight, extra], dim=1) * (3.0 / in_channels)
+                )
+                if module.bias is not None:
+                    widened.bias.copy_(module.bias)
+            setattr(parent, attribute, widened)
+            return
+    raise SystemExit(
+        "Could not find a three-channel stem to widen; the architecture is not what "
+        "this trainer assumes."
     )
 
 
@@ -628,6 +722,7 @@ def train(config: SegMulticlassConfig, *, resume: bool = False) -> dict[str, Any
         fliplr=config.fliplr,
         flipud=config.flipud,
         degrees=config.degrees,
+        band_root=config.band_root,
     )
     val_set = MulticlassSegDataset(
         data_root,
@@ -638,6 +733,7 @@ def train(config: SegMulticlassConfig, *, resume: bool = False) -> dict[str, Any
         fliplr=0.0,
         flipud=0.0,
         degrees=0.0,
+        band_root=config.band_root,
     )
     weight_values = resolve_class_weights(config, train_set.class_pixel_counts)
     print(
@@ -665,7 +761,15 @@ def train(config: SegMulticlassConfig, *, resume: bool = False) -> dict[str, Any
         persistent_workers=workers > 0,
     )
 
-    model = build_model(config.model_id, config.num_classes, class_names).to(device)
+    # The band count comes from the data rather than a second config field, so the two
+    # cannot disagree: a config claiming five bands over an RGB corpus would otherwise
+    # build a five-channel stem and feed it three.
+    in_channels = int(train_set[0][0].shape[0])
+    if in_channels != 3:
+        print(f"multispectral input: {in_channels} bands", flush=True)
+    model = build_model(
+        config.model_id, config.num_classes, class_names, in_channels=in_channels
+    ).to(device)
     optimizer = build_optimizer(model, config)
     optimizer_steps_per_epoch = max(1, math.ceil(len(train_loader) / config.grad_accum))
     total_steps = optimizer_steps_per_epoch * config.epochs

@@ -1057,12 +1057,52 @@ def adapt_weedsgalore(raw: Path) -> Iterator[SegSample]:
             image_path = _weedsgalore_rgb(images_dir, key)
             if image_path is None:
                 continue
+            # Cache the full five-band stack beside the corpus. The corpus itself stays
+            # RGB so every existing trainer keeps working; a multispectral trainer reads
+            # these by sample id.
+            _weedsgalore_stack(images_dir, key)
             yield SegSample(
                 sample_id=f"weeds_{key}",
                 image_path=image_path,
                 mask=mask_path,
                 split=split,
             )
+
+
+WEEDSGALORE_BAND_ROOT = WORK_ROOT / "weedsgalore_bands"
+# Order matters and is fixed here so a trainer reading these arrays knows what each
+# channel is without guessing. RE and NIR come last so the first three channels remain a
+# valid RGB image, which lets a 3-channel model read the same file unchanged.
+WEEDSGALORE_BAND_ORDER = ("R", "G", "B", "RE", "NIR")
+
+
+def _weedsgalore_stack(images_dir: Path, key: str) -> Path | None:
+    """Cache all five bands of one capture as a single uint8 array.
+
+    Crop and weed separation lives mostly in red edge and near infrared: a weed and a
+    maize leaf differ far more in reflectance than in visible colour. A model trained on
+    the RGB composite alone is working with the three bands that discriminate least,
+    which is the single largest limitation of the agriculture model as it stands.
+
+    Written as .npy rather than an image because PNG carries at most four channels, and
+    splitting five bands across two files invites them drifting apart.
+    """
+    WEEDSGALORE_BAND_ROOT.mkdir(parents=True, exist_ok=True)
+    stacked_path = WEEDSGALORE_BAND_ROOT / f"{key}.npy"
+    if stacked_path.is_file():
+        return stacked_path
+
+    bands = []
+    for suffix in WEEDSGALORE_BAND_ORDER:
+        band_path = images_dir / f"{key}_{suffix}.png"
+        if not band_path.is_file():
+            return None
+        bands.append(np.asarray(Image.open(band_path)))
+
+    if len({band.shape[:2] for band in bands}) != 1:
+        return None
+    np.save(stacked_path, np.stack([_as_uint8(band) for band in bands], axis=-1))
+    return stacked_path
 
 
 def _weedsgalore_rgb(images_dir: Path, key: str) -> Path | None:
