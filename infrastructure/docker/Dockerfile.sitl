@@ -19,7 +19,19 @@ FROM ubuntu:22.04
 ENV USER=sitl     DEBIAN_FRONTEND=noninteractive \
     ARDUPILOT_HOME=/opt/ardupilot \
     PATH="/opt/ardupilot/Tools/autotest:${PATH}" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    SITL_RITW_TERMINAL=nohup
+
+# ArduPilot starts the autopilot through Tools/autotest/run_in_terminal_window.sh, which
+# walks a list of terminal emulators -- xterm, konsole, osascript, tmux -- each needing a
+# DISPLAY or TTY the container does not have. With nothing matching it falls through and
+# SITL exits 1 before EKF readiness, which reads as a simulator crash rather than a
+# missing terminal.
+#
+# That script checks SITL_RITW_TERMINAL first: when set it writes the command to a
+# temporary script and runs it with whatever this names. nohup is already installed and
+# means exactly "run this detached", so the autopilot starts headless without patching
+# ArduPilot or tools/sitl/launch.py.
 
 # ArduPilot's own prerequisites plus what the repo's tests import. python3-wxgtk and the
 # GUI stack are deliberately omitted: MAVProxy pulls them for its map window, which
