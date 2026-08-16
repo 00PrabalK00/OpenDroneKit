@@ -185,10 +185,10 @@
       "labels": [
         "crack"
       ],
-      "score_threshold": 0.25,
-      "iou_threshold": 0.45,
       "input_size": 224,
-      "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (IoU 0.637). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface."
+      "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (IoU 0.637). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface.",
+      "sha256": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "status": "installed"
     }
   }
 }
