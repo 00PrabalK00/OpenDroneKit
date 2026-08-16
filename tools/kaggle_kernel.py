@@ -237,6 +237,31 @@ def ensure_repo() -> None:
     print("repo at commit", head)
 
 
+def gpu_memory_overrides() -> list:
+    """Shrink the run to fit this GPU, without touching the config.
+
+    The detection configs are sized for a 24 GB card. Kaggle's P100 has 16 GB, and the
+    kernels started training and then died: roads at 640px/batch 16 survived while
+    rail_obstacle at 960/12, corrosion at 960/10 and solar at 1024/8 did not.
+
+    Overriding on the command line rather than editing the configs matters. Those values
+    are correct for the hardware they were written for, and a config edited to fit the
+    smallest machine that ever ran it quietly degrades every future run on a bigger one.
+    The trainer already accepts both flags.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return []
+    total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    if total_gb >= 20:
+        print(f"GPU has {{total_gb:.0f}} GB; running the config as written", flush=True)
+        return []
+
+    print(f"GPU has only {{total_gb:.0f}} GB; capping image size and batch to fit", flush=True)
+    return ["--image-size", "640", "--batch-size", "8"]
+
+
 def ensure_ultralytics() -> None:
     """Install ultralytics if the trainer will need it.
 
@@ -283,6 +308,7 @@ def main() -> int:
         "--data-root", str(corpus),
         "--output-dir", str(OUT),
     ]
+    command += gpu_memory_overrides()
     print("running:", " ".join(command), flush=True)
     result = subprocess.run(command, cwd=REPO)
     if result.returncode != 0:
