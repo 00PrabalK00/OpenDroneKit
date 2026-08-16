@@ -130,3 +130,89 @@ class TestGeometryHelpers:
         assert point_in_polygon((5.0, 5.0), polygon)
         # Inside the bite taken out of the corner: outside the building.
         assert not point_in_polygon((15.0, 15.0), polygon)
+
+
+# A 40x40 building with a 16x16 courtyard cut out of the middle.
+COURT_OUTER = [[0, 0], [40, 0], [40, 40], [0, 40]]
+COURTYARD = [[12, 12], [28, 12], [28, 28], [12, 28]]
+
+
+class TestCourtyards:
+    def test_courtyard_passes_are_added_to_outer_passes(self) -> None:
+        from mission.footprints import courtyard_segments
+
+        outer_only = facade_segments(COURT_OUTER, standoff_m=5.0)
+        with_court = courtyard_segments(COURT_OUTER, [COURTYARD], standoff_m=5.0)
+        assert len(with_court) > len(outer_only)
+
+    def test_courtyard_passes_are_inside_the_courtyard(self) -> None:
+        """The inversion that makes courtyards a separate problem.
+
+        On the outer wall the standoff goes outward. Inside a courtyard the building
+        surrounds the aircraft, so it must go inward -- offsetting the same way as the
+        outer wall flies straight into the masonry.
+        """
+        from mission.footprints import courtyard_segments
+
+        court = [(float(x), float(y)) for x, y in COURTYARD]
+        segments = courtyard_segments(COURT_OUTER, [COURTYARD], standoff_m=5.0)
+        inner = [s for s in segments if s.wall_index >= 1000]
+        assert inner, "no courtyard passes were planned"
+        for segment in inner:
+            for point in (segment.start, segment.end):
+                assert point_in_polygon((point[0], point[1]), court), (
+                    f"courtyard pass at {point} is in the building, not the void"
+                )
+
+    def test_a_standoff_wider_than_the_courtyard_is_refused(self) -> None:
+        # Half the courtyard width would put the aircraft in the far wall. Refusing
+        # beats planning a mission that flies through masonry.
+        from mission.footprints import FootprintRefused, courtyard_segments
+
+        with pytest.raises(FootprintRefused, match="narrower than twice the standoff"):
+            courtyard_segments(COURT_OUTER, [COURTYARD], standoff_m=20.0)
+
+    def test_a_degenerate_courtyard_is_refused(self) -> None:
+        from mission.footprints import FootprintRefused, courtyard_segments
+
+        with pytest.raises(FootprintRefused, match="fewer than 3"):
+            courtyard_segments(COURT_OUTER, [[[1, 1], [2, 2]]], standoff_m=3.0)
+
+
+class TestOcclusion:
+    def test_a_shallow_overhang_needs_no_extra_pass(self) -> None:
+        from mission.footprints import assess_occlusion
+
+        report = assess_occlusion(0.3, standoff_m=8.0)
+        assert not report.occluded
+        assert report.recommended_extra_passes == 0
+
+    def test_a_deep_balcony_is_reported_as_occluding(self) -> None:
+        from mission.footprints import assess_occlusion
+
+        report = assess_occlusion(3.0, standoff_m=2.0)
+        assert report.occluded
+        assert report.recommended_extra_passes >= 1
+
+    def test_the_note_says_the_gap_will_not_announce_itself(self) -> None:
+        # The dangerous part: a reconstruction renders unseen wall as smooth surface,
+        # not as a hole, so the omission is invisible in the deliverable.
+        from mission.footprints import assess_occlusion
+
+        report = assess_occlusion(3.0, standoff_m=2.0)
+        assert "does not announce itself" in report.note
+
+    def test_a_closer_standoff_sees_less_under_a_projection(self) -> None:
+        # Counterintuitive and worth pinning: visible depth scales WITH standoff, so
+        # flying closer to inspect a recess makes the occlusion worse, not better.
+        from mission.footprints import assess_occlusion
+
+        near = assess_occlusion(1.5, standoff_m=1.0)
+        far = assess_occlusion(1.5, standoff_m=6.0)
+        assert near.occluded and not far.occluded
+
+    def test_a_negative_standoff_is_refused(self) -> None:
+        from mission.footprints import FootprintRefused, assess_occlusion
+
+        with pytest.raises(FootprintRefused):
+            assess_occlusion(1.0, standoff_m=0.0)

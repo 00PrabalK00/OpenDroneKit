@@ -271,3 +271,33 @@ class TestLargeDatasetCapability:
         result = api.plan_job_chunks([f"i{n}" for n in range(40)], 10, overlap=10)
         assert result["ok"] is False
         assert "never advance" in result["error"]
+
+
+class TestComplexFacadeCapability:
+    """Courtyards, overhangs and the omissions that do not announce themselves."""
+
+    OUTER = [[0, 0], [40, 0], [40, 40], [0, 40]]
+    COURT = [[12, 12], [28, 12], [28, 28], [12, 28]]
+
+    def test_a_courtyard_building_plans_both_rings(self, api: Api) -> None:
+        plain = api.plan_irregular_facade(self.OUTER, standoff_m=5.0)
+        withc = api.plan_complex_facade(self.OUTER, [self.COURT], standoff_m=5.0)
+        assert withc["ok"] is True
+        assert withc["segment_count"] > plain["segment_count"]
+        assert withc["courtyard_count"] == 1
+
+    def test_an_impossible_courtyard_standoff_is_refused(self, api: Api) -> None:
+        result = api.plan_complex_facade(self.OUTER, [self.COURT], standoff_m=20.0)
+        assert result["ok"] is False
+        assert "narrower than twice the standoff" in result["error"]
+
+    def test_a_deep_overhang_is_reported(self, api: Api) -> None:
+        result = api.plan_complex_facade(
+            self.OUTER, [], standoff_m=2.0, overhang_depth_m=3.0)
+        assert result["occlusion"]["occluded"] is True
+        assert result["occlusion"]["recommended_extra_passes"] >= 1
+
+    def test_a_shallow_overhang_needs_nothing_extra(self, api: Api) -> None:
+        result = api.plan_complex_facade(
+            self.OUTER, [], standoff_m=8.0, overhang_depth_m=0.3)
+        assert result["occlusion"]["occluded"] is False

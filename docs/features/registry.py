@@ -113,8 +113,18 @@ MISSION_PLANNING = [
       "capture points sit outside the footprint with the camera facing the wall.",
       "implemented", ["tests/test_mission_types.py::TestMultiFacade"]),
     F("mp.type.complex_facade", "Complex facade planning", "core", "Mission types",
-      "Balconies, recesses, courtyards, overhangs and non-rectangular footprints.",
-      "not_started", []),
+      "Balconies, recesses, courtyards, overhangs and non-rectangular footprints, with "
+      "occlusion reported rather than silently omitted.",
+      "verified", ["tests/test_footprints.py",
+                   "tests/test_api_measurements.py::TestComplexFacadeCapability"],
+      "A courtyard INVERTS the standoff: outside the building the aircraft offsets "
+      "outward, inside a courtyard it offsets inward, and a planner treating them alike "
+      "flies into masonry. A standoff wider than half the courtyard is refused rather "
+      "than planned. Overhangs are assessed against the lens: wall hidden under a "
+      "balcony is never photographed and the reconstruction renders it as smooth "
+      "surface rather than a hole, so the gap is invisible in the deliverable unless "
+      "reported. Counterintuitively, flying CLOSER sees less under a projection, which "
+      "a test pins."),
     F("mp.type.closed_loop", "Closed-loop structure capture", "core", "Mission types",
       "Continuous loops at multiple radii and altitude rings, either direction, with "
       "the camera always facing the structure.",

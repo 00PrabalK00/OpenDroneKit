@@ -902,6 +902,46 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    def plan_complex_facade(self, polygon_xy: list[list[float]],
+                            courtyards: list[list[list[float]]] | None = None,
+                            standoff_m: float = 10.0,
+                            overhang_depth_m: float = 0.0,
+                            camera_fov_deg: float = 78.0) -> dict[str, Any]:
+        """Facade passes for a building with courtyards, recesses and overhangs.
+
+        A courtyard inverts the standoff: outside the building the aircraft stands off
+        outward, inside a courtyard it must offset inward, and treating the two alike
+        plans a mission that flies into masonry.
+
+        Overhangs are reported rather than planned around. A balcony or deep reveal
+        hides wall a single sweep never photographs, and the reconstruction renders the
+        unseen part as smooth surface rather than a hole -- so the omission is invisible
+        in the deliverable unless something says it is there.
+        """
+        from mission.footprints import (
+            FootprintRefused, analyse_footprint, assess_occlusion, courtyard_segments,
+        )
+
+        try:
+            analysis = analyse_footprint(polygon_xy)
+            segments = courtyard_segments(
+                polygon_xy, courtyards or [], standoff_m=float(standoff_m)
+            )
+            occlusion = assess_occlusion(
+                float(overhang_depth_m), standoff_m=float(standoff_m),
+                camera_fov_deg=float(camera_fov_deg),
+            )
+        except FootprintRefused as exc:
+            return fail(str(exc))
+        return ok(
+            footprint=analysis.to_dict(),
+            segments=[s.to_dict() for s in segments],
+            segment_count=len(segments),
+            courtyard_count=len(courtyards or []),
+            occlusion=occlusion.to_dict(),
+        )
+
+    @guard
     def size_reconstruction_job(self, image_count: int,
                                 work_dir: str = ".") -> dict[str, Any]:
         """Whether this machine can finish a reconstruction of this size.

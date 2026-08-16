@@ -244,3 +244,166 @@ def facade_segments(
             "than the geometry allows."
         )
     return segments
+
+
+def courtyard_segments(
+    outer: Sequence[Sequence[float]],
+    courtyards: Sequence[Sequence[Sequence[float]]],
+    *,
+    standoff_m: float,
+    min_wall_m: float = MIN_WALL_M,
+) -> list[FacadeSegment]:
+    """Facade passes for a building with interior courtyards.
+
+    A courtyard inverts the problem. On the outer wall the aircraft stands off
+    *outward*, away from the building. Inside a courtyard the building surrounds the
+    aircraft, so the standoff goes *inward*, toward the courtyard's centre -- offsetting
+    the same direction as the outer wall would fly straight into the masonry.
+
+    That inversion is why a courtyard cannot be handled by feeding the inner ring to the
+    outer-wall planner. The two rings need opposite offsets, and a planner that treats
+    them alike produces a mission that looks complete and flies into a wall.
+
+    Courtyard passes are also checked against the outer footprint: a standoff larger than
+    the courtyard is wide puts the aircraft inside the building on the far side.
+    """
+    segments = facade_segments(outer, standoff_m=standoff_m, min_wall_m=min_wall_m)
+
+    outer_points = _clean(outer)
+    if signed_area(outer_points) < 0:
+        outer_points = list(reversed(outer_points))
+
+    for court_index, courtyard in enumerate(courtyards):
+        points = _clean(courtyard)
+        if len(points) < 3:
+            raise FootprintRefused(
+                f"Courtyard {court_index} has fewer than 3 distinct corners."
+            )
+        # Reversed relative to the outer ring, so the same right-of-travel rule puts the
+        # offset into the open courtyard rather than into the building.
+        if signed_area(points) > 0:
+            points = list(reversed(points))
+
+        found = 0
+        count = len(points)
+        for index in range(count):
+            start, end = points[index], points[(index + 1) % count]
+            length = math.dist(start, end)
+            if length < min_wall_m:
+                continue
+            dx, dy = (end[0] - start[0]) / length, (end[1] - start[1]) / length
+            nx, ny = dy, -dx
+            # Inset along the wall as well as away from it. Offsetting only outward puts
+            # the segment ends exactly on the corner, where they belong to both walls and
+            # sit on the courtyard boundary; the aircraft turns before the corner in any
+            # case, so pulling the ends in matches how the pass is actually flown.
+            inset = min(standoff_m, length / 3.0)
+            offset_start = (start[0] + nx * standoff_m + dx * inset,
+                            start[1] + ny * standoff_m + dy * inset)
+            offset_end = (end[0] + nx * standoff_m - dx * inset,
+                          end[1] + ny * standoff_m - dy * inset)
+            midpoint = ((offset_start[0] + offset_end[0]) / 2.0,
+                        (offset_start[1] + offset_end[1]) / 2.0)
+
+            # Must be inside the courtyard void: within the outer building outline but
+            # not inside the courtyard walls themselves.
+            inside_courtyard = all(
+                point_in_polygon(p, points) for p in (offset_start, offset_end, midpoint)
+            )
+            within_building = all(
+                point_in_polygon(p, outer_points)
+                for p in (offset_start, offset_end, midpoint)
+            )
+            if not (inside_courtyard and within_building):
+                continue
+
+            segments.append(FacadeSegment(
+                wall_index=1000 * (court_index + 1) + index,
+                start=offset_start,
+                end=offset_end,
+                length_m=length,
+                heading_deg=(math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0,
+            ))
+            found += 1
+
+        if found == 0:
+            raise FootprintRefused(
+                f"No pass fits inside courtyard {court_index} at a {standoff_m:g} m "
+                "standoff: the courtyard is narrower than twice the standoff, so the "
+                "aircraft would be in the far wall. Reduce the standoff or fly it as a "
+                "vertical descent rather than a facade sweep."
+            )
+    return segments
+
+
+@dataclass
+class OcclusionReport:
+    """Whether a single standoff sweep can actually see the whole facade."""
+
+    overhang_depth_m: float
+    standoff_m: float
+    occluded: bool
+    recommended_extra_passes: int
+    note: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "overhang_depth_m": round(self.overhang_depth_m, 2),
+            "standoff_m": round(self.standoff_m, 2),
+            "occluded": self.occluded,
+            "recommended_extra_passes": self.recommended_extra_passes,
+            "note": self.note,
+        }
+
+
+def assess_occlusion(
+    overhang_depth_m: float,
+    *,
+    standoff_m: float,
+    camera_fov_deg: float = 78.0,
+) -> OcclusionReport:
+    """Whether a balcony or overhang hides facade a nadir-ish sweep will never see.
+
+    A single vertical sweep at a fixed standoff photographs the outermost surface. Under
+    a balcony, a recessed window reveal, or a projecting cornice, the wall behind it is
+    simply not in view -- and the resulting model shows a smooth surface there rather
+    than a hole, so the gap does not announce itself.
+
+    Reported as extra oblique passes needed, not silently planned around, because the
+    caller may reasonably decide the recess does not matter for their inspection.
+    """
+    if standoff_m <= 0:
+        raise FootprintRefused("Standoff must be a positive distance in metres.")
+    if overhang_depth_m < 0:
+        raise FootprintRefused("Overhang depth cannot be negative.")
+
+    # How far under a projection the camera can see from a level sweep, given half the
+    # field of view. Deeper than this and the surface behind is hidden.
+    half_fov = math.radians(max(1.0, min(camera_fov_deg, 179.0)) / 2.0)
+    visible_depth = standoff_m * math.tan(half_fov)
+    occluded = overhang_depth_m > visible_depth
+
+    if not occluded:
+        note = (
+            f"An overhang of {overhang_depth_m:.2f} m is within the {visible_depth:.2f} m "
+            f"a {camera_fov_deg:g} degree lens sees under a projection at {standoff_m:g} m "
+            "standoff. One sweep covers it."
+        )
+        extra = 0
+    else:
+        extra = max(1, int(math.ceil(overhang_depth_m / max(visible_depth, 0.1))))
+        note = (
+            f"An overhang of {overhang_depth_m:.2f} m exceeds the {visible_depth:.2f} m "
+            f"visible under a projection at {standoff_m:g} m standoff. The wall behind it "
+            f"will not be photographed, and the reconstruction will show a smooth "
+            f"surface there rather than a gap -- the omission does not announce itself. "
+            f"Add about {extra} oblique pass(es) angled up under the projection, or "
+            "reduce the standoff."
+        )
+    return OcclusionReport(
+        overhang_depth_m=float(overhang_depth_m),
+        standoff_m=float(standoff_m),
+        occluded=occluded,
+        recommended_extra_passes=extra,
+        note=note,
+    )
