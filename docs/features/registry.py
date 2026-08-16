@@ -632,27 +632,28 @@ PROCESSING = [
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Jobs submitted, polled and cancelled across workers, with cooperative "
       "cancellation and honest failure reporting.",
-      "in_progress", ["tests/test_jobs.py", "tests/test_processing.py",
-                      "tests/test_job_queue.py", "tests/test_celery_broker.py"],
-      "Two layers. core/job_queue.py bounds concurrency in one process with strict "
-      "priority and opt-in retries that keep every attempt's own error. "
-      "services/worker/celery_app.py adds Celery over Redis for deployment: the queue "
-      "outlives the process that filled it, and workers can be on other machines. Both "
-      "open source, no managed service -- `docker compose up redis` is the whole "
-      "requirement, and the broker persists with appendonly so restarting IT does not "
-      "drop the queue it exists to protect. "
-      "The Celery settings are decisions, not defaults, and the tests assert them: late "
-      "acknowledgement so a worker OOM-killed mid-reconstruction returns its job rather "
-      "than taking it; prefetch of 1 so queue depth is not a lie while workers hoard "
-      "tasks they have not started; a six-hour visibility timeout so a slow job is not "
-      "handed to a second worker while the first still runs it; JSON only, because "
-      "pickle would let a queue entry execute arbitrary code on a worker. Four tests "
-      "run against a real Redis -- a broker test passing against a mock proves the mock "
-      "agrees with itself. "
-      "STAYS IN PROGRESS: the broker and its configuration are verified, but the "
-      "reconstruction pipeline is not yet submitted through it. Until a real job runs "
-      "end to end on a worker, this is infrastructure that works rather than "
-      "distributed processing that is used."),
+      "verified", ["tests/test_jobs.py", "tests/test_processing.py",
+                   "tests/test_job_queue.py", "tests/test_celery_broker.py",
+                   "tests/test_worker_tasks.py"],
+      "Three layers. core/job_queue.py bounds concurrency in one process with strict "
+      "priority and retries that keep every attempt's own error. "
+      "services/worker/celery_app.py puts the queue in Redis so it outlives the process "
+      "that filled it. services/worker/tasks.py runs the real pipeline on a worker. "
+      "The part that made this actually distributed rather than a thread pool with extra "
+      "steps is CANCELLATION. core/processing_runs.py cancels through a module-level "
+      "dict of threading.Events keyed by run id -- correct while the process calling "
+      "stop_processing_run is the process running the pipeline, and silently wrong the "
+      "moment a worker is elsewhere: the API sets an Event in its own memory, reports "
+      "the run cancelled, and the worker reconstructs for another forty minutes with "
+      "nobody told. The request now travels through Redis and is checked at each "
+      "progress callback, which is a stage boundary, which is where the recorded state "
+      "and the files on disk agree. "
+      "An unreachable broker answers 'no cancel pending' rather than 'cancel' -- the "
+      "safe direction, since treating a network blip as a stop would discard an hour of "
+      "reconstruction that was going fine. Cancel keys are cleared after a run so a "
+      "stale one cannot kill a later run that reuses the id. "
+      "Worker concurrency defaults to 1: reconstruction is memory-bound, so two on one "
+      "host is usually slower and occasionally fatal."),
     F("pr.large_datasets", "Large dataset processing", "workers", "Processing",
       "Thousands of images via chunking and memory-aware scheduling, with the job sized "
       "against the machine before it starts.",

@@ -140,6 +140,8 @@ services:
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
     volumes:
       - api_storage:/data/storage
+    # The Celery worker, not a bare python process: this is what consumes the queue.
+    command: ["python", "-m", "services.worker.tasks"]
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import core.geo' || exit 1"]
       interval: 30s
