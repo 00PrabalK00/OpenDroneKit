@@ -422,16 +422,20 @@ FLIGHT = [
       "verified", ["tests/test_mavlink_transfer.py::test_each_list_lands_in_its_own_slot"]),
     F("fl.sitl", "SITL verified flight", "core", "Flight",
       "The flight path exercised against a real ArduPilot autopilot rather than a mock.",
-      "not_started", [],
-      "PASSES IN DOCKER, and cannot count locally. Both tests go green against ArduPilot "
+      "implemented", ["tests/sitl/test_flight_lifecycle.py",
+                      "tests/sitl/test_mission_upload.py"],
+      "VERIFIED IN CI, AND ONLY THERE. Both tests go green against ArduPilot "
       "Copter-4.5.7 in infrastructure/docker/Dockerfile.sitl -- and they SKIP under a "
       "plain pytest, because SITL needs the container. Status is computed from passing "
-      "tests and a skip is not a pass, so this row reads not_started on any laptop no "
-      "matter how many times the container succeeds. That is the honest reading, not a "
-      "bookkeeping problem to argue away. "
-      ".github/workflows/ci.yml is the fix: it builds the image and runs the suite, and "
-      "FAILS if the tests skipped rather than ran -- a green tick over a skip would hide "
-      "this permanently. The row moves when CI has run on a push. "
+      "tests and a skip is not a pass, so this row reads implemented rather than "
+      "verified on any laptop no matter how many times the container succeeds. That is "
+      "the honest reading, not a bookkeeping problem to argue away. "
+      "The CI status job closes the gap without weakening it: the sitl job publishes the "
+      "container's junit report and tools/feature_status.py merges it with "
+      "--extra-report, so the row is earned by a flight run that actually happened "
+      "rather than by anyone's belief about what the container would do. CI FAILS if "
+      "those tests skipped rather than ran, and fails again if the report is missing or "
+      "empty -- a green tick over a skip would hide this permanently. "
       "Worth recording what SITL already caught, since it is the argument for the whole "
       "harness: our missions put NAV_TAKEOFF at sequence 0, which MAVLink reserves for "
       "home, so ArduPilot silently overwrote it and the aircraft would never have taken "
