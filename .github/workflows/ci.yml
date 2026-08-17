@@ -1,9 +1,14 @@
 # CI for OpenDroneKit.
 #
-# Three jobs, because three kinds of thing here cannot be checked the same way.
+# Four jobs, because these things cannot be checked the same way.
 #
 # `tests` is the fast one and runs on every push. It covers the whole suite except the
 # parts that need infrastructure, and it is the gate that must stay green.
+#
+# `status` computes the feature registry from what actually passed, and it runs last
+# because it needs results from more than one runner. Skipped tests count as no evidence
+# rather than as passes, so it can only see a flight test succeed if a container ran it
+# and published the report.
 #
 # `spatial` and `sitl` exist because of a specific failure mode this project keeps
 # hitting: a test that skips when its dependency is absent reports success while
@@ -62,11 +67,8 @@ jobs:
       - name: Test
         run: python -m pytest -q --durations=15
 
-      - name: Feature status must not regress
-        # --strict exits non-zero when any row drops below what it claims, which is the
-        # only automated defence against a capability quietly breaking: status is computed
-        # from passing tests, so a broken test silently downgrades a row.
-        run: python tools/feature_status.py --strict
+      # The strict status check lives in its own job below, because it needs the SITL
+      # evidence and that is produced by a different runner.
 
   spatial:
     name: PostGIS spatial
@@ -132,9 +134,14 @@ jobs:
         run: docker build -f infrastructure/docker/Dockerfile.sitl -t opendronekit-sitl:ci .
 
       - name: Fly the tests against real ArduPilot
+        # The junit report is the artefact that matters beyond this job: fl.sitl cannot
+        # be earned on a machine without ArduPilot, so this run is the only evidence
+        # that exists for it anywhere.
         run: |
           docker run --rm -v "${{ github.workspace }}:/workspace" \
-            opendronekit-sitl:ci | tee sitl.log
+            opendronekit-sitl:ci \
+            python3 -m pytest -m sitl tests/sitl -v --junit-xml=/workspace/sitl-report.xml \
+            | tee sitl.log
 
       - name: They must have run, not skipped
         # The whole point of this job. A skipped SITL suite is what makes fl.sitl read
@@ -144,3 +151,59 @@ jobs:
             echo "SITL tests did not run"; exit 1
           fi
           grep -E "[0-9]+ passed" sitl.log
+
+      # Published so the status job can count a run this repository cannot reproduce
+      # anywhere else. Without it fl.sitl reads not_started forever, however green the
+      # container is.
+      - name: Publish the flight evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sitl-report
+          path: sitl-report.xml
+
+  status:
+    name: Feature status
+    # Needs both, because status is computed from what actually passed and the two jobs
+    # prove different things. `tests` covers everything runnable on a plain runner; only
+    # `sitl` can produce evidence for a flight test, and only in a container.
+    needs: [tests, sitl]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Collect the flight evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: sitl-report
+
+      - name: The evidence must be real
+        # A missing or empty report would otherwise let the next step quietly compute
+        # status as though SITL had never been asked about -- which is the pre-CI
+        # situation this whole job exists to end.
+        run: |
+          test -s sitl-report.xml || { echo "no SITL evidence to merge"; exit 1; }
+          grep -q "<testcase" sitl-report.xml || { echo "SITL report has no cases"; exit 1; }
+
+      - name: Feature status must not regress
+        # --strict exits non-zero when any row drops below what it claims, which is the
+        # only automated defence against a capability quietly breaking: status is computed
+        # from passing tests, so a broken test silently downgrades a row.
+        #
+        # --extra-report merges the container's results. A skipped test counts as no
+        # evidence rather than as a pass, so without this fl.sitl would be downgraded
+        # here exactly as it is on a laptop.
+        run: python tools/feature_status.py --strict --extra-report sitl-report.xml

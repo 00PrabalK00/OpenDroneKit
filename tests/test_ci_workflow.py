@@ -43,8 +43,35 @@ class TestTheWorkflowExists:
         triggers = workflow.get("on") or workflow.get(True)
         assert "push" in triggers and "pull_request" in triggers
 
-    def test_the_three_jobs_are_present(self, workflow) -> None:
-        assert set(workflow["jobs"]) == {"tests", "spatial", "sitl"}
+    def test_the_four_jobs_are_present(self, workflow) -> None:
+        assert set(workflow["jobs"]) == {"tests", "spatial", "sitl", "status"}
+
+
+class TestFlightEvidenceReachesTheStatusCheck:
+    """fl.sitl cannot be earned on a machine without ArduPilot, so the container's own
+    junit report is the only evidence that exists for it anywhere.
+
+    Publishing it and merging it is what moves the row -- as opposed to hard-coding a
+    status that reflects what someone believes the container would do.
+    """
+
+    def test_the_sitl_job_writes_a_junit_report(self, raw) -> None:
+        assert "--junit-xml=/workspace/sitl-report.xml" in raw
+
+    def test_the_report_is_published_as_an_artifact(self, workflow) -> None:
+        steps = workflow["jobs"]["sitl"]["steps"]
+        assert any("upload-artifact" in str(step.get("uses", "")) for step in steps)
+
+    def test_the_status_job_waits_for_both_kinds_of_evidence(self, workflow) -> None:
+        assert set(workflow["jobs"]["status"]["needs"]) == {"tests", "sitl"}
+
+    def test_the_status_job_merges_the_flight_report(self, raw) -> None:
+        assert "--extra-report sitl-report.xml" in raw
+
+    def test_an_empty_report_fails_rather_than_computing_status_without_it(self, raw) -> None:
+        """Otherwise a broken upload silently returns to the pre-CI situation, where the
+        row is computed as though SITL had never been asked about."""
+        assert "no SITL evidence to merge" in raw
 
 
 class TestSkipsCannotPassAsSuccess:

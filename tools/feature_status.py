@@ -30,6 +30,55 @@ RANK = {"not_started": 0, "in_progress": 1, "implemented": 2, "verified": 3}
 ORDER = ["verified", "implemented", "in_progress", "not_started"]
 
 
+def classify(case) -> str:
+    """What a junit <testcase> actually says: passed, failed, or skipped.
+
+    Skipped is its own answer, and getting that wrong was a real defect here: a case was
+    read as broken only when it carried <failure> or <error>, so every SKIPPED test
+    landed in the passed set and counted as evidence for the feature that named it.
+
+    This project skips a lot on purpose -- weights that are gitignored, PostGIS that is
+    not running, SITL that needs a container -- and each of those skips was silently
+    promoting a row it had proved nothing about. "Status is computed from passing tests
+    and a skip is not a pass" was the claim; this makes it true.
+    """
+    if case.find("skipped") is not None:
+        return "skipped"
+    if case.find("failure") is not None or case.find("error") is not None:
+        return "failed"
+    return "passed"
+
+
+def node_id(case) -> str:
+    """Rebuild a pytest node id from a junit <testcase>.
+
+    junit gives a dotted classname and a bare name:
+
+        classname="tests.sitl.test_mission_upload.TestUpload"  name="test_home"
+        -> tests/sitl/test_mission_upload.py::TestUpload::test_home
+
+    The dots are ambiguous -- nothing marks where the directories stop and the module
+    begins -- so the module file is found by its name. Test modules are called test_*.py,
+    and the LAST segment matching that is the file; everything after it is the class.
+
+    Taking a fixed two segments instead, as this used to, is right only for a test
+    directly under tests/. Anything nested came out as `tests/sitl.py::...`, a path that
+    exists nowhere, so a selector naming a nested test matched nothing and its feature
+    could never be earned. tests/sitl is exactly that case.
+    """
+    parts = [p for p in case.get("classname", "").split(".") if p]
+    name = case.get("name", "")
+    if not parts:
+        return name
+    module_end = next(
+        (i for i in range(len(parts) - 1, -1, -1) if parts[i].startswith("test_")),
+        min(1, len(parts) - 1),
+    )
+    file_part = "/".join(parts[: module_end + 1]) + ".py"
+    rest = "::".join(parts[module_end + 1:])
+    return f"{file_part}::{rest}::{name}" if rest else f"{file_part}::{name}"
+
+
 def run_tests() -> tuple[set[str], set[str], str]:
     """Run the suite and return (passed node ids, failed node ids, raw report)."""
     report_path = REPO_ROOT / ".feature_report.json"
@@ -50,17 +99,15 @@ def run_tests() -> tuple[set[str], set[str], str]:
 
         tree = ET.parse(xml_path)
         for case in tree.iter("testcase"):
-            classname = case.get("classname", "")
-            name = case.get("name", "")
-            # junit classname is dotted: tests.test_geo.TestUmeyamaSimilarity
-            parts = classname.split(".")
-            if not parts:
-                continue
-            file_part = "/".join(parts[:2]) + ".py" if len(parts) >= 2 else parts[0]
-            rest = "::".join(parts[2:]) if len(parts) > 2 else ""
-            node = f"{file_part}::{rest}::{name}" if rest else f"{file_part}::{name}"
-            broken = case.find("failure") is not None or case.find("error") is not None
-            (failed if broken else passed).add(node)
+            node = node_id(case)
+            outcome = classify(case)
+            if outcome == "passed":
+                passed.add(node)
+            elif outcome == "failed":
+                failed.add(node)
+            # A skipped test joins neither set. Its selector then matches nothing, and
+            # evaluate() downgrades the row for lack of evidence rather than crediting a
+            # test that never ran.
         xml_path.unlink(missing_ok=True)
     report_path.unlink(missing_ok=True)
     return passed, failed, completed.stdout + completed.stderr
@@ -97,18 +144,59 @@ def evaluate(feature: Feature, passed: set[str], failed: set[str]) -> tuple[str,
     return feature.claimed, ""
 
 
+def read_report(xml_path: Path) -> tuple[set[str], set[str]]:
+    """Read passed and failed node ids from a junit XML written elsewhere.
+
+    This exists for evidence that cannot be produced on the machine asking the question.
+    fl.sitl is the case: its tests need ArduPilot in a container, they skip under a plain
+    pytest, and a skip is not a pass -- so on any laptop the row is honestly not_started
+    no matter how many times the container goes green.
+
+    CI runs that container. Passing its junit report in here is how the run that DID
+    happen gets counted, rather than having the status hard-coded to what someone
+    believes the container would do.
+    """
+    import xml.etree.ElementTree as ET
+
+    passed: set[str] = set()
+    failed: set[str] = set()
+    tree = ET.parse(xml_path)
+    for case in tree.iter("testcase"):
+        node = node_id(case)
+        outcome = classify(case)
+        if outcome == "passed":
+            passed.add(node)
+        elif outcome == "failed":
+            failed.add(node)
+    return passed, failed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python tools/feature_status.py")
     parser.add_argument("--markdown", action="store_true", help="Rewrite docs/FEATURES.md")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable status")
     parser.add_argument("--strict", action="store_true", help="Exit non-zero on any downgrade")
     parser.add_argument("--no-tests", action="store_true", help="Skip the test run (claims only)")
+    parser.add_argument(
+        "--extra-report", type=Path, action="append", default=[],
+        help="junit XML from a run this machine cannot perform (e.g. the SITL container)",
+    )
     args = parser.parse_args(argv)
 
     if args.no_tests:
         passed, failed, output = set(), set(), "(test run skipped)"
     else:
         passed, failed, output = run_tests()
+
+    # Evidence from elsewhere is merged in, and a failure there still counts as a
+    # failure: an outside report can promote a row only by passing, never by being
+    # quieter than the local run.
+    for extra in args.extra_report:
+        extra_passed, extra_failed = read_report(extra)
+        passed |= extra_passed
+        failed |= extra_failed
+        output += f"\n(merged {len(extra_passed)} passed, {len(extra_failed)} failed from {extra})"
+    passed -= failed
 
     results = []
     downgrades = []

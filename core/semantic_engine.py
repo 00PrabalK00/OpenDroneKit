@@ -23,6 +23,47 @@ from . import geo
 CLASS_NODATA = 65535
 
 
+def onnx_model_files(model_path: str | Path) -> list[Path]:
+    '''Every file that makes up an ONNX model, graph first.
+
+    A large ONNX model does not fit in one file. Anything over 2 GB of initialisers must
+    use external data, and torch's exporter reaches for it well below that: the
+    shared_semantic export is a 1.1 MB graph beside a 378 MB ``.onnx.data`` sidecar
+    holding 99.7% of the weights.
+
+    That matters because identity is the whole reason a digest is recorded. Hashing the
+    graph alone would let the sidecar be replaced with different weights while every
+    published metric, and the digest that is supposed to tie those metrics to a
+    particular file, stayed valid.
+
+    Sidecars are found by name: the exporter writes them beside the graph with the
+    graph's filename as their prefix. The manifest and export report do not match that
+    prefix (``x.manifest.json`` against ``x.onnx``), so they are not swept in.
+    '''
+    graph = Path(model_path)
+    siblings = sorted(
+        path for path in graph.parent.glob(graph.name + '*')
+        if path != graph and path.is_file()
+    )
+    return [graph, *siblings]
+
+
+def sha256_onnx_model(model_path: str | Path) -> str:
+    '''Digest a whole ONNX model, including any external-data sidecars.
+
+    Each file contributes its name as well as its bytes, so renaming a sidecar -- which
+    breaks loading -- changes the digest rather than going unnoticed.
+    '''
+    digest = hashlib.sha256()
+    for path in onnx_model_files(model_path):
+        digest.update(path.name.encode('utf-8'))
+        digest.update(b'\0')
+        with path.open('rb') as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 class SemanticInferenceRefused(RuntimeError):
     '''Raised when an inference request cannot make a defensible result.'''
 
@@ -226,11 +267,9 @@ class ONNXSemanticPredictor:
         path = Path(model_path)
         if not path.is_file():
             raise SemanticInferenceRefused(f'Semantic ONNX model does not exist: {path}')
-        digest = hashlib.sha256()
-        with path.open('rb') as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-                digest.update(chunk)
-        self.checkpoint_sha256 = digest.hexdigest()
+        # The sidecar counts. Hashing only the graph would verify 1.1 MB of a 379 MB
+        # model and call the weights identified -- see sha256_onnx_model.
+        self.checkpoint_sha256 = sha256_onnx_model(path)
         self._session = ort.InferenceSession(str(path), providers=providers)
         self._input_name = self._session.get_inputs()[0].name
         self._mean = np.asarray(mean, dtype=np.float32)[:, None, None]
