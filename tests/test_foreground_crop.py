@@ -17,7 +17,12 @@ import random
 import numpy as np
 import pytest
 
-from training.train_seg import _foreground_crop
+# train_seg imports torch at module scope; see the note in
+# tests/test_export_shared_semantic.py. A bare import here fails collection for the
+# entire suite rather than for this file.
+pytest.importorskip("torch", reason="training-only dependency; the runtime uses cv2.dnn")
+
+from training.train_seg import _foreground_crop  # noqa: E402
 
 
 def _blank(height: int = 400, width: int = 600):

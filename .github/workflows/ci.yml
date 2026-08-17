@@ -51,6 +51,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # torch is NOT a runtime dependency -- the runtime loads ONNX through cv2.dnn --
+      # so it is deliberately absent from requirements.txt. But the training tests import
+      # it, and they carry importorskip so a machine without torch can still run the
+      # suite. A skip in CI is the lie this workflow exists to prevent, so the CPU wheel
+      # goes in here: ~200 MB, no CUDA, and those tests actually run.
+      - name: Install torch (CPU) so the training tests run rather than skip
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
       - name: Test
         run: python -m pytest -q --durations=15
 

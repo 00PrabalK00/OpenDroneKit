@@ -21,7 +21,11 @@ from pathlib import Path
 
 import pytest
 
-from training.train_det import _localise_data_yaml
+# train_det reaches train_seg for the shared config reader, which imports torch at
+# module scope; see the note in tests/test_export_shared_semantic.py.
+pytest.importorskip("torch", reason="training-only dependency; the runtime uses cv2.dnn")
+
+from training.train_det import _localise_data_yaml  # noqa: E402
 
 CORPUS_YAML = "path: D:/Projects/OpenDroneKit/training/data/prepared/x\ntrain: train\nval: val\n"
 

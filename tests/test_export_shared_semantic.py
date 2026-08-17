@@ -7,7 +7,15 @@ import json
 import pytest
 
 from core.semantic_engine import load_semantic_manifest
-from training.export_shared_semantic import build_runtime_manifest, sha256_file
+
+# The training modules import torch at module scope, and torch is not a runtime
+# dependency of this project -- the runtime loads ONNX through cv2.dnn. Without this the
+# import raises during collection and takes the WHOLE suite down with exit code 2, which
+# is how CI stayed red while every individual test was fine. CI installs the CPU wheel so
+# these still run there; the skip is for machines that only ever run the shipped code.
+pytest.importorskip("torch", reason="training-only dependency; the runtime uses cv2.dnn")
+
+from training.export_shared_semantic import build_runtime_manifest, sha256_file  # noqa: E402
 
 
 def test_runtime_manifest_uses_onnx_hash_and_numeric_metrics(tmp_path):

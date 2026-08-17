@@ -16,7 +16,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from training.train_change import (
+# train_change imports torch at module scope; see the note in
+# tests/test_export_shared_semantic.py.
+pytest.importorskip("torch", reason="training-only dependency; the runtime uses cv2.dnn")
+
+from training.train_change import (  # noqa: E402
     ChangeConfig,
     ChangePairDataset,
     evaluate,
