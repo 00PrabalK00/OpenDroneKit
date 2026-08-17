@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import pathlib
 from pathlib import Path
 import sqlite3
 
@@ -30,6 +31,35 @@ def _bounds(annotation: dict) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _detector_weights_present() -> bool:
+    """Whether an installed detector's ONNX file is actually on this machine.
+
+    The point of this test is that the PRODUCTION route runs -- real weights, real
+    inference, no mock. That makes it unrunnable on a fresh clone, where the weights are
+    gitignored as large binaries, and skipping is the only honest answer: mocking the
+    detector here would leave a test that passes while checking the opposite of what it
+    claims.
+    """
+    import json
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "models"
+    try:
+        registry = json.loads((root / "model_registry.json").read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    return any(
+        (root / entry["path"]).is_file()
+        for entry in registry.get("models", {}).values()
+        if entry.get("status") == "installed"
+        and entry.get("kind", "").startswith("onnx")
+        and entry.get("path")
+    )
+
+
+@pytest.mark.skipif(
+    not _detector_weights_present(),
+    reason="no installed ONNX weights on this machine; this test must not mock the detector",
+)
 def test_real_model_prelabels_retain_claims_through_every_review_action(tmp_path, monkeypatch):
     """The production ONNX route runs; no detector, file, DB or review call is mocked."""
     assert FIXTURE.is_file()
