@@ -10,6 +10,24 @@ They are deliberately opt-in. A normal `pytest` run collects these tests but ski
 them, so machines without a simulator stay green. Only the exact `-m sitl` selection
 starts a simulator.
 
+## Where the `fl.sitl` status comes from
+
+That skip has a consequence worth stating plainly: feature status is computed from
+passing tests, a skip counts as **no evidence** rather than as a pass, and so `fl.sitl`
+reads *implemented* on any laptop no matter how many times the container succeeds.
+
+CI is where the row is earned. The `sitl` job builds the image, flies both suites against
+ArduPilot Copter-4.5.7, fails if they skipped rather than ran, and publishes the junit
+report. The `status` job merges that report through
+`tools/feature_status.py --extra-report`, so *verified* is backed by a flight run that
+actually happened rather than by a status written down by hand. A missing or empty report
+fails the job instead of computing status as though SITL had never been asked about.
+
+This is the harness that caught the mission sequence bug: our missions put `NAV_TAKEOFF`
+at sequence 0, which MAVLink reserves for home. ArduPilot silently overwrote it and the
+aircraft would never have taken off — while every mock-based test passed, because a mock
+stores what it is given and only a real autopilot has an opinion about sequence 0.
+
 ## Install ArduPilot SITL
 
 ArduPilot's supported Linux setup starts with its complete build environment. The

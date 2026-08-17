@@ -125,6 +125,22 @@ Prometheus metrics at `/metrics`. No external telemetry is sent anywhere by defa
 that is a property the project tests for rather than a promise in a document
 (`inf.offline_first`).
 
+## What CI checks, and why it is four jobs
+
+`tests` is the fast gate. `spatial` and `sitl` exist because a test that skips when its
+dependency is absent reports success while checking nothing — right on a laptop, a lie in
+CI — so both assert their tests actually **ran** rather than skipped.
+
+`status` runs last and needs the other two, because feature status is computed from
+passing tests and a skip counts as no evidence. That makes `fl.sitl` unearnable anywhere
+except a machine with ArduPilot, so the `sitl` job publishes its junit report and `status`
+merges it with `tools/feature_status.py --extra-report`. A failure in the merged report
+still counts as a failure: an outside run can promote a row by passing, never by being
+quieter than the local one. A missing or empty report fails the job.
+
+The practical consequence for anyone reading a status: **`verified` means tests named by
+that row passed in a run that happened**, not that someone decided the feature was done.
+
 ## SITL
 
 `infrastructure/docker/Dockerfile.sitl` builds ArduPilot Copter-4.5.7 with the test
