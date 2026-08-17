@@ -19,7 +19,11 @@ data_root: training/data/prepared/roads_det
 model_id: yolo11l.pt
 image_size: 640
 batch_size: 16
-epochs: 100
+# 60, not 100. Measured: a 100-epoch run on Kaggle reached epoch 83 in about eight
+# hours and was cancelled at the session limit, producing nothing -- the checkpoints
+# existed but were never packaged. Sixty finishes inside the window with margin.
+# A run that completes at 60 beats a run that dies at 83.
+epochs: 60
 patience: 20
 optimizer: auto
 lr: 0.01

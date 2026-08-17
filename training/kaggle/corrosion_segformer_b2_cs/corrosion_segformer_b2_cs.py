@@ -298,6 +298,9 @@ def main() -> int:
         ]
         command += gpu_memory_overrides()
     report_resources("before training")
+    # Started before training so a run killed at the session limit still leaves its best
+    # epoch behind. Kaggle packages /kaggle/working; OUT is scratch and is not packaged.
+    start_checkpoint_mirror()
     print("running:", " ".join(command), flush=True)
 
     # Piped rather than inherited so the child's output goes through the tee above. With
@@ -352,6 +355,48 @@ def report_resources(when: str) -> None:
     except Exception:
         pass
     print(line, flush=True)
+
+
+def start_checkpoint_mirror(interval_s: int = 300):
+    """Copy checkpoints into /kaggle/working WHILE training runs, not only after.
+
+    A roads run reached epoch 83 of 100 and was cancelled at the session limit. It
+    produced nothing at all, because artefacts were collected once, at the end, and the
+    end never came. Eight hours of GPU for zero output, and the checkpoints existed the
+    whole time -- they were simply in a directory Kaggle does not package.
+
+    So a daemon thread mirrors them every few minutes. A cancelled or timed-out run now
+    yields its best epoch so far, which for a long run is most of the value. The cost is
+    a few seconds of copying per interval.
+
+    Daemon so it cannot keep the kernel alive, and every failure is swallowed: a mirror
+    that crashed the run it exists to protect would be worse than no mirror.
+    """
+    import threading
+    import time as _time
+
+    wanted = ("best.pt", "last.pt", "best.pth", "last.pth", "summary.json", "results.csv")
+    staged = Path("/kaggle/working")
+
+    def mirror() -> None:
+        while True:
+            _time.sleep(interval_s)
+            try:
+                for name in wanted:
+                    for source in OUT.rglob(name):
+                        target = staged / source.name
+                        # Skip unchanged files so a 200 MB checkpoint is not rewritten
+                        # every interval for no reason.
+                        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+                            continue
+                        shutil.copy2(source, target)
+                        print(f"mirrored {source.name} ({target.stat().st_size / 1e6:.1f} MB)", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"checkpoint mirror skipped a pass: {exc}", flush=True)
+
+    thread = threading.Thread(target=mirror, name="checkpoint-mirror", daemon=True)
+    thread.start()
+    return thread
 
 
 def collect_outputs() -> None:
