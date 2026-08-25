@@ -1,0 +1,23 @@
+numpy._core._exceptions._ArrayMemoryError: Unable to allocate 51.4 MiB for an array with shape (3672, 4896, 3) and data type uint8
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\Projects\OpenDroneKit\run_pipeline.py", line 294, in <module>
+    main()
+  File "D:\Projects\OpenDroneKit\run_pipeline.py", line 285, in main
+    result = run_pipeline(image_dir=args.images, output_dir=args.output, config=config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\OpenDroneKit\core\pipeline.py", line 646, in run_pipeline
+    return pipeline.run(
+           ^^^^^^^^^^^^^
+  File "D:\Projects\OpenDroneKit\core\pipeline.py", line 251, in run
+    crack = detect_cracks(image, min_area_px=self.config.crack_min_area_px)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\OpenDroneKit\core\detection.py", line 610, in detect_cracks
+    return _crack_result_from_mask(image_bgr, binary, model_used, model_key)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Projects\OpenDroneKit\core\detection.py", line 640, in _crack_result_from_mask
+    overlay = cv2.addWeighted(image_bgr, 0.65, overlay, 0.35, 0.0)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+SystemError: <built-in function addWeighted> returned a result with an exception set

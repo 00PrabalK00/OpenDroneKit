@@ -231,6 +231,42 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     root.appendChild(el("div", { class: `canvas-overlay ${overlay.at || "tr"}`, html: overlay.html }));
   }
 
+  // What the current view mode actually has to show. A map canvas keeps its map; every
+  // other view either renders a real product or says which one is missing and how to
+  // produce it -- an empty canvas is indistinguishable from a broken one.
+  queueMicrotask(async () => {
+    const { currentView } = await import("./viewstate.js");
+    const { DATA } = await import("./demo.js");
+    const view = currentView();
+    // A map canvas keeps its map ONLY while the view is the map. Returning early for
+    // every map canvas meant the thermal workspace -- which is a map -- ignored its own
+    // RGB, Thermal and Fused buttons entirely.
+    if (!view || view === "map") return;
+    const product = (DATA.products || {})[view];
+    if (!product) {
+      // Named, not blank. "Nothing here" and "this has not been produced yet" look the
+      // same on a dark canvas, and only one of them tells the user what to do.
+      if (view && view !== "map") {
+        root.querySelectorAll(".placeholder").forEach((node) => node.remove());
+        root.appendChild(el("div", { class: "placeholder" }, [
+          el("div", {}, [
+            el("div", { class: "big", text: `No ${view} product yet` }),
+            el("div", { class: "small", text: "Import a dataset and run Process to produce one." }),
+          ]),
+        ]));
+      }
+      return;
+    }
+    root.querySelectorAll(".placeholder").forEach((node) => node.remove());
+    const image = el("img", { class: "canvas-product" });
+    image.setAttribute("src", product.src);
+    image.setAttribute("alt", product.note);
+    root.appendChild(image);
+    root.appendChild(el("div", { class: "canvas-overlay bl" }, [
+      el("span", { class: "chip", text: product.note }),
+    ]));
+  });
+
   root.appendChild(el("div", { class: "placeholder" }, [
     el("div", {}, [
       el("div", { class: "big", text: title || kind }),
@@ -243,8 +279,30 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     // dock has put it in the document. Mounting synchronously gives a map 0px wide.
     queueMicrotask(async () => {
       if (!root.isConnected) return;
-      const { mountMap } = await import("./mapview.js");
-      mountMap(root, typeof map === "object" ? map : {});
+      const { mountMap, showMission } = await import("./mapview.js");
+      const { DATA } = await import("./demo.js");
+      const options = typeof map === "object" ? { ...map } : {};
+
+      // Centre on the site the data actually describes rather than a hardcoded city.
+      const mission = DATA.mission || {};
+      const footprint = DATA.footprint || {};
+      if (!options.centre && footprint.centre) options.centre = footprint.centre;
+      if (!options.zoom && footprint.centre) options.zoom = 17;
+
+      const instance = mountMap(root, options);
+      if (!instance) return;
+
+      // Draw the planned flight. showMission has existed since the map view was
+      // written and nothing ever called it, which is why every canvas was an empty
+      // basemap -- the path was computed and then thrown away.
+      if (options.mission !== false && (mission.line || []).length > 1) {
+        const draw = () => showMission(instance, {
+          line: mission.line,
+          captures: footprint.captures || [],
+        });
+        if (instance.isStyleLoaded()) draw();
+        else instance.once("load", draw);
+      }
     });
   }
   return root;

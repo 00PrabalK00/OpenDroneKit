@@ -133,9 +133,130 @@ def metric_cards() -> list[dict[str, Any]]:
     return cards
 
 
+def survey_footprint() -> dict[str, Any]:
+    """The survey extent, read from the imagery's own GPS tags.
+
+    Not a bounding box someone drew. Every one of the 24 images in the subset carries a
+    GPS EXIF tag, so the footprint below is where the aircraft actually was -- which is
+    what makes the planned path drawn over it a plan for a real place.
+    """
+    import glob
+
+    from PIL import Image
+
+    points = []
+    for path in sorted(glob.glob(str(REPO_ROOT / "training/data/aukerman_subset/*.JPG"))):
+        try:
+            exif = Image.open(path)._getexif() or {}
+        except Exception:  # noqa: BLE001 - an unreadable image is not a build failure
+            continue
+        gps = exif.get(34853)
+        if not gps:
+            continue
+
+        def to_degrees(value: Any) -> float:
+            return float(value[0]) + float(value[1]) / 60 + float(value[2]) / 3600
+
+        lat = to_degrees(gps[2]) * (-1 if gps[1] == "S" else 1)
+        lon = to_degrees(gps[4]) * (-1 if gps[3] == "W" else 1)
+        points.append((lon, lat))
+
+    if not points:
+        return {}
+    lons = [p[0] for p in points]
+    lats = [p[1] for p in points]
+    return {
+        "captures": points,
+        "bounds": [min(lons), min(lats), max(lons), max(lats)],
+        "centre": [sum(lons) / len(points), sum(lats) / len(points)],
+        "provenance": f"GPS EXIF from {len(points)} images in the Aukerman subset.",
+    }
+
+
+def planned_mission(footprint: dict[str, Any]) -> dict[str, Any]:
+    """A mission planned over that footprint by the production planner.
+
+    mission.MissionPlanner.generate is the same code the application runs when a user
+    presses Plan. Calling it here rather than drawing a zigzag means the path on screen
+    has real spacing, a real distance and a real GSD, and it changes if the planner
+    changes.
+    """
+    if not footprint:
+        return {}
+    from mission.planner import MissionPlanner
+
+    west, south, east, north = footprint["bounds"]
+    polygon = [[west, south], [east, south], [east, north], [west, north]]
+    plan = MissionPlanner().generate(
+        polygon_lonlat=polygon,
+        altitude_m=60.0,
+        mode="grid",
+        camera="mavic2pro",
+    )
+    data = plan.to_dict() if hasattr(plan, "to_dict") else dict(plan)
+    waypoints = data.get("waypoints") or []
+    return {
+        "polygon": polygon,
+        # [lon, lat] pairs for the map layer; altitude is carried separately.
+        "line": [[float(w[0]), float(w[1])] for w in waypoints],
+        "waypoint_count": len(waypoints),
+        "altitude_m": data.get("altitude_m"),
+        "distance_m": round(float(data.get("path_distance_m") or 0.0), 1),
+        "duration_min": round(float(data.get("estimated_time_min") or 0.0), 1),
+        "gsd_cm": round(float(data.get("estimated_gsd_cm") or 0.0), 2),
+        "camera": data.get("camera"),
+        "mode": data.get("mode"),
+        "provenance": "Planned by mission.MissionPlanner over the surveyed footprint.",
+    }
+
+
+def products() -> dict[str, Any]:
+    """Real outputs the pipeline wrote, indexed by the view that shows them.
+
+    These are detection overlays and coverage rasters produced by running the pipeline
+    over the Aukerman subset -- the model's actual output on real imagery, downscaled for
+    the UI. A view with no product here renders an explicit "not produced yet" state
+    naming what to run, rather than an empty canvas that looks broken.
+    """
+    root = REPO_ROOT / "app" / "web" / "assets" / "demo"
+    known = {
+        "crack": "Crack segmentation overlay, SegFormer-B5 at the shipped 0.85 threshold.",
+        "structural": "Structural multiclass detector output, YOLO11x on CODEBRIM.",
+        "metal": "Metal and corrosion detector output.",
+        "coverage": "Coverage heatmap from the capture-vs-plan check.",
+        "mosaic": "Preview mosaic of the survey.",
+    }
+    # Which view button shows which product. The buttons are named for what an operator
+    # wants to see; the files are named for what produced them, and the two are not the
+    # same vocabulary.
+    view_alias = {
+        "rgb": "mosaic",
+        "semantic": "structural",
+        "crack": "crack",
+        "corrosion": "metal",
+    }
+    found = {}
+    for key, note in known.items():
+        path = root / f"{key}.jpg"
+        if path.is_file():
+            found[key] = {
+                "src": f"assets/demo/{key}.jpg",
+                "note": note,
+                "bytes": path.stat().st_size,
+            }
+    for view, key in view_alias.items():
+        if key in found and view not in found:
+            found[view] = dict(found[key], view_of=key)
+    return found
+
+
 def build() -> dict[str, Any]:
+    footprint = survey_footprint()
     return {
         "project": AUKERMAN,
+        "footprint": footprint,
+        "mission": planned_mission(footprint),
+        "products": products(),
         "models": installed_models(),
         "metrics": metric_cards(),
         "capabilities": capability_counts(),
@@ -167,6 +288,12 @@ def main() -> int:
     print(f"  models: {len(payload['models'])}")
     print(f"  metric cards: {len(payload['metrics'])}")
     print(f"  capabilities: {payload['capabilities']}")
+    print(f"  products: {sorted(payload.get('products') or {})}")
+    mission = payload.get("mission") or {}
+    if mission:
+        print(f"  mission: {mission['waypoint_count']} waypoints, "
+              f"{mission['distance_m']} m, {mission['duration_min']} min, "
+              f"GSD {mission['gsd_cm']} cm/px")
     return 0
 
 

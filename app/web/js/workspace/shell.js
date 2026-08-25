@@ -12,6 +12,7 @@ import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DEMO, demoEnabled } from "./demo.js";
 import { call, connected, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
+import { setView } from "./viewstate.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -170,6 +171,11 @@ export class Shell {
     const workspace = WORKSPACE_BY_ID[id];
     if (!workspace) return;
     this.workspaceId = id;
+    // Each workspace opens on its own canvas. Carrying a thermal or point-cloud view
+    // across a workspace switch leaves the operator looking at the previous instrument
+    // through the new one, and there would be no way back to the map.
+    setView("map");
+    this.canvasView = "map";
     localStorage.setItem(LAST_WORKSPACE, id);
 
     [...this.navItems.children].forEach((button, index) =>
@@ -233,23 +239,18 @@ export class Shell {
       return;
     }
 
-    const blocked = prerequisite(action, this.stateSummary());
-    if (blocked) {
-      this.toast(`${action}: ${blocked}`, "warn");
-      return;
-    }
-
-    // Anything that starts real work or moves an aircraft asks first. A misclick on
-    // Abort must not be the same gesture as a misclick on Pan.
-    const question = entry.confirm;
-    if (question && !window.confirm(question)) return;
-
-    // Local behaviour first: a view mode, a canvas tool or a workspace jump is a client
-    // decision, and routing it through Python would be slower, would fail when
-    // disconnected, and would buy nothing.
+    // Local behaviour BEFORE the prerequisite gate. A view mode, a canvas tool and a
+    // workspace jump are client decisions that need no bridge -- and the gate refuses
+    // everything with "Not connected to the application" when there is none, which
+    // silently disabled every view button in a browser and in the demo.
     if (entry.view) {
       this.canvasView = entry.view;
       this.workspaceEl.dataset.view = entry.view;
+      // Repaint, rather than setting an attribute nobody reads. Recording the mode and
+      // leaving the canvas untouched is exactly as dead as the stub this replaced --
+      // the button reported success and the screen did not move.
+      setView(entry.view);
+      this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
       this.toast(`View: ${action}`, "ok");
       return;
     }
@@ -264,6 +265,17 @@ export class Shell {
       this.toast(`Opened ${action}.`, "ok");
       return;
     }
+
+    const blocked = prerequisite(action, this.stateSummary());
+    if (blocked) {
+      this.toast(`${action}: ${blocked}`, "warn");
+      return;
+    }
+
+    // Anything that starts real work or moves an aircraft asks first. A misclick on
+    // Abort must not be the same gesture as a misclick on Pan.
+    const question = entry.confirm;
+    if (question && !window.confirm(question)) return;
 
     this.toast(`${action}…`);
     try {

@@ -492,3 +492,15 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
 .toast.warn { border-left-color: var(--warn); }
 .toast.error { border-left-color: var(--error); color: #ffd9d7; }
 .toast.info { border-left-color: var(--accent); }
+
+
+/* A product image fills the canvas. object-fit: contain so a 4:3 overlay is not
+   stretched into a claim about geometry it does not make. */
+.canvas-product {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg-app);
+}

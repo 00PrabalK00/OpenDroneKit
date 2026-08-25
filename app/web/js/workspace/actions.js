@@ -261,6 +261,7 @@ export const ACTIONS = {
      Local, and real: these switch what the canvas is showing rather than calling the
      application. A view toggle that made a round trip would be slower and would fail
      when disconnected, for no benefit -- what to draw is a client decision. */
+  Map: { view: "map", describe: "Back to the map." },
   RGB: { view: "rgb", describe: "Show the RGB orthomosaic." },
   Thermal: { view: "thermal", describe: "Show the radiometric thermal layer." },
   "3D Thermal": { view: "thermal3d", describe: "Thermal draped over the surface." },

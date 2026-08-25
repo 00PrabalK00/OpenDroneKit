@@ -188,3 +188,132 @@ class TestEveryModuleActuallyParses:
             capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, f"{module} does not load: {result.stderr.strip()}"
+
+
+class TestEveryButtonIsActuallyClicked:
+    """Executed, not read.
+
+    Every other test in this file greps actions.js for a method name. That would pass
+    while the shell threw on the first click, and it DID pass while a syntax error in
+    shell.js left the window blank -- text in a file is not evidence that a button works.
+
+    click_every_button.mjs mounts the real Shell against a stub DOM and a fake pywebview
+    bridge, then clicks all seventy-five toolbar actions across all fourteen workspaces
+    and records what each one did: called the Api, changed the view, armed a tool, or
+    declared itself unavailable. A button that throws, or that does nothing at all
+    without saying so, fails the run.
+    """
+
+    @pytest.fixture(scope="class")
+    def clicked(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("node") is None:
+            pytest.skip("node is not installed")
+        script = WORKSPACE_JS / "__tests__" / "click_every_button.mjs"
+        return subprocess.run(
+            ["node", str(script)], cwd=script.parent,
+            capture_output=True, text=True, timeout=180,
+        )
+
+    def test_no_button_throws(self, clicked) -> None:
+        assert "THREW" not in clicked.stdout, clicked.stdout
+        assert clicked.returncode == 0, f"{clicked.stdout}\n{clicked.stderr}"
+
+    def test_no_button_is_silent(self, clicked) -> None:
+        """Doing nothing and saying nothing is the failure the user actually hit."""
+        assert "SILENT" not in clicked.stdout, clicked.stdout
+
+    def test_every_button_responded(self, clicked) -> None:
+        assert "every button responded" in clicked.stdout, clicked.stdout
+
+    def test_most_buttons_reach_the_application(self, clicked) -> None:
+        line = [l for l in clicked.stdout.splitlines() if l.startswith("ok: ")]
+        assert line, clicked.stdout
+        assert int(line[0].split(":")[1]) >= 50
+
+
+class TestTheCanvasActuallyChanges:
+    """The failure the user reported: 'the canvas is just not changing no matter what
+    I click'.
+
+    It was true twice over. The view buttons recorded a mode on the shell and set a data
+    attribute nobody read, so the canvas never repainted. And once repainting was added,
+    the prerequisite gate refused every action with "Not connected to the application"
+    before the local handler ran -- so in a browser, and in the demo, no view button did
+    anything at all.
+
+    A view mode, a canvas tool and a workspace jump are client decisions that need no
+    bridge. They are handled before the gate now, and this holds that order.
+    """
+
+    def test_local_actions_run_before_the_connection_gate(self, shell_js) -> None:
+        local = shell_js.index("if (entry.view)")
+        gate = shell_js.index("const blocked = prerequisite(")
+        assert local < gate, (
+            "the connection gate runs first, which disables every view button when "
+            "there is no bridge"
+        )
+
+    def test_switching_view_repaints_the_canvas(self, shell_js) -> None:
+        assert "setView(entry.view)" in shell_js
+        assert "this.dock.render(WORKSPACE_BY_ID[this.workspaceId])" in shell_js
+
+    def test_the_canvas_reads_the_current_view(self) -> None:
+        primitives = (WORKSPACE_JS / "primitives.js").read_text(encoding="utf-8")
+        assert "currentView()" in primitives
+
+    def test_a_view_with_no_product_says_so(self) -> None:
+        """'Nothing here' and 'this has not been produced yet' look identical on a dark
+        canvas, and only one of them tells the user what to do next."""
+        primitives = (WORKSPACE_JS / "primitives.js").read_text(encoding="utf-8")
+        assert "No ${view} product yet" in primitives
+        assert "run Process" in primitives
+
+    def test_the_placeholder_is_removed_by_class_not_tag(self) -> None:
+        """querySelectorAll("placeholder") is a TAG selector and matches nothing in a
+        real browser, so the stale placeholder stayed under the new content. The stub DOM
+        in the click harness strips the dot, which is why only a real browser caught it.
+        """
+        primitives = (WORKSPACE_JS / "primitives.js").read_text(encoding="utf-8")
+        assert 'querySelectorAll("placeholder")' not in primitives
+        assert 'querySelectorAll(".placeholder")' in primitives
+
+    def test_a_workspace_switch_returns_to_the_map(self, shell_js) -> None:
+        """Otherwise a thermal view follows you into the next workspace and there is no
+        button anywhere that puts the map back."""
+        assert 'setView("map")' in shell_js
+
+
+class TestThePlannedPathIsReal:
+    """'in the demo there should be planned drone paths'.
+
+    mapview.js has exported showMission since it was written and nothing ever called it,
+    so every canvas was an empty basemap: the path was computed and thrown away.
+    """
+
+    def test_the_canvas_draws_the_mission(self) -> None:
+        primitives = (WORKSPACE_JS / "primitives.js").read_text(encoding="utf-8")
+        assert "showMission(instance" in primitives
+
+    def test_the_mission_was_planned_by_the_planner(self) -> None:
+        """Not a zigzag drawn to look like a flight path."""
+        builder = (REPO_ROOT / "tools" / "build_demo_data.py").read_text(encoding="utf-8")
+        assert "MissionPlanner().generate(" in builder
+
+    def test_the_footprint_comes_from_the_imagery(self) -> None:
+        """The polygon is the survey's own GPS extent, so the plan is for a real place."""
+        builder = (REPO_ROOT / "tools" / "build_demo_data.py").read_text(encoding="utf-8")
+        assert "GPS EXIF" in builder
+
+    def test_the_demo_carries_a_planned_path(self) -> None:
+        import json
+
+        text = (WORKSPACE_JS / "demo-data.js").read_text(encoding="utf-8")
+        payload = json.loads(text[text.index("{"):text.rindex("}") + 1])
+        mission = payload.get("mission") or {}
+        assert mission.get("waypoint_count", 0) > 20, "no planned path in the demo data"
+        assert len(mission.get("line") or []) > 20
+        assert mission.get("distance_m", 0) > 0
+        assert mission.get("gsd_cm", 0) > 0
