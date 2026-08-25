@@ -422,9 +422,11 @@ FLIGHT = [
       "verified", ["tests/test_mavlink_transfer.py::test_each_list_lands_in_its_own_slot"]),
     F("fl.sitl", "SITL verified flight", "core", "Flight",
       "The flight path exercised against a real ArduPilot autopilot rather than a mock.",
-      "implemented", ["tests/sitl/test_flight_lifecycle.py",
-                      "tests/sitl/test_mission_upload.py"],
-      "VERIFIED IN CI, AND ONLY THERE. Both tests go green against ArduPilot "
+      "verified", ["tests/sitl/test_flight_lifecycle.py",
+                   "tests/sitl/test_mission_upload.py"],
+      "VERIFIED IN CI, AND ONLY THERE -- earned by run 32853156668, whose junit report "
+      "records 2 tests, 0 skipped, 0 failures against ArduPilot Copter-4.5.7. "
+      "Both tests go green against ArduPilot "
       "Copter-4.5.7 in infrastructure/docker/Dockerfile.sitl -- and they SKIP under a "
       "plain pytest, because SITL needs the container. Status is computed from passing "
       "tests and a skip is not a pass, so this row reads implemented rather than "
@@ -747,7 +749,7 @@ VISION = [
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
       "Trained model for corrosion with published validation metrics, reporting a "
       "severity grade it measured or refusing to report one at all.",
-      "implemented",
+      "verified",
       ["tests/test_corrosion_severity.py::TestItActuallyPredictsTheWorstGrade",
        "tests/test_corrosion_severity.py::TestRefusalRatherThanAGuessedGrade",
        "tests/test_corrosion_severity.py::TestTheGradeIsAnArgmaxNotAThreshold",
