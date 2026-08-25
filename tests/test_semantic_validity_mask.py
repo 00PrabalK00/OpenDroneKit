@@ -58,7 +58,7 @@ class TestValidityIsHonoured:
     def test_transparent_pixels_become_ignore(self, tmp_path) -> None:
         image = write_image(tmp_path / "img.tif", bands=4, invalid_rows=4)
         label = write_label(tmp_path / "lbl.tif")
-        _, mask = read_semantic_sample(sample(image, label))
+        _, mask, _ = read_semantic_sample(sample(image, label))
         assert (mask[:4, :] == IGNORE_INDEX).all(), (
             "no-data pixels were left as background; the model learns that absence of "
             "data is a confident negative"
@@ -67,34 +67,34 @@ class TestValidityIsHonoured:
     def test_valid_pixels_keep_their_class(self, tmp_path) -> None:
         image = write_image(tmp_path / "img2.tif", bands=4, invalid_rows=4)
         label = write_label(tmp_path / "lbl2.tif", value=1)
-        _, mask = read_semantic_sample(sample(image, label))
+        _, mask, _ = read_semantic_sample(sample(image, label))
         assert (mask[4:, :] == 1).all()
 
     def test_a_fully_opaque_tile_is_untouched(self, tmp_path) -> None:
         image = write_image(tmp_path / "img3.tif", bands=4, invalid_rows=0)
         label = write_label(tmp_path / "lbl3.tif", value=2)
-        _, mask = read_semantic_sample(sample(image, label))
+        _, mask, _ = read_semantic_sample(sample(image, label))
         assert not (mask == IGNORE_INDEX).any()
 
     def test_a_three_band_image_still_loads(self, tmp_path) -> None:
         # OpenEarthMap tiles are RGB with no alpha; they must not be affected.
         image = write_image(tmp_path / "img4.tif", bands=3)
         label = write_label(tmp_path / "lbl4.tif", value=1)
-        _, mask = read_semantic_sample(sample(image, label))
+        _, mask, _ = read_semantic_sample(sample(image, label))
         assert not (mask == IGNORE_INDEX).any()
 
     def test_the_image_itself_is_unchanged_in_shape(self, tmp_path) -> None:
         """Ignore marks the label, not the pixels: geometry must not shift."""
         image = write_image(tmp_path / "img5.tif", bands=4, invalid_rows=4)
         label = write_label(tmp_path / "lbl5.tif")
-        array, mask = read_semantic_sample(sample(image, label))
+        array, mask, _ = read_semantic_sample(sample(image, label))
         assert array.shape == (3, 16, 16)
         assert mask.shape == (16, 16)
 
     def test_ignore_survives_a_class_map_remap(self, tmp_path) -> None:
         image = write_image(tmp_path / "img6.tif", bands=4, invalid_rows=4)
         label = write_label(tmp_path / "lbl6.tif", value=3)
-        _, mask = read_semantic_sample(
+        _, mask, _ = read_semantic_sample(
             sample(image, label, class_map={"3": 1})
         )
         assert (mask[:4, :] == IGNORE_INDEX).all()

@@ -87,6 +87,14 @@ def index_spacenet7(
             'class_id': class_names['building'],
             'class_ids': [class_names['building']],
             'background_id': 255,
+            # SpaceNet 7's annotators drew every building they saw across the whole
+            # tile, so a pixel outside every polygon is evidence there is no building
+            # there -- even though it says nothing about what there IS. Without this
+            # the loss never penalises a false building on the 96.7 per cent of each
+            # tile that carries no label, and "everything is a building" becomes a
+            # free answer. It is not hypothetical: the head trained without it
+            # predicted building on 100 per cent of the India holdout.
+            'exhaustive_class_ids': [class_names['building']],
         }
         if udm.is_file():
             record['udm_mask'] = str(udm.resolve())

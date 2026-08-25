@@ -43,6 +43,10 @@ training:
   max_grad_norm: 1.0
   mixed_precision: true
   class_balance: log_inverse
+  # Penalises predicting a class on pixels the annotation says it is absent from.
+  # SpaceNet 7 leaves 96.7% of each tile unlabelled while having drawn every building,
+  # so without this a false building costs nothing there.
+  absent_class_weight: 1.0
   freeze_encoder: false
 release_gates:
   - Train the decoder and fine-tune the encoder on the frozen schema.

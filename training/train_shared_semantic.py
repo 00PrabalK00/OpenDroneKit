@@ -63,6 +63,46 @@ class Confusion:
         }
 
 
+def absent_class_penalty(
+    logits: torch.Tensor,
+    negative_mask: torch.Tensor,
+    negative_classes: torch.Tensor,
+) -> torch.Tensor:
+    """Penalise predicting a class where the annotation says it is not.
+
+    Cross-entropy with ignore_index scores only labelled pixels. On a corpus where one
+    source labels a single class and leaves everything else unlabelled -- SpaceNet 7
+    marks 96.7 per cent of each tile ignore -- that means predicting BUILDING everywhere
+    costs nothing on those tiles, and the model that does it is exactly what came out:
+    building on 100 per cent of the India holdout, precision 0.092.
+
+    The fix has to respect what the annotation actually supports. An unlabelled pixel in
+    an exhaustively annotated tile is evidence the class is absent, and no evidence at
+    all about which class is present, so this drives p(class) down there and says nothing
+    about the rest of the distribution. `-log(1 - p)` is the negative-learning form of
+    cross-entropy: zero when the model already agrees, unbounded when it insists.
+
+    Returns a zero scalar when the batch carries no such evidence, so a corpus of fully
+    labelled tiles trains exactly as it did before.
+    """
+    if not bool(negative_mask.any()) or not bool(negative_classes.any()):
+        return logits.sum() * 0.0
+
+    probabilities = torch.softmax(logits.float(), dim=1)
+    # [B, C] -> [B, C, 1, 1] against [B, 1, H, W]: a class is penalised only on tiles
+    # that carry evidence for it, and only where that tile is unlabelled.
+    weights = negative_classes.to(probabilities.dtype)[:, :, None, None]
+    where = negative_mask.to(probabilities.dtype)[:, None, :, :]
+    penalised = weights * where
+    total = penalised.sum()
+    if float(total) == 0.0:
+        return logits.sum() * 0.0
+    # Clamped because a confident wrong answer would otherwise produce inf and take the
+    # step with it.
+    surprise = -torch.log(torch.clamp(1.0 - probabilities, min=1e-6))
+    return (surprise * penalised).sum() / total
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open('rb') as stream:
@@ -220,6 +260,9 @@ def train(
         eta_min=float(training.get('min_learning_rate', base_lr * 0.01)),
     )
     accumulation = max(1, int(training.get('gradient_accumulation', 1)))
+    # Weight on the absent-class term. Set to 0 to train exactly as the first head did,
+    # which is the run that predicted building everywhere on the India holdout.
+    absent_weight = float(training.get('absent_class_weight', 1.0))
     mixed_precision = device.type == 'cuda' and bool(training.get('mixed_precision', True))
     scaler = torch.amp.GradScaler('cuda', enabled=mixed_precision)
     balance = str(training.get('class_balance', 'none')).casefold()
@@ -275,7 +318,14 @@ def train(
                 enabled=mixed_precision,
             ):
                 logits = model(images)
-                loss = criterion(logits, masks) / accumulation
+                loss = criterion(logits, masks)
+                if absent_weight:
+                    loss = loss + absent_weight * absent_class_penalty(
+                        logits,
+                        batch['negative_mask'].to(device, non_blocking=True),
+                        batch['negative_classes'].to(device, non_blocking=True),
+                    )
+                loss = loss / accumulation
             scaler.scale(loss).backward()
             if step % accumulation == 0 or step == len(train_loader):
                 scaler.unscale_(optimizer)

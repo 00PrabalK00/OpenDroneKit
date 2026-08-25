@@ -79,7 +79,9 @@ def rasterize_geojson_polygons(
         )
 
 
-def read_semantic_sample(sample: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+def read_semantic_sample(
+    sample: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     import rasterio
 
     image_path = Path(sample['image'])
@@ -132,13 +134,20 @@ def read_semantic_sample(sample: dict[str, Any]) -> tuple[np.ndarray, np.ndarray
         for source_id, target_id in class_map.items():
             remapped[label == int(source_id)] = int(target_id)
         label = remapped
+    no_data = np.zeros(label.shape, dtype=bool)
     if invalid is not None:
         # Marked ignore rather than dropped: the pixels still occupy their position in
         # the tile, and the loss simply does not score them.
         label = np.asarray(label).copy()
         if label.shape == invalid.shape:
             label[invalid] = IGNORE_INDEX
-    return image, label
+            no_data = invalid
+    # Returned separately because the two reasons a pixel is IGNORE are not the same
+    # evidence. An unlabelled pixel in an exhaustively annotated tile is evidence the
+    # class is absent; a no-data pixel is evidence of nothing at all, and treating it as
+    # a negative would teach the model that transparent mosaic edges are confidently
+    # not-building.
+    return image, label, no_data
 
 
 class SemanticTileDataset:
@@ -191,16 +200,21 @@ class SemanticTileDataset:
         import torch
 
         sample = self.samples[index]
-        image, source_mask = read_semantic_sample(sample)
+        image, source_mask, no_data = read_semantic_sample(sample)
         mask = np.full(source_mask.shape, IGNORE_INDEX, dtype=np.int64)
         for class_id, channel in self.class_to_channel.items():
             mask[source_mask == class_id] = channel
         height, width = mask.shape
         pad_h = max(0, self.tile_size - height)
         pad_w = max(0, self.tile_size - width)
+        if no_data.shape != mask.shape:
+            no_data = np.zeros(mask.shape, dtype=bool)
         if pad_h or pad_w:
             image = np.pad(image, ((0, 0), (0, pad_h), (0, pad_w)), mode='edge')
             mask = np.pad(mask, ((0, pad_h), (0, pad_w)), constant_values=IGNORE_INDEX)
+            # Padding is invented pixels, so it carries no evidence either way and must
+            # never become a negative.
+            no_data = np.pad(no_data, ((0, pad_h), (0, pad_w)), constant_values=True)
             height, width = mask.shape
         if self.augment:
             top = random.randint(0, height - self.tile_size)
@@ -210,15 +224,35 @@ class SemanticTileDataset:
             left = (width - self.tile_size) // 2
         image = image[:, top:top + self.tile_size, left:left + self.tile_size]
         mask = mask[top:top + self.tile_size, left:left + self.tile_size]
+        no_data = no_data[top:top + self.tile_size, left:left + self.tile_size]
         if self.augment and random.random() < 0.5:
             image = image[:, :, ::-1]
             mask = mask[:, ::-1]
+            no_data = no_data[:, ::-1]
         if self.augment and random.random() < 0.5:
             image = image[:, ::-1, :]
             mask = mask[::-1, :]
+            no_data = no_data[::-1, :]
+
+        # An exhaustively annotated tile says something about its unlabelled pixels: the
+        # annotators drew every instance of these classes they saw, so a pixel outside
+        # every polygon is evidence that class is ABSENT there. It is not evidence of
+        # what the pixel is, which is why this cannot be folded into the mask as a
+        # background label -- there is no basis for calling it road rather than water.
+        negative_classes = np.zeros(len(self.class_to_channel), dtype=np.float32)
+        for class_id in sample.get('exhaustive_class_ids') or ():
+            channel = self.class_to_channel.get(int(class_id))
+            if channel is not None:
+                negative_classes[channel] = 1.0
+        negative_mask = (mask == IGNORE_INDEX) & ~no_data if negative_classes.any() \
+            else np.zeros(mask.shape, dtype=bool)
+
         return {
             'image': torch.from_numpy(np.ascontiguousarray(image, dtype=np.float32)),
             'mask': torch.from_numpy(np.ascontiguousarray(mask, dtype=np.int64)),
+            # Where a class is known absent, and which classes that applies to.
+            'negative_mask': torch.from_numpy(np.ascontiguousarray(negative_mask)),
+            'negative_classes': torch.from_numpy(negative_classes),
             'sample_id': str(sample['id']),
             'site_id': str(sample['site_id']),
             'capture_date': str(sample['capture_date']),

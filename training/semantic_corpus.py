@@ -234,6 +234,7 @@ def build_semantic_corpus(
                     'label_format',
                     'class_id',
                     'class_ids',
+                    'exhaustive_class_ids',
                     'class_map',
                     'class_pixel_counts',
                     'background_id',

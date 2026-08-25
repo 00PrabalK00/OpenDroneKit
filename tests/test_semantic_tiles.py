@@ -87,7 +87,7 @@ def test_geojson_polygons_are_rasterized_in_the_image_grid(tmp_path):
 def test_sample_reader_normalizes_rgb_and_keeps_schema_ids(tmp_path):
     image = write_image(tmp_path)
     label = write_vector(tmp_path)
-    pixels, mask = read_semantic_sample({
+    pixels, mask, _ = read_semantic_sample({
         'image': str(image),
         'label': str(label),
         'label_format': 'geojson_polygons',
@@ -102,7 +102,7 @@ def test_sample_reader_normalizes_rgb_and_keeps_schema_ids(tmp_path):
 def test_partial_vector_labels_can_ignore_everything_outside_polygons(tmp_path):
     image = write_image(tmp_path)
     label = write_vector(tmp_path)
-    _, mask = read_semantic_sample({
+    _, mask, _ = read_semantic_sample({
         'image': str(image),
         'label': str(label),
         'label_format': 'geojson_polygons',
@@ -128,7 +128,7 @@ def test_raster_class_map_merges_source_classes_and_ignores_pavement(tmp_path):
         transform=from_origin(70, 20, 0.01, 0.01),
     ) as target:
         target.write(source_ids, 1)
-    _, mask = read_semantic_sample({
+    _, mask, _ = read_semantic_sample({
         'image': str(image),
         'label': str(label),
         'label_format': 'raster_class_ids',

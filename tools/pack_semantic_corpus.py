@@ -61,7 +61,7 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
     for index, sample in enumerate(samples, start=1):
         stem = f"{index:05d}_{sample['source']}"
         try:
-            image, label = read_semantic_sample(sample)
+            image, label, _ = read_semantic_sample(sample)
         except Exception as exc:  # noqa: BLE001 - recorded, never silently skipped
             failures.append({"id": sample.get("id"), "error": f"{type(exc).__name__}: {exc}"})
             continue
