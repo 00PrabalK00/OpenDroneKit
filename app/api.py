@@ -1089,6 +1089,36 @@ class Api:
         )
 
     @guard
+    def build_detection_corpus(self, labelled: list[dict[str, Any]],
+                               output_dir: str,
+                               salt: str = "custom-boxes-v1",
+                               allow_empty_images: bool = False) -> dict[str, Any]:
+        """Turn boxes drawn in the labelling canvas into a trainable corpus, or refuse.
+
+        The other half of build_training_corpus. That one takes a class per image, which
+        answers "is there a crack in this tile"; this one takes the regions someone drew,
+        which is what a user actually needs when they want to know WHERE.
+
+        Refusals are the point, and they are stricter here because a box can be wrong in
+        ways a class label cannot: a click stored as a zero-area target, coordinates off
+        the edge of the image, or an image opened and never labelled, which teaches the
+        model the defect is absent rather than being skipped.
+        """
+        from core.custom_training import CorpusRefused
+        from core.label_sets import build_detection_corpus, regions_from_payload
+
+        try:
+            regions = regions_from_payload(labelled)
+            report = build_detection_corpus(
+                regions, output_dir, salt=salt, allow_empty_images=allow_empty_images
+            )
+        except CorpusRefused as exc:
+            return fail(str(exc))
+        except (OSError, ValueError) as exc:
+            return fail(str(exc))
+        return ok(**report)
+
+    @guard
     def asset_taxonomy(self, domain: str = "") -> dict[str, Any]:
         """The shared asset vocabulary, so a caller can see it before detecting anything."""
         from core.asset_taxonomy import ASSET_TYPES, AssetRefused, DOMAINS, assets_for_domain

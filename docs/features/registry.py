@@ -804,7 +804,9 @@ VISION = [
       "a finding means no movement was RESOLVABLE, not that none occurred."),
     F("ai.custom_training", "Custom defect training", "vision", "AI",
       "Users label, split, train, review metrics and deploy their own model.",
-      "in_progress", ["tests/test_custom_training.py"],
+      "implemented", ["tests/test_custom_training.py",
+                      "tests/test_label_sets.py",
+                      "tests/test_label_ui.py"],
       "Trainers exist, and core/custom_training.py is now the dataset builder they were "
       "missing: labelled images become splits or the corpus is REFUSED with the reason. "
       "Refused rather than warned, because a corpus is built once and its metric read "
@@ -816,9 +818,21 @@ VISION = [
       "Splitting is stratified per class after a whole-corpus hash was found handing a "
       "30-image class ONE validation example -- which would have been refused as 'label "
       "more' when the images were sufficient and the split was not. "
-      "STAYS IN PROGRESS: this is the builder, not the labelling UI. A user still cannot "
-      "draw a box in this product, and until they can, custom training is a capability "
-      "for someone who already has labelled files."),
+      "A USER CAN NOW DRAW THE BOX. app/web/js/label-box.js is a canvas labeller, and "
+      "the boxes it produces go through core/label_sets.py into a YOLO-layout corpus the "
+      "existing detection trainer reads. The drawing is verified by executing it in "
+      "headless Chromium and reading the geometry back, not by asserting about it in "
+      "Python: two drags produce two boxes, a one-pixel drag is discarded rather than "
+      "stored as a target no model can match, and coordinates are normalised per axis "
+      "(0.25 wide over a 400px canvas, 0.5 tall over 200) so a corpus does not depend on "
+      "the window it was drawn in. "
+      "The box builder refuses what the class builder cannot see: geometry off the edge "
+      "of the image, and an image carrying no boxes at all. That last one is accepted "
+      "ONLY when the user marks it deliberately empty, because a confirmed negative is "
+      "evidence and a forgotten image is an accident, and training on the second teaches "
+      "the model the defect is absent. "
+      "WHAT IS STILL NOT HERE: training is launched from the CLI or the job queue rather "
+      "than from the labelling screen, so label-to-model is two steps and not one."),
     F("ai.assisted_annotation", "AI assisted annotation", "hub", "AI",
       "Model pre-labels imagery; a reviewer accepts, edits, merges, splits or reclassifies.",
       "implemented", ["tests/test_assisted_annotations.py"],
