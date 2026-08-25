@@ -23,6 +23,13 @@ import {
 } from "./primitives.js";
 import { DATA, DEMO, demoCoords } from "./demo.js";
 
+/* Every editable field reports onto the same bus the trees and tables use.
+ *
+ * fields() has always accepted an onChange and no caller passed one, so editing an
+ * altitude or an overlap changed the input element and nothing else -- the mission that
+ * Plan then generated used the defaults, silently. */
+const settingChanged = (key, value) => selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
   { icon: "▣", title: "Box select" },
@@ -251,12 +258,12 @@ const planning = {
         { key: "speed", label: "Speed", value: "8", unit: "m/s" },
         { key: "angle", label: "Line heading", value: "90", unit: "°" },
         { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
-      ]) },
+      ], settingChanged) },
       { title: "Aircraft", render: () => fields([
         { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },
         { key: "batt", label: "Batteries", value: "3" },
         { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
-      ]) },
+      ], settingChanged) },
       { title: "Camera", render: () => properties([
         { group: "P1 / 35 mm" },
         { label: "Sensor", value: "35.9 × 24.0", unit: "mm" },
@@ -467,7 +474,7 @@ const processing = {
         { key: "imgsize", label: "Max image size", value: "4096", unit: "px" },
         { key: "dense", label: "Dense cloud", value: "yes", options: ["yes", "no"] },
         { key: "mesh", label: "Mesh depth", value: "9" },
-      ]) },
+      ], settingChanged) },
       { title: "Spatial", render: () => properties([
         { label: "Reference", value: chip("georeferenced", "ok") },
         { label: "CRS", value: "EPSG:4326" },
@@ -648,7 +655,7 @@ const inspection = {
       { key: "min", label: "Min confidence", value: "0.50" },
       { key: "cls", label: "Class", value: "all", options: ["all", "crack", "corrosion", "ponding"] },
       { key: "status", label: "Status", value: "all", options: ["all", "unreviewed", "validated", "rejected"] },
-    ]) },
+    ], settingChanged) },
   ],
 };
 
@@ -840,11 +847,11 @@ const reports = {
       { key: "from", label: "From", value: "2026-05-14" },
       { key: "to", label: "To", value: "2026-08-02" },
       { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX", "HTML"] },
-    ]) },
+    ], settingChanged) },
     { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
       { key: "org", label: "Organisation", value: "DEMO organisation" },
       { key: "logo", label: "Logo", value: "brand.png" },
-    ]) },
+    ], settingChanged) },
   ],
   bottom: [
     { id: "rp.included", title: "Included Findings", flex: 3, render: () => table(
@@ -941,7 +948,7 @@ const settings = {
       { key: "crs", label: "Default CRS", value: "EPSG:4326" },
       { key: "vert", label: "Vertical datum", value: "EGM96" },
       { key: "angle", label: "Angles", value: "degrees", options: ["degrees", "mils"] },
-    ]) },
+    ], settingChanged) },
   ],
   bottom: [
     { id: "set.models", title: "Installed Models", flex: 1, render: () => table(

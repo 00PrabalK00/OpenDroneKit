@@ -360,8 +360,8 @@ export const ACTIONS = {
   "Log Maintenance": {
     describe: "Record maintenance and reset the service clock.",
     async run(ctx) {
-      const id = parseInt(ctx.prompt("Aircraft id", "1"), 10);
-      if (!id) return { skipped: "No aircraft chosen." };
+      const id = ctx.selectedFleetId() || parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
       const kind = ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
       if (!kind) return { skipped: "Maintenance needs a kind." };
       const detail = ctx.prompt("Detail (optional)", "") || "";
@@ -372,8 +372,8 @@ export const ACTIONS = {
   "Assign Mission": {
     describe: "Note which aircraft flies this mission.",
     async run(ctx) {
-      const id = parseInt(ctx.prompt("Aircraft id", "1"), 10);
-      if (!id) return { skipped: "No aircraft chosen." };
+      const id = ctx.selectedFleetId() || parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
       const mission = ctx.prompt("Mission name", "Mission");
       if (!mission) return { skipped: "No mission named." };
       await call("assign_mission_to_aircraft", id, mission);
@@ -472,8 +472,10 @@ export const ACTIONS = {
   Accept: {
     describe: "Accept a finding.",
     async run(ctx) {
-      const id = ctx.prompt("Finding id", "");
-      if (!id) return { skipped: "No finding chosen." };
+      // The finding picked in the panel, falling back to asking. Requiring an id the
+      // user cannot see was the reason review felt broken even once it was wired.
+      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "accept", "operator");
       return { message: `Accepted — status ${result.status}.`, refresh: true };
     },
@@ -481,8 +483,10 @@ export const ACTIONS = {
   Reject: {
     describe: "Reject a finding.",
     async run(ctx) {
-      const id = ctx.prompt("Finding id", "");
-      if (!id) return { skipped: "No finding chosen." };
+      // The finding picked in the panel, falling back to asking. Requiring an id the
+      // user cannot see was the reason review felt broken even once it was wired.
+      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "reject", "operator");
       return { message: `Rejected — status ${result.status}.`, refresh: true };
     },
@@ -490,8 +494,10 @@ export const ACTIONS = {
   Flag: {
     describe: "Flag a finding for a second look.",
     async run(ctx) {
-      const id = ctx.prompt("Finding id", "");
-      if (!id) return { skipped: "No finding chosen." };
+      // The finding picked in the panel, falling back to asking. Requiring an id the
+      // user cannot see was the reason review felt broken even once it was wired.
+      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "flag", "operator");
       return { message: `Flagged — status ${result.status}.`, refresh: true };
     },

@@ -9,7 +9,7 @@
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
-import { DEMO, demoEnabled } from "./demo.js";
+import { DATA, DEMO, demoEnabled } from "./demo.js";
 import { call, connected, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setView } from "./viewstate.js";
@@ -107,9 +107,93 @@ export class Shell {
 
     // Every selection is echoed in the status bar. It is the cheapest possible proof
     // that the panels are wired to each other rather than merely sitting side by side.
-    selection.on("*", (kind, value) => {
-      this.selectionLabel.textContent = `${kind}: ${value?.label || value?.id || value?.name || "—"}`;
-    });
+    selection.on("*", (kind, value) => this.onSelection(kind, value));
+  }
+
+  /**
+   * What happens when the user picks something in a panel.
+   *
+   * Every tree and table already published its selection onto the bus, and the only
+   * subscriber wrote an 11px label into the status bar -- so clicking a job, a model or
+   * an image looked exactly like clicking nothing. Publishing without a consequence is
+   * the same failure as a button with no handler, one layer further in.
+   *
+   * Each branch below is the smallest honest consequence for that kind: show what is
+   * known about the thing, or act on it. Where the application has nothing more to say,
+   * it says that rather than staying silent.
+   */
+  onSelection(kind, value) {
+    if (!value) return;
+    const name = value.label || value.name || value.id || value.key || "—";
+    this.selectionLabel.textContent = `${kind}: ${name}`;
+
+    switch (kind) {
+      case "job": {
+        // Cancel needs a job to cancel, and picking one in the queue is how you say
+        // which. It used to require a job id nobody could see.
+        this.selectedJobId = value.job || value.id || null;
+        if (this.selectedJobId) {
+          this.toast(`Job ${this.selectedJobId} selected. Cancel acts on this one.`, "ok");
+          this.watchJob(this.selectedJobId);
+        }
+        return;
+      }
+      case "model": {
+        const model = (DATA.models || []).find((m) => m.key === name || m.key === value.key);
+        this.toast(model
+          ? `${model.key}: ${model.headline || "no headline metric"} · ${model.input_size}px · sha ${model.sha256}`
+          : `${name}: not in the installed registry.`, "ok");
+        return;
+      }
+      case "finding":
+      case "anomaly": {
+        // A finding is reviewable, and the review buttons ask for an id. Remembering it
+        // here is what lets Accept/Reject/Flag act on what is on screen.
+        this.selectedFindingId = value.id || value.label || null;
+        this.toast(`${name} selected. Accept, Reject and Flag act on this finding.`, "ok");
+        return;
+      }
+      case "image":
+      case "capture":
+      case "product": {
+        const product = (DATA.products || {})[String(name).toLowerCase()];
+        if (product) {
+          setView(String(name).toLowerCase());
+          this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+          this.toast(`Showing ${name}.`, "ok");
+        } else {
+          this.toast(`${name}: no rendered product for this one yet.`);
+        }
+        return;
+      }
+      case "aircraft":
+      case "battery":
+      case "pilot": {
+        // The fleet buttons take an id. Selecting the row is how you choose it.
+        this.selectedFleetId = value.id || null;
+        this.toast(`${kind} ${name} selected${this.selectedFleetId ? ` (id ${this.selectedFleetId})` : ""}.`, "ok");
+        return;
+      }
+      case "project": {
+        this.toast(`${name} selected. Open acts on projects the application knows about.`, "ok");
+        return;
+      }
+      case "layer": {
+        this.toast(`Layer ${name} selected.`, "ok");
+        return;
+      }
+      case "setting": {
+        // Kept, so Plan uses what the operator typed. Without this the field updated
+        // its own input and the planner ran on defaults -- the worst kind of broken,
+        // because the screen agreed with the user and the output did not.
+        this.settings = this.settings || {};
+        this.settings[value.key] = value.value;
+        this.toast(`${value.key} = ${value.value}`, "ok");
+        return;
+      }
+      default:
+        this.toast(`${kind}: ${name}`, "ok");
+    }
   }
 
   buildNav() {
@@ -313,9 +397,22 @@ export class Shell {
         const index = parseInt(answer, 10) - 1;
         return options[index] ? options[index].value : null;
       },
-      missionOptions: () => ({}),
+      missionOptions: () => {
+        // What the mission panels were actually edited to. Numeric where the planner
+        // expects a number: a string altitude reaches Python and fails there, which
+        // reads as a planner bug rather than a form that never converted its input.
+        const raw = this.settings || {};
+        const options = {};
+        for (const [key, value] of Object.entries(raw)) {
+          const asNumber = Number(value);
+          options[key] = value !== "" && Number.isFinite(asNumber) ? asNumber : value;
+        }
+        return options;
+      },
       reconstructionOptions: () => ({ engine: "auto", profile: "standard" }),
       selectedJob: () => this.selectedJobId || null,
+      selectedFinding: () => this.selectedFindingId || null,
+      selectedFleetId: () => this.selectedFleetId || null,
       selectionGeometry: () => this.selectionGeometry || null,
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather

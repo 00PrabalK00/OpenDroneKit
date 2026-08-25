@@ -335,3 +335,62 @@ class TestThePlannedPathIsReal:
         assert len(mission.get("line") or []) > 20
         assert mission.get("distance_m", 0) > 0
         assert mission.get("gsd_cm", 0) > 0
+
+
+class TestThePanelsDoSomething:
+    """"The side panel is useless -- I see things there but none of them do anything."
+
+    They were publishing correctly and nothing was listening usefully. Every tree and
+    table already called selection.select(), and the only subscriber wrote an 11px label
+    into the status bar, so clicking a job, a model or a finding looked exactly like
+    clicking nothing. Publishing without a consequence is a button with no handler, one
+    layer further in.
+    """
+
+    def test_selection_has_a_handler_not_just_a_label(self, shell_js) -> None:
+        assert "onSelection(kind, value)" in shell_js
+        assert 'selection.on("*", (kind, value) => this.onSelection(kind, value))' in shell_js
+
+    def test_selecting_a_job_makes_cancel_act_on_it(self, shell_js) -> None:
+        """Cancel used to need a job id the user could not see anywhere."""
+        assert "this.selectedJobId = value.job || value.id" in shell_js
+
+    def test_selecting_a_finding_makes_review_act_on_it(self, shell_js, actions_js) -> None:
+        assert "this.selectedFindingId" in shell_js
+        assert "ctx.selectedFinding()" in actions_js
+
+    def test_selecting_an_aircraft_makes_maintenance_act_on_it(self, shell_js, actions_js) -> None:
+        assert "this.selectedFleetId" in shell_js
+        assert "ctx.selectedFleetId()" in actions_js
+
+    def test_selecting_a_model_reports_what_it_measured(self, shell_js) -> None:
+        """The registry knows the metric and the digest; the panel should say them."""
+        assert 'case "model"' in shell_js
+        assert "headline" in shell_js
+
+
+class TestEditingAFieldReachesThePlanner:
+    """fields() has always accepted an onChange and no caller passed one.
+
+    Editing an altitude updated the input element and nothing else, so Plan ran on the
+    defaults -- the worst kind of broken, because the screen agreed with the user and the
+    output did not.
+    """
+
+    def test_every_field_group_reports_its_edits(self) -> None:
+        workspaces = (WORKSPACE_JS / "workspaces.js").read_text(encoding="utf-8")
+        assert "const settingChanged" in workspaces
+        assert workspaces.count("settingChanged)") >= 7
+
+    def test_the_shell_keeps_what_was_typed(self, shell_js) -> None:
+        assert 'case "setting"' in shell_js
+        assert "this.settings[value.key] = value.value" in shell_js
+
+    def test_the_planner_is_given_those_settings(self, shell_js) -> None:
+        assert "missionOptions: () => {" in shell_js
+        assert "this.settings" in shell_js
+
+    def test_numbers_are_sent_as_numbers(self, shell_js) -> None:
+        """A string altitude reaches Python and fails there, which reads as a planner
+        bug rather than a form that never converted its input."""
+        assert "Number.isFinite(asNumber)" in shell_js
