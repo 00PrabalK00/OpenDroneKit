@@ -80,7 +80,23 @@ class TestDesignRules:
 
     @pytest.fixture(scope="class")
     def css(self) -> str:
-        return (WEB / "css" / "workspace.css").read_text(encoding="utf-8")
+        """Tokens and rules together.
+
+        The design values moved into css/tokens.css so the desktop shell, the cockpit
+        and the hub stop each declaring their own palette -- they had three, and the hub
+        was a different colour from the app it belongs to. The rules below still hold;
+        they just have to look in both files now.
+        """
+        return "\n".join(
+            (WEB / "css" / name).read_text(encoding="utf-8")
+            for name in ("tokens.css", "workspace.css")
+        )
+
+    def test_the_tokens_are_shared_rather_than_redeclared(self) -> None:
+        """Every surface imports the same source of colour, spacing and type."""
+        for name in ("workspace.css", "app.css", "hub.css"):
+            text = (WEB / "css" / name).read_text(encoding="utf-8")
+            assert '@import "tokens.css";' in text, f"{name} does not use the shared tokens"
 
     def test_the_semantic_colours_are_defined(self, css) -> None:
         for token in ("--accent:", "--ok:", "--warn:", "--error:", "--thermal:"):

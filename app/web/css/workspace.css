@@ -15,42 +15,7 @@
  * A red border must always mean something is wrong, or it stops meaning anything.
  */
 
-:root {
-  --bg-app: #0d1015;
-  --bg-region: #12161d;
-  --bg-panel: #161b23;
-  --bg-panel-header: #1b212b;
-  --bg-input: #0f131a;
-  --bg-hover: #1f2733;
-  --bg-active: #26303e;
-
-  --line: #252c38;
-  --line-strong: #333d4d;
-
-  --text: #dfe4ec;
-  --text-dim: #98a2b3;
-  --text-faint: #6b7583;
-
-  --accent: #3b82f6;
-  --accent-dim: #1d4ed8;
-  --ok: #22c55e;
-  --warn: #f59e0b;
-  --error: #ef4444;
-  --thermal: #a855f7;
-
-  --radius: 3px;
-  --row: 22px;              /* dense table/tree row */
-  --nav-h: 38px;
-  --toolbar-h: 34px;
-  --status-h: 24px;
-  --panel-header-h: 26px;
-
-  --font: "Inter", "Geist", "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --mono: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", Consolas, monospace;
-  --fs: 12px;
-  --fs-sm: 11px;
-  --fs-xs: 10px;
-}
+@import "tokens.css";
 
 * { box-sizing: border-box; }
 
@@ -204,7 +169,7 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 .region.collapsed { display: none; }
 
 .centre-stack { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
-.region.bottom { flex: none; min-height: 0; }
+.region.bottom { flex: none; min-height: 0; min-width: 0; overflow: hidden; }
 
 /* Splitters are 4px: wide enough to grab, narrow enough not to cost canvas. */
 .splitter { flex: none; background: transparent; position: relative; }
@@ -228,6 +193,11 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   margin: 3px;
   overflow: hidden;
   min-height: var(--panel-header-h);
+  /* Without this a flex item will not shrink below its content width, so the
+     bottom row (activity log + processing queue + fleet, side by side) forced the
+     whole shell to 1829px and clipped 229px of the right dock off a 1600px
+     screen. flex: 1 1 0 does not override min-width: auto on its own. */
+  min-width: 0;
 }
 .panel.grow { flex: 1 1 auto; min-height: 40px; }
 .panel.collapsed { flex: none; }

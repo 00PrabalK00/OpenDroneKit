@@ -1,19 +1,11 @@
 /* OpenDroneKit desktop UI.
    Dense, tool-oriented layout: docks around a map canvas, no decorative chrome. */
 
+@import "tokens.css";
+
 :root {
-  --bg: #12161c;
-  --bg-panel: #171d25;
-  --bg-raised: #1e2632;
-  --bg-input: #0e1218;
-  --border: #2a3441;
-  --text: #dce3ec;
-  --text-dim: #8b98a9;
-  --accent: #3d9df6;
-  --accent-dim: #24618f;
-  --good: #35c98b;
-  --warn: #e7b04a;
-  --bad: #e5645f;
+  /* The desktop shell uses a taller row than the cockpit: its docks hold form
+     controls rather than tree nodes, and a 22px row clips a select. */
   --row: 26px;
 }
 
@@ -115,12 +107,21 @@ label {
   gap: 3px;
   font-size: 11px;
   color: var(--text-dim);
+  /* A grid column will not shrink below the intrinsic width of what it holds, and
+     a number input's is wider than half a 268px dock. The mission form overflowed
+     its own dock by 25px, and the dock clips overflow-x, so the right edge of every
+     field in the right-hand column was cut off. */
+  min-width: 0;
 }
 
 input, select, button {
   font: inherit;
   color: var(--text);
   background: var(--bg-input);
+  /* Same reason as the label above: without an explicit floor the control keeps its
+     intrinsic width and pushes the dock wider than it is allowed to be. */
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 4px 6px;
@@ -151,7 +152,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   padding: 5px 8px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
+  /* Wraps rather than clips. The row of tool groups is wider than a 1600px window
+     once the docks take their 268px each, and #centre hides the overflow -- so the
+     right-hand group (vehicle chip, Connect, Upload) was cut in half and the buttons
+     could not be clicked at all. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  min-width: 0;
 }
+
+/* The search field is the one elastic thing here; everything else is a control whose
+   width is its label. Letting it absorb the slack keeps the buttons intact. */
+#toolbar .search-group { flex: 1 1 180px; min-width: 140px; }
+#toolbar .search-group #place-search { flex: 1 1 auto; min-width: 0; }
 
 .app-brand {
   display: inline-flex;

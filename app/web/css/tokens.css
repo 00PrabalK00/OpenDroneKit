@@ -1,0 +1,111 @@
+/*
+ * The one place colour, spacing and type are decided.
+ *
+ * There were three. The desktop shell was blue on #12161c, the cockpit blue on #0d1015,
+ * and the hub TEAL on #071018 -- three palettes for one product, so a user moving from
+ * the desktop app to the web hub had no reason to believe they were the same software.
+ * Worse, each file had its own names for the same idea (--border, --line; --text-dim,
+ * --muted; --bad, --danger, --error), which is how they drifted apart without anyone
+ * making a decision to diverge.
+ *
+ * The values below are the cockpit's, because that is the surface with the most
+ * considered palette and the one becoming the desktop app. Its reasoning holds for all
+ * three surfaces and is worth keeping:
+ *
+ *   Dense operational software, not a marketing dashboard. Every value is chosen against
+ *   one test -- could an operator keep this open for an eight-hour shift and still read
+ *   it? That rules out large type, generous padding and decorative cards. They cost
+ *   screen the canvas needs, and on a laptop in a site office the canvas is where the
+ *   work happens.
+ *
+ *   Colour carries meaning and is never decorative:
+ *     blue    interaction and selection
+ *     green   healthy operational state
+ *     amber   warning, degraded, needs attention
+ *     red     error, safety-critical, serious defect
+ *     purple  thermal and semantic visualisation only
+ *   A red border must always mean something is wrong, or it stops meaning anything.
+ *
+ * The legacy aliases at the bottom are deliberate. They let app.css and hub.css adopt
+ * these tokens without every rule being rewritten in one commit -- a rewrite that large
+ * cannot be reviewed, and a UI that cannot be reviewed is how the drift started.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* -- surfaces, darkest to lightest ------------------------------------- */
+  --bg-app: #0d1015;
+  --bg-region: #12161d;
+  --bg-panel: #161b23;
+  --bg-panel-header: #1b212b;
+  --bg-input: #0f131a;
+  --bg-hover: #1f2733;
+  --bg-active: #26303e;
+
+  --line: #252c38;
+  --line-strong: #333d4d;
+
+  /* -- text: three weights, no more. A fourth would not be distinguishable
+        at 11px on a dim site-office screen. ---------------------------------- */
+  --text: #dfe4ec;
+  --text-dim: #98a2b3;
+  --text-faint: #6b7583;
+
+  /* -- semantic colour. Never use these decoratively. -------------------- */
+  --accent: #3b82f6;
+  --accent-dim: #1d4ed8;
+  --ok: #22c55e;
+  --warn: #f59e0b;
+  --error: #ef4444;
+  --thermal: #a855f7;
+
+  /* Demo and synthetic data. Distinct from --warn on purpose: a synthetic
+     artefact is not a fault, it is a claim about provenance, and confusing
+     the two would either alarm an operator or hide the marker. */
+  --synthetic: #c084fc;
+
+  /* -- geometry ---------------------------------------------------------- */
+  --radius: 3px;
+  --row: 22px;              /* dense table/tree row */
+  --nav-h: 38px;
+  --toolbar-h: 34px;
+  --status-h: 24px;
+  --panel-header-h: 26px;
+
+  /* Dock widths live here rather than in JavaScript, so the layout that has
+     to fit 1600px is stated in one place instead of being a literal buried in
+     dock.js. */
+  --dock-left: 240px;
+  --dock-right: 288px;
+  --dock-min: 180px;
+  --dock-bottom: 190px;
+
+  /* -- spacing scale. Four steps; anything between them is a decision
+        nobody made. ------------------------------------------------------ */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+
+  /* -- type -------------------------------------------------------------- */
+  --font: "Inter", "Geist", "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", Consolas, monospace;
+  --fs: 12px;
+  --fs-sm: 11px;
+  --fs-xs: 10px;
+  --fs-lg: 14px;
+  --fs-title: 17px;
+
+  /* -- legacy aliases ----------------------------------------------------
+     Same idea, older name. Kept so the desktop and hub stylesheets can point
+     at these tokens today; new rules should use the canonical names above. */
+  --bg: var(--bg-app);
+  --panel: var(--bg-panel);
+  --bg-raised: var(--bg-hover);
+  --border: var(--line);
+  --muted: var(--text-dim);
+  --good: var(--ok);
+  --bad: var(--error);
+  --danger: var(--error);
+}

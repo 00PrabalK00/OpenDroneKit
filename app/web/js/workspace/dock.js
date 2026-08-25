@@ -14,6 +14,23 @@
 
 const STORE_KEY = "odk.workspace.layout.v1";
 
+function defaultDockWidth(side) {
+  /* Read from the stylesheet rather than hardcoded here. The layout has to fit a
+     1600px laptop, and that budget is stated once in tokens.css -- a literal buried
+     in this file is how the docks and the design drifted apart. */
+  const fallback = side === "left" ? 240 : 288;
+  // The render check runs this module under Node against a DOM shim with no
+  // getComputedStyle, and a layout helper is not worth a hard dependency on a real
+  // browser -- the fallback is the same number the stylesheet holds.
+  if (typeof getComputedStyle !== "function" || typeof document === "undefined") {
+    return fallback;
+  }
+  const token = getComputedStyle(document.documentElement)
+    .getPropertyValue(side === "left" ? "--dock-left" : "--dock-right");
+  const parsed = parseInt(String(token).trim(), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export class Dock {
   constructor(root, { onLayoutChange } = {}) {
     this.root = root;
@@ -82,7 +99,7 @@ export class Dock {
     const el = document.createElement("div");
     el.className = `region ${side}`;
     el.dataset.region = side;
-    el.style.width = `${this._regionWidth(side, side === "left" ? 240 : 300)}px`;
+    el.style.width = `${this._regionWidth(side, defaultDockWidth(side))}px`;
     for (const def of panelDefs) el.appendChild(this._panel(def, side));
     this._enableDrop(el, side);
     return el;
