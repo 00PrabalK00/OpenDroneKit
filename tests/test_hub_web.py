@@ -6,9 +6,10 @@ from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import threading
+
+from browser_evidence import dump_dom_command
 
 
 ROOT = Path(__file__).parents[1]
@@ -272,21 +273,16 @@ const viewer=new OdkMap('map',{center:[77.595,12.975],zoom:14,style,onAnnotation
 
 class TestHubRealBrowser:
     def test_webgl_scene_and_progressive_point_chunks_render_in_edge(self, tmp_path):
-        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-        if not edge.is_file():
-            edge_command = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
-            assert edge_command, "A Chromium browser is required for the Hub WebGL evidence test."
-            edge = Path(edge_command)
         server = ThreadingHTTPServer(("127.0.0.1", 0), _BrowserHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            completed = subprocess.run([
-                str(edge), "--headless=new", "--enable-webgl", "--ignore-gpu-blocklist",
-                "--use-angle=swiftshader", "--disable-software-rasterizer=false",
-                f"--user-data-dir={tmp_path / 'edge-profile'}", "--virtual-time-budget=4000",
-                "--dump-dom", f"http://127.0.0.1:{server.server_port}/harness.html",
-            ], capture_output=True, text=True, timeout=30, check=True)
+            completed = subprocess.run(dump_dom_command(
+                "the Hub WebGL evidence test",
+                tmp_path / "edge-profile",
+                f"http://127.0.0.1:{server.server_port}/harness.html",
+                virtual_time_ms=4000,
+            ), capture_output=True, text=True, timeout=30, check=True)
             assert 'data-result="scene:3;points:2;chunks:2"' in completed.stdout
         finally:
             server.shutdown()
@@ -294,21 +290,16 @@ class TestHubRealBrowser:
             thread.join(timeout=2)
 
     def test_2d_viewer_loads_real_geojson_layers_and_measurement_tool(self, tmp_path):
-        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-        if not edge.is_file():
-            edge_command = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
-            assert edge_command, "A Chromium browser is required for the Hub map evidence test."
-            edge = Path(edge_command)
         server = ThreadingHTTPServer(("127.0.0.1", 0), _BrowserHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            completed = subprocess.run([
-                str(edge), "--headless=new", "--enable-webgl", "--ignore-gpu-blocklist",
-                "--use-angle=swiftshader", f"--user-data-dir={tmp_path / 'map-profile'}",
-                "--virtual-time-budget=7000", "--dump-dom",
+            completed = subprocess.run(dump_dom_command(
+                "the Hub map evidence test",
+                tmp_path / "map-profile",
                 f"http://127.0.0.1:{server.server_port}/map-harness.html",
-            ], capture_output=True, text=True, timeout=40, check=True)
+                virtual_time_ms=7000,
+            ), capture_output=True, text=True, timeout=40, check=True)
             assert 'data-result="layers:2;tool:measure-distance"' in completed.stdout
         finally:
             server.shutdown()
@@ -316,21 +307,16 @@ class TestHubRealBrowser:
             thread.join(timeout=2)
 
     def test_annotation_draw_events_cover_every_shape_with_metadata(self, tmp_path):
-        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-        if not edge.is_file():
-            edge_command = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
-            assert edge_command, "A Chromium browser is required for the annotation evidence test."
-            edge = Path(edge_command)
         server = ThreadingHTTPServer(("127.0.0.1", 0), _BrowserHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            completed = subprocess.run([
-                str(edge), "--headless=new", "--enable-webgl", "--ignore-gpu-blocklist",
-                "--use-angle=swiftshader", f"--user-data-dir={tmp_path / 'annotation-profile'}",
-                "--virtual-time-budget=7000", "--dump-dom",
+            completed = subprocess.run(dump_dom_command(
+                "the annotation evidence test",
+                tmp_path / "annotation-profile",
                 f"http://127.0.0.1:{server.server_port}/annotation-harness.html",
-            ], capture_output=True, text=True, timeout=40, check=True)
+                virtual_time_ms=7000,
+            ), capture_output=True, text=True, timeout=40, check=True)
             assert (
                 'data-result="annotations:7;types:point,line,polygon,rectangle,circle,freehand,text;metadata:true"'
                 in completed.stdout

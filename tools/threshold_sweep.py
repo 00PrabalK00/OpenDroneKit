@@ -35,25 +35,41 @@ DEFAULT_THRESHOLDS = [0.25, 0.5, 0.85]
 
 
 def find_mask(image_path: str) -> str | None:
-    """Locate the mask belonging to an image, whatever extension it uses.
+    r"""Locate the mask belonging to an image, whatever extension it uses.
 
     Resolved through path components rather than string replacement. On Windows glob
     returns mixed separators -- ``.../val/images\name.png`` -- so replacing "/images/"
     or os.sep + "images" + os.sep silently matches neither, leaves the path unchanged,
     and hands back the image itself. Scoring a model against its own input produces a
     confident, meaningless number rather than an error.
-    """
-    path = Path(image_path)
-    parts = list(path.parts)
-    if "images" not in parts:
-        return None
-    parts[len(parts) - 1 - parts[::-1].index("images")] = "masks"
-    candidate = Path(*parts)
 
-    if candidate.exists():
-        return str(candidate)
-    matches = sorted(candidate.parent.glob(candidate.stem + ".*"))
-    return str(matches[0]) if matches else None
+    A path written by Windows can be read on Linux -- a corpus listing, a manifest, a
+    sweep re-run on another machine -- and there a backslash is not a separator but a
+    legal character in a filename. So the literal reading is tried FIRST, and the
+    Windows reading only as a fallback: a Linux file genuinely named ``images\x.png``
+    still resolves as itself, and a Windows-produced path resolves anywhere.
+    """
+    for candidate_path in _readings(image_path):
+        parts = list(candidate_path.parts)
+        if "images" not in parts:
+            continue
+        parts[len(parts) - 1 - parts[::-1].index("images")] = "masks"
+        candidate = Path(*parts)
+
+        if candidate.exists():
+            return str(candidate)
+        matches = sorted(candidate.parent.glob(candidate.stem + ".*"))
+        if matches:
+            return str(matches[0])
+    return None
+
+
+def _readings(image_path: str) -> list[Path]:
+    """The path as written, then the same path read with backslash as a separator."""
+    readings = [Path(image_path)]
+    if "\\" in image_path:
+        readings.append(Path(image_path.replace("\\", "/")))
+    return readings
 
 
 def sweep(model_path: str, split: str, samples: int, size: int,

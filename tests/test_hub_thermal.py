@@ -5,9 +5,10 @@ from __future__ import annotations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import threading
+
+from browser_evidence import dump_dom_command
 
 import numpy as np
 import pytest
@@ -155,21 +156,16 @@ class TestThermalRealBrowser:
     def test_map_comparison_modes_linked_zoom_and_3d_projection_render(self, thermal_artifact, tmp_path):
         _, _, manifest = thermal_artifact
         _ThermalBrowserHandler.thermal_payload = manifest
-        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-        if not edge.is_file():
-            command = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
-            assert command, "A Chromium browser is required for thermal viewer evidence."
-            edge = Path(command)
         server = ThreadingHTTPServer(("127.0.0.1", 0), _ThermalBrowserHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            completed = subprocess.run([
-                str(edge), "--headless=new", "--enable-webgl", "--ignore-gpu-blocklist",
-                "--use-angle=swiftshader", "--disable-software-rasterizer=false",
-                f"--user-data-dir={tmp_path / 'thermal-edge'}", "--virtual-time-budget=4000",
-                "--dump-dom", f"http://127.0.0.1:{server.server_port}/harness.html",
-            ], capture_output=True, text=True, timeout=30, check=True)
+            completed = subprocess.run(dump_dom_command(
+                "thermal viewer evidence",
+                tmp_path / "thermal-edge",
+                f"http://127.0.0.1:{server.server_port}/harness.html",
+                virtual_time_ms=4000,
+            ), capture_output=True, text=True, timeout=30, check=True)
             assert 'data-result="map:true;side:true;clip:true;mode:overlay;opacity:0.4;linked:true;sampled:3;vertices:3"' in completed.stdout
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=2)

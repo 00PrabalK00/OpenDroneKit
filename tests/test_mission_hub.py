@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import threading
+
+from browser_evidence import dump_dom_command
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
@@ -140,20 +141,17 @@ class TestMissionHubBrowser:
                 self.end_headers()
                 self.wfile.write(body)
 
-        edge = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
-        if not edge.is_file():
-            found = shutil.which("msedge") or shutil.which("chromium") or shutil.which("google-chrome")
-            assert found, "A Chromium browser is required for mission playback evidence."
-            edge = Path(found)
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            completed = subprocess.run([
-                str(edge), "--headless=new", f"--user-data-dir={tmp_path / 'edge-profile'}",
-                "--virtual-time-budget=5000", "--dump-dom",
+            completed = subprocess.run(dump_dom_command(
+                "mission playback evidence",
+                tmp_path / "edge-profile",
                 f"http://127.0.0.1:{server.server_port}/",
-            ], capture_output=True, text=True, timeout=40, check=True)
+                virtual_time_ms=5000,
+                webgl=False,
+            ), capture_output=True, text=True, timeout=40, check=True)
             expected = len(payload["timeline"])
             assert (
                 f'data-result="frames:{expected};capture:{expected};terrain:unavailable;'

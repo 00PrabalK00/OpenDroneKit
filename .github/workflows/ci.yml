@@ -61,8 +61,11 @@ jobs:
       # it, and they carry importorskip so a machine without torch can still run the
       # suite. A skip in CI is the lie this workflow exists to prevent, so the CPU wheel
       # goes in here: ~200 MB, no CUDA, and those tests actually run.
+      # torchvision comes with it because the segmentation trainers import it for their
+      # encoders; torch alone leaves those tests failing on an import rather than
+      # checking anything.
       - name: Install torch (CPU) so the training tests run rather than skip
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Test
         run: python -m pytest -q --durations=15
@@ -183,7 +186,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Collect the flight evidence
         uses: actions/download-artifact@v4
