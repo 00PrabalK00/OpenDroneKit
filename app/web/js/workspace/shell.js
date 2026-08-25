@@ -318,6 +318,15 @@ export class Shell {
       selectedJob: () => this.selectedJobId || null,
       selectionGeometry: () => this.selectionGeometry || null,
       resetLayout: () => this.dock.resetLayout(),
+      // The organisation and project the session is actually on. Defaulting to 1 rather
+      // than refusing keeps a single-tenant desktop install usable; a multi-tenant
+      // deployment sets them from the opened project.
+      organizationId: () => (this.state && this.state.organization_id) || 1,
+      projectId: () => (this.state && this.state.project && this.state.project.id) || 1,
+      // A secret the application will never show again. A toast disappears after four
+      // seconds, which is not long enough to copy a token, so this blocks until the
+      // user dismisses it.
+      reveal: (text) => window.alert(text),
     };
   }
 

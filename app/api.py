@@ -1118,6 +1118,191 @@ class Api:
             return fail(str(exc))
         return ok(**report)
 
+    # ---------------------------------------------------------------- fleet
+    #
+    # Fleet, sharing, webhooks, reports and review were reachable only through the web
+    # service, so twenty-three buttons in the cockpit reported themselves unavailable.
+    # They are not missing capabilities -- every one carries a verified registry row.
+    # app/desktop_ops.py opens the same database the service uses and calls the same
+    # code, so a local-first user gets the real thing rather than a stub.
+
+    @guard
+    def add_aircraft(self, organization_id: int, name: str, model: str = "",
+                     serial: str = "") -> dict[str, Any]:
+        """Register an aircraft."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.add_aircraft(organization_id, name, model, serial))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def add_battery(self, organization_id: int, serial: str, capacity_mah: int = 0,
+                    cycle_limit: int = 0) -> dict[str, Any]:
+        """Register a battery so its cycles can be tracked."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.add_battery(organization_id, serial, capacity_mah, cycle_limit))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def add_pilot(self, organization_id: int, display_name: str, licence_number: str = "",
+                  licence_expires_on: str = "") -> dict[str, Any]:
+        """Add a pilot, refusing an unparseable licence expiry rather than defaulting it."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.add_pilot(organization_id, display_name,
+                                              licence_number, licence_expires_on))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def log_maintenance(self, aircraft_id: int, kind: str, description: str = "",
+                        performed_by: str = "") -> dict[str, Any]:
+        """Record maintenance and reset the aircraft's service clock."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.log_maintenance(aircraft_id, kind, description, performed_by))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def assign_mission_to_aircraft(self, aircraft_id: int, mission_name: str) -> dict[str, Any]:
+        """Note which aircraft is flying which mission."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.assign_mission(aircraft_id, mission_name))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def fleet_status(self, organization_id: int = 1) -> dict[str, Any]:
+        """Aircraft, batteries, pilots and what is due for service."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.fleet_status(organization_id))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    # -------------------------------------------------------------- sharing
+
+    @guard
+    def create_share_link(self, project_id: int, note: str = "",
+                          allow_download: bool = False) -> dict[str, Any]:
+        """Issue a share link. The token is returned ONCE and only its hash is stored."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.create_share_link(project_id, note, allow_download))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def list_share_links(self, project_id: int) -> dict[str, Any]:
+        """Every link issued for this project, by prefix rather than by token."""
+        from app import desktop_ops
+
+        try:
+            return ok(links=desktop_ops.list_share_links(project_id))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def revoke_share_link(self, share_id: int) -> dict[str, Any]:
+        """Revoke a link that has been shared too widely."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.revoke_share_link(share_id))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    # ------------------------------------------------------------- webhooks
+
+    @guard
+    def add_webhook(self, organization_id: int, url: str, events: list[str] | None = None,
+                    description: str = "") -> dict[str, Any]:
+        """Register a webhook. The signing secret is returned once."""
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.add_webhook(organization_id, url, events, description))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def list_webhooks(self, organization_id: int = 1) -> dict[str, Any]:
+        """Registered webhooks and their delivery counts."""
+        from app import desktop_ops
+
+        try:
+            return ok(webhooks=desktop_ops.list_webhooks(organization_id))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    # -------------------------------------------------------------- reports
+
+    @guard
+    def report_readiness(self, project_id: str = "", report_type: str = "standard") -> dict[str, Any]:
+        """What a report still needs, before anyone presses Generate."""
+        from app import desktop_ops
+
+        target = str(project_id or getattr(self._session, "active_project_id", "") or "")
+        if not target:
+            return fail("Open a project before checking report readiness.")
+        try:
+            return ok(**desktop_ops.report_readiness(target, report_type=report_type))
+        except Exception as exc:  # noqa: BLE001 - the engine raises its own error type
+            return fail(str(exc))
+
+    @guard
+    def generate_report(self, project_id: str = "", title: str = "Inspection report",
+                        report_type: str = "standard", author: str = "") -> dict[str, Any]:
+        """Build the report, or return the engine refusal naming what is missing."""
+        from app import desktop_ops
+
+        target = str(project_id or getattr(self._session, "active_project_id", "") or "")
+        if not target:
+            return fail("Open a project before generating a report.")
+        try:
+            return ok(**desktop_ops.generate_report(
+                target, title=title, report_type=report_type, author=author))
+        except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
+            return fail(str(exc))
+
+    # --------------------------------------------------------------- review
+
+    @guard
+    def review_finding(self, annotation_id: str, decision: str,
+                       reviewer: str = "operator") -> dict[str, Any]:
+        """Accept, reject or flag a finding without overwriting what the model claimed."""
+        from app import desktop_ops
+
+        root = self._session.project_root()
+        if not root:
+            return fail("Open a project before reviewing findings.")
+        try:
+            return ok(**desktop_ops.review_finding(root, annotation_id, decision, reviewer))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
+    @guard
+    def list_plugins(self) -> dict[str, Any]:
+        """What the plugin registry has actually loaded."""
+        from app import desktop_ops
+
+        try:
+            return ok(plugins=desktop_ops.list_plugins())
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
     @guard
     def asset_taxonomy(self, domain: str = "") -> dict[str, Any]:
         """The shared asset vocabulary, so a caller can see it before detecting anything."""

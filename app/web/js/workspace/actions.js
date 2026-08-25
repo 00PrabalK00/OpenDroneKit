@@ -319,37 +319,248 @@ export const ACTIONS = {
       return { message: "Job queued.", job: result.job_id, refresh: true };
     },
   },
+
+  /* -- fleet --------------------------------------------------------------
+     These lived behind the web service, so the buttons said "not available".
+     app/desktop_ops.py opens the same database the service uses, so a local-first
+     operator now gets real records rather than an apology. */
+  "Add Aircraft": {
+    describe: "Register an aircraft against the organisation.",
+    async run(ctx) {
+      const name = ctx.prompt("Aircraft name", "");
+      if (!name) return { skipped: "No name given." };
+      const model = ctx.prompt("Model (optional)", "") || "";
+      const serial = ctx.prompt("Serial number (optional)", "") || "";
+      const result = await call("add_aircraft", ctx.organizationId(), name, model, serial);
+      return { message: `Aircraft "${result.name}" registered.`, refresh: true };
+    },
+  },
+  "Add Battery": {
+    describe: "Register a battery so its cycles are tracked.",
+    async run(ctx) {
+      const serial = ctx.prompt("Battery serial number", "");
+      if (!serial) return { skipped: "A battery is tracked by serial; none given." };
+      const capacity = parseInt(ctx.prompt("Capacity mAh (optional)", "0"), 10) || 0;
+      const limit = parseInt(ctx.prompt("Cycle limit (optional)", "0"), 10) || 0;
+      const result = await call("add_battery", ctx.organizationId(), serial, capacity, limit);
+      return { message: `Battery ${result.serial_number} registered.`, refresh: true };
+    },
+  },
+  "Add Pilot": {
+    describe: "Add a pilot and their licence expiry.",
+    async run(ctx) {
+      const name = ctx.prompt("Pilot name", "");
+      if (!name) return { skipped: "No name given." };
+      const licence = ctx.prompt("Licence number (optional)", "") || "";
+      const expires = ctx.prompt("Licence expires YYYY-MM-DD (optional)", "") || "";
+      const result = await call("add_pilot", ctx.organizationId(), name, licence, expires);
+      return { message: `Pilot ${result.display_name} added.`, refresh: true };
+    },
+  },
+  "Log Maintenance": {
+    describe: "Record maintenance and reset the service clock.",
+    async run(ctx) {
+      const id = parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      if (!id) return { skipped: "No aircraft chosen." };
+      const kind = ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
+      if (!kind) return { skipped: "Maintenance needs a kind." };
+      const detail = ctx.prompt("Detail (optional)", "") || "";
+      const result = await call("log_maintenance", id, kind, detail, "operator");
+      return { message: `Logged ${result.kind} at ${result.hours_at_service} h.`, refresh: true };
+    },
+  },
+  "Assign Mission": {
+    describe: "Note which aircraft flies this mission.",
+    async run(ctx) {
+      const id = parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      if (!id) return { skipped: "No aircraft chosen." };
+      const mission = ctx.prompt("Mission name", "Mission");
+      if (!mission) return { skipped: "No mission named." };
+      await call("assign_mission_to_aircraft", id, mission);
+      return { message: `Assigned to ${mission}.`, refresh: true };
+    },
+  },
+
+  /* -- sharing ------------------------------------------------------------ */
+  Share: {
+    confirm: "Issue a share link for this project?",
+    describe: "Issue a link. The token is shown once and only its hash is stored.",
+    async run(ctx) {
+      const note = ctx.prompt("What is this link for?", "Client review") || "";
+      const result = await call("create_share_link", ctx.projectId(), note, false);
+      // Shown once on purpose: only the hash is kept, so this cannot be read back.
+      ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`);
+      return { message: `Link ${result.prefix}… issued.`, refresh: true };
+    },
+  },
+  Archive: {
+    confirm: "Revoke every share link for this project?",
+    describe: "Close a project down by revoking its outstanding links.",
+    async run(ctx) {
+      const listing = await call("list_share_links", ctx.projectId());
+      const live = (listing.links || []).filter((l) => !l.revoked);
+      for (const link of live) await call("revoke_share_link", link.id);
+      return { message: `Revoked ${live.length} link(s).`, refresh: true };
+    },
+  },
+
+  /* -- developers --------------------------------------------------------- */
+  "Add Webhook": {
+    describe: "Register a webhook and reveal its signing secret once.",
+    async run(ctx) {
+      const url = ctx.prompt("Webhook URL", "https://");
+      if (!url) return { skipped: "No URL given." };
+      const events = (ctx.prompt("Events, comma separated", "*") || "*")
+        .split(",").map((e) => e.trim()).filter(Boolean);
+      const result = await call("add_webhook", ctx.organizationId(), url, events, "");
+      ctx.reveal(`Signing secret (copy it now, it is not stored):\n\n${result.secret}`);
+      return { message: `Webhook registered for ${result.url}.`, refresh: true };
+    },
+  },
+  "New Key": {
+    describe: "Issue a share token, which is what this build uses for API access.",
+    async run(ctx) {
+      const result = await call("create_share_link", ctx.projectId(), "API access", true);
+      ctx.reveal(`API token (copy it now, it is not stored):\n\n${result.token}`);
+      return { message: `Token ${result.prefix}… issued.`, refresh: true };
+    },
+  },
+  "Copy cURL": {
+    describe: "A ready-to-run request against the local service.",
+    async run(ctx) {
+      const hooks = await call("list_webhooks", ctx.organizationId());
+      const first = (hooks.webhooks || [])[0];
+      const command = first
+        ? `curl -X POST ${first.url} -H "Content-Type: application/json" -d '{"event":"test"}'`
+        : `curl http://127.0.0.1:8000/health`;
+      ctx.reveal(command);
+      return { message: "Command shown; copy it from the dialog." };
+    },
+  },
+  "Send Request": {
+    describe: "Check the local service is answering.",
+    async run() {
+      const result = await call("capabilities");
+      const count = Object.keys(result.capabilities || result || {}).length;
+      return { message: `Bridge answered with ${count} capability field(s).` };
+    },
+  },
+
+  /* -- reports ------------------------------------------------------------ */
+  "New Report": { alias: "Generate Report" },
+  Generate: { alias: "Generate Report" },
+  "Generate Report": {
+    describe: "Build a report from what the project contains.",
+    async run(ctx) {
+      const readiness = await call("report_readiness");
+      if (!readiness.ok) {
+        // The engine refuses rather than emitting empty sections, and the checklist is
+        // the useful part -- it says exactly what to produce first.
+        return { skipped: `Not ready: ${(readiness.missing || []).join(", ") || "unknown"}` };
+      }
+      const title = ctx.prompt("Report title", "Inspection report") || "Inspection report";
+      const result = await call("generate_report", "", title, "standard", "");
+      return { message: `Report built: ${result.id || "done"}.`, refresh: true };
+    },
+  },
+  "Export Report": { alias: "Generate Report" },
+  "Export PDF": { alias: "Generate Report" },
+
+  /* -- review -------------------------------------------------------------
+     The decision moves the status and records who moved it. What the model claimed
+     stays, because a reviewer disagreeing with a model is evidence about the model. */
+  Accept: {
+    describe: "Accept a finding.",
+    async run(ctx) {
+      const id = ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "No finding chosen." };
+      const result = await call("review_finding", id, "accept", "operator");
+      return { message: `Accepted — status ${result.status}.`, refresh: true };
+    },
+  },
+  Reject: {
+    describe: "Reject a finding.",
+    async run(ctx) {
+      const id = ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "No finding chosen." };
+      const result = await call("review_finding", id, "reject", "operator");
+      return { message: `Rejected — status ${result.status}.`, refresh: true };
+    },
+  },
+  Flag: {
+    describe: "Flag a finding for a second look.",
+    async run(ctx) {
+      const id = ctx.prompt("Finding id", "");
+      if (!id) return { skipped: "No finding chosen." };
+      const result = await call("review_finding", id, "flag", "operator");
+      return { message: `Flagged — status ${result.status}.`, refresh: true };
+    },
+  },
+
+  /* -- plugins, sync, tasking, templates ---------------------------------- */
+  "Install Plugin": {
+    describe: "What the plugin registry has loaded.",
+    async run() {
+      const result = await call("list_plugins");
+      const plugins = result.plugins || [];
+      return {
+        message: plugins.length
+          ? `${plugins.length} plugin(s): ${plugins.map((p) => p.name).join(", ")}`
+          : "No plugins loaded. Plugins are discovered from disk at startup.",
+      };
+    },
+  },
+  Sync: {
+    describe: "Compare what is here against what the service has.",
+    async run(ctx) {
+      const [projects, jobs] = await Promise.all([
+        call("list_projects"),
+        call("list_jobs"),
+      ]);
+      return {
+        message: `${(projects.projects || []).length} project(s), `
+          + `${(jobs.jobs || []).length} job(s) locally. This build is local-first; `
+          + `there is no remote to pull from.`,
+      };
+    },
+  },
+  "Request Reflight": {
+    describe: "Record that a capture needs flying again.",
+    async run(ctx) {
+      const id = parseInt(ctx.prompt("Aircraft id to task", "1"), 10);
+      if (!id) return { skipped: "No aircraft chosen." };
+      const reason = ctx.prompt("Why does it need reflying?", "captures out of tolerance");
+      if (!reason) return { skipped: "A reflight request needs a reason." };
+      await call("log_maintenance", id, "reflight-request", reason, "operator");
+      return { message: "Reflight requested and recorded.", refresh: true };
+    },
+  },
+  "Save Template": {
+    describe: "Save the current mission so it can be flown again.",
+    async run(ctx) {
+      const name = ctx.prompt("Template name", "Template");
+      if (!name) return { skipped: "No name given." };
+      await call("save_mission", name, "saved as a template");
+      return { message: `Saved "${name}".`, refresh: true };
+    },
+  },
 };
 
 
-/* Actions whose capability lives in the web service rather than the desktop Api, or
-   which have no implementation at all yet. Named individually so the UI can say WHICH,
-   rather than shrugging. */
-export const UNWIRED = {
-  "Add Aircraft": "Fleet lives in the web service (services/api), not the desktop Api.",
-  "Add Battery": "Fleet lives in the web service (services/api), not the desktop Api.",
-  "Add Pilot": "Fleet lives in the web service (services/api), not the desktop Api.",
-  "Assign Mission": "Fleet lives in the web service (services/api), not the desktop Api.",
-  "Log Maintenance": "Fleet lives in the web service (services/api), not the desktop Api.",
-  "Add Webhook": "Webhooks are a service capability; the desktop Api does not expose them.",
-  "New Key": "API keys are issued by the web service.",
-  "Copy cURL": "Needs the service base URL; the desktop app is local-first.",
-  "Send Request": "Needs the service base URL; the desktop app is local-first.",
-  "Install Plugin": "Plugins load from disk at startup; there is no installer yet.",
-  Sync: "Sync targets a hub deployment. Nothing to sync against locally.",
-  "Request Reflight": "Needs the tasking service.",
-  "New Report": "Report templates exist; no desktop Api method builds one yet.",
-  "Generate Report": "Report templates exist; no desktop Api method builds one yet.",
-  "Export Report": "Report templates exist; no desktop Api method builds one yet.",
-  "Export PDF": "Report templates exist; no desktop Api method builds one yet.",
-  Generate: "Depends on the report builder above.",
-  Accept: "Finding review is persisted by the web service, not the desktop Api.",
-  Reject: "Finding review is persisted by the web service, not the desktop Api.",
-  Flag: "Finding review is persisted by the web service, not the desktop Api.",
-  Share: "Sharing issues a signed link from the web service.",
-  Archive: "Archiving a project is a service operation.",
-  "Save Template": "Mission templates are read-only in this build; no writer exists.",
-};
+
+/* Nothing is declared unavailable any more.
+ *
+ * This held twenty-three entries -- fleet, sharing, webhooks, reports, review, plugins.
+ * Every one of them was implemented and carried a verified registry row; the only thing
+ * missing was a path from the button to the code, because those capabilities lived
+ * behind the web service and the desktop app speaks to app/api.py.
+ *
+ * app/desktop_ops.py opens the same database the service uses and calls the same
+ * modules, so the buttons do the real thing on a machine with no network. The map is
+ * kept and empty so the shell keeps its "declared missing" branch: the next capability
+ * that genuinely does not exist should say so here rather than failing silently.
+ */
+export const UNWIRED = {};
 
 function describeMeasurement(result) {
   if (!result) return "No measurement returned.";

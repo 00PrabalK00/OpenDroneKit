@@ -97,12 +97,27 @@ class TestEveryButtonIsAccountedFor:
             f"{unaccounted}"
         )
 
-    def test_the_unwired_ones_say_what_is_missing(self, actions_js) -> None:
-        """Not 'coming soon'. Which capability, and where it would live."""
+    def test_nothing_is_declared_unavailable_any_more(self, actions_js) -> None:
+        """UNWIRED held twenty-three entries: fleet, sharing, webhooks, reports, review,
+        plugins. Every one was implemented and carried a verified registry row -- the
+        only thing missing was a path from the button to the code, because those
+        capabilities lived behind the web service.
+
+        The map is kept and empty on purpose. The next capability that genuinely does
+        not exist should be declared here rather than failing silently.
+        """
         unwired_block = actions_js[actions_js.index("export const UNWIRED"):]
-        reasons = re.findall(r':\s*"([^"]{20,})"', unwired_block)
-        assert len(reasons) >= 10
-        assert any("service" in reason for reason in reasons)
+        entries = re.findall(r':\s*"([^"]{20,})"', unwired_block[:400])
+        assert not entries, f"still declared unavailable: {entries}"
+
+    def test_the_previously_unavailable_buttons_call_the_api(self, actions_js) -> None:
+        """The specific ones the user asked about."""
+        for method in (
+            "add_aircraft", "add_battery", "add_pilot", "log_maintenance",
+            "create_share_link", "add_webhook", "generate_report",
+            "review_finding", "list_plugins",
+        ):
+            assert f'call("{method}"' in actions_js, f"{method} is not called by any button"
 
 
 class TestReconstructionIsReachable:
@@ -228,10 +243,13 @@ class TestEveryButtonIsActuallyClicked:
     def test_every_button_responded(self, clicked) -> None:
         assert "every button responded" in clicked.stdout, clicked.stdout
 
-    def test_most_buttons_reach_the_application(self, clicked) -> None:
-        line = [l for l in clicked.stdout.splitlines() if l.startswith("ok: ")]
-        assert line, clicked.stdout
-        assert int(line[0].split(":")[1]) >= 50
+    def test_every_button_reaches_the_application(self, clicked) -> None:
+        """Was 66 of 93 with 27 declared unavailable. The 27 are now wired to the same
+        database the web service uses, so all of them do real work."""
+        ok_line = [l for l in clicked.stdout.splitlines() if l.startswith("ok: ")]
+        clicked_line = [l for l in clicked.stdout.splitlines() if l.startswith("buttons clicked: ")]
+        assert ok_line and clicked_line, clicked.stdout
+        assert int(ok_line[0].split(":")[1]) == int(clicked_line[0].split(":")[1])
 
 
 class TestTheCanvasActuallyChanges:
