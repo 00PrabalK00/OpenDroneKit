@@ -488,13 +488,24 @@ def build_model(model_id: str, num_classes: int, class_names: Sequence[str],
     from transformers import SegformerForSemanticSegmentation
 
     id2label = {index: str(name) for index, name in enumerate(class_names)}
-    model = SegformerForSemanticSegmentation.from_pretrained(
-        model_id,
+    common = dict(
         num_labels=num_classes,
         id2label=id2label,
         label2id={name: index for index, name in id2label.items()},
         ignore_mismatched_sizes=True,
     )
+    try:
+        # safetensors first. Recent transformers refuses to torch.load a .bin unless
+        # torch is 2.6 or newer, and a rented GPU often carries an older build pinned to
+        # its compute capability -- which is how both agriculture kernels died before
+        # reaching their first batch. The safetensors weights are the same artefact from
+        # the same publisher and are not affected by that restriction.
+        model = SegformerForSemanticSegmentation.from_pretrained(
+            model_id, use_safetensors=True, **common
+        )
+    except (OSError, ValueError, EnvironmentError):
+        # Not every checkpoint publishes them; fall back rather than refuse to train.
+        model = SegformerForSemanticSegmentation.from_pretrained(model_id, **common)
     if in_channels != 3:
         _widen_stem(model, in_channels)
     return model
