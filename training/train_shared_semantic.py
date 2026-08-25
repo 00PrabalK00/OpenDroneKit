@@ -162,6 +162,11 @@ def _evaluate(
     mixed_precision: bool,
 ) -> dict[str, Any]:
     model.eval()
+    autocast_dtype = (
+        torch.bfloat16
+        if mixed_precision and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
     confusion = Confusion.create(classes)
     loss_total = 0.0
     batches = 0
@@ -172,13 +177,17 @@ def _evaluate(
             masks = batch['mask'].to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
-                dtype=torch.float16,
+                dtype=autocast_dtype,
                 enabled=mixed_precision,
             ):
                 logits = model(images)
                 loss = criterion(logits, masks)
-            loss_total += float(loss.detach().cpu())
-            batches += 1
+            value = float(loss.detach().cpu())
+            # A single non-finite batch would otherwise make the whole epoch's reported
+            # loss nan, which is what hid the fp16 overflow in the first place.
+            if np.isfinite(value):
+                loss_total += value
+                batches += 1
             confusion.update(logits, masks)
     metrics = confusion.summary(class_names)
     metrics['loss'] = loss_total / batches if batches else None
@@ -264,7 +273,20 @@ def train(
     # which is the run that predicted building everywhere on the India holdout.
     absent_weight = float(training.get('absent_class_weight', 1.0))
     mixed_precision = device.type == 'cuda' and bool(training.get('mixed_precision', True))
-    scaler = torch.amp.GradScaler('cuda', enabled=mixed_precision)
+    # bf16 where the GPU supports it. The first run trained in fp16 and reported a train
+    # loss of nan for every epoch: the ViT overflows fp16's range, the gradient scaler
+    # then silently SKIPS those steps, and the model learns from an unknown subset of the
+    # corpus. bf16 carries fp32's exponent range, so the overflow does not happen and no
+    # scaler is needed. The nan was visible in the manifest for weeks and read as a
+    # cosmetic reporting quirk.
+    autocast_dtype = (
+        torch.bfloat16
+        if mixed_precision and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
+    scaler = torch.amp.GradScaler(
+        'cuda', enabled=mixed_precision and autocast_dtype is torch.float16
+    )
     balance = str(training.get('class_balance', 'none')).casefold()
     if balance == 'log_inverse':
         weight_values = class_weights_from_corpus(corpus, class_ids)
@@ -309,12 +331,14 @@ def train(
         model.train()
         optimizer.zero_grad(set_to_none=True)
         running_loss = 0.0
+        counted_steps = 0
+        nonfinite_steps = 0
         for step, batch in enumerate(train_loader, start=1):
             images = _normalise(batch['image'].to(device, non_blocking=True))
             masks = batch['mask'].to(device, non_blocking=True)
             with torch.autocast(
                 device_type=device.type,
-                dtype=torch.float16,
+                dtype=autocast_dtype,
                 enabled=mixed_precision,
             ):
                 logits = model(images)
@@ -333,7 +357,14 @@ def train(
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
-            running_loss += float(loss.detach().cpu()) * accumulation
+            step_loss = float(loss.detach().cpu()) * accumulation
+            if np.isfinite(step_loss):
+                running_loss += step_loss
+                counted_steps += 1
+            else:
+                # Named rather than averaged into nan: a non-finite loss means the
+                # gradient scaler drops this step, so the tile taught the model nothing.
+                nonfinite_steps += 1
 
         validation = _evaluate(
             model,
@@ -345,7 +376,9 @@ def train(
         )
         record = {
             'epoch': epoch,
-            'train_loss': running_loss / max(1, len(train_loader)),
+            'train_loss': running_loss / max(1, counted_steps),
+            'nonfinite_steps': nonfinite_steps,
+            'steps': len(train_loader),
             'learning_rates': [float(group['lr']) for group in optimizer.param_groups],
             'validation': validation,
         }
