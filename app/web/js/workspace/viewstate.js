@@ -25,3 +25,20 @@ export function onViewChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+/* The image the user picked, if any.
+ *
+ * Kept beside the view mode rather than inside the shell, because the canvas is built by
+ * workspaces.js which the shell does not pass arguments to -- the same reason the view
+ * mode lives here.
+ */
+let picked = null;
+
+export function currentImage() {
+  return picked;
+}
+
+export function setImage(image) {
+  picked = image || null;
+  listeners.forEach((fn) => fn(current));
+}

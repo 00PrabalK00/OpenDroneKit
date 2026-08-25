@@ -12,7 +12,8 @@ import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DATA, DEMO, demoEnabled } from "./demo.js";
 import { call, connected, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
-import { setView } from "./viewstate.js";
+import { setImage, setView } from "./viewstate.js";
+import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -154,10 +155,17 @@ export class Shell {
         return;
       }
       case "image":
-      case "capture":
+      case "capture": {
+        // Fetch the actual frame and draw it. The UI is served from app/web, so it
+        // cannot read a survey folder elsewhere on disk -- the bytes have to come back
+        // through the bridge as a data URI or the canvas has nothing to show.
+        this.showImage(String(value.label || value.name || name));
+        return;
+      }
       case "product": {
         const product = (DATA.products || {})[String(name).toLowerCase()];
         if (product) {
+          setImage(null);
           setView(String(name).toLowerCase());
           this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
           this.toast(`Showing ${name}.`, "ok");
@@ -194,6 +202,24 @@ export class Shell {
       default:
         this.toast(`${kind}: ${name}`, "ok");
     }
+  }
+
+  /** Draw one image from the active dataset on the canvas. */
+  async showImage(name) {
+    if (!connected()) {
+      this.toast(`${name}: connect a project to preview the image.`, "warn");
+      return;
+    }
+    this.toast(`Loading ${name}…`);
+    const preview = await tryCall("image_preview", name);
+    if (!preview || preview.ok === false) {
+      this.toast(`${name}: ${(preview && preview.error) || "no preview available."}`, "warn");
+      return;
+    }
+    setImage(preview);
+    setView("image");
+    this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+    this.toast(`${preview.name} — ${preview.source_width}×${preview.source_height}`, "ok");
   }
 
   buildNav() {
@@ -259,6 +285,7 @@ export class Shell {
     // across a workspace switch leaves the operator looking at the previous instrument
     // through the new one, and there would be no way back to the map.
     setView("map");
+    setImage(null);
     this.canvasView = "map";
     localStorage.setItem(LAST_WORKSPACE, id);
 
@@ -359,7 +386,9 @@ export class Shell {
     // Anything that starts real work or moves an aircraft asks first. A misclick on
     // Abort must not be the same gesture as a misclick on Pan.
     const question = entry.confirm;
-    if (question && !window.confirm(question)) return;
+    // confirmAll lets the click harness exercise the confirming actions; a real session
+    // never sets it, so a user always gets the question.
+    if (question && !this.confirmAll && !(await confirmAsk(question))) return;
 
     this.toast(`${action}…`);
     try {
@@ -389,14 +418,12 @@ export class Shell {
   /** What the actions need from the shell, in one place they can all reach. */
   actionContext() {
     return {
-      prompt: (label, fallback) => window.prompt(label, fallback),
-      choose: async (title, options) => {
-        const lines = options.map((o, i) => `${i + 1}. ${o.label}${o.hint ? "  — " + o.hint : ""}`);
-        const answer = window.prompt(`${title}\n${lines.join("\n")}`, "1");
-        if (answer === null) return null;
-        const index = parseInt(answer, 10) - 1;
-        return options[index] ? options[index].value : null;
-      },
+      // Drawn by the application, not by the webview. WebView2 does not implement
+      // window.prompt and pywebview does not route script dialogs, so every one of
+      // these returned null instantly and the action stopped with "no name given" --
+      // twenty-six buttons that looked completely dead and raised nothing.
+      prompt: (label, fallback) => askOne(label, label, fallback),
+      choose: (title, options) => chooseModal(title, options),
       missionOptions: () => {
         // What the mission panels were actually edited to. Numeric where the planner
         // expects a number: a string altitude reaches Python and fails there, which
@@ -423,7 +450,7 @@ export class Shell {
       // A secret the application will never show again. A toast disappears after four
       // seconds, which is not long enough to copy a token, so this blocks until the
       // user dismisses it.
-      reveal: (text) => window.alert(text),
+      reveal: (text) => reveal("Copy this now — it is not stored", text),
     };
   }
 

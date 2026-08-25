@@ -1127,6 +1127,75 @@ class Api:
     # code, so a local-first user gets the real thing rather than a stub.
 
     @guard
+    def list_dataset_images(self, limit: int = 500) -> dict[str, Any]:
+        """The images in the active dataset, so a panel can list something real."""
+        from app.session import SUPPORTED_IMAGE_EXTENSIONS
+
+        folder = self._session.active_dataset_dir
+        if not folder:
+            return fail("Select a dataset first.")
+        root = Path(folder)
+        if not root.is_dir():
+            return fail(f"Dataset folder is missing: {folder}")
+        # The same extension set the importer accepted, so the panel cannot list an
+        # image the application would then refuse to open.
+        names = sorted(
+            entry.name for entry in root.iterdir()
+            if entry.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+        )[: max(1, int(limit))]
+        return ok(folder=str(root), images=names, count=len(names))
+
+    @guard
+    def image_preview(self, name: str, max_size: int = 1400) -> dict[str, Any]:
+        """One image from the active dataset, as a data URI the canvas can draw.
+
+        The desktop UI is served over loopback from app/web, so it cannot read a file
+        anywhere else on disk -- a survey folder is outside the document root and an
+        <img src="D:/..."> is blocked. Handing back a downscaled data URI is what lets
+        the canvas show the actual photograph rather than a placeholder saying one
+        exists.
+
+        Downscaled because these are 24-megapixel frames: a full-size data URI is tens
+        of megabytes of base64 across the bridge for a preview nobody zooms into.
+        """
+        import base64
+
+        import cv2
+
+        folder = self._session.active_dataset_dir
+        if not folder:
+            return fail("Select a dataset first.")
+        # Resolved against the dataset and checked, so a crafted name cannot walk out of
+        # it -- the same containment rule the upload path enforces.
+        root = Path(folder).resolve()
+        target = (root / str(name)).resolve()
+        if root not in target.parents and target != root:
+            return fail("That image is outside the active dataset.")
+        if not target.is_file():
+            return fail(f"No such image in the dataset: {name}")
+
+        image = cv2.imread(str(target))
+        if image is None:
+            return fail(f"Could not read {name}. It may not be an image this build understands.")
+        height, width = image.shape[:2]
+        limit = max(64, int(max_size))
+        if max(height, width) > limit:
+            scale = limit / float(max(height, width))
+            image = cv2.resize(image, (int(width * scale), int(height * scale)),
+                               interpolation=cv2.INTER_AREA)
+        okay, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if not okay:
+            return fail(f"Could not encode a preview for {name}.")
+        return ok(
+            name=str(name),
+            width=int(image.shape[1]),
+            height=int(image.shape[0]),
+            source_width=int(width),
+            source_height=int(height),
+            data_uri="data:image/jpeg;base64," + base64.b64encode(buffer.tobytes()).decode("ascii"),
+        )
+
+    @guard
     def add_aircraft(self, organization_id: int, name: str, model: str = "",
                      serial: str = "") -> dict[str, Any]:
         """Register an aircraft."""

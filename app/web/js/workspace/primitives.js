@@ -235,7 +235,24 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
   // other view either renders a real product or says which one is missing and how to
   // produce it -- an empty canvas is indistinguishable from a broken one.
   queueMicrotask(async () => {
-    const { currentView } = await import("./viewstate.js");
+    const { currentView, currentImage } = await import("./viewstate.js");
+
+    // An image the user picked in a panel wins over everything else: they asked for
+    // this exact frame, and showing the basemap instead is the behaviour that made
+    // clicking a photograph feel like clicking nothing.
+    const picked = currentImage();
+    if (picked) {
+      root.querySelectorAll(".placeholder").forEach((node) => node.remove());
+      const shown = el("img", { class: "canvas-product" });
+      shown.setAttribute("src", picked.data_uri);
+      shown.setAttribute("alt", picked.name);
+      root.appendChild(shown);
+      root.appendChild(el("div", { class: "canvas-overlay bl" }, [
+        el("span", { class: "chip", text: `${picked.name} — ${picked.source_width}×${picked.source_height}` }),
+      ]));
+      return;
+    }
+
     const { DATA } = await import("./demo.js");
     const view = currentView();
     // A map canvas keeps its map ONLY while the view is the map. Returning early for

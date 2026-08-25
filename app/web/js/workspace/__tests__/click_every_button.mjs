@@ -154,6 +154,19 @@ const { WORKSPACES } = await import(pathToFileURL(resolve(HERE, "../workspaces.j
 const root = new Node("div");
 const shell = new Shell(root);
 
+// The dialogs are real DOM and wait for a real click, so under the stub DOM they would
+// never resolve and the run would hang -- which is exactly what happened the first time.
+// The harness answers them instead of the user. Overridden here rather than adding a
+// test hook to modal.js, so production code carries no branch that only tests take.
+const originalContext = shell.actionContext.bind(shell);
+shell.actionContext = () => ({
+  ...originalContext(),
+  prompt: async () => "Harness",
+  choose: async (_title, options) => (options[0] ? options[0].value : null),
+  reveal: async () => {},
+});
+shell.confirmAll = true;
+
 const results = [];
 for (const workspace of WORKSPACES) {
   shell.open(workspace.id);

@@ -43,7 +43,7 @@ export const ACTIONS = {
     async run(ctx) {
       const folder = await call("pick_folder");
       if (!folder || !folder.path) return { skipped: "No folder chosen." };
-      const name = ctx.prompt("Project name", folder.path.split(/[\\/]/).pop() || "Survey");
+      const name = await ctx.prompt("Project name", folder.path.split(/[\\/]/).pop() || "Survey");
       if (!name) return { skipped: "No name given." };
       const created = await call("create_project", name, folder.path);
       await call("set_active_project", created.project_id ?? created.id);
@@ -87,7 +87,7 @@ export const ACTIONS = {
   Save: {
     describe: "Save the planned mission into the project.",
     async run(ctx) {
-      const name = ctx.prompt("Mission name", "Mission");
+      const name = await ctx.prompt("Mission name", "Mission");
       if (!name) return { skipped: "No name given." };
       await call("save_mission", name);
       return { message: `Saved "${name}".`, refresh: true };
@@ -327,10 +327,10 @@ export const ACTIONS = {
   "Add Aircraft": {
     describe: "Register an aircraft against the organisation.",
     async run(ctx) {
-      const name = ctx.prompt("Aircraft name", "");
+      const name = await ctx.prompt("Aircraft name", "");
       if (!name) return { skipped: "No name given." };
-      const model = ctx.prompt("Model (optional)", "") || "";
-      const serial = ctx.prompt("Serial number (optional)", "") || "";
+      const model = await ctx.prompt("Model (optional)", "") || "";
+      const serial = await ctx.prompt("Serial number (optional)", "") || "";
       const result = await call("add_aircraft", ctx.organizationId(), name, model, serial);
       return { message: `Aircraft "${result.name}" registered.`, refresh: true };
     },
@@ -338,10 +338,10 @@ export const ACTIONS = {
   "Add Battery": {
     describe: "Register a battery so its cycles are tracked.",
     async run(ctx) {
-      const serial = ctx.prompt("Battery serial number", "");
+      const serial = await ctx.prompt("Battery serial number", "");
       if (!serial) return { skipped: "A battery is tracked by serial; none given." };
-      const capacity = parseInt(ctx.prompt("Capacity mAh (optional)", "0"), 10) || 0;
-      const limit = parseInt(ctx.prompt("Cycle limit (optional)", "0"), 10) || 0;
+      const capacity = parseInt(await ctx.prompt("Capacity mAh (optional)", "0") || "0", 10) || 0;
+      const limit = parseInt(await ctx.prompt("Cycle limit (optional)", "0") || "0", 10) || 0;
       const result = await call("add_battery", ctx.organizationId(), serial, capacity, limit);
       return { message: `Battery ${result.serial_number} registered.`, refresh: true };
     },
@@ -349,10 +349,10 @@ export const ACTIONS = {
   "Add Pilot": {
     describe: "Add a pilot and their licence expiry.",
     async run(ctx) {
-      const name = ctx.prompt("Pilot name", "");
+      const name = await ctx.prompt("Pilot name", "");
       if (!name) return { skipped: "No name given." };
-      const licence = ctx.prompt("Licence number (optional)", "") || "";
-      const expires = ctx.prompt("Licence expires YYYY-MM-DD (optional)", "") || "";
+      const licence = await ctx.prompt("Licence number (optional)", "") || "";
+      const expires = await ctx.prompt("Licence expires YYYY-MM-DD (optional)", "") || "";
       const result = await call("add_pilot", ctx.organizationId(), name, licence, expires);
       return { message: `Pilot ${result.display_name} added.`, refresh: true };
     },
@@ -360,11 +360,11 @@ export const ACTIONS = {
   "Log Maintenance": {
     describe: "Record maintenance and reset the service clock.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
       if (!id) return { skipped: "Select an aircraft in the fleet list first." };
-      const kind = ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
+      const kind = await ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
       if (!kind) return { skipped: "Maintenance needs a kind." };
-      const detail = ctx.prompt("Detail (optional)", "") || "";
+      const detail = await ctx.prompt("Detail (optional)", "") || "";
       const result = await call("log_maintenance", id, kind, detail, "operator");
       return { message: `Logged ${result.kind} at ${result.hours_at_service} h.`, refresh: true };
     },
@@ -372,9 +372,9 @@ export const ACTIONS = {
   "Assign Mission": {
     describe: "Note which aircraft flies this mission.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(ctx.prompt("Aircraft id", "1"), 10);
+      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
       if (!id) return { skipped: "Select an aircraft in the fleet list first." };
-      const mission = ctx.prompt("Mission name", "Mission");
+      const mission = await ctx.prompt("Mission name", "Mission");
       if (!mission) return { skipped: "No mission named." };
       await call("assign_mission_to_aircraft", id, mission);
       return { message: `Assigned to ${mission}.`, refresh: true };
@@ -386,10 +386,10 @@ export const ACTIONS = {
     confirm: "Issue a share link for this project?",
     describe: "Issue a link. The token is shown once and only its hash is stored.",
     async run(ctx) {
-      const note = ctx.prompt("What is this link for?", "Client review") || "";
+      const note = await ctx.prompt("What is this link for?", "Client review") || "";
       const result = await call("create_share_link", ctx.projectId(), note, false);
       // Shown once on purpose: only the hash is kept, so this cannot be read back.
-      ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`);
+      await ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`);
       return { message: `Link ${result.prefix}… issued.`, refresh: true };
     },
   },
@@ -408,12 +408,12 @@ export const ACTIONS = {
   "Add Webhook": {
     describe: "Register a webhook and reveal its signing secret once.",
     async run(ctx) {
-      const url = ctx.prompt("Webhook URL", "https://");
+      const url = await ctx.prompt("Webhook URL", "https://");
       if (!url) return { skipped: "No URL given." };
-      const events = (ctx.prompt("Events, comma separated", "*") || "*")
+      const events = ((await ctx.prompt("Events, comma separated", "*")) || "*")
         .split(",").map((e) => e.trim()).filter(Boolean);
       const result = await call("add_webhook", ctx.organizationId(), url, events, "");
-      ctx.reveal(`Signing secret (copy it now, it is not stored):\n\n${result.secret}`);
+      await ctx.reveal(`Signing secret (copy it now, it is not stored):\n\n${result.secret}`);
       return { message: `Webhook registered for ${result.url}.`, refresh: true };
     },
   },
@@ -421,7 +421,7 @@ export const ACTIONS = {
     describe: "Issue a share token, which is what this build uses for API access.",
     async run(ctx) {
       const result = await call("create_share_link", ctx.projectId(), "API access", true);
-      ctx.reveal(`API token (copy it now, it is not stored):\n\n${result.token}`);
+      await ctx.reveal(`API token (copy it now, it is not stored):\n\n${result.token}`);
       return { message: `Token ${result.prefix}… issued.`, refresh: true };
     },
   },
@@ -433,7 +433,7 @@ export const ACTIONS = {
       const command = first
         ? `curl -X POST ${first.url} -H "Content-Type: application/json" -d '{"event":"test"}'`
         : `curl http://127.0.0.1:8000/health`;
-      ctx.reveal(command);
+      await ctx.reveal(command);
       return { message: "Command shown; copy it from the dialog." };
     },
   },
@@ -458,7 +458,7 @@ export const ACTIONS = {
         // the useful part -- it says exactly what to produce first.
         return { skipped: `Not ready: ${(readiness.missing || []).join(", ") || "unknown"}` };
       }
-      const title = ctx.prompt("Report title", "Inspection report") || "Inspection report";
+      const title = await ctx.prompt("Report title", "Inspection report") || "Inspection report";
       const result = await call("generate_report", "", title, "standard", "");
       return { message: `Report built: ${result.id || "done"}.`, refresh: true };
     },
@@ -474,7 +474,7 @@ export const ACTIONS = {
     async run(ctx) {
       // The finding picked in the panel, falling back to asking. Requiring an id the
       // user cannot see was the reason review felt broken even once it was wired.
-      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      const id = ctx.selectedFinding() || await ctx.prompt("Finding id", "");
       if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "accept", "operator");
       return { message: `Accepted — status ${result.status}.`, refresh: true };
@@ -485,7 +485,7 @@ export const ACTIONS = {
     async run(ctx) {
       // The finding picked in the panel, falling back to asking. Requiring an id the
       // user cannot see was the reason review felt broken even once it was wired.
-      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      const id = ctx.selectedFinding() || await ctx.prompt("Finding id", "");
       if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "reject", "operator");
       return { message: `Rejected — status ${result.status}.`, refresh: true };
@@ -496,7 +496,7 @@ export const ACTIONS = {
     async run(ctx) {
       // The finding picked in the panel, falling back to asking. Requiring an id the
       // user cannot see was the reason review felt broken even once it was wired.
-      const id = ctx.selectedFinding() || ctx.prompt("Finding id", "");
+      const id = ctx.selectedFinding() || await ctx.prompt("Finding id", "");
       if (!id) return { skipped: "Select a finding in the list first." };
       const result = await call("review_finding", id, "flag", "operator");
       return { message: `Flagged — status ${result.status}.`, refresh: true };
@@ -533,9 +533,9 @@ export const ACTIONS = {
   "Request Reflight": {
     describe: "Record that a capture needs flying again.",
     async run(ctx) {
-      const id = parseInt(ctx.prompt("Aircraft id to task", "1"), 10);
+      const id = parseInt(await ctx.prompt("Aircraft id to task", "1") || "0", 10);
       if (!id) return { skipped: "No aircraft chosen." };
-      const reason = ctx.prompt("Why does it need reflying?", "captures out of tolerance");
+      const reason = await ctx.prompt("Why does it need reflying?", "captures out of tolerance");
       if (!reason) return { skipped: "A reflight request needs a reason." };
       await call("log_maintenance", id, "reflight-request", reason, "operator");
       return { message: "Reflight requested and recorded.", refresh: true };
@@ -544,7 +544,7 @@ export const ACTIONS = {
   "Save Template": {
     describe: "Save the current mission so it can be flown again.",
     async run(ctx) {
-      const name = ctx.prompt("Template name", "Template");
+      const name = await ctx.prompt("Template name", "Template");
       if (!name) return { skipped: "No name given." };
       await call("save_mission", name, "saved as a template");
       return { message: `Saved "${name}".`, refresh: true };
