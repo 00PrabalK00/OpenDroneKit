@@ -80,6 +80,14 @@ def export_segmentation(run_dir: Path, *, opset: int = 17, image_size: int | Non
         raise SystemExit(f"No checkpoint at {checkpoint_path}. Train first.")
 
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    # A multiclass checkpoint would otherwise be built with one logit and a sigmoid,
+    # producing a graph that loads and runs and answers a question nobody asked.
+    if "num_classes" in state.get("config", {}):
+        raise SystemExit(
+            f"{checkpoint_path} was trained by train_seg_multiclass "
+            f"({state['config']['num_classes']} classes). Export it with "
+            "--kind seg_multiclass; the binary head and sigmoid here would be wrong."
+        )
     config = SegConfig(**state["config"])
     size = int(image_size or config.image_size)
 
@@ -156,6 +164,141 @@ def export_segmentation(run_dir: Path, *, opset: int = 17, image_size: int | Non
         report["opencv_error"] = str(exc)
 
     return report
+
+
+def export_segmentation_multiclass(
+    run_dir: Path, *, opset: int = 17, image_size: int | None = None
+) -> dict[str, Any]:
+    """Export a multiclass SegFormer checkpoint, emitting per-class probabilities.
+
+    Separate from `export_segmentation` because the two trainers disagree about what
+    the head means. A binary run has one logit and a sigmoid; a multiclass run has
+    `num_classes` logits that are only interpretable against each other, so the graph
+    ends in a softmax over the channel axis. Running one through the other's exporter
+    produces a graph that loads, runs, and is wrong -- which is why the binary path
+    now refuses a config it does not recognise rather than coercing it.
+
+    Parity is checked on the decision as well as the probability: a per-pixel argmax
+    disagreement is a different class in the output, whereas a small float difference
+    in a probability is drift.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    from training.train_seg_multiclass import SegMulticlassConfig, build_model
+
+    checkpoint_path = run_dir / "best.pt"
+    if not checkpoint_path.exists():
+        raise SystemExit(f"No checkpoint at {checkpoint_path}. Train first.")
+
+    state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config = SegMulticlassConfig(**state["config"])
+    size = int(image_size or config.image_size)
+    labels = list(config.resolved_class_names)
+
+    model = build_model(config.model_id, config.num_classes, labels)
+    model.load_state_dict(state["model"], strict=False)
+    model.eval()
+
+    class MulticlassSegWrapper(torch.nn.Module):
+        """Fold SegFormer's 1/4-resolution upsample and the softmax into the graph."""
+
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+
+        def forward(self, pixel_values):
+            logits = self.inner(pixel_values=pixel_values).logits
+            logits = F.interpolate(
+                logits, size=pixel_values.shape[-2:], mode="bilinear", align_corners=False
+            )
+            return torch.softmax(logits, dim=1)
+
+    wrapper = MulticlassSegWrapper(model).eval()
+    example = torch.randn(1, 3, size, size)
+    output_path = run_dir / f"{config.name}.onnx"
+
+    torch.onnx.export(
+        wrapper,
+        (example,),
+        str(output_path),
+        input_names=["images"],
+        output_names=["class_probabilities"],
+        opset_version=opset,
+        dynamo=False,
+        dynamic_axes={"images": {0: "batch"}, "class_probabilities": {0: "batch"}},
+    )
+
+    with torch.no_grad():
+        torch_output = wrapper(example).numpy()
+    session = _onnx_session(output_path)
+    onnx_output = session.run(None, {"images": example.numpy()})[0]
+
+    difference = float(np.abs(torch_output - onnx_output).max())
+    violation = parity_violation(torch_output, onnx_output)
+    disagreements = int((torch_output.argmax(axis=1) != onnx_output.argmax(axis=1)).sum())
+    pixels = int(torch_output[:, 0].size)
+
+    report = {
+        "name": config.name,
+        "kind": "onnx_segmentation_multiclass",
+        "onnx_path": str(output_path),
+        "labels": labels,
+        "input_size": size,
+        "opset": opset,
+        "max_abs_diff": difference,
+        "parity_violation": violation,
+        "label_disagreements": disagreements,
+        "pixels_compared": pixels,
+        # A probability that drifts is drift; a pixel that changes class is a different
+        # answer, so the decision has to agree exactly before this can be registered.
+        "parity_ok": violation <= 1.0 and disagreements == 0,
+        "output_shape": list(onnx_output.shape),
+        "preprocessing": (
+            "images are RGB in 0..1 with ImageNet mean/std applied by the caller; the "
+            "upsample to full resolution and the softmax over classes are in the graph"
+        ),
+        "train_metrics": state.get("metrics", {}) or _best_validation(run_dir),
+    }
+
+    if report["output_shape"][1] != len(labels):
+        report["parity_ok"] = False
+        report["class_count_mismatch"] = (
+            f"graph emits {report['output_shape'][1]} channels for {len(labels)} classes"
+        )
+
+    # cv2.dnn is the runtime core/detection.py uses, so a graph it cannot read is
+    # useless regardless of what onnxruntime thinks.
+    try:
+        import cv2
+
+        net = cv2.dnn.readNetFromONNX(str(output_path))
+        net.setInput(example.numpy())
+        cv_output = net.forward()
+        report["opencv_dnn_loadable"] = True
+        report["opencv_max_abs_diff"] = float(np.abs(torch_output - cv_output).max())
+    except Exception as exc:
+        report["opencv_dnn_loadable"] = False
+        report["opencv_error"] = str(exc)
+
+    return report
+
+
+def _best_validation(run_dir: Path) -> dict[str, Any]:
+    """The validation entry the checkpoint was selected on, per-class IoU and all.
+
+    Read from history rather than summary.json, which records only the mean. A mean
+    hides the case this project cares about most -- a class the model never predicts.
+    """
+    history_path = run_dir / "history.json"
+    if not history_path.exists():
+        return {}
+    history = json.loads(history_path.read_text(encoding="utf-8"))
+    entries = history if isinstance(history, list) else history.get("epochs", [])
+    best = [entry for entry in entries if entry.get("best")]
+    if not best:
+        return {}
+    return best[-1].get("validation", {})
 
 
 def export_yolo(run_dir: Path, *, opset: int = 17, image_size: int | None = None) -> dict[str, Any]:
@@ -328,7 +471,9 @@ def export_classification(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m training.export_onnx")
     parser.add_argument("--run", required=True, type=Path, help="Run directory to export.")
-    parser.add_argument("--kind", choices=["seg", "yolo", "cls"], default="seg")
+    parser.add_argument(
+        "--kind", choices=["seg", "seg_multiclass", "yolo", "cls"], default="seg"
+    )
     parser.add_argument("--opset", type=int, default=17)
     parser.add_argument("--image-size", type=int)
     args = parser.parse_args(argv)
@@ -336,6 +481,10 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = args.run if args.run.is_absolute() else REPO_ROOT / args.run
     if args.kind == "seg":
         report = export_segmentation(run_dir, opset=args.opset, image_size=args.image_size)
+    elif args.kind == "seg_multiclass":
+        report = export_segmentation_multiclass(
+            run_dir, opset=args.opset, image_size=args.image_size
+        )
     elif args.kind == "cls":
         report = export_classification(run_dir, opset=args.opset, image_size=args.image_size)
     else:

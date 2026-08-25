@@ -114,8 +114,6 @@ class StructuralDefectResult:
     model_available: bool = False
     model_key: str = ""
     model_sha256: str = ""
-    model_key: str = ""
-    model_sha256: str = ""
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -419,6 +417,151 @@ def _run_onnx_segmentation(
     if binary.shape != (height, width):
         binary = cv2.resize(binary, (width, height), interpolation=cv2.INTER_NEAREST)
     return binary
+
+
+class CorrosionGradingRefused(ValueError):
+    """Raised rather than returning a severity nothing measured.
+
+    Every other detector here degrades to a heuristic when its model is missing, and
+    reports `heuristic` so the caller can tell. Severity grading has no such fallback:
+    colour and texture rules can find rust, but "poor versus severe" is a judgement the
+    corpus taught and no threshold reproduces. A guessed grade drives a maintenance
+    decision, so this refuses instead.
+    """
+
+
+@dataclass
+class CorrosionSeverityResult:
+    """A per-pixel severity grade, and the evidence for what produced it."""
+
+    grade_index: np.ndarray
+    overlay: np.ndarray
+    labels: list[str]
+    class_pixel_ratio: dict[str, float]
+    worst_present_grade: str
+    total_pixels: int
+    model_used: str
+    model_key: str = ""
+    model_sha256: str = ""
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "labels": list(self.labels),
+            "class_pixel_ratio": {k: float(v) for k, v in self.class_pixel_ratio.items()},
+            "worst_present_grade": self.worst_present_grade,
+            "total_pixels": int(self.total_pixels),
+            "model_used": self.model_used,
+            "model_key": self.model_key,
+            "model_sha256": self.model_sha256,
+        }
+
+
+def _run_onnx_segmentation_multiclass(
+    image_bgr: np.ndarray,
+    model_path: Path,
+    input_size: int,
+    class_count: int,
+) -> np.ndarray | None:
+    """Run a multiclass segmentation graph and return a full-resolution class index map.
+
+    The graph ends in a softmax over the channel axis, so the answer is the argmax and
+    not a threshold: the classes are mutually exclusive and only interpretable against
+    each other. Thresholding one channel of a softmax against 0.5 would silently return
+    "nothing" for any pixel the model is merely unsure about.
+    """
+    net = _load_onnx_net(model_path)
+    if net is None:
+        return None
+
+    size = int(max(64, input_size))
+    blob = cv2.dnn.blobFromImage(
+        image_bgr, scalefactor=1.0 / 255.0, size=(size, size), swapRB=True, crop=False
+    )
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 3, 1, 1)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 3, 1, 1)
+    blob = (blob - mean) / std
+
+    net.setInput(blob)
+    try:
+        output = np.asarray(net.forward())
+    except Exception:
+        return None
+
+    probabilities = np.squeeze(output, axis=0) if output.ndim == 4 else np.squeeze(output)
+    if probabilities.ndim != 3 or probabilities.shape[0] != class_count:
+        # A graph whose channel count disagrees with the registered labels would map
+        # every pixel onto the wrong name. Refusing the array is the only safe answer.
+        return None
+
+    grade = probabilities.argmax(axis=0).astype(np.uint8)
+    height, width = image_bgr.shape[:2]
+    if grade.shape != (height, width):
+        grade = cv2.resize(grade, (width, height), interpolation=cv2.INTER_NEAREST)
+    return grade
+
+
+def grade_corrosion_severity(
+    image_bgr: np.ndarray,
+    *,
+    model_key: str = "corrosion_severity_segmentation",
+) -> CorrosionSeverityResult:
+    """Grade every pixel on the corrosion severity scale, or refuse.
+
+    `worst_present_grade` is the highest grade the model actually assigns to any pixel,
+    read off the label order rather than a score, because the classes are ordinal: the
+    last label is the worst by construction.
+    """
+    spec = get_model_spec(model_key)
+    if spec is None:
+        raise CorrosionGradingRefused(f"{model_key} is not in the model registry.")
+
+    info = model_status(model_key)
+    if not info.get("exists"):
+        raise CorrosionGradingRefused(
+            f"{model_key} is registered but its weights are not installed at "
+            f"{info.get('path', '?')}. There is no heuristic severity grade to fall "
+            "back to, so nothing is returned."
+        )
+
+    labels = list(getattr(spec, "labels", []) or [])
+    if len(labels) < 2:
+        raise CorrosionGradingRefused(
+            f"{model_key} declares {len(labels)} labels; a severity scale needs at least two."
+        )
+
+    grade = _run_onnx_segmentation_multiclass(
+        image_bgr,
+        Path(str(info["path"])),
+        input_size=int(getattr(spec, "input_size", 512) or 512),
+        class_count=len(labels),
+    )
+    if grade is None:
+        raise CorrosionGradingRefused(
+            f"{model_key} did not produce a usable grade map -- the graph would not "
+            "load, or its channel count disagrees with the registered labels."
+        )
+
+    total = int(grade.size)
+    counts = np.bincount(grade.reshape(-1), minlength=len(labels))[: len(labels)]
+    ratios = {label: float(counts[index]) / total for index, label in enumerate(labels)}
+    present = [label for index, label in enumerate(labels) if counts[index] > 0]
+
+    identity = model_identity(model_key)
+    return CorrosionSeverityResult(
+        grade_index=grade,
+        overlay=_overlay_by_masks(
+            image_bgr,
+            {label: (grade == index).astype(np.uint8) * 255
+             for index, label in enumerate(labels) if counts[index] > 0},
+        ),
+        labels=labels,
+        class_pixel_ratio=ratios,
+        worst_present_grade=present[-1] if present else "",
+        total_pixels=total,
+        model_used=f"onnx:{Path(str(info['path'])).name}",
+        model_key=identity["model_key"],
+        model_sha256=identity["model_sha256"],
+    )
 
 
 def detect_cracks(

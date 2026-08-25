@@ -27,6 +27,21 @@ WINDOWS_EDGE = Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.e
 # container is too small for the shared memory it expects.
 SANDBOX_FLAGS = ["--no-sandbox", "--disable-dev-shm-usage"]
 
+# A first run reaches out to Google for variations, component updates and safe-browsing
+# lists before it settles the page. On a runner those requests are what turned SIGABRT
+# into a 30-second timeout: the browser started and then waited on the network for a
+# page served from loopback.
+STARTUP_FLAGS = [
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--disable-extensions",
+    "--metrics-recording-only",
+    "--mute-audio",
+]
+
 # Runners have no GPU, so WebGL has to come from a software renderer or the context
 # never gets created and the harness reports a scene that never rendered.
 WEBGL_FLAGS = [
@@ -41,11 +56,15 @@ def chromium(reason: str) -> Path:
     """The browser to render with, or a failure naming what went unverified."""
     if WINDOWS_EDGE.is_file():
         return WINDOWS_EDGE
+    # Chrome first. On a GitHub runner /usr/bin/chromium is a snap shim, and a snap
+    # confined browser inside CI starts and then hangs rather than failing, which reads
+    # as a broken page instead of a missing browser.
     found = (
-        shutil.which("msedge")
+        shutil.which("google-chrome")
+        or shutil.which("google-chrome-stable")
+        or shutil.which("msedge")
         or shutil.which("chromium")
         or shutil.which("chromium-browser")
-        or shutil.which("google-chrome")
     )
     assert found, f"A Chromium browser is required for {reason}."
     return Path(found)
@@ -65,7 +84,7 @@ def dump_dom_command(
     advanced as fast as they can be evaluated rather than in wall-clock, so a loaded
     runner cannot produce a half-rendered DOM and a mystery assertion failure.
     """
-    argv = [str(chromium(reason)), "--headless=new", *SANDBOX_FLAGS,
+    argv = [str(chromium(reason)), "--headless=new", *SANDBOX_FLAGS, *STARTUP_FLAGS,
             f"--user-data-dir={profile_dir}"]
     if webgl:
         argv += WEBGL_FLAGS

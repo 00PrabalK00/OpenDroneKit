@@ -208,6 +208,74 @@
       },
       "training_data": {},
       "registered_utc": "2026-08-16T15:56:03Z"
+    },
+    {
+      "registry_key": "corrosion_severity_segmentation",
+      "path": "structural/corrosion_severity_segmentation.onnx",
+      "sha256": "edcecd84cc6839d76b7db3e5a6475ec694636fc6cffe545ca4718c7147b5002f",
+      "bytes": 109917813,
+      "method": "trained_in_repo",
+      "source_run": "training\\runs\\corrosion_segformer_b2_cs",
+      "architecture": "corrosion_segformer_b2_cs",
+      "input_size": 512,
+      "opset": 17,
+      "onnx_parity_max_abs_diff": 2.682209014892578e-06,
+      "opencv_dnn_loadable": true,
+      "validation_metrics": {
+        "mean_iou": 0.576873642472528,
+        "per_class_iou": {
+          "good": 0.8707799787522927,
+          "fair": 0.4979998742778117,
+          "poor": 0.4495381778590612,
+          "severe": 0.4891765390009464
+        },
+        "per_class_support": {
+          "good": 12810001,
+          "fair": 2413308,
+          "poor": 1425124,
+          "severe": 653071
+        },
+        "pixel_accuracy": 0.849654804576527,
+        "confusion_matrix": [
+          [
+            11456193,
+            857136,
+            303973,
+            192699
+          ],
+          [
+            265592,
+            1742890,
+            340905,
+            63921
+          ],
+          [
+            70473,
+            225510,
+            986396,
+            142745
+          ],
+          [
+            10177,
+            3826,
+            124241,
+            514827
+          ]
+        ]
+      },
+      "training_data": {
+        "task": "corrosion_seg",
+        "sources": [
+          "corrosion_cs"
+        ],
+        "licenses": {},
+        "sample_counts": {
+          "train": 330,
+          "val": 66,
+          "test": 44
+        }
+      },
+      "registered_utc": "2026-08-25T13:01:38Z"
     }
   ],
   "licensing_policy": [

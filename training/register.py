@@ -47,6 +47,7 @@ KEY_SUBDIR = {
     "structural_codebrim_detector": "structural",
     "solar_pv_multidefect_detector": "solar",
     "metal_corrosion_detector": "solar",
+    "corrosion_severity_segmentation": "structural",
 }
 
 # Which prepared task fed each key, so provenance can name the training data.
@@ -56,6 +57,7 @@ KEY_TASK = {
     "structural_codebrim_detector": "structural_det",
     "solar_pv_multidefect_detector": "solar_det",
     "metal_corrosion_detector": "corrosion_det",
+    "corrosion_severity_segmentation": "corrosion_seg",
 }
 
 
@@ -136,6 +138,11 @@ def register(run_dir: Path, key: str, *, force: bool = False) -> dict[str, Any]:
         "iou_threshold": existing.get("iou_threshold", 0.45),
         "input_size": export_report.get("input_size", existing.get("input_size", 640)),
         "description": existing.get("description", f"Trained in run {run_dir.name}."),
+        # The digest of the file whose metrics are on record. Without it the runtime's
+        # identity check reports `unrecorded` -- not a failure, but not verification
+        # either, and every model registered here would arrive in that state.
+        "sha256": checksum,
+        "status": "installed",
     }
     registry["models"][key] = entry
     REGISTRY_PATH.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")

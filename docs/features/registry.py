@@ -745,14 +745,28 @@ VISION = [
       "mAP50 0.417, mAP50-95 0.201; Spallation 0.306, ExposedBars 0.330, "
       "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124."),
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
-      "Trained detector for corrosion and rust with published validation metrics.",
-      "in_progress", [],
-      "TRAINED AND REJECTED, not untried: YOLO11l on 498 images reached mAP50 0.254, "
-      "precision 0.343, recall 0.257. At that recall three corrosion sites in four are "
-      "missed, which is not a detector, and registering it would have put a number in "
-      "front of an inspector that the model cannot support. The corpus is the limit -- "
-      "498 training images of a defect whose appearance varies enormously with substrate, "
-      "lighting and stage. Needs a larger and more varied corpus, not more epochs."),
+      "Trained model for corrosion with published validation metrics, reporting a "
+      "severity grade it measured or refusing to report one at all.",
+      "implemented",
+      ["tests/test_corrosion_severity.py::TestItActuallyPredictsTheWorstGrade",
+       "tests/test_corrosion_severity.py::TestRefusalRatherThanAGuessedGrade",
+       "tests/test_corrosion_severity.py::TestTheGradeIsAnArgmaxNotAThreshold",
+       "tests/test_corrosion_severity.py::TestTheScaleIsOrdinalAndSaysSo"],
+      "SEGMENTATION, AFTER DETECTION FAILED. The first attempt was YOLO11l on 498 "
+      "images: mAP50 0.254, recall 0.257, so three corrosion sites in four went "
+      "unfound. That was rejected rather than registered. The shipping model asks a "
+      "different question -- how bad is this pixel, on an ordinal scale of "
+      "good/fair/poor/severe -- because that is what a maintenance decision needs and "
+      "it is what the Condition State corpus actually labels. "
+      "corrosion_severity_segmentation is SegFormer-B2 @512 over 440 images, mean IoU "
+      "0.5769, pixel accuracy 0.8497, and it recovers 0.788 of severe pixels rather "
+      "than declining to use its worst grade. Errors are almost all one step on the "
+      "scale: 124,241 of the missed severe pixels are called 'poor'. "
+      "REFUSES RATHER THAN GUESSES: every other detector here degrades to a heuristic "
+      "when its model is absent, and this one does not, because colour and texture "
+      "rules can find rust but nothing outside the corpus separates poor from severe. "
+      "440 images from one source means these figures are a first indication, and it "
+      "has not been tested on Indian infrastructure imagery."),
     F("ai.solar", "Solar defect detection", "vision", "AI",
       "Trained detector for panel defects with published validation metrics.",
       "verified", ["tests/test_trained_defect_models.py::TestTheWeightsAreReallyThere",

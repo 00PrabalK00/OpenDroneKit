@@ -56,14 +56,16 @@ class TestFlightEvidenceReachesTheStatusCheck:
     """
 
     def test_the_sitl_job_writes_a_junit_report(self, raw) -> None:
-        assert "--junit-xml=/workspace/sitl-report.xml" in raw
+        # Written to a mount the container's unprivileged user can actually write to;
+        # the checkout is not one, and the failure lands after the flights have passed.
+        assert "--junit-xml=/out/sitl-report.xml" in raw
 
     def test_the_report_is_published_as_an_artifact(self, workflow) -> None:
         steps = workflow["jobs"]["sitl"]["steps"]
         assert any("upload-artifact" in str(step.get("uses", "")) for step in steps)
 
-    def test_the_status_job_waits_for_both_kinds_of_evidence(self, workflow) -> None:
-        assert set(workflow["jobs"]["status"]["needs"]) == {"tests", "sitl"}
+    def test_the_status_job_waits_for_every_kind_of_evidence(self, workflow) -> None:
+        assert set(workflow["jobs"]["status"]["needs"]) == {"tests", "spatial", "sitl"}
 
     def test_the_status_job_merges_the_flight_report(self, raw) -> None:
         assert "--extra-report sitl-report.xml" in raw
@@ -72,6 +74,27 @@ class TestFlightEvidenceReachesTheStatusCheck:
         """Otherwise a broken upload silently returns to the pre-CI situation, where the
         row is computed as though SITL had never been asked about."""
         assert "no SITL evidence to merge" in raw
+        assert "no spatial evidence to merge" in raw
+
+
+class TestSpatialEvidenceReachesTheStatusCheck:
+    """inf.postgis fails the same way fl.sitl did, for the same reason.
+
+    Its tests skip without a live PostGIS, and the status job runs on a plain runner
+    with no database. Without the merged report a suite that passed in the spatial job
+    downgrades the row anyway -- which is a green CI reporting a regression that did not
+    happen.
+    """
+
+    def test_the_spatial_job_writes_a_junit_report(self, raw) -> None:
+        assert "--junit-xml=spatial-report.xml" in raw
+
+    def test_the_report_is_published_as_an_artifact(self, workflow) -> None:
+        steps = workflow["jobs"]["spatial"]["steps"]
+        assert any("upload-artifact" in str(step.get("uses", "")) for step in steps)
+
+    def test_the_status_job_merges_it(self, raw) -> None:
+        assert "--extra-report spatial-report.xml" in raw
 
 
 class TestSkipsCannotPassAsSuccess:

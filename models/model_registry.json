@@ -207,6 +207,22 @@
       "description": "YOLO11l @640 on the rail corridor obstacle corpus, trained on a Kaggle P100, 60 epochs. Validation mAP50 0.824, mAP50-95 0.493, precision 0.762, recall 0.743 over 273 held-out images. All six classes are predicted; none is ignored. Per-class mAP50-95: Barrel 0.590, Boulder 0.532, IronRod 0.531, Person 0.493, Jerrycan 0.418, Branch 0.395. READ THE RECALL BEFORE USING THIS FOR SAFETY. At 0.743 overall recall roughly one obstacle in four is missed, and Person is mid-table at 0.493 mAP50-95. This model must NOT be presented as clearing a track: an empty result means the model found nothing, not that the corridor is safe. It is a review aid that flags candidates for a human, and a track cleared on its silence would be cleared on no evidence. SCOPE: trained on 1,338 corridor images of discrete objects lying on or beside track. It does not detect track geometry faults, ballast condition, missing fasteners, or vegetation encroachment, and it has not been measured on Indian railway imagery.",
       "sha256": "7a53c8b9eaeabf956a1f2fc3a25ca3ff39f6217c5cb3a3b744f54e017e8ced23",
       "status": "installed"
+    },
+    "corrosion_severity_segmentation": {
+      "kind": "onnx_segmentation_multiclass",
+      "path": "structural/corrosion_severity_segmentation.onnx",
+      "labels": [
+        "good",
+        "fair",
+        "poor",
+        "severe"
+      ],
+      "score_threshold": 0.5,
+      "iou_threshold": 0.45,
+      "input_size": 512,
+      "description": "SegFormer-B2 @512 on the Corrosion Condition State corpus (440 prepared images: 330 train / 66 val / 44 test), run corrosion_segformer_b2_cs, 80 epochs with log-inverse class weighting. Validation mean IoU 0.5769, pixel accuracy 0.8497. Per class IoU: good 0.871, fair 0.498, poor 0.450, severe 0.489. ONNX export agrees with torch on every one of 262,144 pixel decisions (max abs prob diff 2.7e-06) and cv2.dnn loads it. OUTPUT IS PER-CLASS PROBABILITY, NOT A BINARY MASK: the graph ends in a softmax over four channels and the answer is the argmax, so score_threshold does not apply the way it does to the binary segmenters here. WHAT THE NUMBERS MEAN: the classes are an ORDINAL severity scale and the errors are almost entirely between adjacent grades -- of the 653,071 severe pixels it recovers 514,827 (recall 0.788) and loses 124,241 of the rest to 'poor', one step down. A mean IoU near 0.58 on a four-way ordinal task is not the same weakness as 0.58 on independent classes, but it does mean a reported grade can be one step off. CORPUS SIZE IS THE CAVEAT: 440 images from a single source, so these figures are a first indication rather than a settled measurement, and the model has not been tested on Indian infrastructure imagery.",
+      "sha256": "edcecd84cc6839d76b7db3e5a6475ec694636fc6cffe545ca4718c7147b5002f",
+      "status": "installed"
     }
   }
 }

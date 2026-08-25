@@ -104,7 +104,13 @@ jobs:
       - name: Spatial tests
         env:
           ODK_TEST_POSTGIS: postgresql+psycopg://postgres:odk@127.0.0.1:5432/odk
-        run: python -m pytest tests/test_postgis_spatial.py -q
+        # The junit report is this job's evidence, for the same reason the SITL job
+        # publishes one: these tests skip without a live PostGIS, a skip counts as no
+        # evidence, and inf.postgis would be downgraded in the status job by a suite
+        # that in fact passed here.
+        run: |
+          python -m pytest tests/test_postgis_spatial.py -q \
+            --junit-xml=spatial-report.xml
 
       - name: They must have run, not skipped
         # Without this the job is green when the database never came up, which is the
@@ -122,6 +128,12 @@ jobs:
               sys.exit("spatial tests skipped in CI: PostGIS was not reachable")
           print(out.strip().splitlines()[-1])
           PY
+
+      - name: Publish the spatial evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: spatial-report
+          path: spatial-report.xml
 
   sitl:
     name: SITL flight tests
@@ -141,9 +153,16 @@ jobs:
         # be earned on a machine without ArduPilot, so this run is the only evidence
         # that exists for it anywhere.
         run: |
-          docker run --rm -v "${{ github.workspace }}:/workspace" \
+          # The image runs as an unprivileged `sitl` user, which cannot write into the
+          # checkout. Both flights passed and then junitxml raised PermissionError on
+          # the way out, losing the evidence and the pass count with it -- so the report
+          # goes to a directory made writable for it.
+          mkdir -p sitl-out && chmod 777 sitl-out
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -v "${{ github.workspace }}/sitl-out:/out" \
             opendronekit-sitl:ci \
-            python3 -m pytest -m sitl tests/sitl -v --junit-xml=/workspace/sitl-report.xml \
+            python3 -m pytest -m sitl tests/sitl -v --junit-xml=/out/sitl-report.xml \
             | tee sitl.log
 
       - name: They must have run, not skipped
@@ -162,14 +181,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sitl-report
-          path: sitl-report.xml
+          path: sitl-out/sitl-report.xml
 
   status:
     name: Feature status
     # Needs both, because status is computed from what actually passed and the two jobs
     # prove different things. `tests` covers everything runnable on a plain runner; only
     # `sitl` can produce evidence for a flight test, and only in a container.
-    needs: [tests, sitl]
+    needs: [tests, spatial, sitl]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -193,6 +212,11 @@ jobs:
         with:
           name: sitl-report
 
+      - name: Collect the spatial evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: spatial-report
+
       - name: The evidence must be real
         # A missing or empty report would otherwise let the next step quietly compute
         # status as though SITL had never been asked about -- which is the pre-CI
@@ -200,6 +224,8 @@ jobs:
         run: |
           test -s sitl-report.xml || { echo "no SITL evidence to merge"; exit 1; }
           grep -q "<testcase" sitl-report.xml || { echo "SITL report has no cases"; exit 1; }
+          test -s spatial-report.xml || { echo "no spatial evidence to merge"; exit 1; }
+          grep -q "<testcase" spatial-report.xml || { echo "spatial report has no cases"; exit 1; }
 
       - name: Feature status must not regress
         # --strict exits non-zero when any row drops below what it claims, which is the
@@ -209,4 +235,7 @@ jobs:
         # --extra-report merges the container's results. A skipped test counts as no
         # evidence rather than as a pass, so without this fl.sitl would be downgraded
         # here exactly as it is on a laptop.
-        run: python tools/feature_status.py --strict --extra-report sitl-report.xml
+        run: |
+          python tools/feature_status.py --strict \
+            --extra-report sitl-report.xml \
+            --extra-report spatial-report.xml

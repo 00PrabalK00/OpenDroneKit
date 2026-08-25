@@ -29,6 +29,7 @@ REGISTRY_PATH = MODELS_DIR / "model_registry.json"
 SOLAR_MODELS = ("solar_cell_defect_detector", "solar_thermal_anomaly_classifier")
 RAIL_MODELS = ("rail_obstacle_detector", "rail_corridor_segmentation")
 CRACK_MODELS = ("crack_segmentation", "crack_presence_classifier")
+CORROSION_MODELS = ("corrosion_severity_segmentation",)
 
 
 @pytest.fixture(scope="module")
@@ -64,21 +65,21 @@ def requires_weights(registry: dict, key: str) -> None:
 
 
 class TestTheWeightsAreReallyThere:
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_registry_names_a_weights_path(self, registry, key) -> None:
         # Checkable everywhere, including a clone with no weights: the entry must at
         # least say where its file belongs.
         entry = installed(registry, key)
         assert entry.get("path"), f"{key} is installed but names no file"
 
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_weights_file_exists(self, registry, key) -> None:
         requires_weights(registry, key)
         weights = MODELS_DIR / registry[key]["path"]
         assert weights.is_file()
         assert weights.stat().st_size > 0
 
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_digest_matches_the_file_on_disk(self, registry, key) -> None:
         """Identity, not existence.
 
@@ -98,7 +99,7 @@ class TestTheWeightsAreReallyThere:
 
 
 class TestTheNumbersArePublished:
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_description_carries_a_validation_figure(self, registry, key) -> None:
         description = installed(registry, key).get("description", "")
         assert re.search(r"0\.\d{2,}", description), (
@@ -106,7 +107,7 @@ class TestTheNumbersArePublished:
             "metrics' is not true of it"
         )
 
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_description_states_a_limit_not_only_a_score(self, registry, key) -> None:
         """Every model here has a weakness, and the entry has to name it.
 
@@ -122,7 +123,7 @@ class TestTheNumbersArePublished:
 
 
 class TestLabelsMatchTheModel:
-    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS)
+    @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_every_model_names_its_classes(self, registry, key) -> None:
         labels = installed(registry, key).get("labels")
         assert labels, f"{key} has no labels; its outputs are anonymous column indices"

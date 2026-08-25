@@ -55,12 +55,15 @@ from .mission_manager import (
 )
 
 from .detection import (
+    CorrosionGradingRefused,
+    CorrosionSeverityResult,
     CrackDetectionResult,
     DefectHit,
     MetalDefectResult,
     SolarDefectResult,
     StructuralDefectResult,
     detect_cracks,
+    grade_corrosion_severity,
     detect_metal_defects,
     detect_solar_defects,
     detect_structural_defects,
@@ -168,6 +171,8 @@ __all__ = [
     "get_mission_manager",
     "generate_mission",
     "save_mission",
+    "CorrosionGradingRefused",
+    "CorrosionSeverityResult",
     "CrackDetectionResult",
     "DefectHit",
     "MetalDefectResult",
@@ -188,6 +193,7 @@ __all__ = [
     "ReconstructionResult",
     "available_reconstruction_profiles",
     "detect_cracks",
+    "grade_corrosion_severity",
     "detect_metal_defects",
     "detect_solar_defects",
     "detect_structural_defects",
