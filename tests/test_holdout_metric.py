@@ -115,3 +115,41 @@ class TestTheReportDoesNotOverclaim:
                                 sites=["mumbai", "tirupati"])
         assert report["sites"] == ["mumbai", "tirupati"]
         assert report["metric"] == "binary_building"
+
+
+class TestTheHoldoutIsScoredOnTheHoldout:
+    """A metric that can fail is only half of it; it has to be fed the right tiles.
+
+    The evaluator built the list of pinned Indian samples, then scored the whole `test`
+    split -- 362 tiles across sixteen groups and two corpora -- while the report named
+    four Indian sites. Every figure it produced was attributed to a place that had not
+    produced it, and the Indian collapse was diluted by tiles from Tanzania and Uruguay
+    into something that looked merely poor.
+    """
+
+    def test_the_test_split_is_wider_than_the_holdout(self) -> None:
+        """The premise: if these were the same set, the filter would be decoration."""
+        from training.semantic_corpus import INDIA_HOLDOUT_GROUPS
+
+        assert INDIA_HOLDOUT_GROUPS, "no pinned holdout groups to filter to"
+        assert all(isinstance(group, str) for group in INDIA_HOLDOUT_GROUPS)
+
+    def test_the_evaluator_filters_the_dataset_to_the_pinned_groups(self) -> None:
+        import inspect
+
+        from training import evaluate_holdout
+
+        source = inspect.getsource(evaluate_holdout.main)
+        assert "INDIA_HOLDOUT_GROUPS" in source
+        assert "dataset.samples = [" in source, (
+            "the dataset must be narrowed to the pinned sites, or the report attributes "
+            "a score to sites that did not produce it"
+        )
+
+    def test_a_holdout_with_no_indian_tiles_refuses_rather_than_scoring_the_rest(self) -> None:
+        import inspect
+
+        from training import evaluate_holdout
+
+        source = inspect.getsource(evaluate_holdout.main)
+        assert "contains none of the India holdout groups" in source

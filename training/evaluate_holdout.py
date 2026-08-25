@@ -125,20 +125,60 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    from training.shared_semantic_model import build_model  # noqa: PLC0415
+    # The encoder is built exactly as training built it, from the same retained
+    # Apache-2.0 checkpoint. A holdout scored against a differently constructed model is
+    # not a holdout score.
+    from training.shared_semantic_model import build_dinov2_vitb14_upernet  # noqa: PLC0415
 
-    model = build_model(len(state.get("classes", [])) or 6)
-    model.load_state_dict(state["model"])
+    # The trainer records the architecture at the top level of the checkpoint; the
+    # config it was launched with is kept beside it.
+    architecture = dict(
+        state.get("architecture")
+        or (state.get("config") or {}).get("architecture")
+        or {}
+    )
+    encoder_checkpoint = architecture.get(
+        "encoder_checkpoint", "models/pretrained/dinov2_vitb14_pretrain.pth"
+    )
+    encoder_source = architecture.get("encoder_source", "facebookresearch/dinov2")
+    model = build_dinov2_vitb14_upernet(
+        REPO_ROOT / encoder_checkpoint if not Path(encoder_checkpoint).is_absolute()
+        else encoder_checkpoint,
+        len((state.get("schema") or {}).get("classes") or state.get("classes") or []) or 6,
+        dinov2_source=str(REPO_ROOT / encoder_source)
+        if (REPO_ROOT / encoder_source).is_dir() else encoder_source,
+        source="local" if (REPO_ROOT / encoder_source).is_dir() else "github",
+    )
+    model.load_state_dict(state.get("model_state") or state["model"])
     model.eval()
 
+    # ViT-B/14 over 518px tiles is minutes per tile on a CPU and seconds on a GPU. The
+    # scores are identical; only the wait is not.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
     dataset = SemanticTileDataset(args.corpus, "test", tile_size=518, augment=False)
+    # The test split is not the holdout. It carries sixteen groups across two corpora,
+    # and scoring all of them while the report names four Indian sites attributes a
+    # number to a place that did not produce it -- the corpus is pinned by group, so the
+    # dataset has to be too.
+    dataset.samples = [
+        sample for sample in dataset.samples
+        if sample.get("group") in INDIA_HOLDOUT_GROUPS
+    ]
+    if not dataset.samples:
+        raise SystemExit(
+            "The test split contains none of the India holdout groups, so there is "
+            "nothing to score them on."
+        )
+
     predictions: list[np.ndarray] = []
     labels: list[np.ndarray] = []
     with torch.no_grad():
         for index in range(len(dataset)):
             item = dataset[index]
-            logits = model(item["image"].unsqueeze(0))
-            predictions.append(logits.argmax(dim=1).squeeze(0).numpy())
+            logits = model(item["image"].unsqueeze(0).to(device))
+            predictions.append(logits.argmax(dim=1).squeeze(0).cpu().numpy())
             labels.append(item["mask"].numpy())
 
     scores = binary_building_scores(np.concatenate([p.reshape(-1) for p in predictions]),

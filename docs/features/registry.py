@@ -877,8 +877,21 @@ INDIA_FIRST = [
       "Versioned class schemas run through overlap-blended tiled inference and emit "
       "georeferenced class/confidence rasters, polygons and model provenance.",
       "in_progress", ["tests/test_semantic_engine.py"],
-      "Runtime and DINOv2/UPerNet architecture are implemented; the shared production "
-      "head still needs licence-filtered training and site/date holdout evaluation."),
+      "Runtime and DINOv2/UPerNet architecture are implemented, and a head has now been "
+      "TRAINED AND MEASURED AND IS NOT SHIPPING. shared_semantic_dinov2_vitb14 reached "
+      "mean IoU 0.6128 in validation (building 0.890, road 0.782, vegetation 0.848, "
+      "water 0.661, bare_land 0.422) and its ONNX export agrees with torch on all "
+      "1,073,296 pixel decisions. On the India holdout it predicts BUILDING ON EVERY "
+      "PIXEL of all four Indian tiles -- precision 0.092, recall 1.0, IoU 0.092, "
+      "docs/holdout/shared_semantic_india_holdout.json. "
+      "The cause is in the corpus, not the code: SpaceNet 7 labels buildings and leaves "
+      "96.7 per cent of each tile at IGNORE_INDEX, so training never once penalised "
+      "predicting building on an unlabelled pixel, and on imagery that resembles that "
+      "source the cheapest answer is 'all building'. It scores normally on "
+      "OpenEarthMap tiles, which is why validation looked healthy. "
+      "Fixing this needs a corpus where non-building pixels are labelled or at least "
+      "counted as negatives, not more epochs. Until then the row stays in_progress and "
+      "nothing routes to the head."),
     F("eng.assets", "Object and asset detection engine", "vision", "India: shared engines",
       "Count and individually locate assets such as trees, modules, equipment, poles "
       "and insulators with model provenance and confidence.",
