@@ -105,6 +105,7 @@ export class Shell {
     this.dock = new Dock(this.workspaceEl);
     this.open(this.workspaceId);
     this.applyMode();
+    this.installMenuBridge();
 
     // Every selection is echoed in the status bar. It is the cheapest possible proof
     // that the panels are wired to each other rather than merely sitting side by side.
@@ -220,6 +221,119 @@ export class Shell {
     setView("image");
     this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
     this.toast(`${preview.name} — ${preview.source_width}×${preview.source_height}`, "ok");
+  }
+
+  /**
+   * The native menu bar, which did nothing at all in this UI.
+   *
+   * app/shell.py dispatches every menu item as `window.odk.onMenu({action, payload})`.
+   * That hook was defined only in app.js -- the classic single-screen UI -- so in the
+   * cockpit all thirty-three items were inert: File, Mission, Fly, Analysis, Reconstruct,
+   * View, Tools, Help. Nothing threw, because evaluate_js on an undefined property is
+   * simply a no-op, which is why it looked like the menu was decorative.
+   *
+   * Each entry maps to the SAME handler the toolbar uses, rather than a second
+   * implementation of the same verb. A menu item and a button that drift apart are two
+   * behaviours for one action, and the one nobody tests is the one that breaks.
+   */
+  installMenuBridge() {
+    const toWorkspace = {
+      "mission.plan": "planning",
+      "mission.settings": "planning",
+      "mission.history": "planning",
+      "fly.connect": "flight",
+      "fly.command": "flight",
+      "fly.disconnect": "flight",
+      "recon.settings": "processing",
+      "analysis.pipeline": "inspection",
+      "analysis.models": "inspection",
+      "tools.measure": "measurements",
+      "tools.audit": "developers",
+      "view.panel": null,
+    };
+
+    const toAction = {
+      "project.new": "New Project",
+      "project.open": "Open",
+      "data.import_imagery": "Import",
+      "data.import_raster": "New Folder",
+      "data.import_vector": "New Folder",
+      "mission.plan": "Plan",
+      "mission.save": "Save",
+      "mission.export": "Export",
+      "mission.export_all": "Export",
+      "recon.run": "Process",
+      "analysis.pipeline": "Start",
+      "analysis.models": "Run AI",
+      "fly.upload": "Upload",
+      "tools.capabilities": "Preflight",
+      "mission.history": "Simulate",
+    };
+
+    window.odk = window.odk || {};
+    window.odk.onMenu = async ({ action, payload } = {}) => {
+      if (!action) return;
+
+      // Jump to where the action belongs first, so the user can see what it did.
+      const workspace = toWorkspace[action];
+      if (workspace && WORKSPACE_BY_ID[workspace]) this.open(workspace);
+
+      const mapped = toAction[action];
+      if (mapped) {
+        await this.runAction(mapped);
+        return;
+      }
+
+      switch (action) {
+        case "project.reveal":
+        case "recon.reveal": {
+          const state = await tryCall("get_state");
+          const root = state && state.project && (state.project.root_dir || state.project.path);
+          if (root) await tryCall("open_path", String(root));
+          this.toast(root ? `Opened ${root}` : "No project folder to open.", root ? "ok" : "warn");
+          return;
+        }
+        case "mission.clear_aoi":
+          await tryCall("set_aoi", null);
+          this.toast("Area of interest cleared.", "ok");
+          return;
+        case "mission.clear_nofly":
+          await tryCall("set_no_fly_zones", []);
+          this.toast("No-fly zones cleared.", "ok");
+          return;
+        case "data.import_terrain": {
+          const file = await call("pick_file", ["tif", "tiff", "asc", "csv"]);
+          if (!file || !file.path) return;
+          await tryCall("set_terrain_source", file.path);
+          this.toast(`Terrain source: ${file.path}`, "ok");
+          return;
+        }
+        case "fly.disconnect":
+          await tryCall("disconnect_vehicle");
+          this.toast("Vehicle disconnected.", "ok");
+          return;
+        case "view.zoom_aoi":
+        case "view.zoom_mission":
+          setView("map");
+          setImage(null);
+          this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+          this.toast("Back to the map.", "ok");
+          return;
+        case "view.basemap":
+          this.toast("Basemap is chosen on the canvas toolbar.", "warn");
+          return;
+        case "help.shortcuts":
+          this.openPalette();
+          return;
+        case "help.about":
+          this.toast("OpenDroneKit — offline-first drone inspection toolkit.", "ok");
+          return;
+        default:
+          // Named rather than ignored: a menu item nobody wired should say so, in the
+          // same way an unwired button does.
+          this.toast(`Menu action not handled here: ${action}`, "warn");
+      }
+    };
   }
 
   buildNav() {
