@@ -445,3 +445,15 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
   letter-spacing: 0.04em;
   text-align: center;
 }
+
+/* Collapsed rather than removed. display: none takes the banner OUT of the grid, and
+   the shell's rows are positional -- every following child then shifts up one, so the
+   workspace inherited the 34px toolbar row and the status bar got the 781px canvas row.
+   The layout looked like a rendering failure and was actually an off-by-one. */
+.demo-banner.hidden {
+  display: block !important;
+  height: 0;
+  padding: 0;
+  border-bottom: 0;
+  overflow: hidden;
+}

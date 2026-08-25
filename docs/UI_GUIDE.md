@@ -6,6 +6,31 @@ dockable framework, arranged around a canvas that keeps most of the screen.
 Open it with the desktop shell (`python main.py`), or serve `app/web/` and visit
 `/workspace.html`.
 
+This document described the cockpit as the interface for some time while `app/shell.py`
+opened `index.html` instead, so the UI documented here was one no user could reach and
+the one they did reach was documented nowhere. `python main.py` now opens the cockpit.
+
+The older single-screen shell is still there behind `ODK_UI=classic`, because it is the
+more completely wired of the two while the cockpit's workspaces are connected to the Api
+one at a time, and removing a working screen before its replacement is finished loses
+capability quietly.
+
+## What is real on screen, and what is not
+
+The cockpit shows the structural sample until it can talk to the application. That
+sample is deliberately impossible to mistake for a survey: sites are named DEMO,
+coordinates are Null Island, clocks sit at the epoch, and the wording matches
+`core/demo_mode.py` so the desktop demo and the API demo agree about what synthetic
+looks like.
+
+A banner across the top says so, and it is shown in every state except `connected` --
+the only state in which what you are looking at came from the application. It used to
+be a chip at the end of the status bar, which was clipped off screen at 1600px, so the
+one thing declaring the data synthetic was the first thing to disappear.
+
+`?demo=1` keeps the demo even when a bridge is available, for demonstrating the product
+on a machine that has real projects on it.
+
 ## The idea
 
 A workspace is not a page. It is an arrangement of panels pointed at the project you are

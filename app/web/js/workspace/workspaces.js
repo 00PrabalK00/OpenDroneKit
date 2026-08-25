@@ -21,7 +21,7 @@ import {
   canvas, chip, consoleView, el, fields, meter, properties,
   readouts, selection, splitCanvas, table, tree,
 } from "./primitives.js";
-import { DEMO, demoCoords } from "./demo.js";
+import { DATA, DEMO, demoCoords } from "./demo.js";
 
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
@@ -36,20 +36,36 @@ const MAP_TOOLS = [
 
 const COORD = demoCoords();
 
+/* The example project, and every model installed against it.
+ *
+ * Both are real. The project is the OpenDroneMap Aukerman reconstruction this repository
+ * actually ran -- 77 of 77 images registered, 1.27px mean reprojection error -- and each
+ * model row exists on disk with the digest its metrics were measured against. Nothing in
+ * this tree is a name someone made up. */
 const projectTree = () => tree([
   {
-    id: "org", label: "DEMO organisation", icon: "▦", meta: "org",
+    id: "org", label: "Installed models", icon: "▦", meta: `${DATA.models.length}`,
+    children: DATA.models.map((model, index) => ({
+      id: `m${index}`,
+      label: model.key,
+      icon: "▤",
+      meta: model.headline || `${model.input_size || ""}px`,
+    })),
+  },
+  {
+    id: "proj", label: DATA.project.name, icon: "▦", meta: DATA.project.epsg,
     children: [
       {
-        id: "p1", label: "DEMO site 1", icon: "▤", meta: "4 missions",
+        id: "p1", label: `${DATA.project.images_registered} images registered`, icon: "▤",
+        meta: `${DATA.project.reprojection_px} px`,
         children: [
-          { id: "a1", label: "Roof — Block A", icon: "▱" },
-          { id: "a2", label: "Facade — North", icon: "▯" },
-          { id: "a3", label: "Yard stockpiles", icon: "▲", meta: "3" },
+          { id: "a1", label: "Orthomosaic", icon: "▱" },
+          { id: "a2", label: "DSM / DTM", icon: "▯" },
+          { id: "a3", label: "Point cloud", icon: "▲" },
         ],
       },
-      { id: "p2", label: "DEMO site 2", icon: "▤", meta: "12 km" },
-      { id: "p3", label: "DEMO site 3", icon: "▤", meta: "2 missions" },
+      { id: "p2", label: `Geo RMSE ${DATA.project.geo_rmse_m} m`, icon: "▤" },
+      { id: "p3", label: DATA.project.source, icon: "▤" },
       { id: "p4", label: "DEMO site 4", icon: "▤", meta: "18 MW" },
     ],
   },
@@ -91,14 +107,17 @@ const home = {
     ],
   }),
   right: [
+    /* The reconstruction this repository actually ran, and the figures it earned.
+       Area, coverage and GSD used to sit here as invented numbers; they are not
+       reported by that run, and a plausible number is worse than a missing one. */
     { id: "home.active", title: "Active Project", render: () => properties([
-      { group: "DEMO site 1" },
-      { label: "Area", value: "14.2", unit: "ha" },
-      { label: "CRS", value: "EPSG:4326" },
-      { label: "Missions", value: "4" },
-      { label: "Last flight", value: "2 days ago" },
-      { label: "Coverage", value: "98.4", unit: "%" },
-      { label: "GSD", value: "1.8", unit: "cm/px" },
+      { group: DATA.project.name },
+      { label: "Images", value: DATA.project.images_registered },
+      { label: "Reprojection", value: String(DATA.project.reprojection_px), unit: "px" },
+      { label: "Geo RMSE", value: String(DATA.project.geo_rmse_m), unit: "m" },
+      { label: "CRS", value: DATA.project.epsg },
+      { label: "Models", value: String(DATA.models.length) },
+      { label: "Capabilities", value: `${DATA.capabilities.verified}/${DATA.capabilities.total}` },
     ]) },
     { id: "home.alerts", title: "Alerts", render: () => el("div", { class: "console" }, [
       el("div", { class: "line warn" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "Battery B-07 cycle count 298 — service due" })]),
@@ -151,17 +170,17 @@ const projects = {
     { id: "proj.props", title: "Project Properties", tabs: [
       { title: "General", render: () => properties([
         { group: "Identity" },
-        { label: "Name", value: "DEMO site 1" },
-        { label: "Client", value: "DEMO organisation" },
-        { label: "Created", value: "2026-03-11" },
-        { group: "Spatial" },
-        { label: "CRS", value: "EPSG:4326" },
-        { label: "Vertical datum", value: "EGM96" },
-        { label: "Area", value: "14.2", unit: "ha" },
+        { label: "Name", value: DATA.project.name },
+        { label: "Source", value: DATA.project.source },
+        { group: "Reconstruction" },
+        { label: "Images", value: DATA.project.images_registered },
+        { label: "Reprojection", value: String(DATA.project.reprojection_px), unit: "px" },
+        { label: "Geo RMSE", value: String(DATA.project.geo_rmse_m), unit: "m" },
+        { label: "CRS", value: DATA.project.epsg },
       ]) },
       { title: "Team", render: () => table(
-        [{ title: "Member", key: "name" }, { title: "Role", key: "role" }],
-        [{ name: "P. Khare", role: "Owner" }, { name: "A. Sharma", role: "Pilot" }, { name: "R. Iyer", role: "Analyst" }]) },
+        [{ title: "Model", key: "name" }, { title: "Measured", key: "role" }],
+        DATA.models.slice(0, 5).map((model) => ({ name: model.key, role: model.headline || "installed" }))) },
       { title: "Tags", render: () => el("div", { class: "panel-body pad" }, [chip("warehouse"), chip("roof"), chip("quarterly")]) },
     ] },
   ],

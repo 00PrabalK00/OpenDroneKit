@@ -9,7 +9,8 @@
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
-import { DEMO } from "./demo.js";
+import { DEMO, demoEnabled } from "./demo.js";
+import { connected, tryCall, whenReady } from "./api.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -33,8 +34,49 @@ export class Shell {
     this.root = root;
     this.workspaceId = localStorage.getItem(LAST_WORKSPACE) || "home";
     if (!WORKSPACE_BY_ID[this.workspaceId]) this.workspaceId = "home";
+    // Three states rather than two, because "no projects" and "no connection" are
+    // different answers and a user acts on them differently.
+    this.mode = demoEnabled() ? "demo" : "disconnected";
     this.build();
     this.bindKeys();
+    this.connect();
+  }
+
+  /**
+   * Ask the bridge what is really there, and stop showing demo content the moment it
+   * answers. Demo mode stays on if it was explicitly requested -- someone demonstrating
+   * the product on a machine with real projects still wants the demo.
+   */
+  async connect() {
+    const ready = await whenReady();
+    if (!ready || !connected()) return;
+    if (this.mode === "demo") return;
+    this.mode = "connected";
+    const projects = await tryCall("list_projects");
+    this.projects = Array.isArray(projects && projects.projects) ? projects.projects : [];
+    this.applyMode();
+  }
+
+  /** The frame reflects the state: the banner only exists while content is synthetic. */
+  applyMode() {
+    if (!this.banner) return;
+    // Synthetic whenever the panels are NOT showing what the application returned.
+    // Keying this on demo mode alone was wrong and briefly made things worse: with no
+    // bridge the panels still render the structural sample, so hiding the banner left
+    // synthetic content on screen with nothing saying so. Connected is the only state
+    // in which what you are looking at was measured.
+    const synthetic = this.mode !== "connected";
+    this.banner.classList.toggle("hidden", !synthetic);
+    if (this.connectionChip) {
+      this.connectionChip.textContent =
+        this.mode === "connected"
+          ? `connected — ${this.projects ? this.projects.length : 0} project(s)`
+          : this.mode === "demo"
+            ? "demo mode"
+            : "not connected to a project";
+      this.connectionChip.className =
+        this.mode === "connected" ? "chip ok" : "chip warn";
+    }
   }
 
   build() {
@@ -52,10 +94,14 @@ export class Shell {
     // nothing at all to say so.
     this.banner = el("div", { class: "demo-banner", text: DEMO.BANNER });
     this.banner.title = DEMO.PROVENANCE;
+    // Hidden unless the content really is synthetic. A banner that is always there is
+    // one nobody reads, which is how the old status-bar chip stopped working.
+    this.banner.classList.toggle("hidden", this.mode !== "demo");
     this.root.append(this.banner, this.nav, this.toolbar, this.workspaceEl, this.status);
 
     this.dock = new Dock(this.workspaceEl);
     this.open(this.workspaceId);
+    this.applyMode();
 
     // Every selection is echoed in the status bar. It is the cheapest possible proof
     // that the panels are wired to each other rather than merely sitting side by side.
@@ -113,7 +159,7 @@ export class Shell {
       // The banner above carries this now. A chip at the end of the status bar was the
       // only marking on the whole shell, and at 1600px it was clipped off the screen --
       // so the one thing saying "none of this was measured" was the first thing to go.
-      el("span", { class: "chip warn", text: "not connected to a project" }),
+      this.connectionChip = el("span", { class: "chip warn", text: "not connected to a project" }),
       el("span", { class: "sep" }),
       el("span", { class: "mono", text: "v1.0" }),
     ]);

@@ -11,6 +11,8 @@ single code path per action regardless of how the user triggered it.
 
 from __future__ import annotations
 
+import os
+
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -171,7 +173,16 @@ class Shell:
     # -- lifecycle -------------------------------------------------------
 
     def run(self, *, debug: bool = False, width: int = 1600, height: int = 980) -> None:
-        index = WEB_ROOT / "index.html"
+        # The cockpit is the operations interface the documentation has described all
+        # along -- fourteen workspaces around one canvas. It was never loaded: this line
+        # opened index.html, so the UI in docs/UI_GUIDE.md and the README was one no user
+        # could reach, and the one they did reach was documented nowhere.
+        #
+        # ODK_UI=classic still opens the older single-screen shell, which remains the
+        # more completely wired of the two while the cockpit's workspaces are connected
+        # to the Api one at a time.
+        page = "index.html" if os.environ.get("ODK_UI") == "classic" else "workspace.html"
+        index = WEB_ROOT / page
         if not index.exists():
             raise FileNotFoundError(f"UI assets are missing: {index}")
 
