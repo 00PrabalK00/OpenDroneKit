@@ -33,6 +33,14 @@ class Shell:
     def __init__(self, session: AppSession | None = None):
         self.api = Api(session)
         self.window: Any = None
+        # Reselect the dataset this project last imported. The field lives in memory, so
+        # without this the application opened with nothing selected even when the project
+        # obviously had a dataset, and every dataset-dependent action refused until the
+        # user re-imported a folder it already knew about.
+        try:
+            self.api._session.restore_active_dataset()  # noqa: SLF001 - startup wiring
+        except Exception:  # noqa: BLE001 - a first run has no project yet
+            pass
 
     # -- menu dispatch ---------------------------------------------------
 

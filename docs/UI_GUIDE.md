@@ -70,6 +70,56 @@ the selection and the coordinate system all survive the switch.
 | 13 | Developers | API console | How to integrate |
 | 14 | Settings | — | Units, CRS, models, keyboard |
 
+## Using it: a run from an empty window to a report
+
+Three things frame every workspace. The **top row** switches which instruments point at
+your project -- it does not change which project you are on. The **second row** is the
+toolbar, and it changes per workspace: that is where the verbs live. The **bottom right**
+is where every action reports. If you click something and no message appears there, that
+is a bug worth reporting rather than a feature you have not found.
+
+Two habits make the panels make sense:
+
+1. **Select first, then act.** Clicking a row tells the toolbar what to work on. Cancel
+   acts on the selected job, Accept/Reject/Flag on the selected finding, Log Maintenance
+   on the selected aircraft. Nothing has to be typed twice.
+2. **In a tree, click the label rather than the ▸.** The arrow expands; the text selects.
+
+| # | Workspace | Do this | What happens |
+|---|---|---|---|
+| 1 | Projects | `New Project`, choose a folder, name it | Created and made active |
+| 2 | Projects | `Import`, choose a folder of images | Imported, and made the active dataset. Reselected automatically next launch |
+| 3 | Mission Planning | Edit altitude and overlap on the right, then `Plan` | Each edit is confirmed, and the planner runs **with those values** |
+| 4 | Mission Planning | `Save`, then `Export` | Stored in the project, then written in the flight-controller formats |
+| 5 | Processing | `Process` for reconstruction, or `Start` for the full pipeline | Both confirm first, then run as background jobs reporting progress |
+| 6 | Processing | Select a row in the queue, then `Cancel` | Cancels the job you selected |
+| 7 | Verification | `Match Captures`, select a finding, then `Accept` / `Reject` / `Flag` | Moves its status and records who moved it |
+| 8 | Thermal, AI Inspection | `RGB`, `Thermal`, `Semantic` | The canvas draws that product, or says which one has not been produced |
+| 9 | Fleet | `Add Aircraft`, `Add Battery`, `Add Pilot` | Real rows, in the same database the web service reads |
+| 10 | Fleet | Select an aircraft, then `Log Maintenance` | Records it and resets the service clock |
+| 11 | Reports | `Generate Report` | Builds it, or refuses with a checklist of what is missing first |
+| 12 | Projects | `Share` | Issues a token in a blocking dialog. Copy it there: only its hash is stored |
+
+### Two refusals that are working correctly
+
+`Generate Report` refusing with a list is the report engine declining to emit a document
+with empty sections. The checklist is the useful part.
+
+A view saying "no thermal product yet" means exactly that. It is not a broken canvas; it
+is a canvas with nothing true to draw, and it names what to run to produce one.
+
+### Starting it
+
+```bash
+python main.py                 # the cockpit
+ODK_UI=classic python main.py  # the older single-screen shell
+```
+
+The UI is served over 127.0.0.1 on an ephemeral port rather than opened as a file. ES
+modules fetched from `file://` have origin "null" and the webview refuses them, which
+produces a blank window and no error anywhere. Nothing leaves the machine: the server
+binds loopback only.
+
 ## Panels
 
 Every panel supports the same operations, because they are the same component:

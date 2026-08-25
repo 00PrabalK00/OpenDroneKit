@@ -94,6 +94,10 @@ class AppSession:
         # Which geocoding backend place search uses. Switchable to a self-hosted
         # Nominatim or to "offline" so no query ever leaves the machine.
         self.geocoding_provider: str = "nominatim"
+        # Restored below from the project's most recent import. The field is in memory,
+        # so before this every launch opened with no dataset selected even when the
+        # project plainly had one -- and every dataset-dependent action refused until the
+        # user re-imported a folder the application already knew about.
         self.active_dataset_dir: str = ""
         self.layers: dict[str, MapLayer] = {}
         self.vehicle = VehicleLink()
@@ -263,6 +267,26 @@ class AppSession:
 
     def list_datasets(self) -> list[dict[str, Any]]:
         return self.store.list_datasets(self.project_id())
+
+    def restore_active_dataset(self) -> str:
+        """Reselect the newest dataset this project imported, if it is still on disk.
+
+        Called at startup. A path that has since been deleted or unplugged is skipped
+        rather than restored, because a selected dataset that does not exist turns every
+        later refusal into a confusing one.
+        """
+        if self.active_dataset_dir:
+            return self.active_dataset_dir
+        try:
+            entries = self.store.list_datasets(self.project_id())
+        except Exception:  # noqa: BLE001 - a fresh store has no project yet
+            return ""
+        for entry in entries:
+            candidate = str(entry.get("path") or "")
+            if candidate and Path(candidate).is_dir():
+                self.active_dataset_dir = candidate
+                return candidate
+        return ""
 
     # -- vehicle ---------------------------------------------------------
 
