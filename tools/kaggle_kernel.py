@@ -459,8 +459,18 @@ def main() -> int:
         # exist here; the stacks arrive inside the mounted dataset instead. The trainer
         # refuses a missing stack rather than reading RGB and calling it five-band, so
         # this has to be pointed at the real location or the run stops on the first tile.
-        bands = corpus / "weedsgalore_bands"
-        if bands.is_dir():
+        # Searched upward, not just inside the corpus. resolve_corpus descends to the
+        # directory holding train/val/test, so it lands on <dataset>/agriculture_seg
+        # while the band stacks sit beside it at <dataset>/weedsgalore_bands. Looking
+        # only in the corpus directory found nothing, no --band-root was passed, and the
+        # trainer refused on the first tile -- correctly, but the run was lost.
+        bands = None
+        for candidate in (corpus, corpus.parent, corpus.parent.parent):
+            probe = candidate / "weedsgalore_bands"
+            if probe.is_dir():
+                bands = probe
+                break
+        if bands is not None:
             command += ["--band-root", str(bands)]
             print("multispectral stacks at", bands, flush=True)
         command += gpu_memory_overrides()

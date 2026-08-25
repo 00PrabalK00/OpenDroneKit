@@ -61,6 +61,16 @@ class TestTheMultispectralRunGetsItsBands:
         assert '"--band-root"' in script
         assert "weedsgalore_bands" in script
 
+    def test_it_searches_beside_the_corpus_not_only_inside_it(self) -> None:
+        """The resolver descends to the directory holding train/val/test, so it lands on
+        <dataset>/agriculture_seg while the stacks sit at <dataset>/weedsgalore_bands.
+
+        Looking only inside the corpus found nothing, passed no --band-root, and the
+        trainer refused on the first tile. The refusal was right; the lookup was not.
+        """
+        script = script_for("agriculture_segformer_b2_ms")
+        assert "corpus.parent" in script
+
 
 class TestTheTrainerChoiceIsReadFromTheConfig:
     @pytest.mark.parametrize(
