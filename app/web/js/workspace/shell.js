@@ -10,7 +10,8 @@ import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DEMO, demoEnabled } from "./demo.js";
-import { connected, tryCall, whenReady } from "./api.js";
+import { call, connected, tryCall, whenReady } from "./api.js";
+import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -54,7 +55,7 @@ export class Shell {
     this.mode = "connected";
     const projects = await tryCall("list_projects");
     this.projects = Array.isArray(projects && projects.projects) ? projects.projects : [];
-    this.applyMode();
+    await this.refreshState();
   }
 
   /** The frame reflects the state: the banner only exists while content is synthetic. */
@@ -212,11 +213,165 @@ export class Shell {
     this.palette(items, "Layout");
   }
 
-  runAction(action) {
-    // No action here mutates a survey. The shell is the framework; wiring an action to
-    // the API is a per-action decision, and a button that silently did nothing real
-    // would be worse than one that says so.
-    this.selectionLabel.textContent = `action: ${action} (not wired to the API yet)`;
+  /**
+   * Run a toolbar action against the real application.
+   *
+   * Everything is reported where the user is looking -- a toast over the canvas -- and
+   * appended to the console. The old version wrote to the status bar in 11px text at the
+   * bottom of the screen, which is indistinguishable from the app doing nothing.
+   */
+  async runAction(action) {
+    const missing = UNWIRED[action];
+    if (missing) {
+      this.toast(`${action}: not available. ${missing}`, "warn");
+      return;
+    }
+
+    const entry = resolve(action);
+    if (!entry) {
+      this.toast(`${action}: no handler. This is a gap, not a refusal.`, "warn");
+      return;
+    }
+
+    const blocked = prerequisite(action, this.stateSummary());
+    if (blocked) {
+      this.toast(`${action}: ${blocked}`, "warn");
+      return;
+    }
+
+    // Anything that starts real work or moves an aircraft asks first. A misclick on
+    // Abort must not be the same gesture as a misclick on Pan.
+    const question = entry.confirm;
+    if (question && !window.confirm(question)) return;
+
+    // Local behaviour first: a view mode, a canvas tool or a workspace jump is a client
+    // decision, and routing it through Python would be slower, would fail when
+    // disconnected, and would buy nothing.
+    if (entry.view) {
+      this.canvasView = entry.view;
+      this.workspaceEl.dataset.view = entry.view;
+      this.toast(`View: ${action}`, "ok");
+      return;
+    }
+    if (entry.tool) {
+      this.activeTool = entry.tool;
+      this.workspaceEl.dataset.tool = entry.tool;
+      this.toast(`Tool armed: ${action}. Draw on the canvas.`, "ok");
+      return;
+    }
+    if (entry.workspace) {
+      this.open(entry.workspace);
+      this.toast(`Opened ${action}.`, "ok");
+      return;
+    }
+
+    this.toast(`${action}…`);
+    try {
+      const result = entry.vehicle
+        ? await this.runVehicle(entry.vehicle, action)
+        : await entry.run(this.actionContext());
+      if (result && result.skipped) {
+        this.toast(`${action}: ${result.skipped}`);
+        return;
+      }
+      const message = (result && result.message) || `${action} done.`;
+      this.toast(message, "ok");
+      if (result && result.job) this.watchJob(result.job);
+      if (result && result.refresh) await this.refreshState();
+    } catch (error) {
+      // Shown, not swallowed. A refusal from the Api is the most useful thing this
+      // application produces and it used to vanish into a rejected promise.
+      this.toast(`${action}: ${error.message || error}`, "error");
+    }
+  }
+
+  async runVehicle(command, action) {
+    await call("vehicle_command", command);
+    return { message: `${action} sent.` };
+  }
+
+  /** What the actions need from the shell, in one place they can all reach. */
+  actionContext() {
+    return {
+      prompt: (label, fallback) => window.prompt(label, fallback),
+      choose: async (title, options) => {
+        const lines = options.map((o, i) => `${i + 1}. ${o.label}${o.hint ? "  — " + o.hint : ""}`);
+        const answer = window.prompt(`${title}\n${lines.join("\n")}`, "1");
+        if (answer === null) return null;
+        const index = parseInt(answer, 10) - 1;
+        return options[index] ? options[index].value : null;
+      },
+      missionOptions: () => ({}),
+      reconstructionOptions: () => ({ engine: "auto", profile: "standard" }),
+      selectedJob: () => this.selectedJobId || null,
+      selectionGeometry: () => this.selectionGeometry || null,
+      resetLayout: () => this.dock.resetLayout(),
+    };
+  }
+
+  stateSummary() {
+    return {
+      projectOpen: Boolean(this.state && this.state.project),
+      datasetSelected: Boolean(this.state && this.state.dataset),
+    };
+  }
+
+  /** Ask the application what is open, so prerequisites are real rather than assumed. */
+  async refreshState() {
+    const state = await tryCall("get_state");
+    if (state) {
+      this.state = {
+        project: state.project || state.active_project || null,
+        dataset: state.dataset || state.active_dataset || null,
+      };
+    }
+    const jobs = await tryCall("list_jobs");
+    this.jobs = (jobs && jobs.jobs) || [];
+    this.applyMode();
+  }
+
+  /** Follow a background job to completion, reporting progress as it goes. */
+  watchJob(jobId) {
+    this.selectedJobId = jobId;
+    const tick = async () => {
+      const status = await tryCall("job_status", jobId);
+      if (!status) return;
+      const state = status.state || status.status;
+      const percent = status.progress ?? status.percent;
+      if (state === "done" || state === "finished" || state === "complete") {
+        this.toast(`Job ${jobId} finished.`, "ok");
+        await this.refreshState();
+        return;
+      }
+      if (state === "failed" || state === "error") {
+        this.toast(`Job ${jobId} failed: ${status.error || "no reason given"}`, "error");
+        return;
+      }
+      if (state === "cancelled") {
+        this.toast(`Job ${jobId} cancelled.`);
+        return;
+      }
+      this.toast(`Job ${jobId}: ${status.message || state}${percent != null ? ` ${percent}%` : ""}`);
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 800);
+  }
+
+  /**
+   * A message where the user is actually looking.
+   *
+   * Over the canvas rather than in the status bar, because the status bar is where the
+   * previous version reported everything and it read as silence.
+   */
+  toast(text, kind = "info") {
+    if (!this.toasts) {
+      this.toasts = el("div", { class: "toasts" });
+      this.root.appendChild(this.toasts);
+    }
+    const item = el("div", { class: `toast ${kind}`, text });
+    this.toasts.appendChild(item);
+    setTimeout(() => item.remove(), kind === "error" ? 9000 : 4500);
+    if (this.selectionLabel) this.selectionLabel.textContent = text;
   }
 
   /* --------------------------------------------------------- command palette */

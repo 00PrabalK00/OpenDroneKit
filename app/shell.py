@@ -173,22 +173,38 @@ class Shell:
     # -- lifecycle -------------------------------------------------------
 
     def run(self, *, debug: bool = False, width: int = 1600, height: int = 980) -> None:
-        # The cockpit is the operations interface the documentation has described all
-        # along -- fourteen workspaces around one canvas. It was never loaded: this line
-        # opened index.html, so the UI in docs/UI_GUIDE.md and the README was one no user
-        # could reach, and the one they did reach was documented nowhere.
+        # index.html is what opens, because it is the only one of the two that DOES
+        # anything: plan a mission, run a reconstruction, connect a vehicle, upload.
         #
-        # ODK_UI=classic still opens the older single-screen shell, which remains the
-        # more completely wired of the two while the cockpit's workspaces are connected
-        # to the Api one at a time.
-        page = "index.html" if os.environ.get("ODK_UI") == "classic" else "workspace.html"
+        # The cockpit (workspace.html) is the interface the documentation describes, and
+        # it is a real shell -- fourteen workspaces, docks, panels, command palette. What
+        # it has no wiring for is actions: every toolbar button routes to runAction(),
+        # which writes "not wired to the API yet" into the status bar and does nothing.
+        # Making it the default shipped an application whose buttons do not work, which
+        # is a downgrade however much better it looks.
+        #
+        # ODK_UI=cockpit opens it, and it becomes the default when its actions reach the
+        # Api rather than when its layout is finished.
+        page = "workspace.html" if os.environ.get("ODK_UI") == "cockpit" else "index.html"
         index = WEB_ROOT / page
         if not index.exists():
             raise FileNotFoundError(f"UI assets are missing: {index}")
 
+        # Served over loopback rather than opened as a file. The cockpit is built from
+        # ES modules, and a module fetched from file:// has origin "null", which the
+        # webview refuses -- the window opens, the menu works, and the page is silently
+        # blank with nothing in any log. index.html survives on file:// only because it
+        # uses a classic script tag, which is why one UI worked and the other did not.
+        #
+        # pywebview's own http_server=True does not apply when the window is given an
+        # absolute path, so the server is started here where the behaviour is explicit.
+        # It binds 127.0.0.1 on an ephemeral port: nothing leaves the machine, which
+        # this application guarantees elsewhere and must not quietly break here.
+        url = self._serve(WEB_ROOT, page)
+
         self.window = webview.create_window(
             WINDOW_TITLE,
-            str(index),
+            url,
             js_api=self.api,
             width=width,
             height=height,
@@ -198,6 +214,27 @@ class Shell:
         )
         self.api.bind_window(self.window)
         webview.start(menu=self.build_menu(), debug=debug)
+
+    @staticmethod
+    def _serve(root: Path, page: str) -> str:
+        """Serve the UI directory on loopback and return the URL for `page`.
+
+        A daemon thread on an ephemeral port. Bound to 127.0.0.1 explicitly rather than
+        0.0.0.0: an offline-first inspection tool must not open a port to the network
+        because its UI happens to need an origin.
+        """
+        import functools
+        import threading
+        from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+        class QuietHandler(SimpleHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                """Silent: a request line per asset would bury the application's own log."""
+
+        handler = functools.partial(QuietHandler, directory=str(root))
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}/{page}"
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -457,3 +457,38 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
   border-bottom: 0;
   overflow: hidden;
 }
+
+
+/* ------------------------------------------------------------------- toasts */
+/* Over the canvas, where the user is looking. Every action used to report into the
+   status bar in 11px text at the bottom of the window, which is indistinguishable from
+   the application doing nothing at all. */
+.toasts {
+  position: fixed;
+  right: var(--sp-3);
+  bottom: calc(var(--status-h) + var(--sp-3));
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  z-index: 40;
+  pointer-events: none;
+  max-width: 460px;
+}
+
+.toast {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--line-strong);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-header);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* Colour carries the same meaning here as everywhere else: green healthy, amber needs
+   attention, red something is wrong. */
+.toast.ok { border-left-color: var(--ok); }
+.toast.warn { border-left-color: var(--warn); }
+.toast.error { border-left-color: var(--error); color: #ffd9d7; }
+.toast.info { border-left-color: var(--accent); }

@@ -26,19 +26,20 @@ def shell_py() -> str:
     return (REPO_ROOT / "app" / "shell.py").read_text(encoding="utf-8")
 
 
-class TestTheAppOpensTheDocumentedInterface:
-    def test_the_desktop_shell_opens_the_cockpit(self, shell_py) -> None:
-        assert '"workspace.html"' in shell_py
+class TestTheAppOpensSomethingThatWorks:
+    def test_the_desktop_shell_opens_the_wired_ui(self, shell_py) -> None:
+        """index.html, because it is the only one of the two whose buttons do anything.
 
-    def test_the_classic_shell_is_still_reachable(self, shell_py) -> None:
-        """Kept behind ODK_UI=classic rather than deleted.
-
-        index.html is the more completely wired of the two while the cockpit's
-        workspaces are connected to the Api one at a time, and removing a working screen
-        before its replacement is finished is how a rewrite loses capability quietly.
+        The cockpit was briefly made the default on the strength of its layout. Every
+        toolbar button in it routes to runAction(), which writes "not wired to the API
+        yet" into the status bar -- in text small enough that the app simply appears
+        broken. A better-looking UI that cannot plan a mission is a downgrade.
         """
+        assert 'else "index.html"' in shell_py
+
+    def test_the_cockpit_is_reachable_for_development(self, shell_py) -> None:
         assert 'ODK_UI' in shell_py
-        assert '"index.html"' in shell_py
+        assert '"workspace.html"' in shell_py
 
     def test_the_documentation_names_what_actually_opens(self) -> None:
         guide = (REPO_ROOT / "docs" / "UI_GUIDE.md").read_text(encoding="utf-8")
