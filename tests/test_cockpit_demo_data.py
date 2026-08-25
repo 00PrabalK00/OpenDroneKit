@@ -1,0 +1,134 @@
+"""The cockpit must not show invented survey data that looks real.
+
+This was the one place in the codebase that fabricated. Everywhere else a model refuses
+rather than guesses, a status is computed from tests that ran, and a metric that came
+back undefined is named rather than averaged away. The cockpit -- the product's shop
+window -- shipped "Bhopal Warehouse", "NH-46 Corridor", "Kalyan Solar Farm", coordinates
+at 28.6139 N 77.2090 E (Delhi), 412 GB of storage and processing job #4471 at 34 per
+cent, with a live UTC clock ticking beside them.
+
+The only marking was a chip at the far end of the status bar, and at 1600px that chip
+was clipped off the screen -- so in practice the screen carried no marking at all.
+
+core/demo_mode.py had already solved this for the backend: Null Island, the epoch, a
+DEMO operator, and synthetic: True stamped recursively so a single finding lifted out
+still declares itself. These tests hold the front end to the same contract, and hold the
+two in step -- if the desktop demo and the API demo disagree about what synthetic looks
+like, one of them is teaching a user the wrong tell.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_JS = REPO_ROOT / "app" / "web" / "js" / "workspace"
+COCKPIT_SOURCES = ("workspaces.js", "shell.js", "demo.js")
+
+
+@pytest.fixture(scope="module")
+def cockpit() -> str:
+    return "\n".join(
+        (WORKSPACE_JS / name).read_text(encoding="utf-8") for name in COCKPIT_SOURCES
+    )
+
+
+class TestNothingReadsAsARealSurvey:
+    @pytest.mark.parametrize(
+        "tell",
+        [
+            "Bhopal",
+            "Tirupati",
+            "Kalyan",
+            "NH-46",
+            "Northern Infrastructure",
+            "28.6139",   # Delhi, and a plausible survey coordinate
+            "77.2090",
+            "412 GB",
+        ],
+    )
+    def test_the_invented_site_is_gone(self, cockpit, tell) -> None:
+        """Each of these named a place or a quantity that never existed.
+
+        The comment block explaining the history is allowed to mention what it replaced,
+        so this checks the code rather than the prose.
+        """
+        code = "\n".join(
+            line for line in cockpit.splitlines()
+            if not line.lstrip().startswith(("*", "//", "/*"))
+        )
+        assert tell not in code, f"{tell!r} reads as a real survey and is back in the cockpit"
+
+    def test_coordinates_are_null_island(self, cockpit) -> None:
+        """A real inspection is never at 0,0, so a reader who misses every label still
+        cannot mistake the readout for a site."""
+        assert "LAT: 0.0" in cockpit and "LON: 0.0" in cockpit
+
+    def test_the_clock_does_not_tick(self, cockpit) -> None:
+        """A live wall clock beside synthetic sites is what makes the screen read as a
+        real shift in progress. It is the one number here that is genuinely true, which
+        is exactly what makes it misleading in this company."""
+        assert "new Date().toISOString()" not in cockpit
+
+
+class TestTheMarkingCannotBeMissed:
+    def test_the_banner_exists_and_says_nothing_was_measured(self, cockpit) -> None:
+        assert "demo-banner" in cockpit
+        assert "nothing here was measured" in cockpit
+
+    def test_the_banner_is_in_the_frame_not_the_status_bar(self, cockpit) -> None:
+        """The old marking was a status-bar chip that clipped off screen at 1600px.
+
+        The banner is appended before the nav, so it sits above every workspace and
+        cannot be scrolled, collapsed or clipped away.
+        """
+        assert "this.root.append(this.banner" in cockpit
+
+    def test_the_banner_has_its_own_colour(self) -> None:
+        """Purple, not amber. Synthetic data is a claim about provenance, not a fault;
+        reusing the warning colour would either alarm an operator or teach them to
+        ignore a real warning."""
+        css = (REPO_ROOT / "app" / "web" / "css" / "workspace.css").read_text(encoding="utf-8")
+        tokens = (REPO_ROOT / "app" / "web" / "css" / "tokens.css").read_text(encoding="utf-8")
+        assert "--synthetic:" in tokens
+        assert ".demo-banner" in css
+        assert "var(--synthetic)" in css
+
+
+class TestTheFrontEndMatchesTheBackendContract:
+    """core/demo_mode.py is the authority; the cockpit copies it rather than inventing
+    a second idea of what synthetic looks like."""
+
+    def test_the_coordinates_agree(self, cockpit) -> None:
+        from core.demo_mode import DEMO_LAT, DEMO_LON
+
+        assert f"LAT: {DEMO_LAT}" in cockpit
+        assert f"LON: {DEMO_LON}" in cockpit
+
+    def test_the_timestamp_agrees(self, cockpit) -> None:
+        from core.demo_mode import DEMO_TIMESTAMP
+
+        assert DEMO_TIMESTAMP in cockpit
+
+    def test_the_operator_agrees(self, cockpit) -> None:
+        from core.demo_mode import DEMO_OPERATOR
+
+        assert f'OPERATOR: "{DEMO_OPERATOR}"' in cockpit
+
+    def test_the_provenance_sentence_agrees(self, cockpit) -> None:
+        """Same words, so a screenshot of either surface carries the same disclosure."""
+        from core.demo_mode import DEMO_PROVENANCE
+
+        assert "No aircraft flew and no sensor recorded this." in DEMO_PROVENANCE
+        assert "No aircraft flew and no sensor recorded this." in cockpit
+
+
+class TestDemoIsOffByDefault:
+    def test_demo_must_be_asked_for(self, cockpit) -> None:
+        """An empty cockpit is the honest state for a product with no project open, and
+        it also tells a new user what to do next. Invented projects tell them the
+        software is already full of someone else's work."""
+        assert "export function demoEnabled()" in cockpit
+        assert 'get("demo") === "1"' in cockpit

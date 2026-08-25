@@ -118,6 +118,14 @@ class TestDesignRules:
         assert ".tbtn.danger" in css
 
     def test_the_shell_marks_unconnected_data(self) -> None:
-        """The frame says plainly that nothing shown has been measured."""
+        """The frame says plainly that nothing shown has been measured.
+
+        This used to look for the words "sample data" in a status-bar chip. The chip was
+        the only marking on the whole shell and it was clipped off screen at 1600px, so
+        the assertion passed while the user saw nothing. It now looks for the banner,
+        which sits above the nav and cannot be clipped or scrolled away.
+        tests/test_cockpit_demo_data.py holds the rest of the contract.
+        """
         shell = (WEB / "js" / "workspace" / "shell.js").read_text(encoding="utf-8")
-        assert "sample data" in shell
+        assert "demo-banner" in shell
+        assert "this.root.append(this.banner" in shell

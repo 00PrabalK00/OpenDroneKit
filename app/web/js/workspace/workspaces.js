@@ -5,15 +5,23 @@
  * set of pages: an operator moving plan → fly → verify → process → inspect → measure →
  * report never leaves the survey they are working on.
  *
- * Data here is illustrative structure, not measurement. Every number a real deployment
- * shows comes from the API; nothing in this file should ever be presented as a survey
- * result, and the shell marks the session as sample data until a project is connected.
+ * Data here is illustrative STRUCTURE, not measurement, and it is written so that it
+ * cannot be mistaken for one. Sites are named DEMO, coordinates are Null Island and
+ * clocks are at the epoch, matching core/demo_mode.py so the desktop demo and the API
+ * demo agree about what synthetic looks like.
+ *
+ * It used to read as a real Indian survey: named warehouses, a highway corridor, a
+ * substation, Delhi coordinates and hundreds of gigabytes of storage -- marked only by
+ * a status-bar chip that was itself
+ * clipped off screen at 1600px. Every number a real deployment shows comes from the
+ * API; nothing in this file should ever be presented as a survey result.
  */
 
 import {
   canvas, chip, consoleView, el, fields, meter, properties,
   readouts, selection, splitCanvas, table, tree,
 } from "./primitives.js";
+import { DEMO, demoCoords } from "./demo.js";
 
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
@@ -26,23 +34,23 @@ const MAP_TOOLS = [
   { icon: "⤡", title: "Fit view" },
 ];
 
-const COORD = `<span>28.6139 N &nbsp; 77.2090 E &nbsp; EPSG:32643 &nbsp; z16</span>`;
+const COORD = demoCoords();
 
 const projectTree = () => tree([
   {
-    id: "org", label: "Northern Infrastructure", icon: "▦", meta: "org",
+    id: "org", label: "DEMO organisation", icon: "▦", meta: "org",
     children: [
       {
-        id: "p1", label: "Bhopal Warehouse", icon: "▤", meta: "4 missions",
+        id: "p1", label: "DEMO site 1", icon: "▤", meta: "4 missions",
         children: [
           { id: "a1", label: "Roof — Block A", icon: "▱" },
           { id: "a2", label: "Facade — North", icon: "▯" },
           { id: "a3", label: "Yard stockpiles", icon: "▲", meta: "3" },
         ],
       },
-      { id: "p2", label: "NH-46 Corridor", icon: "▤", meta: "12 km" },
-      { id: "p3", label: "Tirupati Substation", icon: "▤", meta: "2 missions" },
-      { id: "p4", label: "Kalyan Solar Farm", icon: "▤", meta: "18 MW" },
+      { id: "p2", label: "DEMO site 2", icon: "▤", meta: "12 km" },
+      { id: "p3", label: "DEMO site 3", icon: "▤", meta: "2 missions" },
+      { id: "p4", label: "DEMO site 4", icon: "▤", meta: "18 MW" },
     ],
   },
 ], { selectKind: "project" });
@@ -67,7 +75,7 @@ const home = {
     { id: "home.projects", title: "Project Explorer", render: projectTree },
     { id: "home.storage", title: "Storage", height: 120, grow: false, pad: true,
       render: () => el("div", {}, [
-        el("div", { class: "field" }, [el("label", { text: "Used" }), el("span", { class: "v", text: "412 GB" })]),
+        el("div", { class: "field" }, [el("label", { text: "Used" }), el("span", { class: "v", text: "0 GB" })]),
         meter(0.41, "ok"),
         el("div", { class: "field" }, [el("label", { text: "Datasets" }), el("span", { text: "38" })]),
       ]) },
@@ -84,18 +92,18 @@ const home = {
   }),
   right: [
     { id: "home.active", title: "Active Project", render: () => properties([
-      { group: "Bhopal Warehouse" },
+      { group: "DEMO site 1" },
       { label: "Area", value: "14.2", unit: "ha" },
-      { label: "CRS", value: "EPSG:32643" },
+      { label: "CRS", value: "EPSG:4326" },
       { label: "Missions", value: "4" },
       { label: "Last flight", value: "2 days ago" },
       { label: "Coverage", value: "98.4", unit: "%" },
       { label: "GSD", value: "1.8", unit: "cm/px" },
     ]) },
     { id: "home.alerts", title: "Alerts", render: () => el("div", { class: "console" }, [
-      el("div", { class: "line warn" }, [el("span", { class: "t", text: "09:14" }), el("span", { text: "Battery B-07 cycle count 298 — service due" })]),
-      el("div", { class: "line error" }, [el("span", { class: "t", text: "08:52" }), el("span", { text: "NH-46: 3 captures out of tolerance" })]),
-      el("div", { class: "line ok" }, [el("span", { class: "t", text: "08:31" }), el("span", { text: "Tirupati reconstruction complete" })]),
+      el("div", { class: "line warn" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "Battery B-07 cycle count 298 — service due" })]),
+      el("div", { class: "line error" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "DEMO site 2: 3 captures out of tolerance" })]),
+      el("div", { class: "line ok" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "DEMO site 3 reconstruction complete" })]),
     ]) },
     { id: "home.system", title: "System Status", render: () => properties([
       { label: "API", value: chip("healthy", "ok") },
@@ -107,10 +115,10 @@ const home = {
   ],
   bottom: [
     { id: "home.activity", title: "Activity Log", flex: 2, render: () => consoleView([
-      { t: "09:20:41", text: "mission 'Roof Block A v3' validated — 214 captures" },
-      { t: "09:18:02", text: "dataset upload complete — 1,842 images", level: "ok" },
-      { t: "09:02:55", text: "processing job #4471 queued (priority 10)" },
-      { t: "08:41:19", text: "flight NH-46 seg 2 resumed after battery swap", level: "warn" },
+      { t: "00:00:00", text: "mission 'Roof Block A v3' validated — 214 captures" },
+      { t: "00:00:00", text: "dataset upload complete — 1,842 images", level: "ok" },
+      { t: "00:00:00", text: "processing job #4471 queued (priority 10)" },
+      { t: "00:00:00", text: "flight DEMO site 2 seg 2 resumed after battery swap", level: "warn" },
     ]) },
     { id: "home.jobs", title: "Processing Queue", flex: 2, render: () => table(
       [{ title: "Job", key: "job" }, { title: "Stage", key: "stage" },
@@ -143,11 +151,11 @@ const projects = {
     { id: "proj.props", title: "Project Properties", tabs: [
       { title: "General", render: () => properties([
         { group: "Identity" },
-        { label: "Name", value: "Bhopal Warehouse" },
-        { label: "Client", value: "Northern Infrastructure" },
+        { label: "Name", value: "DEMO site 1" },
+        { label: "Client", value: "DEMO organisation" },
         { label: "Created", value: "2026-03-11" },
         { group: "Spatial" },
-        { label: "CRS", value: "EPSG:32643" },
+        { label: "CRS", value: "EPSG:4326" },
         { label: "Vertical datum", value: "EGM96" },
         { label: "Area", value: "14.2", unit: "ha" },
       ]) },
@@ -296,7 +304,7 @@ const flight = {
       { id: "c2", label: "GPS fix — RTK fixed", icon: "✓" },
       { id: "c3", label: "Home position set", icon: "✓" },
       { id: "c4", label: "Battery 96%", icon: "✓" },
-      { id: "c5", label: "Storage 412 GB free", icon: "✓" },
+      { id: "c5", label: "Storage 0 GB free", icon: "✓" },
       { id: "c6", label: "Mission uploaded", icon: "✓" },
       { id: "c7", label: "Geofence uploaded", icon: "✓" },
       { id: "c8", label: "Terrain data — none", icon: "!" },
@@ -341,10 +349,10 @@ const flight = {
   bottom: [
     { id: "fly.charts", title: "Telemetry Charts", flex: 3, render: () => canvas({ title: "Altitude · speed · battery · link", note: "Rolling window over the current flight." }) },
     { id: "fly.events", title: "Event Log", flex: 2, render: () => consoleView([
-      { t: "06:11:44", text: "capture 62 triggered" },
-      { t: "06:10:02", text: "waypoint 31 reached" },
-      { t: "06:00:11", text: "mission started", level: "ok" },
-      { t: "05:59:40", text: "armed", level: "ok" },
+      { t: "00:00:00", text: "capture 62 triggered" },
+      { t: "00:00:00", text: "waypoint 31 reached" },
+      { t: "00:00:00", text: "mission started", level: "ok" },
+      { t: "00:00:00", text: "armed", level: "ok" },
     ]) },
     { id: "fly.camera", title: "Camera", flex: 1, render: () => canvas({ title: "Live view", note: "Downlink preview" }) },
   ],
@@ -419,9 +427,9 @@ const processing = {
       { id: "pd3", label: "PPK base", icon: "◎" },
     ], { selectKind: "dataset" }) },
     { id: "proc.jobs", title: "Jobs", render: () => tree([
-      { id: "j1", label: "#4471 Bhopal roof", icon: "▶", meta: "34%" },
-      { id: "j2", label: "#4470 NH-46", icon: "▶", meta: "72%" },
-      { id: "j3", label: "#4468 Tirupati", icon: "✓", meta: "done" },
+      { id: "j1", label: "#4471 DEMO site 1 roof", icon: "▶", meta: "34%" },
+      { id: "j2", label: "#4470 DEMO site 2", icon: "▶", meta: "72%" },
+      { id: "j3", label: "#4468 DEMO site 3", icon: "✓", meta: "done" },
     ], { selectKind: "job" }) },
   ],
   canvas: () => canvas({
@@ -443,7 +451,7 @@ const processing = {
       ]) },
       { title: "Spatial", render: () => properties([
         { label: "Reference", value: chip("georeferenced", "ok") },
-        { label: "CRS", value: "EPSG:32643" },
+        { label: "CRS", value: "EPSG:4326" },
         { label: "GCPs", value: "7" },
         { label: "RTK", value: chip("fixed", "ok") },
         { label: "Scale", value: "metric" },
@@ -477,9 +485,9 @@ const processing = {
         { stage: "Structure from motion", state: "queued", t: "—", p: 0 },
       ]) },
     { id: "proc.logs", title: "Processing Log", flex: 3, render: () => consoleView([
-      { t: "09:41:02", text: "matching 412,880 pairs across 3 workers" },
-      { t: "09:32:55", text: "features extracted: 1,842 images", level: "ok" },
-      { t: "09:26:11", text: "job accepted by w-02 (priority 10, attempt 1)" },
+      { t: "00:00:00", text: "matching 412,880 pairs across 3 workers" },
+      { t: "00:00:00", text: "features extracted: 1,842 images", level: "ok" },
+      { t: "00:00:00", text: "job accepted by w-02 (priority 10, attempt 1)" },
     ]) },
   ],
 };
@@ -492,7 +500,7 @@ const twin = {
   toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|", "Compare Dates", "Measure", "Annotate", "Export"],
   left: [
     { id: "twin.hierarchy", title: "Scene Hierarchy", render: () => tree([
-      { id: "s1", label: "Bhopal Warehouse", icon: "▦", children: [
+      { id: "s1", label: "DEMO site 1", icon: "▦", children: [
         { id: "s2", label: "Block A", icon: "▢", children: [
           { id: "s3", label: "Roof", icon: "▱", meta: "4 defects" },
           { id: "s4", label: "North facade", icon: "▯", meta: "1" },
@@ -815,7 +823,7 @@ const reports = {
       { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX", "HTML"] },
     ]) },
     { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
-      { key: "org", label: "Organisation", value: "Northern Infrastructure" },
+      { key: "org", label: "Organisation", value: "DEMO organisation" },
       { key: "logo", label: "Logo", value: "brand.png" },
     ]) },
   ],
@@ -884,8 +892,8 @@ const developers = {
         { c: "Observability", s: "healthy", d: "/metrics" },
       ], { selectKind: "component" }) },
     { id: "dev.events", title: "Event Stream", flex: 2, render: () => consoleView([
-      { t: "09:41:02", text: "processing.progress job=4471 pct=34" },
-      { t: "09:26:11", text: "processing.started job=4471" },
+      { t: "00:00:00", text: "processing.progress job=4471 pct=34" },
+      { t: "00:00:00", text: "processing.started job=4471" },
     ]) },
   ],
 };
@@ -911,7 +919,7 @@ const settings = {
   right: [
     { id: "set.detail", title: "Units & CRS", render: () => fields([
       { key: "units", label: "Units", value: "metric", options: ["metric", "imperial"] },
-      { key: "crs", label: "Default CRS", value: "EPSG:32643" },
+      { key: "crs", label: "Default CRS", value: "EPSG:4326" },
       { key: "vert", label: "Vertical datum", value: "EGM96" },
       { key: "angle", label: "Angles", value: "degrees", options: ["degrees", "mils"] },
     ]) },

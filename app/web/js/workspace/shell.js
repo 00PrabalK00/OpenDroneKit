@@ -9,6 +9,7 @@
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
+import { DEMO } from "./demo.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -45,7 +46,13 @@ export class Shell {
     this.workspaceEl = el("div", { class: "workspace" });
     this.status = this.buildStatus();
 
-    this.root.append(this.nav, this.toolbar, this.workspaceEl, this.status);
+    // Above everything, in the frame itself, and impossible to scroll or clip away.
+    // The previous marking was a chip at the far end of the status bar, which at 1600px
+    // was cut off the screen entirely -- so the shell showed invented survey data with
+    // nothing at all to say so.
+    this.banner = el("div", { class: "demo-banner", text: DEMO.BANNER });
+    this.banner.title = DEMO.PROVENANCE;
+    this.root.append(this.banner, this.nav, this.toolbar, this.workspaceEl, this.status);
 
     this.dock = new Dock(this.workspaceEl);
     this.open(this.workspaceId);
@@ -89,7 +96,7 @@ export class Shell {
         this.clock = el("span", { class: "mono", text: "--:--:-- UTC" }),
         el("span", { class: "sep" }),
         el("span", { class: "avatar", text: "PK" }),
-        el("span", { text: "Northern Infrastructure" }),
+        el("span", { text: DEMO.ORG }),
       ]),
     ]);
   }
@@ -97,15 +104,16 @@ export class Shell {
   buildStatus() {
     this.selectionLabel = el("span", { text: "no selection" });
     return el("footer", { class: "statusbar" }, [
-      el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: " Bhopal Warehouse" })]),
+      el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: ` ${DEMO.SITES[0]}` })]),
       el("span", { class: "sep" }),
-      el("span", { class: "mono", text: "EPSG:32643" }),
+      el("span", { class: "mono", text: "EPSG:4326" }),
       el("span", { class: "sep" }),
       this.selectionLabel,
       el("span", { class: "spacer" }),
-      // Said plainly, permanently, in the frame of the application: this shell shows
-      // structure, not survey results. A number here has not been measured.
-      el("span", { class: "chip warn", text: "sample data — not connected to a project" }),
+      // The banner above carries this now. A chip at the end of the status bar was the
+      // only marking on the whole shell, and at 1600px it was clipped off the screen --
+      // so the one thing saying "none of this was measured" was the first thing to go.
+      el("span", { class: "chip warn", text: "not connected to a project" }),
       el("span", { class: "sep" }),
       el("span", { class: "mono", text: "v1.0" }),
     ]);
@@ -173,8 +181,8 @@ export class Shell {
       { kind: "layout", label: "Reset workspace layout", run: () => this.dock.resetLayout() },
       { kind: "view", label: "Toggle full-screen canvas", hint: "F11", run: () => this.dock.toggleCanvasFullScreen() },
       ...SHORTCUTS.map(([keys, what]) => ({ kind: "shortcut", label: what, hint: keys, run: () => {} })),
-      { kind: "project", label: "Bhopal Warehouse", hint: "project", run: () => {} },
-      { kind: "project", label: "NH-46 Corridor", hint: "project", run: () => {} },
+      { kind: "project", label: DEMO.SITES[0], hint: "project", run: () => {} },
+      { kind: "project", label: DEMO.SITES[1], hint: "project", run: () => {} },
       { kind: "finding", label: "F-118 crack — Roof Block A", hint: "finding", run: () => this.open("inspection") },
       { kind: "mission", label: "Roof Block A v3", hint: "mission", run: () => this.open("planning") },
     ];
@@ -241,7 +249,11 @@ export class Shell {
     });
 
     const tick = () => {
-      this.clock.textContent = `${new Date().toISOString().slice(11, 19)} UTC`;
+      // The epoch while the shell is showing demo content. A live wall clock beside
+      // synthetic sites is the detail that makes the whole screen read as a real shift
+      // in progress, and it is the one number here that is genuinely true -- which is
+      // exactly what makes it misleading in this company.
+      this.clock.textContent = `${DEMO.CLOCK} UTC`;
     };
     tick();
     setInterval(tick, 1000);

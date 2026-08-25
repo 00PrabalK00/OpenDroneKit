@@ -42,7 +42,14 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 
 .shell {
   display: grid;
-  grid-template-rows: var(--nav-h) var(--toolbar-h) 1fr var(--status-h);
+  /* auto for the demo banner: it collapses to nothing when not in demo mode, so the
+     row costs no height in the real application. */
+  grid-template-rows: auto var(--nav-h) var(--toolbar-h) 1fr var(--status-h);
+  /* THE one that mattered. With no explicit column the implicit track is `auto`, which
+     sizes to MAX-CONTENT, so the workspace row grew to whatever its docks and canvas
+     wanted -- 1829px -- and pushed the right dock off a 1600px screen. min-width: 0 on
+     the item cannot help when it is the track that is too wide. */
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
 }
 
@@ -161,14 +168,23 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
 
 /* ------------------------------------------------------------------- regions */
 
-.workspace { display: flex; overflow: hidden; background: var(--bg-app); }
+/* min-width: 0 because this is a GRID item, and a grid item's default min-width is
+   auto -- it grows to fit its content rather than to fit its track. The docks are
+   240 + 288 fixed, so the centre never had to shrink and the row came out 1829px wide
+   inside a 1600px shell, putting the right dock past the edge of the screen. The
+   overflow: hidden on this element then hid the evidence from scrollWidth, which is
+   why measuring the document reported it clean. */
+.workspace { display: flex; overflow: hidden; background: var(--bg-app); min-width: 0; }
 
 .region { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-region); }
 .region.left, .region.right { flex: none; min-width: 0; }
 .region.centre { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .region.collapsed { display: none; }
 
-.centre-stack { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden; }
+.centre-stack { flex: 1 1 auto; display: flex; flex-direction: column; overflow: hidden;
+  /* The last link in the chain. Every ancestor could shrink, but this one kept its
+     content width and held the whole row open at 1829px. */
+  min-width: 0; }
 .region.bottom { flex: none; min-height: 0; min-width: 0; overflow: hidden; }
 
 /* Splitters are 4px: wide enough to grab, narrow enough not to cost canvas. */
@@ -335,6 +351,7 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
     radial-gradient(circle at 30% 40%, #16202c 0%, #0d1015 70%);
   margin: 3px; border: 1px solid var(--line); border-radius: var(--radius);
   min-height: 0;
+  min-width: 0;
 }
 .canvas-overlay {
   position: absolute; z-index: 5;
@@ -412,3 +429,19 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
 .region.drop-active { outline: 1px dashed var(--accent); outline-offset: -3px; }
 
 .hidden { display: none !important; }
+
+
+/* The demo banner. Purple rather than amber: synthetic data is a claim about
+   provenance, not a fault, and reusing the warning colour would either alarm an
+   operator or teach them to ignore a real warning. */
+.demo-banner {
+  flex: none;
+  padding: 3px var(--sp-3);
+  background: color-mix(in srgb, var(--synthetic) 18%, var(--bg-region));
+  border-bottom: 1px solid var(--synthetic);
+  color: var(--synthetic);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
