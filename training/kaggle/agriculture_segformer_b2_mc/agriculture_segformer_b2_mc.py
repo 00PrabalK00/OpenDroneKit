@@ -22,6 +22,11 @@ CORPUS = Path("/kaggle/input/odk-agriculture-seg-corpus")
 OUT = SCRATCH / "artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
 
+# What the config itself asks for, baked in at generation time so the GPU cap
+# below can compare against it instead of overriding blindly.
+CONFIG_IMAGE_SIZE = 512
+CONFIG_BATCH_SIZE = 8
+
 
 def report_environment() -> str:
     """Print the environment before training rather than after it fails.
@@ -194,8 +199,25 @@ def gpu_memory_overrides() -> list:
         print(f"GPU has {total_gb:.0f} GB; running the config as written", flush=True)
         return []
 
-    print(f"GPU has only {total_gb:.0f} GB; capping image size and batch to fit", flush=True)
-    return ["--image-size", "640", "--batch-size", "8"]
+    # CAP, never raise. This forced --image-size 640 unconditionally, and the
+    # agriculture configs ask for 512 -- so the helper written to make runs fit made
+    # them BIGGER, and both arms died with CUDA out of memory at 15.6 GB on a 15.89 GB
+    # card. A ceiling that is above the config is not a ceiling.
+    image_size = min(CONFIG_IMAGE_SIZE, 640) if CONFIG_IMAGE_SIZE else 640
+    batch_size = min(CONFIG_BATCH_SIZE, 8) if CONFIG_BATCH_SIZE else 8
+    if image_size >= CONFIG_IMAGE_SIZE and batch_size >= CONFIG_BATCH_SIZE:
+        print(
+            f"GPU has {total_gb:.0f} GB; the config already fits at "
+            f"{CONFIG_IMAGE_SIZE}px/batch {CONFIG_BATCH_SIZE}",
+            flush=True,
+        )
+        return []
+    print(
+        f"GPU has only {total_gb:.0f} GB; capping to {image_size}px/batch {batch_size} "
+        f"(config asks {CONFIG_IMAGE_SIZE}px/batch {CONFIG_BATCH_SIZE})",
+        flush=True,
+    )
+    return ["--image-size", str(image_size), "--batch-size", str(batch_size)]
 
 
 def ensure_ultralytics() -> None:
