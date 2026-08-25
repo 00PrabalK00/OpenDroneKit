@@ -1,0 +1,15 @@
+{
+  "id": "prabalkhare00/odk-train-agriculture-segformer-b2-ms",
+  "title": "ODK train agriculture_segformer_b2_ms",
+  "code_file": "agriculture_segformer_b2_ms.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "prabalkhare00/odk-agriculture-seg-corpus"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

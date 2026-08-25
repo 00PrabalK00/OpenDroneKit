@@ -307,6 +307,16 @@ class MulticlassSegDataset(Dataset):
         stacked = self._band_path(image_path)
         if stacked is not None:
             image = np.load(stacked)
+        elif getattr(self, "band_root", ""):
+            # Configured for five bands and the stack is not there. Falling back to RGB
+            # would train a model that reports itself as multispectral while reading the
+            # three bands that discriminate least -- and the whole point of this config
+            # is a comparison against RGB, which that fallback would quietly void.
+            raise FileNotFoundError(
+                f"No band stack for {image_path.name} under {self.band_root}. "
+                "This config declares multispectral input, so training would otherwise "
+                "silently proceed on RGB and report it as five-band."
+            )
         else:
             with Image.open(image_path) as source:
                 image = np.asarray(source.convert("RGB")).copy()
@@ -940,6 +950,16 @@ def main(argv: list[str] | None = None) -> int:
         "--max-train-samples", type=int, help="Cap training samples for a smoke run."
     )
     parser.add_argument("--data-root", type=Path, help="Override the corpus location.")
+    parser.add_argument(
+        "--band-root",
+        type=Path,
+        help=(
+            "Override where the multispectral band stacks live. The config holds a "
+            "repo-relative path, which does not exist on a rented machine where the "
+            "bands arrive as part of a mounted dataset -- without this the 5-band run "
+            "silently falls back to RGB and the comparison it exists to make is void."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, help="Override where runs are written.")
     args = parser.parse_args(argv)
 
@@ -950,6 +970,8 @@ def main(argv: list[str] | None = None) -> int:
             setattr(config, key, value)
     if args.data_root is not None:
         config.data_root = str(args.data_root)
+    if args.band_root is not None:
+        config.band_root = str(args.band_root)
     if args.output_dir is not None:
         config.output_dir = str(args.output_dir)
     config.validate()
