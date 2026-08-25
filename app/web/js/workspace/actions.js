@@ -46,7 +46,12 @@ export const ACTIONS = {
       const name = await ctx.prompt("Project name", folder.path.split(/[\\/]/).pop() || "Survey");
       if (!name) return { skipped: "No name given." };
       const created = await call("create_project", name, folder.path);
-      await call("set_active_project", created.project_id ?? created.id);
+      // The id is nested: the Api answers ok(project={...}). Reading created.id gave
+      // undefined and set_active_project then failed on int(None) -- and it went
+      // unnoticed because session.create_project already makes the new project active,
+      // so the visible outcome was right for the wrong reason.
+      const id = (created.project && created.project.id) ?? created.project_id ?? created.id;
+      if (id != null) await call("set_active_project", id);
       return { message: `Project "${name}" created.`, refresh: true };
     },
   },

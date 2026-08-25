@@ -1318,14 +1318,49 @@ class Api:
 
     # -------------------------------------------------------------- reports
 
+    def _report_project_id(self) -> str:
+        """The active project, as core.report_engine knows it.
+
+        There are two project stores. app/store.py holds what the desktop opened;
+        core/project.py holds what the report engine reads, with its own ids. Assuming
+        they were the same made every report refuse with "Open a project" while a project
+        was plainly open.
+
+        So the desktop project is mirrored into the engine's store on demand, matched by
+        name, and the engine's id is returned. Mirrored rather than merged: merging two
+        schemas that have diverged this far is a migration, and a report should not be
+        the thing that performs one.
+        """
+        from core.project import get_manager
+
+        project = self._session.ensure_active_project()
+        name = str(project.get("name") or "").strip()
+        if not name:
+            raise ValueError("Open a project before generating a report.")
+
+        manager = get_manager()
+        for candidate in manager.list_projects(include_archived=True):
+            if str(candidate.get("name", "")).strip() == name:
+                return str(candidate["id"])
+
+        # No root_dir: the manager refuses a folder that already has files in it, which
+        # is right for its own workspace and wrong to argue with here. The desktop
+        # project keeps its folder; the engine keeps its own and writes the report there.
+        created = manager.create_project(
+            name=name,
+            description=str(project.get("description") or ""),
+        )
+        return str(created["id"] if isinstance(created, dict) else created)
+
     @guard
     def report_readiness(self, project_id: str = "", report_type: str = "standard") -> dict[str, Any]:
         """What a report still needs, before anyone presses Generate."""
         from app import desktop_ops
 
-        target = str(project_id or getattr(self._session, "active_project_id", "") or "")
-        if not target:
-            return fail("Open a project before checking report readiness.")
+        try:
+            target = str(project_id) if project_id else self._report_project_id()
+        except Exception as exc:  # noqa: BLE001 - no project open yet
+            return fail(str(exc))
         try:
             return ok(**desktop_ops.report_readiness(target, report_type=report_type))
         except Exception as exc:  # noqa: BLE001 - the engine raises its own error type
@@ -1337,9 +1372,10 @@ class Api:
         """Build the report, or return the engine refusal naming what is missing."""
         from app import desktop_ops
 
-        target = str(project_id or getattr(self._session, "active_project_id", "") or "")
-        if not target:
-            return fail("Open a project before generating a report.")
+        try:
+            target = str(project_id) if project_id else self._report_project_id()
+        except Exception as exc:  # noqa: BLE001 - no project open yet
+            return fail(str(exc))
         try:
             return ok(**desktop_ops.generate_report(
                 target, title=title, report_type=report_type, author=author))

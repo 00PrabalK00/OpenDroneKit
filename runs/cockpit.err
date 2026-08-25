@@ -1,0 +1,1 @@
+[pywebview] FOLDER_DIALOG is deprecated and will be removed in a future version. Use 'FileDialog.FOLDER' instead.
