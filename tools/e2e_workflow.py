@@ -131,7 +131,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  reconstruction job {job} running; polling…", flush=True)
             last = ""
             while True:
-                status = api.job_status(job)
+                # ok(job={...}) -- reading the state off the envelope polls forever.
+                status = api.job_status(job).get("job") or {}
                 state = str(status.get("state") or status.get("status") or "")
                 message = str(status.get("message") or "")
                 if message and message != last:

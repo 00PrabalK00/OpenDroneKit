@@ -38,6 +38,11 @@ class ProjectStore:
         # the read-then-write sequences that would otherwise race.
         self._conn = sqlite3.connect(str(self.paths.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # `_lock` only serialises this process. A second one -- the running desktop app
+        # while a script drives the same store, which is exactly how this was found --
+        # gets SQLITE_BUSY, and the default timeout is zero, so it fails instantly rather
+        # than waiting out a write that takes milliseconds. Wait five seconds first.
+        self._conn.execute("PRAGMA busy_timeout = 5000")
         self._lock = threading.RLock()
         self._init_schema()
 

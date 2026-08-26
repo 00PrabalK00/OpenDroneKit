@@ -593,8 +593,13 @@ export class Shell {
   watchJob(jobId) {
     this.selectedJobId = jobId;
     const tick = async () => {
-      const status = await tryCall("job_status", jobId);
-      if (!status) return;
+      const envelope = await tryCall("job_status", jobId);
+      if (!envelope) return;
+      // The record is nested: the Api answers ok(job={...}). Reading the state off the
+      // envelope gave undefined for every job that ever ran, so the terminal branches
+      // below were unreachable and this polled a finished reconstruction forever --
+      // products on disk, and a toast still saying it was working.
+      const status = envelope.job || envelope;
       const state = status.state || status.status;
       const percent = status.progress ?? status.percent;
       if (state === "done" || state === "finished" || state === "complete") {
