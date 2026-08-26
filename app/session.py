@@ -132,6 +132,11 @@ class AppSession:
         self.mission_plan_dict = {}
         self.layers.clear()
         self.active_dataset_dir = ""
+        # Clearing is right -- the old project's layers are not this one's -- but leaving
+        # it there meant opening a project with a finished reconstruction showed an empty
+        # layer tree. Restore what this project has on disk.
+        self.restore_active_dataset()
+        self.restore_layers()
         return self.store.get_active_project() or {}
 
     def project_id(self) -> int:
@@ -287,6 +292,50 @@ class AppSession:
                 self.active_dataset_dir = candidate
                 return candidate
         return ""
+
+    # Reconstruction writes these names, and they are the products worth putting back.
+    RESTORABLE_PRODUCTS = (
+        ("orthomosaic.tif", "raster", "Orthomosaic"),
+        ("dsm.tif", "raster", "DSM"),
+        ("dtm.tif", "raster", "DTM"),
+        ("dsm_hillshade.tif", "raster", "DSM hillshade"),
+        ("camera_track.geojson", "vector", "Camera positions"),
+    )
+
+    def restore_layers(self) -> list[dict[str, Any]]:
+        """Put this project's reconstruction products back in the layer tree.
+
+        `self.layers` is an in-memory dict that is cleared whenever the active project
+        changes and never written anywhere, so a reconstruction registered its
+        orthomosaic, DSM, DTM, hillshade and camera track -- and all five vanished the
+        moment the application was closed or another project was opened. The files were
+        still on disk the whole time; only the application's knowledge of them was
+        thrown away, which is the worst version of this because the operator can see the
+        folder and cannot see the layer.
+
+        Rediscovering from disk rather than persisting the registry keeps one source of
+        truth: a product that has been deleted does not come back as a broken row.
+        """
+        try:
+            root = self.project_root()
+        except Exception:  # noqa: BLE001 - no project open yet
+            return []
+
+        restored: list[dict[str, Any]] = []
+        known = {layer.path for layer in self.layers.values()}
+        for directory in sorted(root.glob("**/reconstruction")):
+            for filename, kind, label in self.RESTORABLE_PRODUCTS:
+                path = directory / filename
+                if not path.exists() or str(path) in known:
+                    continue
+                try:
+                    if kind == "vector":
+                        restored.append(self.register_vector_layer(path, name=label))
+                    else:
+                        restored.append(self.register_raster_layer(path, name=label, kind=kind))
+                except Exception:  # noqa: BLE001 - an unreadable product is not fatal
+                    continue
+        return restored
 
     # -- vehicle ---------------------------------------------------------
 

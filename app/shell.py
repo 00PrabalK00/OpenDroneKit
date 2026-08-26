@@ -39,6 +39,7 @@ class Shell:
         # user re-imported a folder it already knew about.
         try:
             self.api._session.restore_active_dataset()  # noqa: SLF001 - startup wiring
+            self.api._session.restore_layers()  # noqa: SLF001 - startup wiring
         except Exception:  # noqa: BLE001 - a first run has no project yet
             pass
 

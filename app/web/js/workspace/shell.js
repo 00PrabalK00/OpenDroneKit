@@ -10,7 +10,7 @@ import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DATA, DEMO, demoEnabled } from "./demo.js";
-import { call, connected, tryCall, whenReady } from "./api.js";
+import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
@@ -184,11 +184,17 @@ export class Shell {
         return;
       }
       case "project": {
-        this.toast(`${name} selected. Open acts on projects the application knows about.`, "ok");
+        // Selecting a project used to announce that Open would act on it, which is a
+        // sentence about a button rather than a consequence. Picking a project in the
+        // list is the operator saying which one they want; open it.
+        this.openProject(value.id ?? value.project_id, name);
         return;
       }
       case "layer": {
-        this.toast(`Layer ${name} selected.`, "ok");
+        // A layer is the reconstruction's own output -- an orthomosaic, a DSM, a camera
+        // track. Naming it back at the operator was the clearest case of the panel
+        // printing text: the application is holding the picture and describing it.
+        this.showLayer(value.id || value.layer_id || value.key || name, name);
         return;
       }
       case "setting": {
@@ -203,6 +209,73 @@ export class Shell {
       default:
         this.toast(`${kind}: ${name}`, "ok");
     }
+  }
+
+  /** Open the project the operator picked, and rebuild the screen around it. */
+  async openProject(projectId, name) {
+    if (projectId == null) {
+      this.toast(`${name}: this project has no id, so it cannot be opened.`, "warn");
+      return;
+    }
+    if (!connected()) {
+      this.toast(`${name}: the Python bridge is not connected.`, "warn");
+      return;
+    }
+    const opened = await tryCall("set_active_project", projectId);
+    if (!opened) {
+      this.toast(`${name}: ${lastError.get("set_active_project") || "could not be opened."}`, "warn");
+      return;
+    }
+    // A different project means different datasets, layers, jobs and findings, so the
+    // canvas must not keep showing the last one's picture.
+    setImage(null);
+    setView("map");
+    await this.refreshState();
+    this.toast(`Opened ${name}.`, "ok");
+  }
+
+  /**
+   * Draw a map layer on the canvas.
+   *
+   * Rasters come back as a PNG data URI, which the canvas can already show. Vectors have
+   * no picture, so rather than pretending, this reports what the layer actually contains
+   * -- how many features and of what geometry. That is a real answer to "what is this",
+   * which is the question selecting it was asking.
+   */
+  async showLayer(layerId, name) {
+    if (!connected()) {
+      this.toast(`${name}: connect a project to open layers.`, "warn");
+      return;
+    }
+    const raster = await tryCall("raster_preview", layerId);
+    if (raster && raster.data_uri) {
+      setImage({ name, data_uri: raster.data_uri, coordinates: raster.coordinates });
+      setView("image");
+      this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+      this.toast(`Showing ${name}.`, "ok");
+      return;
+    }
+
+    const vector = await tryCall("read_vector_layer", layerId);
+    if (vector && vector.geojson) {
+      const features = vector.geojson.features || [];
+      const kinds = [...new Set(features.map((f) => (f.geometry || {}).type).filter(Boolean))];
+      // Leaving the previously drawn raster up would caption someone else's picture with
+      // this layer's name. Go back to the map, which is where geometry belongs.
+      setImage(null);
+      setView("map");
+      this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+      this.toast(
+        `${name}: ${features.length} feature${features.length === 1 ? "" : "s"}`
+        + `${kinds.length ? ` (${kinds.join(", ")})` : ""}.`,
+        "ok",
+      );
+      return;
+    }
+
+    // Both refused, so say which reason applies rather than falling back to the name.
+    const why = lastError.get("raster_preview") || lastError.get("read_vector_layer");
+    this.toast(`${name}: ${why || "this layer cannot be displayed."}`, "warn");
   }
 
   /** Draw one image from the active dataset on the canvas. */

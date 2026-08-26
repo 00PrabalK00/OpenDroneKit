@@ -248,7 +248,14 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
       shown.setAttribute("alt", picked.name);
       root.appendChild(shown);
       root.appendChild(el("div", { class: "canvas-overlay bl" }, [
-        el("span", { class: "chip", text: `${picked.name} — ${picked.source_width}×${picked.source_height}` }),
+        // A survey photograph knows its own pixel size; a rendered map layer does not,
+        // and "undefined×undefined" under the picture is worse than no caption at all.
+        el("span", {
+          class: "chip",
+          text: picked.source_width
+            ? `${picked.name} — ${picked.source_width}×${picked.source_height}`
+            : String(picked.name),
+        }),
       ]));
       return;
     }

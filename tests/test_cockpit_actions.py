@@ -368,6 +368,38 @@ class TestThePanelsDoSomething:
         assert 'case "model"' in shell_js
         assert "headline" in shell_js
 
+    def test_selecting_a_project_opens_it(self, shell_js) -> None:
+        """It used to answer that Open would act on it, which describes a button.
+
+        A sentence about what some other control would do is not a consequence. Picking
+        a project in the list is the operator saying which one they want.
+        """
+        assert "openProject(" in shell_js
+        assert 'call("set_active_project"' in shell_js or "set_active_project" in shell_js
+        # A different project has different datasets and layers, so the canvas must not
+        # keep showing the previous one's picture.
+        assert "async openProject(projectId, name)" in shell_js
+
+    def test_selecting_a_layer_draws_it(self, shell_js) -> None:
+        """The clearest case of a panel printing text back at the operator.
+
+        A layer is the reconstruction's own output. The application holds the orthomosaic
+        and used to answer by repeating its name.
+        """
+        assert "showLayer(" in shell_js
+        assert "raster_preview" in shell_js
+        # Vectors have no picture. Reporting the feature count and geometry types is a
+        # real answer to "what is this"; repeating the name is not.
+        assert "read_vector_layer" in shell_js
+        assert "features.length" in shell_js
+
+    def test_a_layer_that_cannot_be_drawn_says_why(self, shell_js) -> None:
+        section = shell_js[shell_js.index("async showLayer("):]
+        section = section[: section.index("\n  /**", 10)]
+        assert "lastError.get" in section, (
+            "falling back to the layer name is how this looked like it worked before"
+        )
+
 
 class TestEditingAFieldReachesThePlanner:
     """fields() has always accepted an onChange and no caller passed one.
