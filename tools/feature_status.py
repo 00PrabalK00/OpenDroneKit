@@ -223,6 +223,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if (args.strict and downgrades) else 0
 
     if args.markdown:
+        # A laptop is wrong in BOTH directions, which is why this refuses rather than
+        # warns. It has the trained weights, so the model rows go up; it has no SITL
+        # container and no live PostGIS, so those rows go DOWN -- and a published document
+        # reading "PostGIS: implemented" would be a false demotion of something CI proves
+        # every run. Publishing that is worse than publishing nothing, because a reader
+        # cannot tell a real gap from a missing environment.
+        missing = [f.id for f, _s, reason in results if "selector matched nothing" in reason]
+        if missing and not args.extra_report:
+            print(
+                "Refusing to write docs/FEATURES.md: "
+                f"{len(missing)} row(s) have no evidence on this machine "
+                f"({', '.join(missing[:4])}{', ...' if len(missing) > 4 else ''}).\n"
+                "Those tests run elsewhere -- SITL in its container, PostGIS against a "
+                "live instance -- and writing the document here would demote rows that CI "
+                "verifies on every run.\n"
+                "Pass the junit reports from those runs with --extra-report, or let CI "
+                "generate it.",
+                file=sys.stderr,
+            )
+            return 1
         write_markdown(results, counts, total)
         print(f"Wrote {REPO_ROOT / 'docs' / 'FEATURES.md'}")
 

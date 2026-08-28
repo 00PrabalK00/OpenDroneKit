@@ -46,6 +46,29 @@ def test_the_generated_document_states_its_evidence_base(tmp_path, monkeypatch):
     assert text.index("trained model") < text.index("| Status | Count | Share |")
 
 
+def test_a_laptop_refuses_to_publish_the_document(tmp_path, monkeypatch, capsys):
+    """Regenerating locally is wrong in BOTH directions, so it refuses rather than warns.
+
+    A development machine has the trained weights, so the model rows go up. It has no SITL
+    container and no live PostGIS, so those rows go DOWN -- and a published document
+    reading "PostgreSQL and PostGIS: implemented" would be a false demotion of something
+    continuous integration proves on every run. A reader cannot tell a real gap from a
+    missing environment, which makes publishing it worse than publishing nothing.
+    """
+    import feature_status
+
+    monkeypatch.setattr(feature_status, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(feature_status, "run_tests", lambda: (set(), set(), ""))
+    exit_code = feature_status.main(["--markdown"])
+
+    assert exit_code == 1
+    assert not (tmp_path / "docs" / "FEATURES.md").exists()
+    message = capsys.readouterr().err
+    assert "Refusing to write" in message
+    # It has to say what would fix it, or the refusal is just an obstacle.
+    assert "--extra-report" in message
+
+
 def test_it_names_the_weights_when_they_are_installed():
     if not list((REPO_ROOT / "models").rglob("*.onnx")):
         return  # covered by the other direction below

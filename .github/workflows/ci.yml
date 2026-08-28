@@ -240,6 +240,24 @@ jobs:
             --extra-report sitl-report.xml \
             --extra-report spatial-report.xml
 
+      - name: Generate the document, which only this machine has the evidence for
+        # A laptop has the trained weights and no SITL container; the runner has the
+        # container's results merged in and no weights. Neither can write an honest
+        # FEATURES.md alone, and the tool now refuses on the laptop rather than demoting
+        # rows CI proves. Here the extra reports are present, so this is the one place the
+        # document can be generated from complete evidence.
+        if: always()
+        run: |
+          python tools/feature_status.py --markdown \
+            --extra-report sitl-report.xml \
+            --extra-report spatial-report.xml || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: features-md
+          path: docs/FEATURES.md
+
       - name: Publish the count this machine can reproduce
         # docs/FEATURES.md is generated on a development machine, where the trained
         # weights exist, and reaches a higher verified count than this runner can. That is
