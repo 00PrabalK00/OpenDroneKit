@@ -239,3 +239,22 @@ jobs:
           python tools/feature_status.py --strict \
             --extra-report sitl-report.xml \
             --extra-report spatial-report.xml
+
+      - name: Publish the count this machine can reproduce
+        # docs/FEATURES.md is generated on a development machine, where the trained
+        # weights exist, and reaches a higher verified count than this runner can. That is
+        # legitimate -- the weights are gigabytes and are not in the repository -- but it
+        # means the published number is not the one a fresh clone reproduces. So emit the
+        # runner's own status as an artifact: the two are then comparable instead of one
+        # being invisible.
+        if: always()
+        run: |
+          python tools/feature_status.py --json \
+            --extra-report sitl-report.xml \
+            --extra-report spatial-report.xml > feature-status-ci.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feature-status-ci
+          path: feature-status-ci.json

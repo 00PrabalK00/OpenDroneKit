@@ -243,6 +243,39 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if (args.strict and (downgrades or failed)) else 0
 
 
+def evidence_base() -> str:
+    """State what this count was computed against, because it is not the same everywhere.
+
+    Continuous integration reaches a lower number than a development machine does, and
+    the difference is not a disagreement: the trained weights are gigabytes and are not
+    in the repository, so the rows that exercise a real model cannot be verified where
+    the model is absent. Both counts are honest about their own evidence.
+
+    What was NOT honest was publishing the higher one with no note, so a reader who
+    cloned the repository and ran the same command got a smaller number than the document
+    claimed, with nothing to explain it. A count that only one machine can reproduce has
+    to say so on its face.
+    """
+    models = REPO_ROOT / "models"
+    weights = sorted(models.rglob("*.onnx")) if models.is_dir() else []
+    if not weights:
+        return (
+            "Computed **without the trained model weights**, which are gigabytes and are "
+            "not in the repository. Rows that exercise a real model sit at `implemented` "
+            "here: the code exists and nothing present can prove it runs. This is the "
+            "number continuous integration reaches, and the one a fresh clone reproduces."
+        )
+    size_gb = sum(path.stat().st_size for path in weights) / 1e9
+    return (
+        f"Computed **with {len(weights)} trained models installed** ({size_gb:.1f} GB, not "
+        "in the repository). Continuous integration has no weights and so reaches a lower "
+        "verified count -- the model rows sit at `implemented` there. That gap is the "
+        "weights, not a disagreement about the evidence; run `python "
+        "tools/feature_status.py` on a machine without `models/` to see the reproducible "
+        "floor."
+    )
+
+
 def write_markdown(results, counts, total) -> None:
     lines: list[str] = []
     lines.append("# OpenDroneKit feature status")
@@ -252,6 +285,8 @@ def write_markdown(results, counts, total) -> None:
         "a feature is marked **verified** only when the tests it names actually pass, and "
         "any claim the evidence does not support is downgraded automatically."
     )
+    lines.append("")
+    lines.append(evidence_base())
     lines.append("")
     lines.append("| Status | Count | Share |")
     lines.append("|---|---:|---:|")
