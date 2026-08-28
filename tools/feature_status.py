@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        write_markdown(results, counts, total)
+        write_markdown(results, counts, total, args.extra_report)
         print(f"Wrote {REPO_ROOT / 'docs' / 'FEATURES.md'}")
 
     print(f"\nOpenDroneKit feature status  ({total} specified capabilities)")
@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     return 1 if (args.strict and (downgrades or failed)) else 0
 
 
-def evidence_base() -> str:
+def evidence_base(extra_reports=()) -> str:
     """State what this count was computed against, because it is not the same everywhere.
 
     Continuous integration reaches a lower number than a development machine does, and
@@ -286,7 +286,7 @@ def evidence_base() -> str:
             "number continuous integration reaches, and the one a fresh clone reproduces."
         )
     size_gb = sum(path.stat().st_size for path in weights) / 1e9
-    return (
+    line = (
         f"Computed **with {len(weights)} trained models installed** ({size_gb:.1f} GB, not "
         "in the repository). Continuous integration has no weights and so reaches a lower "
         "verified count -- the model rows sit at `implemented` there. That gap is the "
@@ -294,9 +294,22 @@ def evidence_base() -> str:
         "tools/feature_status.py` on a machine without `models/` to see the reproducible "
         "floor."
     )
+    if extra_reports:
+        # No single machine can produce this document. The weights are here and the SITL
+        # container and live PostGIS are not; on the runner it is the other way round.
+        # Saying which reports were merged is what makes the count checkable rather than
+        # something the reader has to take on trust.
+        merged = ", ".join(f"`{Path(report).name}`" for report in extra_reports)
+        line += (
+            f" Evidence from runs this machine cannot perform was merged in: {merged}. "
+            "No single machine holds all of it -- the weights are here and the SITL "
+            "container and live PostGIS are not, and on the runner it is the other way "
+            "round."
+        )
+    return line
 
 
-def write_markdown(results, counts, total) -> None:
+def write_markdown(results, counts, total, extra_reports=()) -> None:
     lines: list[str] = []
     lines.append("# OpenDroneKit feature status")
     lines.append("")
@@ -306,7 +319,7 @@ def write_markdown(results, counts, total) -> None:
         "any claim the evidence does not support is downgraded automatically."
     )
     lines.append("")
-    lines.append(evidence_base())
+    lines.append(evidence_base(extra_reports))
     lines.append("")
     lines.append("| Status | Count | Share |")
     lines.append("|---|---:|---:|")
