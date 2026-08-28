@@ -226,8 +226,18 @@ def train(
     if device.type == 'cpu' and not allow_cpu:
         raise RuntimeError('Shared DINOv2 training requires CUDA unless --allow-cpu is explicit.')
     tile_size = int(training.get('tile_size', config.get('inference', {}).get('tile_size', 518)))
-    train_data = SemanticTileDataset(corpus_path, 'train', tile_size=tile_size, augment=True)
-    val_data = SemanticTileDataset(corpus_path, 'validation', tile_size=tile_size, augment=False)
+    # Metres per pixel every tile is brought to before the model sees it. Without this
+    # the loader cropped a fixed pixel count from sources spanning 0.20 to 4.77 m/px, so
+    # one crop covered 104 m and another 2.5 km and both were called a tile.
+    target_gsd = training.get('target_gsd', config.get('corpus', {}).get('target_gsd'))
+    train_data = SemanticTileDataset(
+        corpus_path, 'train', tile_size=tile_size, augment=True, target_gsd=target_gsd,
+    )
+    val_data = SemanticTileDataset(
+        corpus_path, 'validation', tile_size=tile_size, augment=False, target_gsd=target_gsd,
+    )
+    if target_gsd:
+        print(f'tiles harmonised to {float(target_gsd):.2f} m/px before training', flush=True)
     batch_size = int(training.get('batch_size', 2))
     workers = int(training.get('workers', 0))
     train_loader = DataLoader(

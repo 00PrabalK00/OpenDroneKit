@@ -47,6 +47,19 @@ training:
   # SpaceNet 7 leaves 96.7% of each tile unlabelled while having drawn every building,
   # so without this a false building costs nothing there.
   absent_class_weight: 1.0
+  # Metres per pixel every tile is resampled to before the model sees it.
+  #
+  # Without this the loader cropped a fixed 518 pixels from sources measured at 0.20 to
+  # 4.77 m/px -- a spread of twenty-four times -- so one crop covered 104 m of ground and
+  # another 2.5 km, and both were handed to the model as the same thing. A building was a
+  # two-pixel blob in one and filled the frame in the other, and the prior learned from
+  # the coarse half is what predicts building over 0.244 of a fine-resolution frame that
+  # is 0.092 building.
+  #
+  # 0.30 is OpenEarthMap's median rather than SpaceNet 7's: this is a drone product, the
+  # fine end is the end that matters, and upsampling the coarse source is honest about
+  # how little it actually resolves.
+  target_gsd: 0.30
   freeze_encoder: false
 release_gates:
   - Train the decoder and fine-tune the encoder on the frozen schema.

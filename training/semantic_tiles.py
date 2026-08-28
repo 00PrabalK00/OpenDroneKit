@@ -150,6 +150,72 @@ def read_semantic_sample(
     return image, label, no_data
 
 
+def sample_gsd(sample: dict[str, Any]) -> float | None:
+    """Ground sample distance of this tile, in metres per pixel.
+
+    Read from the file's own geotransform rather than assumed per source, because the
+    assumption was wrong for a year: the registry note called SpaceNet 7 "0.5 m satellite
+    imagery" when it is a Planet mosaic at roughly 3.8 m. Web Mercator pixels are
+    inflated by 1/cos(latitude), so the raw transform overstates the ground size and has
+    to be corrected before the two sources can be compared at all.
+    """
+    import math
+
+    import rasterio
+
+    try:
+        with rasterio.open(sample['image']) as source:
+            pixel = abs(source.transform.a)
+            epsg = source.crs.to_epsg() if source.crs else None
+            if epsg == 3857:
+                latitude = math.degrees(
+                    2 * math.atan(math.exp(source.bounds.top / 6378137.0)) - math.pi / 2
+                )
+                return pixel * math.cos(math.radians(latitude))
+            if epsg == 4326:
+                latitude = (source.bounds.top + source.bounds.bottom) / 2
+                return pixel * 111320.0 * math.cos(math.radians(latitude))
+            return pixel
+    except Exception:  # noqa: BLE001 - an unreadable transform is not fatal here
+        return None
+
+
+def resample_to_scale(image, mask, no_data, factor: float):
+    """Resize a crop so one pixel means the same distance on the ground in every source.
+
+    The corpus mixes OpenEarthMap at 0.5 m with SpaceNet 7 at about 3.8 m, and the tiler
+    cut a fixed 518-pixel window from both. That window is 259 m across on one source and
+    nearly 2 km on the other -- the same tensor shape standing for ground areas that
+    differ by seven and a half times.
+
+    So the model saw buildings at two incompatible scales and learned a prior that fits
+    neither: on coarse imagery a building is a two-pixel blob, and applying that prior to
+    fine imagery produces exactly the failure measured on the holdout -- building
+    predicted over 0.244 of the frame against a labelled 0.092.
+
+    Images interpolate; masks must not. A label is a class id, and averaging class 1 with
+    class 3 yields class 2, which is a different thing entirely -- so masks and the
+    no-data plane go through nearest neighbour.
+    """
+    import cv2
+
+    if abs(factor - 1.0) < 1e-3:
+        return image, mask, no_data
+
+    height, width = mask.shape
+    target = (max(1, int(round(width * factor))), max(1, int(round(height * factor))))
+    # Shrinking wants area averaging; growing wants a smooth interpolant.
+    interpolation = cv2.INTER_AREA if factor < 1.0 else cv2.INTER_LINEAR
+    resized = np.stack([
+        cv2.resize(band, target, interpolation=interpolation) for band in image
+    ])
+    mask = cv2.resize(mask.astype(np.int32), target, interpolation=cv2.INTER_NEAREST)
+    no_data = cv2.resize(
+        no_data.astype(np.uint8), target, interpolation=cv2.INTER_NEAREST
+    ).astype(bool)
+    return resized, mask.astype(np.int64), no_data
+
+
 class SemanticTileDataset:
     '''PyTorch dataset over one split of a built semantic corpus manifest.'''
 
@@ -160,6 +226,7 @@ class SemanticTileDataset:
         *,
         tile_size: int = 518,
         augment: bool = False,
+        target_gsd: float | None = None,
     ) -> None:
         if split not in {'train', 'validation', 'test'}:
             raise SemanticTileError(f'Unknown semantic split: {split!r}')
@@ -192,6 +259,10 @@ class SemanticTileDataset:
             raise SemanticTileError('Semantic corpus schema needs at least two classes.')
         self.tile_size = int(tile_size)
         self.augment = bool(augment)
+        # Metres per pixel every sample is brought to before it reaches the model. None
+        # keeps the old behaviour of cropping a fixed pixel count, which mixed a 259 m
+        # window with a 2 km one and called both a tile.
+        self.target_gsd = float(target_gsd) if target_gsd else None
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -204,9 +275,27 @@ class SemanticTileDataset:
         mask = np.full(source_mask.shape, IGNORE_INDEX, dtype=np.int64)
         for class_id, channel in self.class_to_channel.items():
             mask[source_mask == class_id] = channel
+        # Cut the window by GROUND extent, not by pixel count, then bring it to the
+        # tile size. Cropping 518 native pixels from a 3.8 m mosaic took in two
+        # kilometres where the same crop of a 0.5 m tile takes in 259 metres, and the
+        # model was asked to learn one notion of "building" across both.
+        #
+        # Crop first and resample after: the alternative resizes a whole 1024-pixel tile
+        # by seven and a half before throwing most of it away, which is sixty million
+        # pixels of work per sample for a 518-pixel result.
+        crop_size = self.tile_size
+        scale = 1.0
+        if self.target_gsd:
+            native = sample.get('_gsd')
+            if native is None:
+                native = sample['_gsd'] = sample_gsd(sample)
+            if native and native > 0:
+                scale = self.target_gsd / native
+                crop_size = max(16, int(round(self.tile_size * scale)))
+
         height, width = mask.shape
-        pad_h = max(0, self.tile_size - height)
-        pad_w = max(0, self.tile_size - width)
+        pad_h = max(0, crop_size - height)
+        pad_w = max(0, crop_size - width)
         if no_data.shape != mask.shape:
             no_data = np.zeros(mask.shape, dtype=bool)
         if pad_h or pad_w:
@@ -217,14 +306,18 @@ class SemanticTileDataset:
             no_data = np.pad(no_data, ((0, pad_h), (0, pad_w)), constant_values=True)
             height, width = mask.shape
         if self.augment:
-            top = random.randint(0, height - self.tile_size)
-            left = random.randint(0, width - self.tile_size)
+            top = random.randint(0, height - crop_size)
+            left = random.randint(0, width - crop_size)
         else:
-            top = (height - self.tile_size) // 2
-            left = (width - self.tile_size) // 2
-        image = image[:, top:top + self.tile_size, left:left + self.tile_size]
-        mask = mask[top:top + self.tile_size, left:left + self.tile_size]
-        no_data = no_data[top:top + self.tile_size, left:left + self.tile_size]
+            top = (height - crop_size) // 2
+            left = (width - crop_size) // 2
+        image = image[:, top:top + crop_size, left:left + crop_size]
+        mask = mask[top:top + crop_size, left:left + crop_size]
+        no_data = no_data[top:top + crop_size, left:left + crop_size]
+        if crop_size != self.tile_size:
+            image, mask, no_data = resample_to_scale(
+                image, mask, no_data, self.tile_size / crop_size
+            )
         if self.augment and random.random() < 0.5:
             image = image[:, :, ::-1]
             mask = mask[:, ::-1]
