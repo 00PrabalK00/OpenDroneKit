@@ -42,7 +42,7 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
          limit: int = 0) -> dict:
     from PIL import Image
 
-    from training.semantic_tiles import IGNORE_INDEX, read_semantic_sample
+    from training.semantic_tiles import IGNORE_INDEX, read_semantic_sample, sample_gsd
 
     Image.MAX_IMAGE_PIXELS = None
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
@@ -82,6 +82,16 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
         ignored_pixels += int((label_array == IGNORE_INDEX).sum())
         total_pixels += int(label_array.size)
 
+        # Measured HERE, from the georeferenced original, because JPEG cannot carry a
+        # geotransform and the trainer needs the ground sample distance to bring every
+        # source to one scale. Without this the loader finds no CRS on a packed corpus
+        # and the scale harmonisation silently does nothing -- a rented GPU spending
+        # hours reproducing the exact defect the option exists to fix.
+        gsd = sample_gsd(sample)
+        if gsd is None:
+            failures.append({"id": sample.get("id"), "error": "no ground sample distance"})
+            continue
+
         packed.append({
             **{k: v for k, v in sample.items()
                if k not in {"image", "label", "label_format", "class_map",
@@ -89,6 +99,7 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
             "image": f"images/{image_path.name}",
             "label": f"labels/{label_path.name}",
             "label_format": "raster_class_ids",
+            "gsd_m": round(float(gsd), 6),
         })
         if index % 200 == 0:
             print(f"  packed {index}/{len(samples)}", flush=True)
@@ -102,6 +113,7 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
             "lossy": True,
             "label_format": "png_lossless",
             "labels_pre_rasterised": True,
+            "gsd_recorded": True,
             "source_corpus": str(corpus_path),
             "packed_samples": len(packed),
             "failed_samples": len(failures),
@@ -112,7 +124,9 @@ def pack(corpus_path: Path, out_dir: Path, *, quality: int = JPEG_QUALITY,
                 "metric measured here is not directly comparable with one measured on "
                 "the source TIFFs. Labels are lossless PNG and were rasterised through "
                 "the trainer's own read_semantic_sample, so GeoJSON rasterisation, class "
-                "remapping and no-data masking are already applied."
+                "remapping and no-data masking are already applied. Each sample carries gsd_m, "
+                "measured from the georeferenced original, because the trainer resamples "
+                "every source to one ground scale and JPEG cannot carry a geotransform."
             ),
         },
     }

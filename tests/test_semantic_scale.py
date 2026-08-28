@@ -112,3 +112,43 @@ class TestTheRealCorpus:
             image = item["image"]
             assert image.shape[-2:] == (64, 64), f"{source} produced {image.shape}"
             assert item["mask"].shape == (64, 64)
+
+
+class TestAPackedCorpusKeepsItsScale:
+    """JPEG carries no geotransform, which is where this fix could have died quietly.
+
+    The packer re-encodes images to JPEG and pre-rasterises labels, which is what makes a
+    14 GB corpus fit on a rented box. It also throws away the georeferencing -- so a
+    trainer reading a packed corpus finds no CRS, measures no ground sample distance, and
+    would fall straight back to the fixed-pixel cropping that broke the last model. The
+    run would look entirely normal for hours.
+    """
+
+    def test_a_recorded_gsd_is_used_without_opening_the_file(self):
+        # The path does not exist. If this returns a number, nothing touched the disk.
+        assert sample_gsd({"image": "/nonexistent/packed.jpg", "gsd_m": 0.42}) == 0.42
+
+    def test_a_sample_with_no_gsd_refuses_rather_than_guessing(self, tmp_path):
+        from training.semantic_tiles import SemanticTileError
+
+        manifest = tmp_path / "corpus.json"
+        manifest.write_text(json.dumps({
+            "schema": {"classes": [{"id": 0, "name": "background"}, {"id": 1, "name": "building"}]},
+            "samples": [{
+                "id": "packed:1", "split": "train", "source": "packed",
+                "image": "images/1.jpg", "label": "labels/1.png",
+                "label_format": "raster_class_ids",
+            }],
+        }), encoding="utf-8")
+
+        dataset = SemanticTileDataset(manifest, "train", tile_size=32, target_gsd=0.30)
+        with pytest.raises(SemanticTileError) as raised:
+            dataset[0]
+        # The message has to say what would fix it, or it is just a crash.
+        assert "ground sample distance" in str(raised.value)
+        assert "repack" in str(raised.value)
+
+    def test_the_packer_records_it(self):
+        source = (REPO_ROOT / "tools" / "pack_semantic_corpus.py").read_text(encoding="utf-8")
+        assert '"gsd_m"' in source, "a packed corpus without gsd_m silently loses the fix"
+        assert "no ground sample distance" in source, "an unmeasurable sample must be recorded, not packed"

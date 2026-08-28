@@ -161,6 +161,15 @@ def sample_gsd(sample: dict[str, Any]) -> float | None:
     """
     import math
 
+    # A packed corpus is JPEG, which cannot carry a geotransform, so the packer records
+    # the value it measured from the georeferenced original. Preferring it here is what
+    # keeps the scale fix working on a rented box -- without it rasterio finds no CRS,
+    # this returns None, and the loader quietly falls back to the mixed-scale cropping
+    # the fix exists to remove.
+    recorded = sample.get('gsd_m')
+    if recorded:
+        return float(recorded)
+
     import rasterio
 
     try:
@@ -271,28 +280,35 @@ class SemanticTileDataset:
         import torch
 
         sample = self.samples[index]
-        image, source_mask, no_data = read_semantic_sample(sample)
-        mask = np.full(source_mask.shape, IGNORE_INDEX, dtype=np.int64)
-        for class_id, channel in self.class_to_channel.items():
-            mask[source_mask == class_id] = channel
-        # Cut the window by GROUND extent, not by pixel count, then bring it to the
-        # tile size. Cropping 518 native pixels from a 3.8 m mosaic took in two
-        # kilometres where the same crop of a 0.5 m tile takes in 259 metres, and the
-        # model was asked to learn one notion of "building" across both.
-        #
-        # Crop first and resample after: the alternative resizes a whole 1024-pixel tile
-        # by seven and a half before throwing most of it away, which is sixty million
-        # pixels of work per sample for a 518-pixel result.
         crop_size = self.tile_size
-        scale = 1.0
         if self.target_gsd:
             native = sample.get('_gsd')
             if native is None:
                 native = sample['_gsd'] = sample_gsd(sample)
-            if native and native > 0:
-                scale = self.target_gsd / native
-                crop_size = max(16, int(round(self.tile_size * scale)))
-
+            if not native or native <= 0:
+                # Refuse rather than fall back, and refuse BEFORE decoding the image. A
+                # silent fallback here trains at the mixed scale this option exists to
+                # remove, and the run would look completely normal while doing the thing
+                # that broke the last model -- which is exactly how a packed corpus,
+                # whose JPEGs carry no geotransform, would have wasted a rented GPU.
+                raise SemanticTileError(
+                    f'Sample {sample.get("id", "?")} has no ground sample distance, so it '
+                    f'cannot be brought to {self.target_gsd} m/px. A packed corpus must '
+                    'record gsd_m per sample; repack it with a packer that does.'
+                )
+            crop_size = max(16, int(round(self.tile_size * (self.target_gsd / native))))
+        image, source_mask, no_data = read_semantic_sample(sample)
+        mask = np.full(source_mask.shape, IGNORE_INDEX, dtype=np.int64)
+        for class_id, channel in self.class_to_channel.items():
+            mask[source_mask == class_id] = channel
+        # The window is cut by GROUND extent (crop_size, resolved above) and then brought
+        # to the tile size. Cropping 518 native pixels from a 4 m mosaic took in two
+        # kilometres where the same crop of a 0.3 m tile takes in 155 metres, and the
+        # model was asked to learn one notion of "building" across both.
+        #
+        # Crop first and resample after: the alternative resizes a whole 1024-pixel tile
+        # before throwing most of it away, which is tens of millions of pixels of work
+        # per sample for a 518-pixel result.
         height, width = mask.shape
         pad_h = max(0, crop_size - height)
         pad_w = max(0, crop_size - width)
