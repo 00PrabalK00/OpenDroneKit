@@ -66,10 +66,34 @@ CC_BY_SA_4_REGIONS = (
     'Khartoum',
     'Vegas',
 )
+# The remaining regions carry CC BY-NC-SA 4.0: OpenEarthMap applies that licence to
+# labels drawn over public-domain or unspecified imagery. They are excluded by default,
+# and admitting them is a deliberate act behind --include-noncommercial rather than a
+# quiet widening -- a model trained on them is arguably encumbered by the same terms, and
+# that has to be a decision someone took rather than one that happened.
+CC_BY_NC_SA_4_REGIONS = (
+    'aachen', 'abancay', 'austin', 'bielefeld', 'chicago', 'chiclayo', 'chincha',
+    'dolnoslaskie', 'dortmund', 'duesseldorf', 'ica', 'kampala', 'kitsap', 'koeln',
+    'kujawsko', 'kyoto', 'lambayeque', 'lima', 'lodzkie', 'lubuskie', 'malopolskie',
+    'mazowieckie', 'muenster', 'pisco', 'piura', 'podkarpackie', 'podlaskie',
+    'pomorskie', 'sechura', 'slaskie', 'swietokrzyskie', 'tokyo', 'tyrolw', 'vienna',
+    'viru', 'warminsko', 'wielkopolskie', 'zachodniopomorskie',
+)
+
 SAFE_REGION_LICENSES = {
     **{region: 'CC BY 4.0' for region in CC_BY_4_REGIONS},
     **{region: 'CC BY-SA 4.0' for region in CC_BY_SA_4_REGIONS},
 }
+NONCOMMERCIAL_REGION_LICENSES = {
+    region: 'CC BY-NC-SA 4.0' for region in CC_BY_NC_SA_4_REGIONS
+}
+
+
+def region_licenses(include_noncommercial: bool = False) -> dict[str, str]:
+    """Which regions may be indexed, and under what terms."""
+    if include_noncommercial:
+        return {**SAFE_REGION_LICENSES, **NONCOMMERCIAL_REGION_LICENSES}
+    return dict(SAFE_REGION_LICENSES)
 
 OEM_CLASS_NAMES = {
     0: 'unknown',
@@ -125,19 +149,20 @@ def _load_schema(config_path: Path) -> dict[str, Any]:
     return schema
 
 
-def _region_for(image: Path, root: Path) -> str | None:
+def _region_for(image: Path, root: Path, aliases: dict[str, str] | None = None) -> str | None:
+    aliases = SAFE_REGION_ALIASES if aliases is None else aliases
     relative = image.relative_to(root)
     values = [part for part in relative.parts[:-1] if part.casefold() != 'images']
     values.append(image.stem)
     for value in reversed(values[:-1]):
-        region = SAFE_REGION_ALIASES.get(_normalise_region(value))
+        region = aliases.get(_normalise_region(value))
         if region:
             return region
     stem = _normalise_region(values[-1])
-    for alias in sorted(SAFE_REGION_ALIASES, key=len, reverse=True):
+    for alias in sorted(aliases, key=len, reverse=True):
         remainder = stem[len(alias):] if stem.startswith(alias) else ''
         if stem == alias or (remainder and remainder[0].isdigit()):
-            return SAFE_REGION_ALIASES[alias]
+            return aliases[alias]
     return None
 
 
@@ -213,8 +238,11 @@ def index_openearthmap(
     *,
     schema_config: str | Path,
     strict: bool = True,
+    include_noncommercial: bool = False,
 ) -> dict[str, Any]:
     root = Path(dataset_root)
+    licenses = region_licenses(include_noncommercial)
+    aliases = {_normalise_region(region): region for region in licenses}
     all_image_paths = sorted(
         path
         for path in root.rglob('*')
@@ -254,7 +282,7 @@ def index_openearthmap(
     shared_pixel_counts: Counter[int] = Counter()
 
     for image in image_paths:
-        region = _region_for(image, root)
+        region = _region_for(image, root, aliases)
         if region is None:
             exclusions.append({
                 'image': str(image.resolve()),
@@ -280,7 +308,7 @@ def index_openearthmap(
                 'reason': 'no_mapped_shared_classes',
             })
             continue
-        licence = SAFE_REGION_LICENSES[region]
+        licence = licenses[region]
         accepted_by_license[licence] += 1
         source_pixel_counts.update(class_counts)
         mapped_pixel_counts: Counter[int] = Counter()
@@ -323,7 +351,12 @@ def index_openearthmap(
         'schema': schema,
         'source': {
             'id': 'openearthmap',
-            'license': 'Per-region allowlist: CC BY 4.0 or CC BY-SA 4.0',
+            'license': (
+                'Per-region allowlist: CC BY 4.0, CC BY-SA 4.0 or CC BY-NC-SA 4.0'
+                if include_noncommercial
+                else 'Per-region allowlist: CC BY 4.0 or CC BY-SA 4.0'
+            ),
+            'includes_noncommercial': bool(include_noncommercial),
             'attribution_url': ATTRIBUTION_URL,
             'dataset_root': str(root.resolve()),
             'image_count': len(all_image_paths),
@@ -331,7 +364,7 @@ def index_openearthmap(
             'upstream_unlabelled_test_count': len(all_image_paths) - len(image_paths),
             'labelled_count': len(records),
             'missing_label_count': len(missing_labels),
-            'production_region_count': len(SAFE_REGION_LICENSES),
+            'production_region_count': len(licenses),
             'accepted_by_license': dict(sorted(accepted_by_license.items())),
             'excluded_file_count': len(exclusions),
             'excluded_by_reason': dict(sorted(exclusion_counts.items())),
@@ -368,12 +401,21 @@ def main(argv: list[str] | None = None) -> int:
         default=Path('training/configs/shared_semantic_dinov2_vitb14.yaml'),
     )
     parser.add_argument('--allow-missing-labels', action='store_true')
+    parser.add_argument(
+        '--include-noncommercial',
+        action='store_true',
+        help=(
+            'Also index the CC BY-NC-SA 4.0 regions. A model trained on them is arguably '
+            'encumbered by the same terms, so this is deliberate rather than default.'
+        ),
+    )
     args = parser.parse_args(argv)
     result = index_openearthmap(
         args.dataset_root,
         args.output_manifest,
         schema_config=args.schema_config,
         strict=not args.allow_missing_labels,
+        include_noncommercial=args.include_noncommercial,
     )
     print(json.dumps(result['source'], indent=2))
     return 0
