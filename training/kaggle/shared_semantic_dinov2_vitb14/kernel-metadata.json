@@ -1,5 +1,5 @@
 {
-  "id": "prabalkhare/odk-train-shared-semantic-dinov2-vitb14",
+  "id": "prabalkhare00/odk-train-shared-semantic-dinov2-vitb14",
   "title": "ODK train shared_semantic_dinov2_vitb14",
   "code_file": "shared_semantic_dinov2_vitb14.py",
   "language": "python",
@@ -8,7 +8,7 @@
   "enable_gpu": true,
   "enable_internet": true,
   "dataset_sources": [
-    "prabalkhare/odk-shared-semantic-v3"
+    "prabalkhare00/odk-shared-semantic-v3"
   ],
   "competition_sources": [],
   "kernel_sources": []
