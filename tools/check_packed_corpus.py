@@ -53,17 +53,27 @@ def check(corpus_path: Path) -> int:
 
     # The holdout is the whole point of the exercise. If it is not in test, the number
     # this run produces is not a holdout number.
-    held = [s for s in samples if str(s.get("group", "")).startswith("spacenet7::L15-14")]
-    if held:
+    # Both India holdouts, checked by name. Hard-coding one prefix meant Gorakhpur --
+    # the only holdout that measures more than buildings -- could have drifted into
+    # training with this guard reporting success.
+    holdouts = {
+        "SpaceNet 7 India": lambda g: g.startswith("spacenet7::L15-14"),
+        "Gorakhpur": lambda g: g == "openearthmap::gorakhpur",
+    }
+    for label, matches in holdouts.items():
+        held = [s for s in samples if matches(str(s.get("group", "")))]
+        if not held:
+            print(f"  {label}: absent from this corpus")
+            continue
         elsewhere = {str(s.get("split")) for s in held} - {"test"}
         if elsewhere:
             print(
-                f"India holdout tiles appear in {sorted(elsewhere)}, not only test. "
+                f"{label} holdout tiles appear in {sorted(elsewhere)}, not only test. "
                 "Any score from this corpus would be measured on data the model saw.",
                 file=sys.stderr,
             )
             return 1
-        print(f"  India holdout: {len(held)} samples, all in test")
+        print(f"  {label} holdout: {len(held)} samples, all in test")
     return 0
 
 
