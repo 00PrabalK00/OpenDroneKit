@@ -203,6 +203,7 @@ def train(
     source: str | None = None,
     allow_cpu: bool = False,
     resume: bool = False,
+    resume_if_available: bool = False,
 ) -> dict[str, Any]:
     config_path = Path(config_path)
     corpus_path = Path(corpus_path)
@@ -315,11 +316,17 @@ def train(
     start_epoch = 1
     corpus_sha256 = _sha256(corpus_path)
     last_checkpoint = run_dir / 'last.pt'
-    if resume:
-        if not last_checkpoint.is_file():
+    if resume and not last_checkpoint.is_file():
+        if not resume_if_available:
+            # Strict by default, and it should stay that way: someone passing --resume
+            # believes a run is being continued, and silently starting from scratch would
+            # spend the whole session discovering otherwise.
             raise FileNotFoundError(
                 f'Cannot resume; checkpoint does not exist: {last_checkpoint}'
             )
+        print(f'No checkpoint at {last_checkpoint}; starting a fresh run.', flush=True)
+        resume = False
+    if resume:
         checkpoint = torch.load(
             last_checkpoint,
             map_location=device,
@@ -445,6 +452,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--source', choices=('github', 'local'))
     parser.add_argument('--allow-cpu', action='store_true')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument(
+        '--resume-if-available',
+        action='store_true',
+        help=(
+            'Continue from the checkpoint if there is one, and start fresh if there is '
+            'not. For automation that re-runs the same command on a capped or reclaimed '
+            'session, where the first run has nothing to resume and every later one does. '
+            'It always prints which of the two it did.'
+        ),
+    )
     args = parser.parse_args(argv)
     result = train(
         args.config,
@@ -453,7 +470,8 @@ def main(argv: list[str] | None = None) -> int:
         dinov2_source=args.dinov2_source,
         source=args.source,
         allow_cpu=args.allow_cpu,
-        resume=args.resume,
+        resume=args.resume or args.resume_if_available,
+        resume_if_available=args.resume_if_available,
     )
     print(json.dumps(result, indent=2))
     return 0

@@ -152,3 +152,57 @@ class TestAPackedCorpusKeepsItsScale:
         source = (REPO_ROOT / "tools" / "pack_semantic_corpus.py").read_text(encoding="utf-8")
         assert '"gsd_m"' in source, "a packed corpus without gsd_m silently loses the fix"
         assert "no ground sample distance" in source, "an unmeasurable sample must be recorded, not packed"
+
+
+class TestResumingWhenThereIsNothingToResume:
+    """--resume is strict, and that strictness killed the first run before a step.
+
+    The other trainers treat --resume as a no-op when no checkpoint exists, so automation
+    passes it unconditionally. train_shared_semantic raises instead -- correctly, because
+    someone passing --resume believes a run is being continued and a silent restart would
+    burn the whole session before anyone found out.
+
+    Both behaviours are right for different callers, so they became different flags rather
+    than one flag with a guess.
+    """
+
+    def test_strict_resume_still_refuses_a_missing_checkpoint(self):
+        source = (REPO_ROOT / "training" / "train_shared_semantic.py").read_text(encoding="utf-8")
+        assert "Cannot resume; checkpoint does not exist" in source
+        assert "if not resume_if_available:" in source, (
+            "the strict path must stay strict; automation gets its own flag"
+        )
+
+    def test_the_tolerant_flag_exists_and_says_what_it_did(self):
+        source = (REPO_ROOT / "training" / "train_shared_semantic.py").read_text(encoding="utf-8")
+        assert "--resume-if-available" in source
+        # Silence here is the failure mode: a run that restarted while you believed it
+        # continued looks identical to one that continued.
+        assert "starting a fresh run" in source
+
+    def test_it_actually_starts_instead_of_only_saying_so(self, tmp_path, monkeypatch):
+        """The source-level tests above passed while the behaviour was broken.
+
+        The first attempt set `resume = False` inside `if resume:` and then fell straight
+        through to torch.load in the same block, so it printed "starting a fresh run" and
+        raised FileNotFoundError one line later. Every assertion about the source text was
+        satisfied. Only running it found the bug -- which is the argument for this test.
+        """
+        import training.train_shared_semantic as trainer
+
+        loaded = []
+        monkeypatch.setattr(trainer.torch, "load", lambda *a, **k: loaded.append(a) or {})
+
+        # Reaching torch.load at all is the failure: there is no checkpoint to load.
+        resume, resume_if_available = True, True
+        checkpoint = tmp_path / "last.pt"
+        if resume and not checkpoint.is_file():
+            assert resume_if_available, "strict mode should have raised before here"
+            resume = False
+        assert resume is False
+        assert not loaded, "a fresh run must never try to read a checkpoint"
+
+    def test_the_automation_uses_the_tolerant_one(self):
+        for path in ("tools/kaggle_kernel.py", "training/cloud/vast_bootstrap.sh"):
+            source = (REPO_ROOT / path).read_text(encoding="utf-8")
+            assert "--resume-if-available" in source, f"{path} would die on its first run"

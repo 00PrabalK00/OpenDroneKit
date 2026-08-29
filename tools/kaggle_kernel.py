@@ -461,9 +461,12 @@ def main() -> int:
             "--corpus", str(corpus / "corpus.json"),
             "--run-dir", str(OUT / "{config_name}"),
             "--source", "github",
-            # Kaggle caps a session, and this corpus needs more than one. Every run
-            # continues from the mirrored checkpoint instead of starting over.
-            "--resume",
+            # Kaggle caps a session and this corpus needs more than one, so every run
+            # continues from the mirrored checkpoint. --resume-if-available rather than
+            # --resume because the FIRST run has nothing to resume: plain --resume is
+            # strict and killed the first attempt with FileNotFoundError before a single
+            # step. The tolerant flag says which of the two it did.
+            "--resume-if-available",
         ]
     else:
         command = [

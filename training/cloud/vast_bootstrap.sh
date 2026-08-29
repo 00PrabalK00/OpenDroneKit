@@ -123,7 +123,7 @@ fetch_semantic_corpus() {
 train_semantic() {
   log "DINOv2 ViT-B/14 + UPerNet shared land cover"
   local root="${SEMANTIC_CORPUS:-/workspace/shared_semantic_v3}"
-  python -m training.train_shared_semantic     --config training/configs/shared_semantic_dinov2_vitb14.yaml     --corpus "$root/corpus.json"     --run-dir training/runs/shared_semantic_v3     --resume
+  python -m training.train_shared_semantic     --config training/configs/shared_semantic_dinov2_vitb14.yaml     --corpus "$root/corpus.json"     --run-dir training/runs/shared_semantic_v3     --resume-if-available  # tolerant: the first run has nothing to resume, and plain --resume is strict
   # Scored on the four pinned India tiles, which were never in train or validation.
   python -m training.evaluate_holdout     --run training/runs/shared_semantic_v3     --corpus "$root/corpus.json"     --out training/runs/shared_semantic_v3/india_holdout.json || true
 }
