@@ -8,7 +8,7 @@
   "enable_gpu": true,
   "enable_internet": true,
   "dataset_sources": [
-    "prabalkhare00/odk-shared-semantic-v3"
+    "prabalkhare00/odk-shared-semantic-v4"
   ],
   "competition_sources": [],
   "kernel_sources": []
