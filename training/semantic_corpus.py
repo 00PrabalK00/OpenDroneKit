@@ -74,6 +74,23 @@ INDIA_HOLDOUT_GROUPS: dict[str, str] = {
     'spacenet7::L15-1439E-1134N_5759_3655_13': 'India holdout: Kalyan/Thane (19.021N, 73.081E).',
     'spacenet7::L15-1479E-1101N_5916_3785_13': 'India holdout: Tirupati (13.539N, 79.980E).',
     'spacenet7::L15-1481E-1119N_5927_3715_13': 'India holdout: Vijayawada (16.510N, 80.464E).',
+    # The four above are Planet mosaics at 2.91-4.77 m per pixel, labelled for buildings
+    # and nothing else. They can say nothing about road, vegetation, water or bare land,
+    # and they test a satellite scale no drone flies at -- so a model can pass them and
+    # still be useless for the product, or fail them and be fine.
+    #
+    # Gorakhpur is the holdout that answers the question actually being asked: Indian
+    # ground at 0.448 m per pixel, exhaustively labelled for all six classes. Its imagery
+    # comes from xBD rather than the OpenEarthMap download, which is why it sat unusable
+    # until training/datasets/xbd_imagery.py went and got it.
+    # Lowercase because that is the region key the indexer produces for the xBD-sourced
+    # regions, and a pin that does not match a group silently pins nothing -- the holdout
+    # would land in training and every number after it would be measured on data the
+    # model had seen. tests/test_india_holdout.py asserts this group exists.
+    'openearthmap::gorakhpur': (
+        'India holdout: Gorakhpur, Uttar Pradesh (26.76N, 83.37E). 0.448 m/px, all six '
+        'classes labelled -- the only India evidence that speaks for more than buildings.'
+    ),
 }
 
 

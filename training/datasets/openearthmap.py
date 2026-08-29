@@ -71,7 +71,22 @@ CC_BY_SA_4_REGIONS = (
 # and admitting them is a deliberate act behind --include-noncommercial rather than a
 # quiet widening -- a model trained on them is arguably encumbered by the same terms, and
 # that has to be a decision someone took rather than one that happened.
-CC_BY_NC_SA_4_REGIONS = (
+# The xBD-sourced regions. They were never in any allowlist because they had no imagery
+# to classify -- OpenEarthMap does not redistribute it -- so they fell out as "no images"
+# rather than as a licence decision. Now that training/datasets/xbd_imagery.py supplies
+# it, they need their terms stated: xBD is CC BY-NC-SA 4.0, so they sit with the other
+# non-commercial regions behind the same explicit flag.
+#
+# gorakhpur is the one that matters. It is the only Indian region in OpenEarthMap, and
+# the only India evidence anywhere in this project that covers more than buildings.
+XBD_SOURCED_REGIONS = (
+    'adelaide', 'el_rodeo', 'gorakhpur', 'houston', 'jeremie', 'joplin', 'labuhan',
+    'leilane_estates', 'les_cayes', 'little_rock', 'mexico_city', 'oklahoma', 'palu',
+    'panama_city', 'pedrogao_grande', 'port_a_piment', 'saint_louis_du_sud',
+    'santa_rosa', 'thousand_oaks', 'tulsa', 'tuscaloosa', 'wallace',
+)
+
+CC_BY_NC_SA_4_REGIONS = XBD_SOURCED_REGIONS + (
     'aachen', 'abancay', 'austin', 'bielefeld', 'chicago', 'chiclayo', 'chincha',
     'dolnoslaskie', 'dortmund', 'duesseldorf', 'ica', 'kampala', 'kitsap', 'koeln',
     'kujawsko', 'kyoto', 'lambayeque', 'lima', 'lodzkie', 'lubuskie', 'malopolskie',

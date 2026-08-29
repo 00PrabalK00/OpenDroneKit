@@ -1,0 +1,68 @@
+{
+  "per_class": {
+    "background": {
+      "iou": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "labelled_px": 14,
+      "predicted_px": 0,
+      "present_in_holdout": true
+    },
+    "building": {
+      "iou": 0.5626178453742637,
+      "precision": 0.5991165478924332,
+      "recall": 0.9022981728498219,
+      "labelled_px": 593602,
+      "predicted_px": 893993,
+      "present_in_holdout": true
+    },
+    "road": {
+      "iou": 0.31208337650675233,
+      "precision": 0.5248333712493405,
+      "recall": 0.4349896496943049,
+      "labelled_px": 249268,
+      "predicted_px": 206597,
+      "present_in_holdout": true
+    },
+    "vegetation": {
+      "iou": 0.9053889396808368,
+      "precision": 0.9645831716750781,
+      "recall": 0.9365220994454186,
+      "labelled_px": 11866429,
+      "predicted_px": 11521218,
+      "present_in_holdout": true
+    },
+    "water": {
+      "iou": 0.09193293739730476,
+      "precision": 0.14649924676416032,
+      "recall": 0.19796019401006054,
+      "labelled_px": 288851,
+      "predicted_px": 390316,
+      "present_in_holdout": true
+    },
+    "bare_land": {
+      "iou": 0.0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "labelled_px": 19990,
+      "predicted_px": 6030,
+      "present_in_holdout": true
+    }
+  },
+  "mean_iou_present_classes": 0.31200384982652624,
+  "pixel_accuracy": 0.9075318205638065,
+  "scored_pixels": 13018154,
+  "classes_present": [
+    "background",
+    "building",
+    "road",
+    "vegetation",
+    "water",
+    "bare_land"
+  ],
+  "site": "Gorakhpur, Uttar Pradesh, India",
+  "tiles": 49,
+  "metric": "multiclass_exhaustive",
+  "checkpoint": "runs\\kernel_v3\\best.pt",
+  "reading_note": "Gorakhpur is exhaustively annotated, so unlike the SpaceNet 7 holdout a false positive is counted and this metric CAN fail. It is 0.448 m per pixel -- the scale the model trains at -- and is the first India evidence covering road, vegetation, water and bare land rather than buildings alone. It remains 49 tiles of ONE city, captured from above by satellite or aircraft rather than by a drone at 60 m. A good number here means the engine works on Gorakhpur; it does not make it verified for India, and it says nothing about sites whose built form differs."
+}
