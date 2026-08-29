@@ -9,11 +9,16 @@
 #   bash vast_bootstrap.sh prepare        # deps + data, no training
 #   bash vast_bootstrap.sh crack          # SegFormer-B5 crack segmentation
 #   bash vast_bootstrap.sh structural     # YOLO11x CODEBRIM
+#   bash vast_bootstrap.sh semantic       # DINOv2/UPerNet shared land cover
 #   bash vast_bootstrap.sh all
 #
 # Required in the environment (never commit these):
 #   KAGGLE_API_TOKEN    for the crack corpora
 #   ROBOFLOW_API_KEY    for the detection corpora
+#
+# The semantic target needs NEITHER: its corpus travels as one packed archive, set by
+# SEMANTIC_CORPUS_URL or already unpacked at SEMANTIC_CORPUS, so no dataset credential
+# ever reaches the rented box.
 
 set -euo pipefail
 
@@ -94,6 +99,35 @@ start_checkpoint_sync() {
   echo "sync pid $!"
 }
 
+fetch_semantic_corpus() {
+  log "Semantic corpus"
+  local root="${SEMANTIC_CORPUS:-/workspace/shared_semantic_v3}"
+  if [ -f "$root/corpus.json" ]; then
+    echo "corpus already present at $root"
+  elif [ -n "${SEMANTIC_CORPUS_URL:-}" ]; then
+    mkdir -p "$root"
+    curl -fL "$SEMANTIC_CORPUS_URL" -o /tmp/semantic_corpus.zip
+    unzip -q -o /tmp/semantic_corpus.zip -d "$root"
+    rm -f /tmp/semantic_corpus.zip
+  else
+    echo "No semantic corpus. Set SEMANTIC_CORPUS_URL or upload it to $root." >&2
+    exit 2
+  fi
+  # Refuses a corpus whose samples carry no ground sample distance. JPEG holds no
+  # georeferencing, so without that field the loader crops a fixed pixel count from
+  # sources spanning 0.20 to 4.78 m/px -- the defect this run exists to fix, reproduced
+  # for hours on a machine billed by the hour, looking entirely normal throughout.
+  python tools/check_packed_corpus.py "$root/corpus.json"
+}
+
+train_semantic() {
+  log "DINOv2 ViT-B/14 + UPerNet shared land cover"
+  local root="${SEMANTIC_CORPUS:-/workspace/shared_semantic_v3}"
+  python -m training.train_shared_semantic     --config training/configs/shared_semantic_dinov2_vitb14.yaml     --corpus "$root/corpus.json"     --run-dir training/runs/shared_semantic_v3     --resume
+  # Scored on the four pinned India tiles, which were never in train or validation.
+  python -m training.evaluate_holdout     --run training/runs/shared_semantic_v3     --corpus "$root/corpus.json"     --out training/runs/shared_semantic_v3/india_holdout.json || true
+}
+
 train_crack() {
   log "SegFormer-B5 crack segmentation @1024"
   # --resume is always passed: on a first run there is no checkpoint and it is a
@@ -116,14 +150,21 @@ main() {
   local target="${1:-prepare}"
   setup_repo
   setup_python
-  fetch_data
+  # The semantic target brings its own corpus and needs no dataset credentials, so it
+  # must not be blocked behind a Kaggle token it will never use.
+  if [ "$target" = "semantic" ]; then
+    fetch_semantic_corpus
+  else
+    fetch_data
+  fi
   [ "$target" = "prepare" ] && { log "Prepared. Nothing trained."; return; }
   start_checkpoint_sync
   case "$target" in
     crack)      train_crack ;;
     structural) train_structural ;;
+    semantic)   train_semantic ;;
     all)        train_crack; train_structural ;;
-    *) echo "Unknown target: $target (prepare|crack|structural|all)" >&2; exit 2 ;;
+    *) echo "Unknown target: $target (prepare|crack|structural|semantic|all)" >&2; exit 2 ;;
   esac
   log "Done. Copy training/runs/*/ back to the workstation, then run training.register."
 }
