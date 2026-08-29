@@ -18,9 +18,14 @@ from pathlib import Path
 # /kaggle/temp, and only the named artefacts are copied into working at the end.
 SCRATCH = Path("/kaggle/temp")
 REPO = SCRATCH / "OpenDroneKit"
-CORPUS = Path("/kaggle/input/odk-shared-semantic-corpus")
+CORPUS = Path("/kaggle/input/odk-shared-semantic-v3")
 OUT = SCRATCH / "artifacts"
 OUT.mkdir(parents=True, exist_ok=True)
+
+# What the config itself asks for, baked in at generation time so the GPU cap
+# below can compare against it instead of overriding blindly.
+CONFIG_IMAGE_SIZE = 0
+CONFIG_BATCH_SIZE = 0
 
 
 def report_environment() -> str:
@@ -194,8 +199,25 @@ def gpu_memory_overrides() -> list:
         print(f"GPU has {total_gb:.0f} GB; running the config as written", flush=True)
         return []
 
-    print(f"GPU has only {total_gb:.0f} GB; capping image size and batch to fit", flush=True)
-    return ["--image-size", "640", "--batch-size", "8"]
+    # CAP, never raise. This forced --image-size 640 unconditionally, and the
+    # agriculture configs ask for 512 -- so the helper written to make runs fit made
+    # them BIGGER, and both arms died with CUDA out of memory at 15.6 GB on a 15.89 GB
+    # card. A ceiling that is above the config is not a ceiling.
+    image_size = min(CONFIG_IMAGE_SIZE, 640) if CONFIG_IMAGE_SIZE else 640
+    batch_size = min(CONFIG_BATCH_SIZE, 8) if CONFIG_BATCH_SIZE else 8
+    if image_size >= CONFIG_IMAGE_SIZE and batch_size >= CONFIG_BATCH_SIZE:
+        print(
+            f"GPU has {total_gb:.0f} GB; the config already fits at "
+            f"{CONFIG_IMAGE_SIZE}px/batch {CONFIG_BATCH_SIZE}",
+            flush=True,
+        )
+        return []
+    print(
+        f"GPU has only {total_gb:.0f} GB; capping to {image_size}px/batch {batch_size} "
+        f"(config asks {CONFIG_IMAGE_SIZE}px/batch {CONFIG_BATCH_SIZE})",
+        flush=True,
+    )
+    return ["--image-size", str(image_size), "--batch-size", str(batch_size)]
 
 
 def ensure_ultralytics() -> None:
@@ -282,12 +304,29 @@ def main() -> int:
         # list of samples with their splits and licences rather than a directory layout.
         # --source github because training/sources/dinov2 and the pretrained encoder are
         # not in the repository, so a fresh clone has neither; torch.hub fetches both.
+        # Checked BEFORE the session starts. The pack is JPEG and carries no
+        # georeferencing, so every sample must bring its own ground sample distance; if it
+        # does not, the loader crops a fixed pixel count from sources spanning 0.20 to
+        # 4.78 m/px and spends the whole session reproducing the exact defect this run
+        # exists to correct, looking entirely normal throughout. The check also refuses a
+        # corpus whose India holdout tiles escaped test, because a score measured on data
+        # the model trained on is not a holdout score.
+        if subprocess.run(
+            [sys.executable, str(REPO / "tools" / "check_packed_corpus.py"),
+             str(corpus / "corpus.json")],
+            cwd=str(REPO),
+        ).returncode != 0:
+            raise SystemExit("corpus rejected; not spending a session on it")
+
         command = [
             sys.executable, "-m", "training.train_shared_semantic",
             "--config", str(REPO / "training" / "configs" / "shared_semantic_dinov2_vitb14.yaml"),
             "--corpus", str(corpus / "corpus.json"),
             "--run-dir", str(OUT / "shared_semantic_dinov2_vitb14"),
             "--source", "github",
+            # Kaggle caps a session, and this corpus needs more than one. Every run
+            # continues from the mirrored checkpoint instead of starting over.
+            "--resume",
         ]
     else:
         command = [
@@ -296,8 +335,29 @@ def main() -> int:
             "--data-root", str(corpus),
             "--output-dir", str(OUT),
         ]
+        # A multispectral config points band_root at a repo-relative cache that does not
+        # exist here; the stacks arrive inside the mounted dataset instead. The trainer
+        # refuses a missing stack rather than reading RGB and calling it five-band, so
+        # this has to be pointed at the real location or the run stops on the first tile.
+        # Searched upward, not just inside the corpus. resolve_corpus descends to the
+        # directory holding train/val/test, so it lands on <dataset>/agriculture_seg
+        # while the band stacks sit beside it at <dataset>/weedsgalore_bands. Looking
+        # only in the corpus directory found nothing, no --band-root was passed, and the
+        # trainer refused on the first tile -- correctly, but the run was lost.
+        bands = None
+        for candidate in (corpus, corpus.parent, corpus.parent.parent):
+            probe = candidate / "weedsgalore_bands"
+            if probe.is_dir():
+                bands = probe
+                break
+        if bands is not None:
+            command += ["--band-root", str(bands)]
+            print("multispectral stacks at", bands, flush=True)
         command += gpu_memory_overrides()
     report_resources("before training")
+    # Started before training so a run killed at the session limit still leaves its best
+    # epoch behind. Kaggle packages /kaggle/working; OUT is scratch and is not packaged.
+    start_checkpoint_mirror()
     print("running:", " ".join(command), flush=True)
 
     # Piped rather than inherited so the child's output goes through the tee above. With
@@ -352,6 +412,48 @@ def report_resources(when: str) -> None:
     except Exception:
         pass
     print(line, flush=True)
+
+
+def start_checkpoint_mirror(interval_s: int = 300):
+    """Copy checkpoints into /kaggle/working WHILE training runs, not only after.
+
+    A roads run reached epoch 83 of 100 and was cancelled at the session limit. It
+    produced nothing at all, because artefacts were collected once, at the end, and the
+    end never came. Eight hours of GPU for zero output, and the checkpoints existed the
+    whole time -- they were simply in a directory Kaggle does not package.
+
+    So a daemon thread mirrors them every few minutes. A cancelled or timed-out run now
+    yields its best epoch so far, which for a long run is most of the value. The cost is
+    a few seconds of copying per interval.
+
+    Daemon so it cannot keep the kernel alive, and every failure is swallowed: a mirror
+    that crashed the run it exists to protect would be worse than no mirror.
+    """
+    import threading
+    import time as _time
+
+    wanted = ("best.pt", "last.pt", "best.pth", "last.pth", "summary.json", "results.csv")
+    staged = Path("/kaggle/working")
+
+    def mirror() -> None:
+        while True:
+            _time.sleep(interval_s)
+            try:
+                for name in wanted:
+                    for source in OUT.rglob(name):
+                        target = staged / source.name
+                        # Skip unchanged files so a 200 MB checkpoint is not rewritten
+                        # every interval for no reason.
+                        if target.exists() and target.stat().st_mtime >= source.stat().st_mtime:
+                            continue
+                        shutil.copy2(source, target)
+                        print(f"mirrored {source.name} ({target.stat().st_size / 1e6:.1f} MB)", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"checkpoint mirror skipped a pass: {exc}", flush=True)
+
+    thread = threading.Thread(target=mirror, name="checkpoint-mirror", daemon=True)
+    thread.start()
+    return thread
 
 
 def collect_outputs() -> None:

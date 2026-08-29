@@ -441,12 +441,29 @@ def main() -> int:
         # list of samples with their splits and licences rather than a directory layout.
         # --source github because training/sources/dinov2 and the pretrained encoder are
         # not in the repository, so a fresh clone has neither; torch.hub fetches both.
+        # Checked BEFORE the session starts. The pack is JPEG and carries no
+        # georeferencing, so every sample must bring its own ground sample distance; if it
+        # does not, the loader crops a fixed pixel count from sources spanning 0.20 to
+        # 4.78 m/px and spends the whole session reproducing the exact defect this run
+        # exists to correct, looking entirely normal throughout. The check also refuses a
+        # corpus whose India holdout tiles escaped test, because a score measured on data
+        # the model trained on is not a holdout score.
+        if subprocess.run(
+            [sys.executable, str(REPO / "tools" / "check_packed_corpus.py"),
+             str(corpus / "corpus.json")],
+            cwd=str(REPO),
+        ).returncode != 0:
+            raise SystemExit("corpus rejected; not spending a session on it")
+
         command = [
             sys.executable, "-m", "{trainer}",
             "--config", str(REPO / "training" / "configs" / "{config_name}.yaml"),
             "--corpus", str(corpus / "corpus.json"),
             "--run-dir", str(OUT / "{config_name}"),
             "--source", "github",
+            # Kaggle caps a session, and this corpus needs more than one. Every run
+            # continues from the mirrored checkpoint instead of starting over.
+            "--resume",
         ]
     else:
         command = [
