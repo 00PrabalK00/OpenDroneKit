@@ -93,9 +93,12 @@ def holdout_report(scores: dict[str, float], *, sites: list[str]) -> dict[str, A
             "Buildings only, scored binary: unlabelled pixels count as not-building. "
             "SpaceNet 7 annotates buildings and nothing else, so this says NOTHING about "
             "road, vegetation, water or bare land performance on Indian sites -- those "
-            "remain unmeasured. It is also 0.5 m satellite imagery, not drone capture, "
-            "so it speaks for building extraction at satellite scale rather than for a "
-            "survey flown at 60 m. "
+            "remain unmeasured. The imagery is a Planet mosaic measured at 2.91-4.77 m per "
+            "pixel -- this note previously said 0.5 m, which was wrong by a factor of "
+            "eight -- so it speaks for building extraction at satellite scale and says "
+            "little about a survey flown at 60 m. Tiles are resampled to the training "
+            "target_gsd before scoring, so a score is comparable only with others "
+            "measured the same way. "
             "Compare predicted_building_fraction against labelled_building_fraction: a "
             "model predicting far more building than exists is over-segmenting, which "
             "the multiclass metric on this holdout cannot show at all."
@@ -157,7 +160,35 @@ def main(argv: list[str] | None = None) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    dataset = SemanticTileDataset(args.corpus, "test", tile_size=518, augment=False)
+    # Evaluate at the scale the model was TRAINED at. The trainer resamples every source
+    # to config training.target_gsd, and cropping a fixed pixel count here instead would
+    # show the model 4 m/px tiles it never saw -- scoring the harmonisation as if it were
+    # a defect. A train/eval mismatch does not fail; it just reports the wrong number,
+    # which is worse.
+    # Taken from the CHECKPOINT rather than the config file on disk: the checkpoint
+    # records what this model was actually trained with, and the file may have moved on
+    # since. Falling back to the file only when the checkpoint predates the field.
+    trained_with = (state.get("config") or {}).get("training") or {}
+    target_gsd = trained_with.get("target_gsd")
+    if target_gsd is None:
+        import yaml  # noqa: PLC0415
+
+        config_path = REPO_ROOT / "training" / "configs" / "shared_semantic_dinov2_vitb14.yaml"
+        if config_path.is_file():
+            on_disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            target_gsd = (on_disk.get("training") or {}).get("target_gsd")
+            if target_gsd:
+                print(
+                    "checkpoint records no target_gsd; using the config file's "
+                    f"{float(target_gsd):.2f} m/px. If this model predates the scale fix "
+                    "the score below is not comparable.",
+                    flush=True,
+                )
+    if target_gsd:
+        print(f"holdout tiles harmonised to {float(target_gsd):.2f} m/px", flush=True)
+    dataset = SemanticTileDataset(
+        args.corpus, "test", tile_size=518, augment=False, target_gsd=target_gsd,
+    )
     # The test split is not the holdout. It carries sixteen groups across two corpora,
     # and scoring all of them while the report names four Indian sites attributes a
     # number to a place that did not produce it -- the corpus is pinned by group, so the

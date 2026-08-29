@@ -1,0 +1,18 @@
+{
+  "building_iou": 0.0,
+  "building_precision": 0.0,
+  "building_recall": 0.0,
+  "true_positive_px": 0,
+  "false_positive_px": 0,
+  "false_negative_px": 1421185,
+  "predicted_building_fraction": 0.0,
+  "labelled_building_fraction": 0.06087960737807629,
+  "sites": [
+    "spacenet7::L15-1438E-1134N_5753_3655_13",
+    "spacenet7::L15-1439E-1134N_5759_3655_13",
+    "spacenet7::L15-1479E-1101N_5916_3785_13",
+    "spacenet7::L15-1481E-1119N_5927_3715_13"
+  ],
+  "metric": "binary_building",
+  "reading_note": "Buildings only, scored binary: unlabelled pixels count as not-building. SpaceNet 7 annotates buildings and nothing else, so this says NOTHING about road, vegetation, water or bare land performance on Indian sites -- those remain unmeasured. The imagery is a Planet mosaic measured at 2.91-4.77 m per pixel -- this note previously said 0.5 m, which was wrong by a factor of eight -- so it speaks for building extraction at satellite scale and says little about a survey flown at 60 m. Tiles are resampled to the training target_gsd before scoring, so a score is comparable only with others measured the same way. so it speaks for building extraction at satellite scale rather than for a survey flown at 60 m. Compare predicted_building_fraction against labelled_building_fraction: a model predicting far more building than exists is over-segmenting, which the multiclass metric on this holdout cannot show at all."
+}
