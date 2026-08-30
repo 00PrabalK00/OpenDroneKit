@@ -494,6 +494,7 @@ def main() -> int:
             command += ["--band-root", str(bands)]
             print("multispectral stacks at", bands, flush=True)
         command += gpu_memory_overrides()
+    restore_checkpoint()
     report_resources("before training")
     # Started before training so a run killed at the session limit still leaves its best
     # epoch behind. Kaggle packages /kaggle/working; OUT is scratch and is not packaged.
@@ -596,6 +597,41 @@ def start_checkpoint_mirror(interval_s: int = 300):
     return thread
 
 
+def restore_checkpoint() -> bool:
+    """Bring a previous session's checkpoint back into the run directory.
+
+    The run directory is /kaggle/temp, which is scratch and does not survive a session.
+    The mirror copies checkpoints to /kaggle/working, which Kaggle packages as output --
+    and that is where they stop. Nothing brought them back, so --resume-if-available found
+    an empty directory on the next session, said "starting a fresh run", and did exactly
+    that. Twelve hours of training discarded silently, with a log line that reads like
+    correct behaviour because it IS the correct behaviour for a genuinely first run.
+
+    Kaggle mounts a kernel's own previous output under /kaggle/input when the kernel lists
+    itself in kernel_sources. This finds it there and copies it in.
+    """
+    target = OUT / "{config_name}"
+    if (target / "last.pt").is_file():
+        print("checkpoint already in the run directory")
+        return True
+
+    candidates = sorted(Path("/kaggle/input").rglob("last.pt"))
+    if not candidates:
+        print("no previous checkpoint mounted; this session starts from scratch", flush=True)
+        return False
+
+    # Newest wins: several versions may be mounted and the latest is the one to continue.
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ("last.pt", "best.pt"):
+        source = newest.parent / name
+        if source.is_file():
+            shutil.copy2(source, target / name)
+            print(f"restored {{name}} ({{source.stat().st_size / 1e6:.1f}} MB) from {{source.parent}}",
+                  flush=True)
+    return (target / "last.pt").is_file()
+
+
 def collect_outputs() -> None:
     """Copy named artefacts to /kaggle/working, and only those.
 
@@ -646,7 +682,10 @@ def kernel_metadata(
         "enable_internet": internet,
         "dataset_sources": [dataset_slug],
         "competition_sources": [],
-        "kernel_sources": [],
+        # Its own previous output, mounted under /kaggle/input, is where an
+        # interrupted run's checkpoint comes back from. Without this a capped
+        # session cannot be continued and every re-push restarts from epoch 1.
+        "kernel_sources": [slug],
     }
 
 
