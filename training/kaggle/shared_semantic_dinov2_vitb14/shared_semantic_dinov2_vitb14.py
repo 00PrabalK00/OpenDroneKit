@@ -357,7 +357,7 @@ def main() -> int:
             command += ["--band-root", str(bands)]
             print("multispectral stacks at", bands, flush=True)
         command += gpu_memory_overrides()
-    restore_checkpoint()
+    restore_checkpoint(corpus)
     report_resources("before training")
     # Started before training so a run killed at the session limit still leaves its best
     # epoch behind. Kaggle packages /kaggle/working; OUT is scratch and is not packaged.
@@ -460,7 +460,7 @@ def start_checkpoint_mirror(interval_s: int = 300):
     return thread
 
 
-def restore_checkpoint() -> bool:
+def restore_checkpoint(corpus: Path) -> bool:
     """Bring a previous session's checkpoint back into the run directory.
 
     The run directory is /kaggle/temp, which is scratch and does not survive a session.
