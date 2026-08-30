@@ -483,8 +483,51 @@ def restore_checkpoint() -> bool:
         print("no previous checkpoint mounted; this session starts from scratch", flush=True)
         return False
 
-    # Newest wins: several versions may be mounted and the latest is the one to continue.
-    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    # The mounted output is NOT necessarily the run being continued. Kaggle serves the
+    # latest SUCCESSFUL version, and a session killed at the time limit is not successful
+    # -- so continuing an interrupted v4 run mounted the completed v3 run instead, and
+    # restoring it put a model trained on a different corpus one step away from being
+    # fine-tuned on this one. The trainer's hash check caught it and refused, which is
+    # the right outcome and a wasted session all the same.
+    #
+    # So the corpus hash is compared HERE, before anything is copied, and a checkpoint
+    # that belongs to another corpus is skipped rather than restored.
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(corpus / "corpus.json", "rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    wanted = digest.hexdigest()
+
+    matching = []
+    for candidate in candidates:
+        try:
+            import torch
+            # mmap so reading one string field does not pull a gigabyte into memory.
+            head = torch.load(candidate, map_location="cpu", weights_only=False, mmap=True)
+            found = str(head.get("corpus_sha256") or "")
+            epoch = head.get("epoch")
+            del head
+        except Exception as exc:
+            print(f"  {candidate}: unreadable ({type(exc).__name__})", flush=True)
+            continue
+        if found == wanted:
+            matching.append((epoch or 0, candidate))
+            print(f"  {candidate.parent.name}: epoch {epoch}, corpus matches", flush=True)
+        else:
+            print(f"  {candidate.parent.name}: epoch {epoch}, DIFFERENT corpus "
+                  f"({found[:12]} != {wanted[:12]}) -- skipped", flush=True)
+
+    if not matching:
+        print(
+            "no mounted checkpoint was trained on this corpus; starting fresh rather than "
+            "fine-tuning someone else's model on it",
+            flush=True,
+        )
+        return False
+
+    newest = max(matching)[1]
     target.mkdir(parents=True, exist_ok=True)
     for name in ("last.pt", "best.pt"):
         source = newest.parent / name
