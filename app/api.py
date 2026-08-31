@@ -902,6 +902,106 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
+    @guard
+    def plan_pylon_mission(self, center_lonlat: list[float],
+                           elements: list[dict[str, Any]],
+                           standoff_m: float = 12.0,
+                           structure_radius_m: float = 3.0,
+                           camera: str = "mavic2pro") -> dict[str, Any]:
+        """A stacked orbit per named pylon element, at the height that element sits at.
+
+        mission/mission_types.py has planned this since the pylon work landed, and nine
+        tests cover it, but nothing could reach it: it was absent from the planner's
+        template table, from mission_templates() and from this class. Implemented and
+        unreachable is indistinguishable from missing to anyone using the application.
+        """
+        from mission.mission_types import MissionTypeRefused, plan_pylon_inspection
+        from mission.planner import MissionPlanner
+
+        try:
+            plan = plan_pylon_inspection(
+                MissionPlanner(),
+                center_lonlat=list(center_lonlat),
+                elements=elements,
+                standoff_m=float(standoff_m),
+                structure_radius_m=float(structure_radius_m),
+                camera=str(camera),
+            )
+        except MissionTypeRefused as exc:
+            return fail(str(exc))
+        self._session.audit("pylon_planned", {"elements": len(elements)})
+        return ok(plan=plan)
+
+    @guard
+    def plan_thermal_survey(self, thermal_camera: str, target_gsd_cm: float,
+                            rgb_camera: str = "",
+                            front_overlap_pct: float = 80.0,
+                            side_overlap_pct: float = 70.0) -> dict[str, Any]:
+        """A grid flown at the altitude the THERMAL sensor needs, with paired RGB.
+
+        Thermal imagers have far coarser pixels than the visual camera beside them, so a
+        grid planned for the RGB sensor delivers thermal imagery too coarse to read. The
+        altitude here is solved for the thermal GSD and the RGB is simply along for the
+        ride, which is the opposite of the usual assumption.
+        """
+        from mission.mission_types import MissionTypeRefused, plan_thermal_mission
+        from mission.planner import MissionPlanner
+
+        polygon = self._session.aoi_polygon
+        if len(polygon) < 3:
+            return fail("Draw an area of interest on the map before planning a survey.")
+        try:
+            plan = plan_thermal_mission(
+                MissionPlanner(),
+                polygon_lonlat=[list(p) for p in polygon],
+                thermal_camera=str(thermal_camera),
+                target_gsd_cm=float(target_gsd_cm),
+                rgb_camera=str(rgb_camera),
+                front_overlap_pct=float(front_overlap_pct),
+                side_overlap_pct=float(side_overlap_pct),
+            )
+        except MissionTypeRefused as exc:
+            return fail(str(exc))
+        self._session.audit("thermal_planned", {"camera": thermal_camera})
+        return ok(plan=plan)
+
+    @guard
+    def plan_multispectral_survey(self, payload_key: str,
+                                  camera: str = "mavic3e",
+                                  altitude_m: float = 60.0,
+                                  calibration_panel_lonlat: list[float] | None = None,
+                                  front_overlap_pct: float = 80.0,
+                                  side_overlap_pct: float = 75.0) -> dict[str, Any]:
+        """A grid for a multispectral array, with the calibration panel in the plan.
+
+        The payload is the subject here, not the camera: a multispectral array has its
+        own band set and its own reflectance panel, and a survey flown without a panel
+        shot gives indices that cannot be compared with any other flight.
+        """
+        from mission.mission_types import MissionTypeRefused, plan_multispectral_mission
+        from mission.planner import MissionPlanner
+
+        polygon = self._session.aoi_polygon
+        if len(polygon) < 3:
+            return fail("Draw an area of interest on the map before planning a survey.")
+        try:
+            plan = plan_multispectral_mission(
+                MissionPlanner(),
+                polygon_lonlat=[list(p) for p in polygon],
+                payload_key=str(payload_key),
+                camera=str(camera),
+                altitude_m=float(altitude_m),
+                calibration_panel_lonlat=(
+                    list(calibration_panel_lonlat) if calibration_panel_lonlat else None
+                ),
+                front_overlap_pct=float(front_overlap_pct),
+                side_overlap_pct=float(side_overlap_pct),
+            )
+        except MissionTypeRefused as exc:
+            return fail(str(exc))
+        self._session.audit("multispectral_planned", {"payload": payload_key})
+        return ok(plan=plan)
+
     def plan_complex_facade(self, polygon_xy: list[list[float]],
                             courtyards: list[list[list[float]]] | None = None,
                             standoff_m: float = 10.0,
