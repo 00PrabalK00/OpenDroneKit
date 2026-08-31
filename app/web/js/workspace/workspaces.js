@@ -22,6 +22,7 @@ import {
   readouts, selection, splitCanvas, table, tree,
 } from "./primitives.js";
 import { DATA, DEMO, demoCoords } from "./demo.js";
+import { emptyState, live, reported } from "./live.js";
 
 /* Every editable field reports onto the same bus the trees and tables use.
  *
@@ -49,34 +50,36 @@ const COORD = demoCoords();
  * actually ran -- 77 of 77 images registered, 1.27px mean reprojection error -- and each
  * model row exists on disk with the digest its metrics were measured against. Nothing in
  * this tree is a name someone made up. */
-const projectTree = () => tree([
-  {
-    id: "org", label: "Installed models", icon: "▦", meta: `${DATA.models.length}`,
-    children: DATA.models.map((model, index) => ({
-      id: `m${index}`,
-      label: model.key,
-      icon: "▤",
-      meta: model.headline || `${model.input_size || ""}px`,
-    })),
-  },
-  {
-    id: "proj", label: DATA.project.name, icon: "▦", meta: DATA.project.epsg,
-    children: [
+const projectTree = () => live({
+  calls: ["list_projects", "verify_models", "get_state"],
+  empty: "No projects yet. Use New Project to create one.",
+  isEmpty: ([projects, models]) => !(projects && (projects.projects || []).length)
+    && !(models && (models.models || []).length),
+  render: ([projects, models, state]) => {
+    const installed = ((models && models.models) || [])
+      .filter((m) => m.status !== "awaiting_weights");
+    const active = (state && (state.project || state.active_project)) || {};
+    const rows = (projects && projects.projects) || [];
+    return tree([
+      ...(installed.length ? [{
+        id: "org", label: "Installed models", icon: "▦", meta: String(installed.length),
+        children: installed.map((m, i) => ({
+          id: `m${i}`, label: m.model_key, icon: "▤",
+          meta: m.status === "verified" ? "verified" : m.status,
+        })),
+      }] : []),
       {
-        id: "p1", label: `${DATA.project.images_registered} images registered`, icon: "▤",
-        meta: `${DATA.project.reprojection_px} px`,
-        children: [
-          { id: "a1", label: "Orthomosaic", icon: "▱" },
-          { id: "a2", label: "DSM / DTM", icon: "▯" },
-          { id: "a3", label: "Point cloud", icon: "▲" },
-        ],
+        id: "projects", label: "Projects", icon: "▦", meta: String(rows.length),
+        children: rows.slice(0, 40).map((project) => ({
+          id: `p${project.id}`,
+          label: project.name,
+          icon: "▤",
+          meta: project.id === active.id ? "active" : "",
+        })),
       },
-      { id: "p2", label: `Geo RMSE ${DATA.project.geo_rmse_m} m`, icon: "▤" },
-      { id: "p3", label: DATA.project.source, icon: "▤" },
-      { id: "p4", label: "DEMO site 4", icon: "▤", meta: "18 MW" },
-    ],
+    ], { selectKind: "project" });
   },
-], { selectKind: "project" });
+});
 
 const layerTree = (extra = []) => tree([
   { id: "l-base", label: "Basemap — Satellite", icon: "◈" },
@@ -96,12 +99,19 @@ const home = {
   toolbar: ["New Project", "Open", "Import", "|", "Sync", "Share"],
   left: [
     { id: "home.projects", title: "Project Explorer", render: projectTree },
-    { id: "home.storage", title: "Storage", height: 120, grow: false, pad: true,
-      render: () => el("div", {}, [
-        el("div", { class: "field" }, [el("label", { text: "Used" }), el("span", { class: "v", text: "0 GB" })]),
-        meter(0.41, "ok"),
-        el("div", { class: "field" }, [el("label", { text: "Datasets" }), el("span", { text: "38" })]),
-      ]) },
+    /* Showed "0 GB used" beside a 41%-full meter and 38 datasets, none of which was
+       read from anywhere. Project and dataset counts are things the app can actually
+       answer; disk usage is not, so it is no longer claimed. */
+    { id: "home.storage", title: "Library", height: 120, grow: false, pad: true,
+      render: () => live({
+        calls: ["list_projects", "list_datasets"],
+        empty: "No projects yet.",
+        isEmpty: ([projects]) => !(projects && (projects.projects || []).length),
+        render: ([projects, datasets]) => properties(reported([
+          ["Projects", (projects.projects || []).length],
+          ["Datasets", ((datasets && datasets.datasets) || []).length || undefined],
+        ])),
+      }) },
   ],
   canvas: () => canvas({
     map: true,
@@ -109,7 +119,8 @@ const home = {
     note: "Projects, active missions and fleet positions. Select a marker to load it into every panel.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `<strong>4</strong> projects &nbsp; <strong>1</strong> flying &nbsp; <strong>2</strong> processing` },
+      /* Was "4 projects, 1 flying, 2 processing" on every machine. Nothing flies from
+         a desk, and the real counts are in the Library panel. */
       { at: "br", html: COORD },
     ],
   }),
@@ -117,35 +128,73 @@ const home = {
     /* The reconstruction this repository actually ran, and the figures it earned.
        Area, coverage and GSD used to sit here as invented numbers; they are not
        reported by that run, and a plausible number is worse than a missing one. */
-    { id: "home.active", title: "Active Project", render: () => properties([
-      { group: DATA.project.name },
-      { label: "Images", value: DATA.project.images_registered },
-      { label: "Reprojection", value: String(DATA.project.reprojection_px), unit: "px" },
-      { label: "Geo RMSE", value: String(DATA.project.geo_rmse_m), unit: "m" },
-      { label: "CRS", value: DATA.project.epsg },
-      { label: "Models", value: String(DATA.models.length) },
-      { label: "Capabilities", value: `${DATA.capabilities.verified}/${DATA.capabilities.total}` },
-    ]) },
-    { id: "home.alerts", title: "Alerts", render: () => el("div", { class: "console" }, [
-      el("div", { class: "line warn" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "Battery B-07 cycle count 298 — service due" })]),
-      el("div", { class: "line error" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "DEMO site 2: 3 captures out of tolerance" })]),
-      el("div", { class: "line ok" }, [el("span", { class: "t", text: "00:00" }), el("span", { text: "DEMO site 3 reconstruction complete" })]),
-    ]) },
-    { id: "home.system", title: "System Status", render: () => properties([
-      { label: "API", value: chip("healthy", "ok") },
-      { label: "Workers", value: chip("3 online", "ok") },
-      { label: "Broker", value: chip("redis 7.4", "ok") },
-      { label: "Database", value: chip("postgis", "ok") },
-      { label: "Geometry storage", value: chip("geojson text", "warn") },
-    ]) },
+    { id: "home.active", title: "Active Project", render: () => live({
+      calls: ["get_state", "list_layers", "list_dataset_images"],
+      empty: "No project open. Use Open, or New Project to create one.",
+      isEmpty: ([state]) => !(state && (state.project || state.active_project)),
+      render: ([state, layers, images]) => {
+        const project = state.project || state.active_project || {};
+        const twin = project.reconstruction || project.digital_twin || {};
+        return properties([
+          { group: project.name || "Project" },
+          ...reported([
+            ["Images", ((images && images.images) || []).length || undefined],
+            ["Registered", twin.registered_images],
+            ["Reprojection", twin.mean_reprojection_error_px &&
+              twin.mean_reprojection_error_px.toFixed(3), "px"],
+            ["Geo RMSE", twin.geo_rmse_m && twin.geo_rmse_m.toFixed(3), "m"],
+            ["Ground sample", twin.ground_sample_distance_m &&
+              twin.ground_sample_distance_m.toFixed(3), "m/px"],
+            ["CRS", project.epsg || (twin.crs_epsg && `EPSG:${twin.crs_epsg}`)],
+            ["Layers", ((layers && layers.layers) || []).length || undefined],
+          ]),
+        ]);
+      },
+    }) },
+    /* Three invented incidents used to sit here, about sites that do not exist. The
+       audit log is the real record of what happened on this machine. */
+    { id: "home.alerts", title: "Recent activity", render: () => live({
+      calls: ["audit_log"],
+      empty: "Nothing has happened in this workspace yet.",
+      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
+      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 12).map((e) => ({
+        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
+        text: e.message || e.action || e.event || "—",
+        level: /fail|error|refus/i.test(e.message || e.action || "") ? "error"
+          : /warn/i.test(e.message || e.action || "") ? "warn" : "",
+      }))),
+    }) },
+    /* Reported three workers, a redis broker and postgis. This build is local-first and
+       runs none of them; it was describing a deployment that does not exist here. */
+    { id: "home.system", title: "System Status", render: () => live({
+      calls: ["capabilities", "verify_models"],
+      empty: "The application did not report its capabilities.",
+      render: ([caps, models]) => {
+        const rows = (models && models.models) || [];
+        const verified = rows.filter((m) => m.verified).length;
+        const mismatch = rows.filter((m) => m.status === "mismatch").length;
+        return properties([
+          { label: "Bridge", value: chip("connected", "ok") },
+          { label: "Storage", value: chip("local-first", "ok") },
+          ...(rows.length ? [{ label: "Models verified",
+            value: chip(`${verified}/${rows.filter((m) => m.status !== "awaiting_weights").length}`,
+              mismatch ? "warn" : "ok") }] : []),
+          ...(mismatch ? [{ label: "Digest mismatch", value: chip(String(mismatch), "warn") }] : []),
+        ]);
+      },
+    }) },
   ],
   bottom: [
-    { id: "home.activity", title: "Activity Log", flex: 2, render: () => consoleView([
-      { t: "00:00:00", text: "mission 'Roof Block A v3' validated — 214 captures" },
-      { t: "00:00:00", text: "dataset upload complete — 1,842 images", level: "ok" },
-      { t: "00:00:00", text: "processing job #4471 queued (priority 10)" },
-      { t: "00:00:00", text: "flight DEMO site 2 seg 2 resumed after battery swap", level: "warn" },
-    ]) },
+    { id: "home.activity", title: "Activity Log", flex: 2, render: () => live({
+      calls: ["audit_log"],
+      empty: "No activity recorded yet.",
+      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
+      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 20).map((e) => ({
+        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
+        text: e.message || e.action || "—",
+        level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
+      }))),
+    }) },
     { id: "home.jobs", title: "Processing Queue", flex: 2, render: () => table(
       [{ title: "Job", key: "job" }, { title: "Stage", key: "stage" },
        { title: "Worker", key: "worker" }, { title: "Progress", value: (r) => meter(r.p, r.p > 0.9 ? "ok" : "") }],
@@ -195,15 +244,22 @@ const projects = {
     { id: "proj.history", title: "Survey History", flex: 2, render: () => table(
       [{ title: "Date", key: "date" }, { title: "Mission", key: "mission" }, { title: "Images", key: "images", num: true },
        { title: "GSD cm", key: "gsd", num: true }, { title: "Coverage", key: "cov", num: true }],
-      [
-        { date: "2026-08-02", mission: "Roof Block A v3", images: 1842, gsd: 1.8, cov: "98.4%" },
-        { date: "2026-05-14", mission: "Roof Block A v2", images: 1791, gsd: 1.9, cov: "97.1%" },
-        { date: "2026-02-08", mission: "Roof Block A v1", images: 1610, gsd: 2.2, cov: "94.8%" },
-      ], { selectKind: "survey" }) },
-    { id: "proj.datasets", title: "Datasets", flex: 1, render: () => tree([
-      { id: "d1", label: "2026-08-02 RGB", icon: "▦", meta: "1842" },
-      { id: "d2", label: "2026-08-02 Thermal", icon: "◍", meta: "612" },
-    ], { selectKind: "dataset" }) },
+      [], { selectKind: "survey" }) },
+    { id: "proj.datasets", title: "Datasets", flex: 1, render: () => live({
+      calls: ["list_datasets", "list_dataset_images"],
+      empty: "No datasets. Use Import to add a folder of images.",
+      isEmpty: ([sets, imgs]) => !(sets && (sets.datasets || []).length)
+        && !(imgs && (imgs.images || []).length),
+      render: ([sets, imgs]) => {
+        const datasets = (sets && sets.datasets) || [];
+        const count = ((imgs && imgs.images) || []).length;
+        return tree(datasets.length
+          ? datasets.map((d, i) => ({ id: `d${i}`, label: d.name || d.path,
+              icon: "▦", meta: String(d.image_count ?? "") }))
+          : [{ id: "d0", label: "Imported images", icon: "▦", meta: String(count) }],
+          { selectKind: "dataset" });
+      },
+    }) },
   ],
 };
 
@@ -391,10 +447,15 @@ const verification = {
   title: "Verification",
   toolbar: ["Load Flight", "Match Captures", "|", "Accept", "Flag", "Request Reflight", "|", "Export Report"],
   left: [
-    { id: "ver.datasets", title: "Datasets", render: () => tree([
-      { id: "f1", label: "2026-08-02 flight 1", icon: "▶", meta: "1842" },
-      { id: "f2", label: "2026-08-02 flight 2", icon: "▶", meta: "612" },
-    ], { selectKind: "flight" }) },
+    { id: "ver.datasets", title: "Datasets", render: () => live({
+      calls: ["list_datasets"],
+      empty: "No flights imported to verify.",
+      isEmpty: ([sets]) => !(sets && (sets.datasets || []).length),
+      render: ([sets]) => tree((sets.datasets || []).map((d, i) => ({
+        id: `f${i}`, label: d.name || d.path, icon: "▶",
+        meta: String(d.image_count ?? ""),
+      })), { selectKind: "flight" }),
+    }) },
     { id: "ver.images", title: "Images", render: () => tree(
       Array.from({ length: 8 }, (_, i) => ({ id: `i${i}`, label: `DJI_${1000 + i}.JPG`, icon: "▣" })),
       { selectKind: "image" }) },
@@ -422,21 +483,24 @@ const verification = {
       ]) },
   ],
   bottom: [
-    { id: "ver.summary", title: "Verification Summary", flex: 2, render: () => readouts([
-      { k: "Planned", v: "1842" }, { k: "Matched", v: "1836", tone: "ok" },
-      { k: "Missing", v: "3", tone: "error" }, { k: "Out of tol.", v: "3", tone: "warn" },
-      { k: "Coverage", v: "98.4%" }, { k: "Pos. error", v: "0.9 m" },
-    ]) },
-    { id: "ver.missing", title: "Missing Captures", flex: 2, render: () => table(
-      [{ title: "Capture", key: "id" }, { title: "Segment", key: "seg" }, { title: "Reason", key: "why" }],
-      [
-        { id: "C-1094", seg: "cross pass", why: "no image within tolerance" },
-        { id: "C-1095", seg: "cross pass", why: "no image within tolerance" },
-        { id: "C-1782", seg: "oblique −60°", why: "trigger not recorded" },
-      ], { selectKind: "capture" }) },
-    { id: "ver.qc", title: "QC Log", flex: 1, render: () => consoleView([
-      { t: "09:31", text: "3 captures flagged for reflight", level: "warn" },
-    ]) },
+    /* Reported 1,842 planned against 1,836 matched with 98.4% coverage, on projects
+       with no mission and no flight. Verification is a comparison, so with nothing to
+       compare it says that instead of inventing a near-miss. */
+    { id: "ver.summary", title: "Verification Summary", flex: 2, render: () => live({
+      calls: ["list_dataset_images", "mission_estimates"],
+      empty: "Nothing to verify yet: plan a mission and import the flight it produced.",
+      isEmpty: ([imgs]) => !(imgs && (imgs.images || []).length),
+      render: ([imgs, est]) => readouts([
+        { k: "Captured", v: String(((imgs && imgs.images) || []).length) },
+        ...(est && est.image_count ? [{ k: "Planned", v: String(est.image_count) }] : []),
+      ]),
+    }) },
+    /* Named three specific captures as missing -- C-1094, C-1095, C-1782 -- for a flight
+       that was never flown. A missing capture is a finding; inventing one is not. */
+    { id: "ver.missing", title: "Missing Captures", flex: 2, render: () =>
+      emptyState("No comparison run. Use Match Captures once a flight is imported.") },
+    { id: "ver.qc", title: "QC Log", flex: 1, render: () =>
+      emptyState("No QC findings.") },
   ],
 };
 
@@ -447,16 +511,35 @@ const processing = {
   title: "Processing",
   toolbar: ["New Job", "|", "Process", "Pause", "Cancel", "|", "Add GCPs", "Set CRS", "Export Products"],
   left: [
-    { id: "proc.datasets", title: "Datasets", render: () => tree([
-      { id: "pd1", label: "2026-08-02 RGB", icon: "▦", meta: "1842" },
-      { id: "pd2", label: "GCPs", icon: "✛", meta: "7" },
-      { id: "pd3", label: "PPK base", icon: "◎" },
-    ], { selectKind: "dataset" }) },
-    { id: "proc.jobs", title: "Jobs", render: () => tree([
-      { id: "j1", label: "#4471 DEMO site 1 roof", icon: "▶", meta: "34%" },
-      { id: "j2", label: "#4470 DEMO site 2", icon: "▶", meta: "72%" },
-      { id: "j3", label: "#4468 DEMO site 3", icon: "✓", meta: "done" },
-    ], { selectKind: "job" }) },
+    { id: "proc.datasets", title: "Datasets", render: () => live({
+      calls: ["list_datasets", "list_dataset_images"],
+      empty: "No dataset imported. Use Import to add a folder of images.",
+      isEmpty: ([sets, imgs]) => !(sets && (sets.datasets || []).length)
+        && !(imgs && (imgs.images || []).length),
+      render: ([sets, imgs]) => {
+        const datasets = (sets && sets.datasets) || [];
+        const count = ((imgs && imgs.images) || []).length;
+        const nodes = datasets.length
+          ? datasets.map((d, i) => ({
+              id: `pd${i}`, label: d.name || d.path || `Dataset ${i + 1}`,
+              icon: "▦", meta: String(d.image_count ?? (i === 0 ? count : "")),
+            }))
+          : [{ id: "pd0", label: "Imported images", icon: "▦", meta: String(count) }];
+        return tree(nodes, { selectKind: "dataset" });
+      },
+    }) },
+    { id: "proc.jobs", title: "Jobs", render: () => live({
+      calls: ["list_jobs"],
+      empty: "No jobs yet. Press Process to queue a reconstruction.",
+      isEmpty: ([jobs]) => !(jobs && (jobs.jobs || []).length),
+      render: ([jobs]) => tree((jobs.jobs || []).slice(0, 40).map((j, i) => ({
+        id: j.id || `j${i}`,
+        label: `${j.id ? "#" + String(j.id).slice(0, 8) : "job"} ${j.kind || j.name || ""}`.trim(),
+        icon: j.state === "finished" ? "✓" : "▶",
+        meta: j.state === "finished" ? "done"
+          : j.progress != null ? `${Math.round(j.progress)}%` : (j.state || ""),
+      })), { selectKind: "job" }),
+    }) },
   ],
   canvas: () => canvas({
     title: "Sparse reconstruction",
@@ -464,7 +547,10 @@ const processing = {
     tools: [{ icon: "✥", title: "Orbit" }, { icon: "⊕", title: "Zoom" }, { icon: "▣", title: "Select" }, { icon: "⤡", title: "Fit" }],
     overlays: [
       { at: "tl", html: `<strong>Ingestion → Features → Matching → SfM → Georeference → Dense → DSM/DTM → Ortho → Mesh → Twin</strong>` },
-      { at: "br", html: `1,842 cameras · 412k tie points` },
+      /* These were "1,842 cameras · 412k tie points" regardless of the project open.
+         The canvas has no data source of its own, so it now says what the stage IS
+         rather than inventing what it processed. */
+      { at: "br", html: `Sparse cloud · counts in the Job Progress panel` },
     ],
   }),
   right: [
@@ -475,46 +561,90 @@ const processing = {
         { key: "dense", label: "Dense cloud", value: "yes", options: ["yes", "no"] },
         { key: "mesh", label: "Mesh depth", value: "9" },
       ], settingChanged) },
-      { title: "Spatial", render: () => properties([
-        { label: "Reference", value: chip("georeferenced", "ok") },
-        { label: "CRS", value: "EPSG:4326" },
-        { label: "GCPs", value: "7" },
-        { label: "RTK", value: chip("fixed", "ok") },
-        { label: "Scale", value: "metric" },
-      ]) },
-      { title: "Workers", render: () => table(
-        [{ title: "Worker", key: "w" }, { title: "State", key: "s" }, { title: "CPU", key: "cpu" },
-         { title: "RAM", key: "ram" }, { title: "GPU", key: "gpu" }],
-        [
-          { w: "w-01", s: "busy", cpu: "94%", ram: "41/64 GB", gpu: "RTX 4090" },
-          { w: "w-02", s: "busy", cpu: "88%", ram: "36/64 GB", gpu: "RTX 4090" },
-          { w: "w-03", s: "idle", cpu: "3%", ram: "4/32 GB", gpu: "—" },
-        ], { selectKind: "worker" }) },
+      /* Was a fixed "EPSG:4326 / 7 GCPs / RTK fixed" on every project, including ones
+         with no GCPs and no RTK at all. Read from the layers the project really has. */
+      { title: "Spatial", render: () => live({
+        calls: ["list_layers"],
+        empty: "No georeferenced products yet.",
+        isEmpty: ([l]) => !(l && (l.layers || []).length),
+        render: ([l]) => {
+          const layers = l.layers || [];
+          const epsg = (layers.find((x) => x.crs_epsg) || {}).crs_epsg;
+          return properties([
+            { label: "Reference", value: epsg ? chip("georeferenced", "ok") : chip("none", "warn") },
+            ...reported([
+              ["CRS", epsg && `EPSG:${epsg}`],
+              ["Rasters", layers.filter((x) => x.kind === "raster").length || undefined],
+              ["Vectors", layers.filter((x) => x.kind === "vector").length || undefined],
+            ]),
+          ]);
+        },
+      }) },
+      /* Three imaginary machines with RTX 4090s used to be listed here. There is one
+         machine -- this one -- and what an operator needs from it is whether the engine
+         can actually do the work, which the application already reports. */
+      { title: "Engine", render: () => live({
+        calls: ["reconstruction_capabilities"],
+        empty: "The reconstruction engine did not report its capabilities.",
+        render: ([caps]) => {
+          const c = caps.capabilities || caps;
+          const yn = (v, good) => chip(v ? (good || "yes") : "no", v ? "ok" : "warn");
+          return properties([
+            { label: "pycolmap", value: yn(c.pycolmap) },
+            { label: "Native COLMAP", value: c.colmap_binary
+              ? chip("found", "ok") : chip("not found", "warn") },
+            { label: "GPU dense stereo", value: yn(c.dense_stereo, "available") },
+            { label: "Open3D mesh", value: yn(c.open3d) },
+          ]);
+        },
+      }) },
     ] },
-    { id: "proc.outputs", title: "Output Products", height: 170, grow: false, render: () => tree([
-      { id: "o1", label: "Sparse cloud", icon: "◌" },
-      { id: "o2", label: "Dense cloud", icon: "◍" },
-      { id: "o3", label: "DSM", icon: "◰" },
-      { id: "o4", label: "DTM", icon: "◱" },
-      { id: "o5", label: "Orthomosaic", icon: "▦" },
-      { id: "o6", label: "Textured mesh", icon: "◈" },
-    ], { selectKind: "product" }) },
+    /* Listed all six products whether or not any existed -- including a dense cloud on
+       a machine whose dense stage had failed. These are the layers actually on disk. */
+    { id: "proc.outputs", title: "Output Products", height: 170, grow: false, render: () => live({
+      calls: ["list_layers"],
+      empty: "Nothing produced yet.",
+      isEmpty: ([l]) => !(l && (l.layers || []).length),
+      render: ([l]) => tree((l.layers || []).map((layer, i) => ({
+        id: layer.id || `o${i}`,
+        label: layer.name || layer.id,
+        icon: layer.kind === "raster" ? "▦" : "◌",
+        meta: layer.metadata && layer.metadata.width
+          ? `${layer.metadata.width}×${layer.metadata.height}` : "",
+      })), { selectKind: "product" }),
+    }) },
   ],
   bottom: [
-    { id: "proc.progress", title: "Job Progress", flex: 2, render: () => table(
-      [{ title: "Stage", key: "stage" }, { title: "State", key: "state" }, { title: "Elapsed", key: "t" },
-       { title: "", value: (r) => meter(r.p, r.p >= 1 ? "ok" : "") }],
-      [
-        { stage: "Ingestion", state: "done", t: "0:41", p: 1 },
-        { stage: "Feature extraction", state: "done", t: "6:12", p: 1 },
-        { stage: "Feature matching", state: "running", t: "9:04", p: 0.34 },
-        { stage: "Structure from motion", state: "queued", t: "—", p: 0 },
-      ]) },
-    { id: "proc.logs", title: "Processing Log", flex: 3, render: () => consoleView([
-      { t: "00:00:00", text: "matching 412,880 pairs across 3 workers" },
-      { t: "00:00:00", text: "features extracted: 1,842 images", level: "ok" },
-      { t: "00:00:00", text: "job accepted by w-02 (priority 10, attempt 1)" },
-    ]) },
+    /* A frozen fake run used to sit here: "feature matching, running, 9:04, 34%" on a
+       machine with no job at all, and a log claiming hundreds of thousands of pairs
+       across three workers that do not exist.
+       Both now read the job queue. */
+    { id: "proc.progress", title: "Job Progress", flex: 2, render: () => live({
+      calls: ["list_jobs"],
+      empty: "No job running. Press Process to start one.",
+      isEmpty: ([jobs]) => !(jobs && (jobs.jobs || []).length),
+      render: ([jobs]) => table(
+        [{ title: "Job", key: "job" }, { title: "State", key: "state" },
+         { title: "Message", key: "msg" },
+         { title: "", value: (r) => meter(r.p, r.p >= 1 ? "ok" : "") }],
+        (jobs.jobs || []).slice(0, 12).map((j) => ({
+          job: j.kind || j.name || String(j.id || "").slice(0, 8),
+          state: j.state || "—",
+          msg: (j.message || "").slice(0, 60),
+          p: j.state === "finished" ? 1 : (j.progress != null ? j.progress / 100 : 0),
+        }))),
+    }) },
+    { id: "proc.logs", title: "Processing Log", flex: 3, render: () => live({
+      calls: ["list_jobs"],
+      empty: "No processing log yet.",
+      isEmpty: ([jobs]) => !(jobs && (jobs.jobs || []).length),
+      render: ([jobs]) => consoleView((jobs.jobs || []).slice(0, 12).map((j) => ({
+        t: String(j.started_at || j.created_at || "").slice(11, 19) || "—",
+        text: `${j.kind || "job"} ${j.state || ""} ${j.message || ""}`.trim(),
+        level: j.state === "finished" ? "ok"
+          : /fail|error/i.test(j.state || "") ? "error" : "",
+      }))),
+    }) },
   ],
 };
 
@@ -525,17 +655,28 @@ const twin = {
   title: "Digital Twin",
   toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|", "Compare Dates", "Measure", "Annotate", "Export"],
   left: [
-    { id: "twin.hierarchy", title: "Scene Hierarchy", render: () => tree([
-      { id: "s1", label: "DEMO site 1", icon: "▦", children: [
-        { id: "s2", label: "Block A", icon: "▢", children: [
-          { id: "s3", label: "Roof", icon: "▱", meta: "4 defects" },
-          { id: "s4", label: "North facade", icon: "▯", meta: "1" },
-        ] },
-        { id: "s5", label: "Yard", icon: "▲", children: [
-          { id: "s6", label: "Stockpile 1", icon: "▲", meta: "1,240 m³" },
-        ] },
-      ] },
-    ], { selectKind: "asset" }) },
+    /* A building with a roof, a facade and a stockpile volume, none of which existed.
+       build_asset_inventory reports what was actually derived from the reconstruction. */
+    { id: "twin.hierarchy", title: "Scene Hierarchy", render: () => live({
+      calls: ["build_asset_inventory", "list_layers"],
+      empty: "No assets derived yet. Reconstruct a survey, then run asset extraction.",
+      isEmpty: ([inv, layers]) => !(inv && (inv.assets || []).length)
+        && !(layers && (layers.layers || []).length),
+      render: ([inv, layers]) => {
+        const assets = (inv && inv.assets) || [];
+        if (assets.length) {
+          return tree(assets.slice(0, 50).map((a, i) => ({
+            id: a.id || `s${i}`, label: a.name || a.kind || `Asset ${i + 1}`,
+            icon: "▢", meta: a.area_m2 ? `${Math.round(a.area_m2)} m²` : "",
+          })), { selectKind: "asset" });
+        }
+        // No asset extraction, but the reconstruction products are real scene content.
+        return tree(((layers && layers.layers) || []).map((l, i) => ({
+          id: l.id || `s${i}`, label: l.name || l.id, icon: "▦",
+          meta: l.crs_epsg ? `EPSG:${l.crs_epsg}` : "",
+        })), { selectKind: "asset" });
+      },
+    }) },
     { id: "twin.layers", title: "Layers", height: 160, grow: false, render: () => layerTree([
       { id: "l-defect", label: "Defects", icon: "⚠" },
       { id: "l-thermal", label: "Thermal", icon: "◍" },
@@ -548,49 +689,45 @@ const twin = {
     tools: [{ icon: "✥", title: "Orbit" }, { icon: "⊕", title: "Zoom" }, { icon: "▣", title: "Select" },
             { icon: "⤢", title: "Measure" }, { icon: "✎", title: "Annotate" }, { icon: "⤡", title: "Fit" }],
     overlays: [
-      { at: "tr", html: `<span class="chip">Textured mesh</span> <span class="chip info">2026-08-02</span>` },
-      { at: "br", html: `4.1M faces · 12 assets · 6 findings` },
+      /* "4.1M faces, 12 assets, 6 findings" was fixed text, shown over an empty canvas
+         on a project whose mesh has 0 of those numbers in common. */
+      { at: "br", html: `Loaded from the project's reconstruction products` },
     ],
   }),
   right: [
-    { id: "twin.asset", title: "Selected Asset", render: () => properties([
-      { group: "Roof — Block A" },
-      { label: "Type", value: "Roof" },
-      { label: "Area", value: "3,140", unit: "m²" },
-      { label: "Material", value: "Metal deck" },
-      { label: "Surveys", value: "3" },
-      { label: "Open findings", value: chip("4", "warn") },
-      { group: "Latest inspection" },
-      { label: "Date", value: "2026-08-02" },
-      { label: "Model", value: "crack_presence_classifier" },
-      { label: "Digest", value: "92a4d142…" },
-    ]) },
-    { id: "twin.timeline", title: "Survey Timeline", height: 130, grow: false, render: () => table(
-      [{ title: "Date", key: "d" }, { title: "Findings", key: "f", num: true }, { title: "Change", key: "c" }],
-      [
-        { d: "2026-08-02", f: 4, c: "+1" },
-        { d: "2026-05-14", f: 3, c: "+2" },
-        { d: "2026-02-08", f: 1, c: "—" },
-      ], { selectKind: "survey" }) },
+    /* A metal-deck roof of 3,140 m2 with four open findings, on every project. Selection
+       is what fills this panel; until something is selected it says so. */
+    { id: "twin.asset", title: "Selected Asset", render: () =>
+      emptyState("Select an object in the scene to inspect it.") },
+    { id: "twin.timeline", title: "Survey Timeline", height: 130, grow: false, render: () => live({
+      calls: ["list_mission_versions"],
+      empty: "One survey. A timeline needs at least two to compare.",
+      isEmpty: ([v]) => !(v && (v.versions || []).length),
+      render: ([v]) => table(
+        [{ title: "Version", key: "d" }, { title: "Saved", key: "f" }],
+        (v.versions || []).slice(0, 10).map((row) => ({
+          d: String(row.version_num ?? row.version ?? "—"),
+          f: String(row.created_at || row.saved_at || "").slice(0, 10) || "—",
+        })), { selectKind: "survey" }),
+    }) },
   ],
   bottom: [
-    { id: "twin.props", title: "Object Properties", flex: 2, render: () => properties([
-      { label: "Object id", value: "asset/roof-block-a" },
-      { label: "Parent", value: "Block A" },
-      { label: "Centroid", value: "23.2591 N, 77.4022 E" },
-      { label: "Source run", value: "#4468" },
-    ]) },
-    { id: "twin.measure", title: "Measurements", flex: 2, render: () => table(
-      [{ title: "Name", key: "n" }, { title: "Type", key: "t" }, { title: "Value", key: "v", num: true }],
-      [
-        { n: "Roof span", t: "Distance", v: "62.4 m" },
-        { n: "Roof area", t: "Area", v: "3,140 m²" },
-        { n: "Parapet", t: "Height", v: "1.1 m" },
-      ], { selectKind: "measurement" }) },
-    { id: "twin.history", title: "History", flex: 1, render: () => consoleView([
-      { t: "08-02", text: "crack finding F-118 added" },
-      { t: "05-14", text: "ponding F-092 resolved", level: "ok" },
-    ]) },
+    /* Reported a centroid in Madhya Pradesh for an asset that does not exist. */
+    { id: "twin.props", title: "Object Properties", flex: 2, render: () =>
+      emptyState("No object selected.") },
+    /* Three measurements of a building that was never surveyed. Measuring is an action
+       the operator takes; the panel holds the results of it. */
+    { id: "twin.measure", title: "Measurements", flex: 2, render: () =>
+      emptyState("No measurements yet. Use Measure on the canvas.") },
+    { id: "twin.history", title: "History", flex: 1, render: () => live({
+      calls: ["audit_log"],
+      empty: "No history for this project yet.",
+      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
+      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 10).map((e) => ({
+        t: String(e.at || e.timestamp || "").slice(5, 10) || "—",
+        text: e.message || e.action || "—",
+      }))),
+    }) },
   ],
 };
 
@@ -743,30 +880,17 @@ const measurements = {
     ],
   }),
   right: [
-    { id: "ms.details", title: "Measurement Details", render: () => properties([
-      { group: "Stockpile 1" },
-      { label: "Volume", value: "1,240", unit: "m³" },
-      { label: "Base area", value: "612", unit: "m²" },
-      { label: "Max height", value: "6.4", unit: "m" },
-      { label: "Mean height", value: "2.0", unit: "m" },
-      { label: "Base method", value: "lowest perimeter" },
-      { group: "Confidence" },
-      { label: "Vertical accuracy", value: "±0.05", unit: "m" },
-      { label: "Volume uncertainty", value: "±31", unit: "m³" },
-      { group: "Change" },
-      { label: "Previous", value: "1,102 m³ (2026-05-14)" },
-      { label: "Difference", value: chip("+138 m³", "info") },
-    ]) },
+    /* A 1,240 m3 stockpile with +-31 m3 uncertainty and a previous survey to compare
+       against, on a project with no measurements at all. Volumes are the numbers an
+       operator bills from, so an invented one is the most costly kind here. */
+    { id: "ms.details", title: "Measurement Details", render: () =>
+      emptyState("No measurement selected. Use Volume, Area or Distance on the canvas.") },
   ],
   bottom: [
     { id: "ms.history", title: "Measurement History", flex: 3, render: () => table(
       [{ title: "Name", key: "n" }, { title: "Type", key: "t" }, { title: "Value", key: "v", num: true },
        { title: "Date", key: "d" }, { title: "Δ", key: "c", num: true }],
-      [
-        { n: "Stockpile 1", t: "Volume", v: "1,240 m³", d: "2026-08-02", c: "+138" },
-        { n: "Stockpile 2", t: "Volume", v: "884 m³", d: "2026-08-02", c: "−42" },
-        { n: "Yard extent", t: "Area", v: "1.42 ha", d: "2026-08-02", c: "0" },
-      ], { selectKind: "measurement" }) },
+      [], { selectKind: "measurement" }) },
     { id: "ms.profile", title: "Profile", flex: 2, render: () => canvas({ title: "Elevation profile", note: "Along the selected profile line" }) },
   ],
 };

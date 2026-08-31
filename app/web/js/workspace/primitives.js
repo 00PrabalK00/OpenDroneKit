@@ -205,6 +205,56 @@ export function consoleView(lines) {
 
 /** The central view. `kind` only changes the placeholder wording and overlays --
  *  a real map or 3D viewport mounts into the same element. */
+/* Which of the project's layers answers a canvas view.
+ *
+ * The view names come from the toolbar buttons ("ortho", "dsm", "mesh"); the layer names
+ * come from what the reconstruction wrote. Matching is on substrings of the layer name so
+ * a run that labels its output "DSM hillshade" still answers a request for the DSM.
+ */
+const VIEW_LAYERS = {
+  // "rgb" is what the toolbar calls the orthomosaic -- the button is labelled RGB and
+  // describes itself as "Show the RGB orthomosaic". Omitting it meant the one view most
+  // likely to have a product behind it reported having none.
+  rgb: ["orthomosaic", "ortho"],
+  ortho: ["orthomosaic", "ortho"],
+  orthomosaic: ["orthomosaic", "ortho"],
+  dsm: ["dsm hillshade", "dsm"],
+  dtm: ["dtm"],
+  hillshade: ["hillshade"],
+  semantic: ["semantic", "classification"],
+  thermal: ["thermal"],
+  // Deliberately absent: mesh, pointcloud, profile, fused, radiometric, thermal3d.
+  // Those are produced as files rather than registered layers, or need a viewer this
+  // canvas does not have, so they report "no <view> product yet" -- which is true.
+};
+
+/**
+ * Render one of the active project's products for this view, or null.
+ *
+ * Null means the project genuinely has no such layer, which the caller reports as
+ * "no <view> product yet" rather than falling back to the bundled example. Showing
+ * another project's orthomosaic under this project's title would be the worst
+ * available outcome.
+ */
+async function projectProduct(view) {
+  const { tryCall } = await import("./api.js");
+  const listed = await tryCall("list_layers");
+  const layers = ((listed && listed.layers) || []).filter((l) => l.path);
+  if (!layers.length) return null;
+
+  const wanted = VIEW_LAYERS[view] || [view];
+  const match = layers.find((l) =>
+    wanted.some((w) => String(l.name || l.id).toLowerCase().includes(w)));
+  if (!match) return null;
+
+  const preview = await tryCall("raster_preview", match.id);
+  if (!preview || !preview.data_uri) return null;
+  return {
+    src: preview.data_uri,
+    note: match.crs_epsg ? `${match.name} — EPSG:${match.crs_epsg}` : String(match.name),
+  };
+}
+
 export function canvas({ kind = "map", title, note, tools = [], overlays = [], map = null } = {}) {
   const root = el("div", { class: "canvas" });
 
@@ -260,13 +310,20 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
       return;
     }
 
-    const { DATA } = await import("./demo.js");
     const view = currentView();
     // A map canvas keeps its map ONLY while the view is the map. Returning early for
     // every map canvas meant the thermal workspace -- which is a map -- ignored its own
     // RGB, Thermal and Fused buttons entirely.
     if (!view || view === "map") return;
-    const product = (DATA.products || {})[view];
+
+    // The project's OWN products come first.
+    //
+    // This used to read straight from DATA.products, the bundled example, so the canvas
+    // showed the same picture whatever project was open -- and on the Digital Twin, where
+    // the example has no entry, it showed nothing at all while a real reconstruction with
+    // an orthomosaic, DSM, DTM and mesh sat on disk. raster_preview renders a layer to a
+    // PNG the canvas can display, which is exactly what it exists for.
+    const product = await projectProduct(view);
     if (!product) {
       // Named, not blank. "Nothing here" and "this has not been produced yet" look the
       // same on a dark canvas, and only one of them tells the user what to do.
