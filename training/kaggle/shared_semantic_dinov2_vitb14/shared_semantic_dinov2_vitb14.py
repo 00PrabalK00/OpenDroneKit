@@ -500,18 +500,47 @@ def restore_checkpoint(corpus: Path) -> bool:
             digest.update(block)
     wanted = digest.hexdigest()
 
+    # Read the header in a FRESH interpreter, never in this process.
+    #
+    # install_compatible_torch replaces torch on disk while this process already has the
+    # preinstalled one imported -- it says so itself, which is why the capability check
+    # runs in a subprocess. The checkpoint read did not, and it paid for it: torch.load
+    # here reached for a submodule that exists in the imported-but-deleted build and not
+    # in the installed one, raised ModuleNotFoundError for BOTH mounted checkpoints, and
+    # the honest "no checkpoint matches this corpus" branch then threw away a resume that
+    # was sitting right there. Twelve hours retrained from epoch 0.
+    #
+    # The subprocess also isolates every other version-skew failure this unpickle can hit
+    # (numpy 2 names under a numpy 1 install being the obvious next one), so a checkpoint
+    # this process cannot read is not silently reclassified as a foreign checkpoint.
+    header_reader = (
+        "import json,sys,torch\n"
+        # mmap so reading two scalar fields does not pull a gigabyte into memory.
+        "h=torch.load(sys.argv[1],map_location='cpu',weights_only=False,mmap=True)\n"
+        "print(json.dumps({'epoch':h.get('epoch'),"
+        "'corpus_sha256':str(h.get('corpus_sha256') or '')}))\n"
+    )
+
     matching = []
     for candidate in candidates:
-        try:
-            import torch
-            # mmap so reading one string field does not pull a gigabyte into memory.
-            head = torch.load(candidate, map_location="cpu", weights_only=False, mmap=True)
-            found = str(head.get("corpus_sha256") or "")
-            epoch = head.get("epoch")
-            del head
-        except Exception as exc:
-            print(f"  {candidate}: unreadable ({type(exc).__name__})", flush=True)
+        probe = subprocess.run(
+            [sys.executable, "-c", header_reader, str(candidate)],
+            capture_output=True, text=True,
+        )
+        if probe.returncode != 0:
+            # The message, not just the type. "unreadable (ModuleNotFoundError)" named the
+            # class of fault and hid which module, which is the one fact that would have
+            # identified this in the log instead of a session later.
+            detail = (probe.stderr.strip().splitlines() or ["no stderr"])[-1]
+            print(f"  {candidate}: unreadable -- {detail}", flush=True)
             continue
+        try:
+            head = json.loads(probe.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            print(f"  {candidate}: header probe printed nothing usable", flush=True)
+            continue
+        found = str(head.get("corpus_sha256") or "")
+        epoch = head.get("epoch")
         if found == wanted:
             matching.append((epoch or 0, candidate))
             print(f"  {candidate.parent.name}: epoch {epoch}, corpus matches", flush=True)

@@ -637,18 +637,47 @@ def restore_checkpoint(corpus: Path) -> bool:
             digest.update(block)
     wanted = digest.hexdigest()
 
+    # Read the header in a FRESH interpreter, never in this process.
+    #
+    # install_compatible_torch replaces torch on disk while this process already has the
+    # preinstalled one imported -- it says so itself, which is why the capability check
+    # runs in a subprocess. The checkpoint read did not, and it paid for it: torch.load
+    # here reached for a submodule that exists in the imported-but-deleted build and not
+    # in the installed one, raised ModuleNotFoundError for BOTH mounted checkpoints, and
+    # the honest "no checkpoint matches this corpus" branch then threw away a resume that
+    # was sitting right there. Twelve hours retrained from epoch 0.
+    #
+    # The subprocess also isolates every other version-skew failure this unpickle can hit
+    # (numpy 2 names under a numpy 1 install being the obvious next one), so a checkpoint
+    # this process cannot read is not silently reclassified as a foreign checkpoint.
+    header_reader = (
+        "import json,sys,torch\\n"
+        # mmap so reading two scalar fields does not pull a gigabyte into memory.
+        "h=torch.load(sys.argv[1],map_location='cpu',weights_only=False,mmap=True)\\n"
+        "print(json.dumps({{'epoch':h.get('epoch'),"
+        "'corpus_sha256':str(h.get('corpus_sha256') or '')}}))\\n"
+    )
+
     matching = []
     for candidate in candidates:
-        try:
-            import torch
-            # mmap so reading one string field does not pull a gigabyte into memory.
-            head = torch.load(candidate, map_location="cpu", weights_only=False, mmap=True)
-            found = str(head.get("corpus_sha256") or "")
-            epoch = head.get("epoch")
-            del head
-        except Exception as exc:
-            print(f"  {{candidate}}: unreadable ({{type(exc).__name__}})", flush=True)
+        probe = subprocess.run(
+            [sys.executable, "-c", header_reader, str(candidate)],
+            capture_output=True, text=True,
+        )
+        if probe.returncode != 0:
+            # The message, not just the type. "unreadable (ModuleNotFoundError)" named the
+            # class of fault and hid which module, which is the one fact that would have
+            # identified this in the log instead of a session later.
+            detail = (probe.stderr.strip().splitlines() or ["no stderr"])[-1]
+            print(f"  {{candidate}}: unreadable -- {{detail}}", flush=True)
             continue
+        try:
+            head = json.loads(probe.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            print(f"  {{candidate}}: header probe printed nothing usable", flush=True)
+            continue
+        found = str(head.get("corpus_sha256") or "")
+        epoch = head.get("epoch")
         if found == wanted:
             matching.append((epoch or 0, candidate))
             print(f"  {{candidate.parent.name}}: epoch {{epoch}}, corpus matches", flush=True)
@@ -712,6 +741,7 @@ def kernel_metadata(
     *,
     gpu: bool,
     internet: bool,
+    extra_datasets: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     slug = f"{username}/odk-train-{config_name.replace('_', '-')}"
     return {
@@ -723,7 +753,11 @@ def kernel_metadata(
         "is_private": True,
         "enable_gpu": gpu,
         "enable_internet": internet,
-        "dataset_sources": [dataset_slug],
+        # The corpus first, then anything else the run needs mounted -- an explicitly
+        # uploaded checkpoint being the case that keeps coming up. These were being added
+        # to the generated file by hand and silently deleted by the next regeneration,
+        # which is how a resume ended up with nothing to resume from.
+        "dataset_sources": [dataset_slug, *extra_datasets],
         "competition_sources": [],
         # Its own previous output, mounted under /kaggle/input, is where an
         # interrupted run's checkpoint comes back from. Without this a capped
@@ -739,6 +773,7 @@ def generate(
     dataset_slug: str = "",
     gpu: bool = True,
     internet: bool = True,
+    extra_datasets: tuple[str, ...] = (),
 ) -> Path:
     config_path = CONFIGS / f"{config_name}.yaml"
     if not config_path.is_file():
@@ -754,7 +789,13 @@ def generate(
         kernel_script(config_name, kind, slug.split("/", 1)[-1]), encoding="utf-8"
     )
     (target / "kernel-metadata.json").write_text(
-        json.dumps(kernel_metadata(config_name, username, slug, gpu=gpu, internet=internet), indent=2),
+        json.dumps(
+            kernel_metadata(
+                config_name, username, slug,
+                gpu=gpu, internet=internet, extra_datasets=extra_datasets,
+            ),
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return target
@@ -765,6 +806,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("config", help="Config stem, e.g. solar_thermal_cls.")
     parser.add_argument("--username", required=True, help="Kaggle username owning the kernel.")
     parser.add_argument("--dataset", default="", help="Corpus dataset slug, user/name.")
+    parser.add_argument(
+        "--extra-dataset", action="append", default=[], metavar="USER/NAME",
+        help="Another dataset to mount, repeatable. Use for an uploaded checkpoint.",
+    )
     parser.add_argument("--no-gpu", action="store_true")
     parser.add_argument("--no-internet", action="store_true")
     args = parser.parse_args(argv)
@@ -774,6 +819,7 @@ def main(argv: list[str] | None = None) -> int:
             args.config,
             args.username,
             dataset_slug=args.dataset,
+            extra_datasets=tuple(args.extra_dataset),
             gpu=not args.no_gpu,
             internet=not args.no_internet,
         )
