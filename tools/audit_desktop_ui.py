@@ -20,10 +20,16 @@ and records one of:
     dialog     it asked for input, which is the correct behaviour for that verb
     refused    it declined, with the reason -- a refusal is a working feature
     view       it changed what the canvas shows
+    broken     it raised, and the exception text became the user-facing result
     silent     nothing happened and nothing was said, which is the bug worth finding
 
-`silent` is the only failing outcome. A refusal is not a failure: "select a dataset
-first" is the application telling the truth about its state.
+`silent` and `broken` are the failing outcomes. A refusal is not a failure: "select a
+dataset first" is the application telling the truth about its state.
+
+`broken` was added after New Folder was recorded as `api` while answering
+"ValueError: tif is not a valid file filter". An exception IS a response, so the audit
+counted it among the working controls and reported zero problems. A control that can
+only throw is as dead as one that does nothing.
 """
 
 from __future__ import annotations
@@ -101,6 +107,14 @@ CLICK_ONE = """
   const viewAfter = document.querySelector('.region.centre .canvas-product') ? 'image' : 'other';
   if (viewAfter !== viewBefore) return {outcome: 'view', detail: viewAfter};
   if (after && after !== before) {
+    // A raw exception is a response, so it is not silent -- and it was being counted as
+    // `api`, which reads as working. New Folder answered
+    // "ValueError: tif is not a valid file filter" and the audit called it a pass.
+    // A control that can only ever throw is as dead as one that does nothing; the
+    // difference is that this one says so and was still not counted.
+    if (/\b(Error|Exception|Traceback)\b|^[A-Za-z]*Error:/.test(after)) {
+      return {outcome: 'broken', detail: after.slice(0, 120)};
+    }
     const refused = /first|Select|Open a project|not available|no |No /.test(after);
     return {outcome: refused ? 'refused' : 'api', detail: after.slice(0, 80)};
   }
@@ -170,18 +184,20 @@ def render(rows: list[dict[str, Any]]) -> str:
         f"| dialog | {counts.get('dialog', 0)} | asked for input, which is correct for that verb |",
         f"| refused | {counts.get('refused', 0)} | declined and said why — a working feature |",
         f"| view | {counts.get('view', 0)} | changed what the canvas shows |",
+        f"| broken | {counts.get('broken', 0)} | **threw an exception at the user** |",
         f"| silent | {counts.get('silent', 0)} | **did nothing and said nothing — the bug worth finding** |",
         "",
     ]
 
-    silent = [r for r in rows if r["outcome"] == "silent"]
-    if silent:
-        lines += ["## Controls that do nothing", "",
-                  "| workspace | control | note |", "|---|---|---|"]
-        lines += [f"| {r['workspace']} | {r['button']} | {r.get('detail', '')} |" for r in silent]
+    failing = [r for r in rows if r["outcome"] in ("silent", "broken")]
+    if failing:
+        lines += ["## Controls that do not work", "",
+                  "| workspace | control | outcome | note |", "|---|---|---|---|"]
+        lines += [f"| {r['workspace']} | {r['button']} | {r['outcome']} | "
+                  f"{(r.get('detail') or '').replace('|', chr(92) + '|')} |" for r in failing]
         lines.append("")
     else:
-        lines += ["Every control responded. Nothing is silent.", ""]
+        lines += ["Every control responded, and none of them by raising.", ""]
 
     lines += ["## Every control", "", "| workspace | control | outcome | detail |", "|---|---|---|---|"]
     for row in rows:
@@ -204,12 +220,14 @@ def main(argv: list[str] | None = None) -> int:
             handle.write(report)
         print(f"wrote {args.markdown}")
 
-    silent = sum(1 for row in rows if row["outcome"] == "silent")
-    print(f"{len(rows)} controls exercised, {silent} silent")
-    for row in rows:
-        if row["outcome"] == "silent":
-            print(f"  SILENT {row['workspace']}/{row['button']}")
-    return 1 if silent else 0
+    failing = [row for row in rows if row["outcome"] in ("silent", "broken")]
+    silent = sum(1 for row in failing if row["outcome"] == "silent")
+    broken = sum(1 for row in failing if row["outcome"] == "broken")
+    print(f"{len(rows)} controls exercised, {silent} silent, {broken} raising")
+    for row in failing:
+        print(f"  {row['outcome'].upper()} {row['workspace']}/{row['button']}: "
+              f"{(row.get('detail') or '')[:90]}")
+    return 1 if failing else 0
 
 
 if __name__ == "__main__":

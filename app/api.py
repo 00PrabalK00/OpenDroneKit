@@ -2170,12 +2170,25 @@ class Api:
 
     @guard
     def pick_file(self, extensions: list[str] | None = None) -> dict[str, Any]:
+        """Open the native file chooser, filtered to the extensions the caller wants.
+
+        pywebview's `file_types` are display strings -- "Rasters (*.tif;*.tiff)" -- not
+        extensions. Passing the bare list the UI sends made it raise
+        `ValueError: tif is not a valid file filter`, and the exception travelled all the
+        way to the toolbar as the result of pressing the button. Every layer-import
+        control was dead in exactly that way.
+
+        So the conversion happens here, at the boundary between what the UI naturally has
+        and what the toolkit demands, rather than being every caller's problem.
+        """
         import webview
 
         if self._window is None:
             return fail("Window is not ready.")
-        filters = tuple(extensions) if extensions else ("All files (*.*)",)
-        result = self._window.create_file_dialog(webview.OPEN_DIALOG, file_types=filters)
+
+        result = self._window.create_file_dialog(
+            webview.OPEN_DIALOG, file_types=_file_type_filters(extensions)
+        )
         return ok(path=result[0] if result else "")
 
     @guard
@@ -2191,6 +2204,52 @@ class Api:
         else:
             subprocess.run(["xdg-open", str(target)], check=False)
         return ok(opened=str(target))
+
+
+#: Extensions the UI asks for, grouped the way a person picking a file thinks about them.
+_FILE_TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Rasters", ("tif", "tiff", "img", "vrt")),
+    ("Vectors", ("geojson", "json", "shp", "gpkg", "kml")),
+    ("Imagery", ("jpg", "jpeg", "png")),
+    ("Point clouds", ("las", "laz", "ply")),
+)
+
+
+def _file_type_filters(extensions: list[str] | None) -> tuple[str, ...]:
+    """Turn bare extensions into the display strings pywebview requires.
+
+    pywebview validates `file_types` against "Description (*.ext;*.ext)" and raises
+    ValueError on anything else -- which is how "tif" became a toolbar error message.
+
+    Requested extensions are grouped under the labels above so the chooser reads like a
+    file chooser rather than a list of suffixes, and anything unrecognised still gets an
+    entry of its own rather than being dropped: silently narrowing what a user is allowed
+    to open is worse than an ugly label.
+    """
+    wanted = [str(e).strip().lstrip("*.").lower() for e in (extensions or []) if str(e).strip()]
+    if not wanted:
+        return ("All files (*.*)",)
+
+    filters: list[str] = []
+    claimed: set[str] = set()
+    for label, known in _FILE_TYPE_GROUPS:
+        present = [e for e in wanted if e in known and e not in claimed]
+        if present:
+            filters.append(f"{label} ({';'.join('*.' + e for e in present)})")
+            claimed.update(present)
+
+    for extension in wanted:
+        if extension not in claimed:
+            filters.append(f"{extension.upper()} files (*.{extension})")
+            claimed.add(extension)
+
+    # Every supported type in one entry, so a user with a mixed folder is not forced to
+    # cycle the dropdown to find their file.
+    if len(filters) > 1:
+        combined = ";".join(f"*.{e}" for e in wanted)
+        filters.insert(0, f"Supported files ({combined})")
+    filters.append("All files (*.*)")
+    return tuple(filters)
 
 
 def _centroid(ring: list[list[float]]) -> list[float]:

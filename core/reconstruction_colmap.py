@@ -16,6 +16,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -94,13 +95,35 @@ def colmap_available() -> bool:
 
 
 def colmap_executable() -> str | None:
-    """Locate a native colmap binary, which is what enables GPU dense stereo."""
+    """Locate a native colmap binary, which is what enables GPU dense stereo.
+
+    ODK_COLMAP wins, so an operator can point at a specific build without touching PATH.
+    The per-user locations matter on Windows: the official CUDA archive is 359 MB and
+    installing it under Program Files needs administrator rights, which a normal user
+    running this application does not have. Searching only the machine-wide path meant a
+    perfectly good GPU build sat unused and the capability report said dense stereo was
+    unavailable -- true of the search, not of the machine.
+    """
+    override = os.environ.get("ODK_COLMAP", "").strip()
+    if override:
+        candidate = Path(override)
+        # Accept either the executable itself or the directory holding it.
+        for path in (candidate, candidate / "bin" / "colmap.exe", candidate / "colmap.exe"):
+            if path.is_file():
+                return str(path)
+        return None
+
     found = shutil.which("colmap")
     if found:
         return found
+
+    local = Path(os.environ.get("LOCALAPPDATA", "")) if os.name == "nt" else None
     for candidate in (
         Path("C:/Program Files/COLMAP/COLMAP.bat"),
         Path("C:/Program Files/COLMAP/bin/colmap.exe"),
+        *((local / "COLMAP" / "bin" / "colmap.exe",) if local else ()),
+        *((local / "COLMAP" / "COLMAP.bat",) if local else ()),
+        Path.home() / ".local" / "bin" / "colmap",
         Path("/usr/local/bin/colmap"),
         Path("/usr/bin/colmap"),
     ):
@@ -383,6 +406,25 @@ class ColmapReconstructor:
             database_path.unlink()
 
         progress(8, "Extracting SIFT features")
+
+        # The GPU is only reachable through the native binary on this kind of install.
+        #
+        # pycolmap's published wheels are built without CUDA, so `use_gpu` on its options
+        # is accepted and then ignored -- SIFT and matching run on the CPU no matter what
+        # the capability report says. Finding a native CUDA build and then using it for
+        # dense alone left the two slowest stages of the pipeline on the CPU, which is
+        # most of the wall clock on any real survey.
+        #
+        # COLMAP's database is a plain file format shared by both, so the binary can fill
+        # it and pycolmap can map from it. Nothing downstream changes.
+        if self.use_gpu and not pycolmap_has_cuda() and colmap_executable():
+            if self._run_sparse_native(image_dir, database_path, image_count, progress):
+                return self._map_from_database(image_dir, database_path, sparse_dir, progress)
+            self._warn(
+                "The native COLMAP binary failed; falling back to the CPU bindings. "
+                "The result is the same, more slowly."
+            )
+
         extract_kwargs: dict[str, Any] = {
             "database_path": str(database_path),
             "image_path": str(image_dir),
@@ -413,6 +455,22 @@ class ColmapReconstructor:
         progress(24, f"Matching features ({matcher})")
         self._run_matcher(matcher, database_path, device)
 
+        return self._map_from_database(image_dir, database_path, sparse_dir, progress, image_count)
+
+    def _map_from_database(
+        self,
+        image_dir: Path,
+        database_path: Path,
+        sparse_dir: Path,
+        progress: Callable[[int, str], None],
+        image_count: int = 0,
+    ) -> Any:
+        """Incremental mapping and bundle adjustment from a filled database.
+
+        Split out so the features in that database can come from either pycolmap or the
+        native binary. The database is COLMAP's own format either way, so mapping does
+        not care which produced it.
+        """
         progress(45, "Incremental mapping with bundle adjustment")
         try:
             reconstructions = pycolmap.incremental_mapping(  # type: ignore[union-attr]
@@ -441,6 +499,98 @@ class ColmapReconstructor:
                 f"({len(_registered_images(best))} of {image_count} images). Increase overlap to merge them."
             )
         return best
+
+    def _run_sparse_native(
+        self,
+        image_dir: Path,
+        database_path: Path,
+        image_count: int,
+        progress: Callable[[int, str], None],
+    ) -> bool:
+        """Extract and match on the GPU via the native binary. False means it did not.
+
+        Returns rather than raises: a failure here is not fatal, because the CPU
+        bindings can still do the same work. Reporting False lets the caller say so and
+        carry on, which is the difference between a slower run and a failed one.
+        """
+        binary = colmap_executable()
+        if not binary:
+            return False
+
+        # 4.1 renamed the extraction knobs from SiftExtraction.* to FeatureExtraction.*
+        # and kept the old names for the SIFT-specific ones. Passing an unrecognised
+        # option is fatal to the binary, so every name is probed rather than assumed.
+        #
+        # Each subcommand is probed against ITS OWN help. Reusing the extractor's help to
+        # choose the matcher's flag is how this failed the first time: FeatureMatching.
+        # use_gpu cannot appear in feature_extractor --help, so the probe fell through to
+        # the legacy name, the matcher rejected it, and the whole native path bailed to
+        # the CPU while the progress message still said "on the GPU".
+        def options_of(subcommand: str) -> str:
+            try:
+                probe = subprocess.run(
+                    [binary, subcommand, "--help"],
+                    capture_output=True, text=True, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return ""
+            return (probe.stdout or "") + (probe.stderr or "")
+
+        extract_help = options_of("feature_extractor")
+        if not extract_help:
+            return False
+        gpu_flag = ("--FeatureExtraction.use_gpu" if "FeatureExtraction.use_gpu" in extract_help
+                    else "--SiftExtraction.use_gpu")
+        features_flag = ("--SiftExtraction.max_num_features"
+                         if "SiftExtraction.max_num_features" in extract_help else "")
+
+        extract = [
+            binary, "feature_extractor",
+            "--database_path", str(database_path),
+            "--image_path", str(image_dir),
+            gpu_flag, "1",
+        ]
+        if features_flag:
+            extract += [features_flag, str(int(self.settings["max_num_features"]))]
+
+        matcher = str(self.settings.get("matcher", "auto"))
+        if matcher == "auto":
+            matcher = "exhaustive" if image_count <= EXHAUSTIVE_MATCH_LIMIT else "sequential"
+        match_help = options_of(f"{matcher}_matcher")
+        if not match_help:
+            return False
+        match_gpu = ("--FeatureMatching.use_gpu" if "FeatureMatching.use_gpu" in match_help
+                     else "--SiftMatching.use_gpu")
+        match = [
+            binary, f"{matcher}_matcher",
+            "--database_path", str(database_path),
+            match_gpu, "1",
+        ]
+
+        for step, command, percent, label in (
+            (1, extract, 8, "Extracting SIFT features on the GPU"),
+            (2, match, 24, f"Matching features on the GPU ({matcher})"),
+        ):
+            progress(percent, label)
+            try:
+                result = subprocess.run(command, capture_output=True, text=True, timeout=7200)
+            except (OSError, subprocess.SubprocessError) as exc:
+                self._warn(f"Native COLMAP step {step} could not run: {exc}")
+                return False
+            if result.returncode != 0:
+                tail = (result.stderr or result.stdout or "").strip().splitlines()
+                self._warn(
+                    f"Native COLMAP step {step} failed: "
+                    + (tail[-1] if tail else f"exit {result.returncode}")
+                )
+                return False
+            # "Creating SIFT CPU feature extractor" means the binary fell back, so the
+            # run would be no faster and the claim of GPU work would be false.
+            if step == 1 and "SIFT CPU feature extractor" in (result.stdout or ""):
+                self._warn(
+                    "The native COLMAP build did not use the GPU for feature extraction."
+                )
+        return True
 
     def _worker_threads(self) -> int:
         """Cap COLMAP's worker threads.
