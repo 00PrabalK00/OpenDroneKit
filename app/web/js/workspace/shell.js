@@ -9,7 +9,7 @@
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
-import { DATA, DEMO, demoEnabled } from "./demo.js";
+import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setImage, setView } from "./viewstate.js";
@@ -60,6 +60,24 @@ export class Shell {
     await this.refreshState();
   }
 
+  /**
+   * Whether any visible panel is currently rendering the built-in sample.
+   *
+   * Uses the demo constants themselves as the test, so this cannot drift away from what
+   * the panels actually draw: if a panel stops using DEMO.ORG the sentinel stops
+   * matching, and if a new panel starts using it the banner appears without anyone
+   * having to remember to wire it.
+   *
+   * A heuristic, deliberately biased towards showing the banner. A banner over real data
+   * is a moment of confusion; real-looking numbers that were invented are the failure
+   * this whole codebase is arranged to prevent.
+   */
+  showingSampleContent() {
+    const text = (this.workspaceEl && this.workspaceEl.innerText) || "";
+    if (!text) return false;
+    return SAMPLE_SENTINELS.some((mark) => mark && text.includes(mark));
+  }
+
   /** The frame reflects the state: the banner only exists while content is synthetic. */
   applyMode() {
     if (!this.banner) return;
@@ -68,7 +86,20 @@ export class Shell {
     // bridge the panels still render the structural sample, so hiding the banner left
     // synthetic content on screen with nothing saying so. Connected is the only state
     // in which what you are looking at was measured.
-    const synthetic = this.mode !== "connected";
+    // The line above used to be `this.mode !== "connected"`, on the stated reasoning
+    // that "connected is the only state in which what you are looking at was measured".
+    // That premise is false, and the comment two lines up already says why: panels fall
+    // back to the structural sample when they have nothing wired, and they do that in
+    // connected mode too.
+    //
+    // Measured on the real window, connected, with a 77-image project open: Processing
+    // showed "DEMO site 1/2/3" and "1,842 images", did NOT show the project's actual 77,
+    // and the banner was collapsed to height 0 -- invented figures presented with the
+    // disclaimer suppressed BECAUSE the app knew it was connected. That is the one thing
+    // this project does not do.
+    //
+    // So the banner now follows what is on screen rather than what the bridge says.
+    const synthetic = this.mode !== "connected" || this.showingSampleContent();
     this.banner.classList.toggle("hidden", !synthetic);
     if (this.connectionChip) {
       this.connectionChip.textContent =
@@ -481,6 +512,12 @@ export class Shell {
 
     this.buildToolbar(workspace);
     this.dock.render(workspace);
+
+    // Re-check per workspace: whether the panels on screen are showing the sample varies
+    // between them, so a banner decided once at startup would be wrong on most of them.
+    // Deferred a tick because the dock's panels populate asynchronously and the text to
+    // test does not exist yet on this one.
+    setTimeout(() => this.applyMode(), 0);
   }
 
   buildToolbar(workspace) {

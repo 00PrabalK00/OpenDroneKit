@@ -112,7 +112,12 @@ CLICK_ONE = """
     // "ValueError: tif is not a valid file filter" and the audit called it a pass.
     // A control that can only ever throw is as dead as one that does nothing; the
     // difference is that this one says so and was still not counted.
-    if (/\b(Error|Exception|Traceback)\b|^[A-Za-z]*Error:/.test(after)) {
+    // \bError\b does not match inside "TypeError", and anchoring to the start of the
+    // string fails because the toast is prefixed with the control's own name --
+    // "Match Captures: TypeError: ...". The first version of this check made both
+    // mistakes at once and filed a real crash under `refused`, which reads as a working
+    // feature. Match the exception class anywhere in the message instead.
+    if (/\w*(Error|Exception)\b\s*:|Traceback/.test(after)) {
       return {outcome: 'broken', detail: after.slice(0, 120)};
     }
     const refused = /first|Select|Open a project|not available|no |No /.test(after);

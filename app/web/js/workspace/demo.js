@@ -78,3 +78,17 @@ export function demoEnabled() {
     return false;
   }
 }
+
+
+/**
+ * Strings that only appear when a panel is drawing the built-in sample.
+ *
+ * The shell tests the rendered workspace against these to decide whether the EXAMPLE
+ * DATA banner belongs on screen. Derived from the same constants the panels render, so
+ * the two cannot disagree: there is no second list to keep in step.
+ */
+export const SAMPLE_SENTINELS = [
+  DEMO.ORG,
+  DEMO.OPERATOR + " site",
+  ...(DEMO.SITES || []).slice(0, 3),
+].filter((s) => typeof s === "string" && s.length > 3);

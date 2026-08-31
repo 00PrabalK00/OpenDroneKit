@@ -16,7 +16,7 @@
  * refusal arriving from Python three seconds later reads as a crash.
  */
 
-import { call, connected } from "./api.js";
+import { call, tryCall, lastError, connected } from "./api.js";
 
 /** Actions that need an open project before they mean anything. */
 const NEEDS_PROJECT = new Set([
@@ -99,14 +99,61 @@ export const ACTIONS = {
     },
   },
   Export: {
-    describe: "Export the mission to the flight-controller formats.",
-    async run() {
-      const result = await call("export_mission");
-      const files = result.files || result.exported || [];
-      return { message: `Exported ${files.length || "the mission"}.`, files };
+    describe: "Export the mission, or the products when there is no mission.",
+    async run(ctx) {
+      // tryCall, not call: call() THROWS when the API refuses, so a fallback written
+      // after it can never run. The first version of this used call() and the mission
+      // refusal propagated straight past the products branch, which is why the button
+      // still said "No mission has been planned yet" on screens that had products.
+      const result = await tryCall("export_mission");
+      const files = (result && (result.files || result.exported)) || [];
+      if (files.length) {
+        return { message: `Exported ${files.length} mission file(s).`, files };
+      }
+
+      // Export sits on Projects, Digital Twin, Thermal, Fleet and Settings as well as
+      // Mission Planning, and on all of those it answered "No mission has been planned
+      // yet" -- true, and about something the user was not looking at. If the project has
+      // products, those are the exportable thing; the mission refusal is only the right
+      // answer when there is nothing else to give.
+      const listed = await tryCall("list_layers");
+      if (((listed && listed.layers) || []).some((l) => l.path)) {
+        return ACTIONS["Export Products"].run(ctx);
+      }
+      return {
+        message:
+          lastError.get("export_mission") ||
+          "Nothing to export yet: no mission has been planned and no products exist.",
+      };
     },
   },
-  "Export Products": { alias: "Export" },
+  "Export Products": {
+    describe: "Reveal the georeferenced products on disk.",
+    async run() {
+      // This aliased to Export, which exports the MISSION. So pressing it on Processing,
+      // Digital Twin, Thermal, Fleet or Settings answered "No mission has been planned
+      // yet" -- a true sentence about something the user had not asked about, on screens
+      // where a mission is not the subject. Seven workspaces reported that.
+      //
+      // The products are already georeferenced COGs written to the project directory, so
+      // there is nothing to convert: revealing them IS the export.
+      const listed = await tryCall("list_layers");
+      const layers = (((listed && listed.layers) || [])).filter((l) => l.path);
+      if (!layers.length) {
+        return {
+          message:
+            "No products yet. Run a reconstruction and the orthomosaic, DSM, DTM and " +
+            "hillshade will be written to the project folder.",
+        };
+      }
+
+      const first = layers[0].path;
+      const directory = first.slice(0, Math.max(first.lastIndexOf("\\"), first.lastIndexOf("/")));
+      await call("open_path", directory);
+      const names = layers.map((l) => l.name).join(", ");
+      return { message: `${layers.length} products in ${directory}: ${names}.` };
+    },
+  },
   Simulate: {
     describe: "Read the compiled plan back as GeoJSON.",
     async run() {
@@ -311,8 +358,32 @@ export const ACTIONS = {
   "Match Captures": {
     describe: "Compare what was captured against what was planned.",
     async run() {
-      const result = await call("compare_survey_specifications");
-      return { message: result.summary || "Captures compared against the plan." };
+      // compare_survey_specifications takes the two mission versions to difference.
+      // This called it with none, so the button's only possible outcome was
+      // "TypeError: Api.compare_survey_specifications() missing 2 required positional
+      // arguments" shown to the user as the result. The versions are fetched here and
+      // the honest refusal is given when there are not two of them to compare.
+      const listed = await tryCall("list_mission_versions");
+      const versions = ((listed && (listed.versions || listed)) || [])
+        .map((v) => Number(v.version_num ?? v.version ?? 0))
+        .filter((n) => n > 0)
+        .sort((a, b) => a - b);
+
+      if (versions.length < 2) {
+        return {
+          message:
+            `Match Captures compares two saved survey versions; this project has ` +
+            `${versions.length}. Save the mission again after the next flight to ` +
+            `difference them.`,
+        };
+      }
+
+      const [previous, latest] = versions.slice(-2);
+      const result = await call("compare_survey_specifications", previous, latest);
+      return {
+        message:
+          result.summary || `Compared survey version ${previous} against ${latest}.`,
+      };
     },
   },
 
