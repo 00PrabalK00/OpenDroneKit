@@ -83,15 +83,51 @@ class TestTheShellDistinguishesItsThreeStates:
         assert "list_projects" in shell_js
 
     def test_the_demo_banner_shows_whenever_content_is_synthetic(self, shell_js) -> None:
-        """Connected is the only state in which what is on screen was measured.
+        """The banner must follow what is on screen, not what the bridge reports.
 
-        Keying this on demo mode alone was wrong: with no bridge the panels still render
-        the structural sample, so hiding the banner outside demo mode left synthetic
-        content on screen with nothing saying so -- worse than the clipped chip it
-        replaced.
+        This test used to assert the literal line `this.mode !== "connected"`, on the
+        reasoning that connected is the only state in which what you are looking at was
+        measured. That reasoning was wrong, and pinning the source text kept it wrong.
+
+        Measured on the real window, connected, with a 77-image project open: Processing
+        showed "DEMO site 1/2/3" and "1,842 images", did NOT show the project's actual 77,
+        and the EXAMPLE DATA banner was collapsed to height 0. Panels fall back to the
+        structural sample whenever they have nothing wired, and they do that while
+        connected too -- so the app presented invented figures with its own disclaimer
+        suppressed BECAUSE it believed it was connected.
+
+        The condition must therefore consult the rendered content as well as the mode.
         """
         assert 'this.banner.classList.toggle("hidden"' in shell_js
-        assert 'const synthetic = this.mode !== "connected";' in shell_js
+        assert "showingSampleContent" in shell_js, (
+            "the banner condition ignores what is actually rendered"
+        )
+        assert 'const synthetic = this.mode !== "connected" || this.showingSampleContent();' in shell_js
+
+        # Being disconnected must still raise it: panels render the sample then too.
+        assert 'this.mode !== "connected"' in shell_js
+
+    def test_the_sample_sentinels_come_from_the_demo_constants(self) -> None:
+        """The detector must not carry its own copy of what the sample looks like.
+
+        A second hand-maintained list would drift the moment a panel changed which demo
+        constant it renders, and the failure would be silent in the direction that
+        matters: no banner over invented content.
+        """
+        demo_js = (WORKSPACE_JS / "demo.js").read_text(encoding="utf-8")
+        assert "export const SAMPLE_SENTINELS" in demo_js
+        sentinels = demo_js.split("export const SAMPLE_SENTINELS")[1]
+        assert "DEMO.ORG" in sentinels, "sentinels must be derived from the demo constants"
+        assert "DEMO.SITES" in sentinels
+
+    def test_the_banner_is_re_evaluated_when_the_workspace_changes(self, shell_js) -> None:
+        """Which panels are sampled differs between workspaces.
+
+        Deciding once at startup would leave the banner correct on whichever workspace
+        happened to open first and wrong on most of the others.
+        """
+        opened = shell_js.split("  open(id) {")[1].split("\n  buildToolbar(")[0]
+        assert "applyMode()" in opened
 
     def test_hiding_the_banner_does_not_break_the_grid(self) -> None:
         """The shell's rows are positional, so display: none on the banner shifts every
