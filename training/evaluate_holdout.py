@@ -96,7 +96,7 @@ def holdout_report(scores: dict[str, float], *, sites: list[str]) -> dict[str, A
             "remain unmeasured. The imagery is a Planet mosaic measured at 2.91-4.77 m per "
             "pixel -- this note previously said 0.5 m, which was wrong by a factor of "
             "eight -- so it speaks for building extraction at satellite scale and says "
-            "little about a survey flown at 60 m. Tiles are resampled to the training "
+            "little about a drone survey flown at 60 m. Tiles are resampled to the training "
             "target_gsd before scoring, so a score is comparable only with others "
             "measured the same way. "
             "Compare predicted_building_fraction against labelled_building_fraction: a "

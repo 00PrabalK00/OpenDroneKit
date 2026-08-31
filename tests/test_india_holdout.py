@@ -83,14 +83,48 @@ class TestBuiltCorpus:
         for sample in held:
             assert sample.get("pinned_test_reason"), sample["id"]
 
-    def test_the_holdout_only_speaks_for_buildings(self) -> None:
-        # SpaceNet 7 labels buildings and nothing else. Recording that here means a
-        # future contributor who reads this metric as whole-schema India performance
-        # has to delete an assertion that says otherwise.
+    def test_the_two_india_holdouts_are_not_the_same_kind_of_evidence(self) -> None:
+        """This assertion used to read "the holdout only speaks for buildings", and it
+        was right until Gorakhpur was pinned. It said a contributor who wanted to claim
+        whole-schema India performance would have to come and delete it. That happened,
+        and this is what replaced it rather than a deletion.
+
+        There are now two India holdouts and they measure different things. SpaceNet 7
+        labels buildings and leaves the rest of each tile ignored -- which is why its
+        multiclass score cannot fail, a model predicting building everywhere scores mean
+        IoU 1.0 on it. Gorakhpur is exhaustively annotated across all six classes, so a
+        false positive lands on a labelled pixel and counts.
+
+        Conflating them is the specific error to prevent: quoting a Gorakhpur-style
+        six-class number over SpaceNet 7 tiles, or reading a buildings-only figure as
+        whole-schema performance.
+        """
         held = [s for s in self._corpus()["samples"] if s["group"] in INDIA_HOLDOUT_GROUPS]
-        assert {s["source"] for s in held} == {"spacenet7"}
+        assert {s["source"] for s in held} == {"spacenet7", "openearthmap"}
+
+        # A group belongs to exactly one source, so a report can say which kind of
+        # evidence it is scoring by looking at the group alone.
+        by_group: dict[str, set[str]] = {}
         for sample in held:
+            by_group.setdefault(sample["group"], set()).add(sample["source"])
+        for group, sources in by_group.items():
+            assert len(sources) == 1, f"{group} mixes sources {sources}"
+
+        buildings_only = [s for s in held if s["source"] == "spacenet7"]
+        assert buildings_only
+        for sample in buildings_only:
             assert sample.get("class_ids") == [1], (
-                f"{sample['id']} claims classes beyond building; the India holdout's "
-                "scope note is no longer accurate."
+                f"{sample['id']} claims classes beyond building. SpaceNet 7 annotates "
+                "buildings and nothing else; if that changed, every note calling this "
+                "holdout buildings-only is now wrong."
+            )
+
+        exhaustive = [s for s in held if s["source"] == "openearthmap"]
+        assert exhaustive, "Gorakhpur is the only India evidence covering more than buildings"
+        for sample in exhaustive:
+            classes = sample.get("class_ids") or []
+            assert len(classes) > 1, (
+                f"{sample['id']} carries {classes}. Gorakhpur is pinned precisely because "
+                "it is exhaustively annotated; a single-class tile here means the corpus "
+                "no longer supports the multiclass claim that rests on it."
             )
