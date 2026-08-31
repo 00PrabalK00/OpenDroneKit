@@ -296,7 +296,13 @@ def _normalize_template(mode: str) -> str:
         "tower_mapping": "tower_mapping",
         "cell_tower": "tower_mapping",
         "stack": "tower_mapping",
-        "dome": "tower_mapping",
+        # A dome is not a cylinder: aliasing it to tower_mapping flew every ring at
+        # the same radius, so the stand-off was only right at the widest one.
+        "dome": "dome_inspection",
+        "dome_inspection": "dome_inspection",
+        "silo": "dome_inspection",
+        "box": "box_inspection",
+        "box_inspection": "box_inspection",
         "solar": "solar_inspection",
         "solar_inspection": "solar_inspection",
         "solar_rows": "solar_inspection",
@@ -363,6 +369,7 @@ def _normalize_template(mode: str) -> str:
 STRUCTURE_RELATIVE_TEMPLATES = frozenset({
     "facade", "facade_mapping", "multi_facade", "closed_loop",
     "tower_mapping", "orbit", "wind_turbine", "bubble_360",
+    "dome_inspection", "box_inspection",
 })
 
 # Room beyond the stand-off itself, so a capture point sitting exactly at stand-off is
@@ -5026,6 +5033,10 @@ class MissionPlanner:
             return self._compile_waypoints_primitive(primitive.params)
         if kind == "tower_mapping":
             return self._compile_tower_mapping_primitive(primitive.params)
+        if kind == "dome_inspection":
+            return self._compile_dome_inspection_primitive(primitive.params)
+        if kind == "box_inspection":
+            return self._compile_box_inspection_primitive(primitive.params)
         if kind == "solar_inspection":
             return self._compile_solar_inspection_primitive(primitive.params)
         if kind == "magnetic_mapping":
@@ -5831,6 +5842,139 @@ class MissionPlanner:
                     )
                 )
 
+        return poses
+
+    def _compile_dome_inspection_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """Rings that follow a dome's curve, with the camera on the surface normal.
+
+        A dome used to alias to tower_mapping, which flies every ring at the SAME radius
+        because a tower is a cylinder. Do that to a silo cap or a stadium roof and the
+        upper rings stand off further and further from a surface curving away underneath
+        them: the requested stand-off is only correct at the widest ring, ground sample
+        drifts all the way up, and the crown is photographed from the side rather than
+        looked at.
+
+        Here the ring radius follows the dome. At elevation angle e up a dome of radius R
+        the surface sits at radius R*cos(e) and height R*sin(e), so the flight path is
+        that offset outward along the normal by the stand-off. The gimbal points along
+        the same normal -- horizontal at the equator, straight down at the crown -- so
+        the stand-off holds everywhere and the crown is actually inspected.
+        """
+        center = np.asarray(params.get("center_local", [0.0, 0.0]), dtype=np.float64)
+        dome_radius = max(1.0, float(params.get("object_radius_m", 10.0)))
+        standoff = max(1.0, float(params.get("standoff_m", 8.0)))
+        base_alt = float(params.get("base_altitude_m", 0.0))
+        rings = max(2, int(params.get("rings", 5)))
+        points_per_ring = max(8, int(params.get("points_per_orbit", 24)))
+        ground_offset = float(params.get("ground_offset_m", 0.0))
+        terrain_follow_enabled = bool(params.get("terrain_follow_enabled", False))
+        terrain_model = params.get("terrain_model")
+
+        poses: list[_CapturePose] = []
+        for ring_idx in range(rings):
+            # Spaced in ANGLE, not height. Equal height steps bunch the rings toward the
+            # crown, where the surface turns fastest and needs them least.
+            elevation = (pi / 2.0) * (ring_idx / max(1, rings - 1))
+            cos_e = float(np.cos(elevation))
+            sin_e = float(np.sin(elevation))
+            flight_radius = dome_radius * cos_e + standoff * cos_e
+            alt = base_alt + dome_radius * sin_e + standoff * sin_e + ground_offset
+            pitch = float(np.clip(-np.degrees(elevation), -120.0, 30.0))
+
+            # The crown is a point; ringing it would fly the same shot repeatedly.
+            count = 1 if flight_radius < 0.5 else points_per_ring
+            order = range(count - 1, -1, -1) if ring_idx % 2 else range(count)
+
+            for i in order:
+                theta = 2.0 * pi * (i / count) if count > 1 else 0.0
+                x = float(center[0] + flight_radius * np.cos(theta))
+                y = float(center[1] + flight_radius * np.sin(theta))
+                yaw = (float(np.degrees(np.arctan2(float(center[1]) - y, float(center[0]) - x)))
+                       if count > 1 else 0.0)
+                pt = np.asarray([x, y], dtype=np.float64)
+                terrain_delta = (
+                    _terrain_delta_m(pt, terrain_model if isinstance(terrain_model, dict) else None)
+                    if terrain_follow_enabled else 0.0
+                )
+                poses.append(
+                    _CapturePose(
+                        x_m=x,
+                        y_m=y,
+                        alt_m=max(1.0, float(alt + terrain_delta)),
+                        yaw_deg=yaw,
+                        gimbal_pitch_deg=pitch,
+                        primitive=f"dome_inspection_ring{ring_idx + 1}",
+                        trigger=True,
+                        dwell_s=0.0,
+                        camera_yaw_locked=True,
+                    )
+                )
+        return poses
+
+    def _compile_box_inspection_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
+        """A rectangular circuit at stand-off, camera on the building centre throughout.
+
+        A crosshatch over a rectangular building photographs the roof and misses the
+        vertical edges and the sides of rooftop plant. Orbiting it on a CIRCLE instead
+        holds the corners at the requested distance and leaves the middle of each wall
+        much further away, so ground sample varies along every face.
+
+        The path here is the footprint offset outward by the stand-off, which keeps the
+        distance to each wall constant along that wall, and the camera stays on the
+        centre of the building so every frame looks inward at an oblique. That is what
+        brings rooftop features, vertical edges and side elevations into the capture.
+        """
+        footprint = params.get("polygon_local", [])
+        if not footprint:
+            return []
+        poly = np.asarray(_ensure_closed_xy(footprint), dtype=np.float64)
+        standoff = max(1.0, float(params.get("standoff_m", 15.0)))
+        levels = params.get("altitude_levels_m", [40.0])
+        if not isinstance(levels, list) or not levels:
+            levels = [40.0]
+        spacing = max(2.0, float(params.get("capture_spacing_m", 8.0)))
+        ground_offset = float(params.get("ground_offset_m", 0.0))
+        gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -30.0)), -120.0, 30.0))
+
+        centre = poly[:-1].mean(axis=0)
+        # Offset each vertex outward along the ray from the centre. Correct for the
+        # convex rectangles this mission type is for; a footprint with inward corners is
+        # what plan_complex_facade exists to handle, and it says so rather than guessing.
+        offset_ring: list[np.ndarray] = []
+        for vertex in poly[:-1]:
+            direction = vertex - centre
+            norm = float(np.linalg.norm(direction))
+            if norm < 1e-6:
+                continue
+            offset_ring.append(vertex + (direction / norm) * standoff)
+        if len(offset_ring) < 3:
+            return []
+        offset_ring.append(offset_ring[0])
+
+        poses: list[_CapturePose] = []
+        for level_idx, level in enumerate(levels):
+            alt = float(level) + ground_offset
+            ring = list(reversed(offset_ring)) if level_idx % 2 else offset_ring
+            for start, end in zip(ring[:-1], ring[1:]):
+                span = float(np.linalg.norm(end - start))
+                steps = max(1, int(np.ceil(span / spacing)))
+                for step in range(steps):
+                    point = start + (end - start) * (step / steps)
+                    x, y = float(point[0]), float(point[1])
+                    yaw = float(np.degrees(np.arctan2(float(centre[1]) - y, float(centre[0]) - x)))
+                    poses.append(
+                        _CapturePose(
+                            x_m=x,
+                            y_m=y,
+                            alt_m=max(1.0, alt),
+                            yaw_deg=yaw,
+                            gimbal_pitch_deg=gimbal_pitch,
+                            primitive=f"box_inspection_level{level_idx + 1}",
+                            trigger=True,
+                            dwell_s=0.0,
+                            camera_yaw_locked=True,
+                        )
+                    )
         return poses
 
     def _compile_solar_inspection_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:

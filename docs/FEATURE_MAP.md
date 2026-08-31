@@ -89,8 +89,8 @@ We generate **15 templates today**: `grid`, `double_grid`, `corridor`, `facade`,
 | Full building capture | `linked_mission` | as above |
 | Utility pylon | `mp.tpl_pylon` | **now reachable** — `Api.plan_pylon_mission`; one stacked orbit per named element (crossarm, insulator, conductor, body) |
 | **Wind turbine** | — | **gap — `mp.tpl_turbine`** |
-| **Box inspection** | — | **gap — `mp.tpl_box`** |
-| **Dome inspection** | — | **gap — `mp.tpl_dome`** |
+| Box inspection | `box_inspection` | **built this session** — offset-footprint circuit, camera on the building centre |
+| Dome inspection | `dome_inspection` | **built this session** — hemispherical rings, gimbal on the surface normal; was silently aliased to `tower_mapping` |
 
 ### Correction, made while building this
 
@@ -109,7 +109,7 @@ verified end to end:
 | Thermal | `Api.plan_thermal_survey` | altitude solved for the THERMAL sensor: 38.2 m for a 5 cm thermal GSD |
 | Multispectral | `Api.plan_multispectral_survey` | refuses without a reflectance panel; plans with one, 5+ bands |
 
-That leaves **three** genuinely missing templates, not four. They remain the cheapest real
+Box and dome are now built too (see below), which leaves **one**: wind turbine. They remain the cheapest real
 wins on this list: the generator, camera model, overlap solver and simulator all exist, so
 each is a new geometry routine rather than new infrastructure.
 
@@ -296,8 +296,8 @@ by where they appear above.
 | # | ODK id | What it is | Why this rank |
 |---|---|---|---|
 | 1 | `mp.tpl_turbine` | Wind turbine mission | Uses `mp.fly_to_draw` for the recorded points; the rest exists |
-| 2 | `mp.tpl_box` | Box inspection | Trivial given `orbit` and `facade` |
-| 3 | `mp.tpl_dome` | Dome inspection | Currently aliased to `tower_mapping`, which is a fudge for curved surfaces |
+| 2 | `mp.tpl_box` | **done this session** | |
+| 3 | `mp.tpl_dome` | **done this session** — the tower alias was a real geometry defect, not a naming one | |
 | 4 | `mp.tpl_pylon` | **done this session** — was implemented and unreachable |
 | 5 | `hub.clipping` | Polygon and plane clipping, saved named clips | The main thing standing between a raw model and a deliverable |
 | 6 | `hub.saved_views` | Saved camera position, facade mode, curated share | Pairs with clipping; small once the viewer holds state |
