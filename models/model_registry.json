@@ -223,6 +223,27 @@
       "description": "SegFormer-B2 @512 on the Corrosion Condition State corpus (440 prepared images: 330 train / 66 val / 44 test), run corrosion_segformer_b2_cs, 80 epochs with log-inverse class weighting. Validation mean IoU 0.5769, pixel accuracy 0.8497. Per class IoU: good 0.871, fair 0.498, poor 0.450, severe 0.489. ONNX export agrees with torch on every one of 262,144 pixel decisions (max abs prob diff 2.7e-06) and cv2.dnn loads it. OUTPUT IS PER-CLASS PROBABILITY, NOT A BINARY MASK: the graph ends in a softmax over four channels and the answer is the argmax, so score_threshold does not apply the way it does to the binary segmenters here. WHAT THE NUMBERS MEAN: the classes are an ORDINAL severity scale and the errors are almost entirely between adjacent grades -- of the 653,071 severe pixels it recovers 514,827 (recall 0.788) and loses 124,241 of the rest to 'poor', one step down. A mean IoU near 0.58 on a four-way ordinal task is not the same weakness as 0.58 on independent classes, but it does mean a reported grade can be one step off. CORPUS SIZE IS THE CAVEAT: 440 images from a single source, so these figures are a first indication rather than a settled measurement, and the model has not been tested on Indian infrastructure imagery.",
       "sha256": "edcecd84cc6839d76b7db3e5a6475ec694636fc6cffe545ca4718c7147b5002f",
       "status": "installed"
+    },
+    "shared_semantic_landcover": {
+      "kind": "onnx_shared_semantic",
+      "path": "shared_semantic_dinov2_vitb14_v4.onnx",
+      "labels": [
+        "background",
+        "building",
+        "road",
+        "vegetation",
+        "water",
+        "bare_land"
+      ],
+      "usable_labels": [
+        "vegetation",
+        "building"
+      ],
+      "input_size": 518,
+      "target_gsd_m": 0.3,
+      "description": "DINOv2 ViT-B/14 + UPerNet, shared_semantic v4, epoch 35 of 40 (the run was cut at Kaggle's 12h cap and the weekly GPU quota is spent; the last five epochs are not in these weights). Validation mean IoU 0.7018. SIX CLASSES ARE PREDICTED AND TWO ARE USABLE. Scored on Gorakhpur, Uttar Pradesh -- 49 exhaustively annotated tiles at 0.448 m/px, pinned to test and never trained on -- the per-class IoU is: vegetation 0.913, building 0.621, road 0.366, water 0.003, bare_land 0.000, background 0.000. Pixel accuracy 0.916. usable_labels names the two that hold up. ROAD IS WEAK, not usable: 0.366 IoU, precision 0.593, recall 0.488 -- it misses half the road it is shown. WATER IS NOT WORKING: 0.003 IoU on 288851 labelled pixels. It predicts roughly the right AMOUNT of water (282787 px) in the wrong PLACES, which is worse than silence because the output looks plausible. BARE_LAND IS DEAD: zero pixels predicted across all 49 tiles against 19990 labelled. Neither improved when v4 added 463 water and 178 bare_land samples over v3 -- water in fact fell from 0.092 to 0.003 -- so more data is not the outstanding fix for them and no claim should be built on either. The mean IoU of 0.317 averages working and dead classes together and should not be quoted; the per-class column is the result. Background reads 0.000 because Gorakhpur's annotators labelled every pixel into a real class, so the model's background predictions have nothing to match. TRAINING CAVEAT: 13.4 per cent of optimiser steps were dropped as non-finite. The cause is unknown -- the absent-class-penalty overflow hypothesis was tested and died, measured max |grad| 0.0625, not the ~1e6 an fp16 overflow needs. SCOPE: one Indian city, captured from satellite or aircraft, not from a drone at 60 m. It is not verified for India and says nothing about differently built sites. ONNX parity max_abs_diff 1.2e-04 over 1073296 pixels with zero label disagreements. Evidence: docs/holdout/shared_semantic_v4_gorakhpur.json.",
+      "sha256": "95b113795b45ba13460c56ba2c2bb8b04c95215d51290d94371bb2481bf7d466",
+      "status": "installed"
     }
   }
 }

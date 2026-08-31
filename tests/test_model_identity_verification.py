@@ -194,6 +194,52 @@ class TestEntriesWithNoWeights:
         assert report["awaiting_weights"] == ["planned_one"]
 
 
+class TestAModelMadeOfSeveralFiles:
+    """The weights can live outside the file the registry points at.
+
+    An ONNX graph over 2 GB of initialisers cannot carry its own weights, and torch's
+    exporter reaches for external data well below that: shared_semantic is a 1.1 MB graph
+    beside a 378 MB `.onnx.data` sidecar holding 99.7% of the model. Digesting the file
+    at `path` covers the 1.1 MB and leaves the part every published metric describes
+    outside the check entirely.
+
+    core/semantic_engine.py was fixed for this and pinned by
+    tests/test_onnx_external_data_digest.py. verify_model_identity was not, and nothing
+    caught it because no registered model had a sidecar until shared_semantic_landcover.
+    """
+
+    def test_replacing_the_sidecar_is_a_mismatch(self, registry) -> None:
+        """The failure the digest exists to prevent. Untouched graph, different weights."""
+        from core.semantic_engine import sha256_onnx_model
+
+        graph = registry.root / "big.onnx"
+        graph.write_bytes(b"the graph")
+        (registry.root / "big.onnx.data").write_bytes(b"the weights measured")
+        registry.write({"big": {"path": "big.onnx", "status": "installed",
+                                "sha256": sha256_onnx_model(graph)}})
+        models_module._DIGEST_CACHE.clear()
+        assert verify_model_identity("big")["status"] == "verified"
+
+        (registry.root / "big.onnx.data").write_bytes(b"entirely other weights!!")
+        models_module._DIGEST_CACHE.clear()
+        assert verify_model_identity("big")["status"] == "mismatch", (
+            "the weights were swapped and the model still reported as verified"
+        )
+
+    def test_a_single_file_onnx_keeps_the_plain_digest(self, registry) -> None:
+        """Existing rows must not be disturbed.
+
+        sha256_onnx_model folds each file's name into the digest, so applying it
+        everywhere would report rail, crack and corrosion as mismatches against recorded
+        digests that are plain byte hashes and are perfectly correct.
+        """
+        expected = registry.install("solo.onnx", b"one file, no sidecar")
+        registry.write({"solo": {"path": "solo.onnx", "status": "installed",
+                                 "sha256": expected}})
+        models_module._DIGEST_CACHE.clear()
+        assert verify_model_identity("solo")["status"] == "verified"
+
+
 class TestTheRealRegistry:
     @needs_weights
     def test_both_shipping_models_verify_against_their_recorded_digests(self):

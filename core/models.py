@@ -366,14 +366,38 @@ def model_identity(model_key: str) -> dict[str, str]:
     except OSError:
         return {"model_key": model_key, "model_sha256": "", "model_path": path_str}
 
-    cache_key = (path_str, stat.st_size, stat.st_mtime)
+    # A model is not always one file. An ONNX graph over 2 GB of initialisers cannot hold
+    # its own weights, and torch's exporter reaches for external data well below that:
+    # shared_semantic exports as a 1.1 MB graph beside a 378 MB `.onnx.data` sidecar
+    # carrying 99.7% of the model. Hashing the file at `path` would cover the 1.1 MB and
+    # leave the weights -- the part the published metrics actually describe -- outside the
+    # digest entirely, so the sidecar could be swapped for a different model while this
+    # reported "verified".
+    #
+    # core/semantic_engine.py already hashes every file, and tests/test_onnx_external_data
+    # _digest.py pins that. This function was not covered by it and kept the graph-only
+    # behaviour, which went unnoticed because no registered model had a sidecar until
+    # shared_semantic_landcover did.
+    # Only models that HAVE a sidecar switch scheme. sha256_onnx_model folds each file's
+    # name into the digest, so applying it to the single-file ONNX models already
+    # registered -- rail, crack, corrosion -- would change their digests and report every
+    # one of them as a mismatch. Those rows are correct and their recorded digests are
+    # plain byte hashes; nothing about them is unsafe, because with no sidecar there is
+    # nothing outside the file to swap.
+    from core.semantic_engine import onnx_model_files, sha256_onnx_model
+
+    parts = onnx_model_files(path) if path.suffix == ".onnx" else [path]
+    cache_key = (path_str, stat.st_size, stat.st_mtime, len(parts))
     digest = _DIGEST_CACHE.get(cache_key)
     if digest is None:
-        hasher = hashlib.sha256()
-        with path.open("rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                hasher.update(block)
-        digest = hasher.hexdigest()
+        if len(parts) > 1:
+            digest = sha256_onnx_model(path)
+        else:
+            hasher = hashlib.sha256()
+            with path.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(block)
+            digest = hasher.hexdigest()
         _DIGEST_CACHE[cache_key] = digest
 
     return {"model_key": model_key, "model_sha256": digest, "model_path": path_str}
