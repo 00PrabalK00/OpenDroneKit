@@ -115,9 +115,19 @@ class TestTheFieldsTheOverlaysAskFor:
     def test_telemetry_fields_exist(self, workspaces) -> None:
         source = (REPO_ROOT / "core" / "drone.py").read_text(encoding="utf-8")
         declared = source.split("class DroneTelemetry")[1].split("@property")[0]
-        block = workspaces.split('calls: ["telemetry"]')[1][:1400]
-        for field in set(re.findall(r"tm\.(\w+)", block)):
-            assert f"{field}:" in declared, f"DroneTelemetry has no {field}"
+        # session.telemetry() adds driver and is_simulated to the dataclass's fields, so
+        # the payload a panel receives is wider than DroneTelemetry itself.
+        session = (REPO_ROOT / "app" / "session.py").read_text(encoding="utf-8")
+        added = set(re.findall(r'payload\["(\w+)"\]\s*=', session))
+
+        # Every telemetry-backed block, not only the first: the flight screen gained
+        # several after this test was written, and splitting once silently checked one
+        # of them while claiming to check the panel it was named for.
+        for block in workspaces.split('calls: ["telemetry"]')[1:]:
+            for field in set(re.findall(r"tm\.(\w+)", block[:1400])):
+                assert f"{field}:" in declared or field in added, (
+                    f"nothing produces telemetry field {field}"
+                )
 
     def test_gcp_report_fields_exist(self, workspaces) -> None:
         source = (REPO_ROOT / "core" / "gcp.py").read_text(encoding="utf-8")

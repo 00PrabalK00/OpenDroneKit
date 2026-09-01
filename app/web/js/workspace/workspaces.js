@@ -442,27 +442,83 @@ const flight = {
   title: "Flight",
   toolbar: ["Preflight", "|", "Start", "Pause", "Resume", "Capture Now", "|", "Manual Override", "RTL", "Land", "Abort"],
   left: [
-    { id: "fly.aircraft", title: "Aircraft", render: () => properties([
-      { label: "Airframe", value: "M350 RTK" },
-      { label: "Link", value: chip("strong", "ok") },
-      { label: "Mode", value: chip("AUTO", "info") },
-      { label: "Armed", value: chip("yes", "ok") },
-    ]) },
-    { id: "fly.checklist", title: "Preflight", render: () => tree([
-      { id: "c1", label: "Autopilot healthy", icon: "✓" },
-      { id: "c2", label: "GPS fix — RTK fixed", icon: "✓" },
-      { id: "c3", label: "Home position set", icon: "✓" },
-      { id: "c4", label: "Battery 96%", icon: "✓" },
-      { id: "c5", label: "Storage 0 GB free", icon: "✓" },
-      { id: "c6", label: "Mission uploaded", icon: "✓" },
-      { id: "c7", label: "Geofence uploaded", icon: "✓" },
-      { id: "c8", label: "Terrain data — none", icon: "!" },
-      { id: "c9", label: "Weather acknowledged", icon: "○" },
-    ]) },
-    { id: "fly.queue", title: "Mission Queue", height: 110, grow: false, render: () => tree([
-      { id: "q1", label: "Roof Block A v3", icon: "▶", meta: "active" },
-      { id: "q2", label: "Yard grid v2", icon: "▸", meta: "queued" },
-    ]) },
+    /* An M350 RTK, linked, in AUTO, armed -- with nothing connected. "Armed" is a
+       statement about whether the propellers will turn. */
+    { id: "fly.aircraft", title: "Aircraft", render: () => live({
+      calls: ["telemetry"],
+      empty: "No aircraft connected.",
+      isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
+      render: ([t]) => {
+        const tm = t.telemetry;
+        return properties([
+          { label: "Driver", value: tm.driver || "\u2014" },
+          /* A simulated vehicle must never be mistaken for a real one on the screen
+             that arms it. */
+          ...(tm.is_simulated ? [{ label: "Vehicle", value: chip("SIMULATED", "warn") }] : []),
+          { label: "Mode", value: chip(tm.flight_mode || "unknown", "info") },
+          { label: "Armed", value: chip(tm.armed ? "yes" : "no", tm.armed ? "warn" : "ok") },
+          { label: "Link", value: tm.link_quality_pct !== undefined
+            ? chip(`${Math.round(tm.link_quality_pct)}%`, tm.link_quality_pct > 70 ? "ok" : "warn")
+            : chip("not reported") },
+        ]);
+      },
+    }) },
+    /* Nine items, eight pre-ticked, checked against nothing.
+       A checklist exists to be believed. One that is ticked before anything was
+       verified is worse than no checklist at all, because an operator who would
+       otherwise have checked now has a reason not to. It also read "Storage 0 GB free"
+       with a tick beside it.
+
+       Every item here is derived from what the vehicle reports, so it is now an actual
+       preflight check. Items the telemetry cannot speak to are shown as unknown rather
+       than passed -- an unanswered check is not a passed one. */
+    { id: "fly.checklist", title: "Preflight", render: () => live({
+      calls: ["telemetry"],
+      empty: "No aircraft connected. Preflight is checked against the aircraft.",
+      isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
+      render: ([t]) => {
+        const tm = t.telemetry;
+        /* pass / fail / unknown, never a bare tick. */
+        const mark = (ok) => (ok === null ? "\u25cb" : ok ? "\u2713" : "\u2717");
+        const items = [
+          ["Autopilot link", tm.connected === true],
+          [`GPS fix \u2014 ${["no GPS", "no fix", "2D", "3D", "RTK float", "RTK fixed"][tm.gps_fix] || "?"}`,
+           tm.gps_fix >= 3],
+          [`Satellites ${tm.satellites ?? 0}`, (tm.satellites ?? 0) >= 6],
+          [`HDOP ${tm.hdop ?? "?"}`, tm.hdop !== undefined ? tm.hdop < 2.0 : null],
+          ["Home position set", tm.home_set === true],
+          [`Battery ${Math.round(tm.battery_pct ?? 0)}%`, (tm.battery_pct ?? 0) >= 50],
+          ["Mission uploaded", tm.waypoint_total ? tm.waypoint_total > 0 : false],
+          [`Link ${tm.link_quality_pct !== undefined ? Math.round(tm.link_quality_pct) + "%" : "unknown"}`,
+           tm.link_quality_pct !== undefined ? tm.link_quality_pct > 50 : null],
+          /* Not derivable from telemetry, and deliberately left open rather than
+             quietly dropped: an operator has to acknowledge it. */
+          ["Weather acknowledged", null],
+        ];
+        return tree(items.map(([label, ok], i) => ({
+          id: `c${i}`, label, icon: mark(ok),
+          meta: ok === null ? "unknown" : ok ? "" : "check",
+        })));
+      },
+    }) },
+    /* Two missions that do not exist, one of them marked active. */
+    { id: "fly.queue", title: "Mission Queue", height: 110, grow: false, render: () => live({
+      calls: ["list_mission_versions"],
+      empty: "No saved missions to fly.",
+      isEmpty: ([v]) => !(v && (v.versions || []).length),
+      render: ([v]) => {
+        const latest = new Map();
+        for (const row of v.versions || []) {
+          const name = row.mission_name || "(unnamed)";
+          const seen = latest.get(name);
+          if (!seen || (row.version_num || 0) > (seen.version_num || 0)) latest.set(name, row);
+        }
+        return tree([...latest.values()].map((row, i) => ({
+          id: `q${i}`, label: row.mission_name || "(unnamed)", icon: "\u25b8",
+          meta: `v${row.version_num ?? 1}`,
+        })), { selectKind: "mission" });
+      },
+    }) },
   ],
   canvas: () => canvas({
     map: true,
@@ -506,33 +562,80 @@ const flight = {
     ],
   }),
   right: [
-    { id: "fly.telemetry", title: "Telemetry", render: () => readouts([
-      { k: "Battery", v: "78%", tone: "ok" }, { k: "Voltage", v: "24.1 V" },
-      { k: "Alt AGL", v: "60.2 m" }, { k: "Alt AMSL", v: "512.6 m" },
-      { k: "Speed", v: "8.0 m/s" }, { k: "Heading", v: "090°" },
-      { k: "Sats", v: "22", tone: "ok" }, { k: "HDOP", v: "0.6" },
-      { k: "Link", v: "98%", tone: "ok" }, { k: "Home", v: "412 m" },
-      { k: "Gimbal", v: "−90°" }, { k: "Flight time", v: "06:12" },
-    ]) },
+    /* Twelve readouts of an aircraft in flight, none of them from an aircraft. */
+    { id: "fly.telemetry", title: "Telemetry", render: () => live({
+      calls: ["telemetry"],
+      empty: "No aircraft connected.",
+      isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
+      render: ([t]) => {
+        const tm = t.telemetry;
+        const n = (v, digits = 1) => (v === undefined || v === null ? null : Number(v).toFixed(digits));
+        /* Only what the vehicle reported. A missing field is dropped rather than
+           shown as zero: "Alt AGL 0.0 m" on a flying aircraft is a lie, and a
+           readout that is absent is obviously absent. */
+        const rows = [
+          ["Battery", tm.battery_pct !== undefined ? `${Math.round(tm.battery_pct)}%` : null,
+           (tm.battery_pct ?? 100) < 25 ? "warn" : "ok"],
+          ["Voltage", n(tm.battery_v) ? `${n(tm.battery_v)} V` : null],
+          ["Alt AGL", n(tm.altitude_rel_m) ? `${n(tm.altitude_rel_m)} m` : null],
+          ["Alt AMSL", n(tm.altitude_abs_m) ? `${n(tm.altitude_abs_m)} m` : null],
+          ["Speed", n(tm.speed_mps) ? `${n(tm.speed_mps)} m/s` : null],
+          ["Heading", n(tm.heading_deg, 0) ? `${n(tm.heading_deg, 0)}\u00b0` : null],
+          ["Sats", tm.satellites !== undefined ? String(tm.satellites) : null,
+           (tm.satellites ?? 0) >= 6 ? "ok" : "warn"],
+          ["HDOP", n(tm.hdop, 2)],
+          ["Link", tm.link_quality_pct !== undefined ? `${Math.round(tm.link_quality_pct)}%` : null],
+          ["Next wp", tm.distance_to_next_m !== undefined ? `${n(tm.distance_to_next_m)} m` : null],
+        ].filter(([, v]) => v !== null && v !== undefined);
+        return readouts(rows.map(([k, v, tone]) => ({ k, v, tone })));
+      },
+    }) },
+    /* Two progress bars at fixed fractions -- 62 of 214 captures, 0.9 of 3.1 km --
+       which moved for nobody and meant nothing. */
     { id: "fly.progress", title: "Mission Progress", height: 120, grow: false, pad: true,
-      render: () => el("div", {}, [
-        el("div", { class: "field" }, [el("label", { text: "Captures" }), el("span", { text: "62 / 214" })]),
-        meter(62 / 214),
-        el("div", { class: "field" }, [el("label", { text: "Distance" }), el("span", { text: "0.9 / 3.1 km" })]),
-        meter(0.9 / 3.1),
-      ]) },
-    { id: "fly.alerts", title: "Alerts", height: 100, grow: false, render: () => consoleView([
-      { t: "06:02", text: "wind gust 9.2 m/s — within limit", level: "warn" },
-    ]) },
+      render: () => live({
+        calls: ["telemetry"],
+        empty: "No aircraft connected.",
+        isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected
+                            && t.telemetry.waypoint_total),
+        render: ([t]) => {
+          const tm = t.telemetry;
+          const done = tm.waypoint_index ?? 0;
+          const total = tm.waypoint_total;
+          return el("div", {}, [
+            el("div", { class: "field" }, [
+              el("label", { text: "Waypoints" }),
+              el("span", { text: `${done} / ${total}` }),
+            ]),
+            meter(total ? done / total : 0),
+          ]);
+        },
+      }) },
+    /* A wind-gust reading, at a timestamp, from no anemometer. */
+    { id: "fly.alerts", title: "Alerts", height: 100, grow: false, render: () => live({
+      calls: ["list_notifications"],
+      empty: "No alerts.",
+      isEmpty: ([n]) => !(n && (n.notifications || []).length),
+      render: ([n]) => consoleView((n.notifications || []).slice(0, 40).map((item) => ({
+        t: String(item.created_utc || "").slice(11, 19) || "\u2014",
+        text: item.detail ? `${item.title} — ${item.detail}` : (item.title || ""),
+        level: item.level === "error" ? "error" : item.level === "warning" ? "warn" : "",
+      }))),
+    }) },
   ],
   bottom: [
     { id: "fly.charts", title: "Telemetry Charts", flex: 3, render: () => canvas({ title: "Altitude · speed · battery · link", note: "Rolling window over the current flight." }) },
-    { id: "fly.events", title: "Event Log", flex: 2, render: () => consoleView([
-      { t: "00:00:00", text: "capture 62 triggered" },
-      { t: "00:00:00", text: "waypoint 31 reached" },
-      { t: "00:00:00", text: "mission started", level: "ok" },
-      { t: "00:00:00", text: "armed", level: "ok" },
-    ]) },
+    /* "armed", "mission started", "waypoint 31 reached", "capture 62 triggered" -- a
+       flight record for a flight that never happened. The audit log is the real one. */
+    { id: "fly.events", title: "Event Log", flex: 2, render: () => live({
+      calls: ["audit_log"],
+      empty: "No flight events recorded yet.",
+      isEmpty: ([a]) => !(a && (a.events || []).length),
+      render: ([a]) => consoleView((a.events || []).slice(0, 60).map((e) => ({
+        t: String(e.created_at || "").slice(11, 19) || "\u2014",
+        text: `${e.event_type || ""} ${e.payload_json && e.payload_json !== "{}" ? e.payload_json : ""}`.trim(),
+      }))),
+    }) },
     { id: "fly.camera", title: "Camera", flex: 1, render: () => canvas({ title: "Live view", note: "Downlink preview" }) },
   ],
 };

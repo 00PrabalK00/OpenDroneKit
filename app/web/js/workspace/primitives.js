@@ -70,7 +70,7 @@ export function el(tag, attrs = {}, children = []) {
 /* --------------------------------------------------------------------- tree */
 
 export function tree(nodes, { selectKind, onSelect } = {}) {
-  const root = el("div", { class: "tree" });
+  const root = el("div", { class: "tree", "data-rows": "tree" });
   const expanded = new Set(nodes.filter((n) => n.expanded !== false).map((n) => n.id));
 
   const draw = () => {
@@ -110,6 +110,23 @@ export function tree(nodes, { selectKind, onSelect } = {}) {
 
 /* -------------------------------------------------------------------- table */
 
+/* Rows on screen are marked, so the shell can tell measured from illustrative.
+ *
+ * The EXAMPLE DATA banner used to decide by searching the rendered text for a handful of
+ * sentinel strings -- the demo organisation's name and three demo site names. That works
+ * only for panels whose sample content happens to mention a demo site. Fifty panels do
+ * not: a Processing Queue of "#4471 / Feature matching / w-02", a Fleet readout of
+ * "Aircraft 6, Available 4", flight telemetry, alerts, battery estimates and maintenance
+ * records are all written into the source and contain no sentinel at all. They therefore
+ * rendered in connected mode with the banner hidden, which is the precise failure this
+ * banner exists to prevent, on the screens where it matters most.
+ *
+ * A longer sentinel list would have the same shape and fail the same way on the next
+ * panel. So the test is structural instead: anything that draws rows marks itself, live()
+ * marks its subtree as answered, and content is synthetic exactly when rows exist that no
+ * API call produced. Converting a panel to live() removes it from the count automatically,
+ * with no list to maintain.
+ */
 export function table(columns, rows, { selectKind, onSelect } = {}) {
   const head = el("tr", {}, columns.map((c) => el("th", { text: c.title })));
   const body = el("tbody");
@@ -127,7 +144,7 @@ export function table(columns, rows, { selectKind, onSelect } = {}) {
     };
     body.appendChild(tr);
   }
-  return el("table", { class: "grid" }, [el("thead", {}, [head]), body]);
+  return el("table", { class: "grid", "data-rows": "table" }, [el("thead", {}, [head]), body]);
 }
 
 /* --------------------------------------------------------------- properties */
@@ -145,7 +162,7 @@ export function properties(spec) {
       : el("td", { text: item.value == null ? "—" : `${item.value}${item.unit ? " " + item.unit : ""}` });
     body.appendChild(el("tr", {}, [el("th", { text: item.label }), value]));
   }
-  return el("table", { class: "props" }, [body]);
+  return el("table", { class: "props", "data-rows": "properties" }, [body]);
 }
 
 export function fields(spec, onChange) {
@@ -174,7 +191,7 @@ export function fields(spec, onChange) {
 /* ----------------------------------------------------------------- readouts */
 
 export function readouts(items) {
-  return el("div", { class: "readout-grid" }, items.map((item) =>
+  return el("div", { class: "readout-grid", "data-rows": "readouts" }, items.map((item) =>
     el("div", { class: "readout" }, [
       el("span", { class: "k", text: item.k }),
       el("span", { class: "v", style: item.tone ? `color:var(--${item.tone})` : "", text: item.v }),

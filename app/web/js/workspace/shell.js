@@ -146,9 +146,35 @@ export class Shell {
    * this whole codebase is arranged to prevent.
    */
   showingSampleContent() {
-    const text = (this.workspaceEl && this.workspaceEl.innerText) || "";
-    if (!text) return false;
-    return SAMPLE_SENTINELS.some((mark) => mark && text.includes(mark));
+    if (!this.workspaceEl) return false;
+
+    /* Structural, because the string list did not work.
+     *
+     * This used to search the rendered text for sentinels: the demo organisation's name
+     * and three demo site names. That catches a panel whose sample content happens to
+     * mention a demo site, and misses every panel that invents something else. Fifty of
+     * them do -- a Processing Queue of "#4471 / Feature matching / w-02", a Fleet
+     * readout of "Aircraft 6, Available 4", flight telemetry, alerts, battery estimates,
+     * maintenance records. None contains a sentinel, so all of them rendered in
+     * connected mode with the banner hidden.
+     *
+     * That is the same failure the banner was written to fix, one level up: the
+     * disclosure mechanism was itself a list of strings, so it could only disclose the
+     * fabrications someone had already thought of.
+     *
+     * Now: anything that draws rows marks itself, live() marks its subtree as answered,
+     * and the content is synthetic exactly when there are rows no API call produced.
+     */
+    const rows = this.workspaceEl.querySelectorAll("[data-rows]");
+    for (const node of rows) {
+      if (!node.closest("[data-live]")) return true;
+    }
+
+    // Kept as well. DATA-driven panels render real-looking prose rather than rows --
+    // a project name in a heading, a site in a caption -- and those have no [data-rows]
+    // to find.
+    const text = this.workspaceEl.innerText || "";
+    return !!text && SAMPLE_SENTINELS.some((mark) => mark && text.includes(mark));
   }
 
   /** The frame reflects the state: the banner only exists while content is synthetic. */

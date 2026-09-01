@@ -30,7 +30,13 @@ import { tryCall } from "./api.js";
  * @param {Function} [spec.isEmpty] (results) => boolean. Defaults to "every result null".
  */
 export function live({ calls, render, empty, isEmpty }) {
-  const host = el("div", { class: "live" });
+  /* Marks everything drawn inside as having come from the application.
+   *
+   * The shell decides whether to show the EXAMPLE DATA banner by looking for rows that
+   * are NOT inside one of these. That makes the banner self-maintaining: converting a
+   * panel to live() takes it out of the synthetic count with no list to update, and a
+   * new panel that renders a literal is counted from the moment it is written. */
+  const host = el("div", { class: "live", "data-live": "" });
   host.appendChild(el("div", { class: "live-wait", text: "Reading…" }));
 
   const settle = async () => {
