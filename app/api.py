@@ -905,6 +905,107 @@ class Api:
 
     @guard
     @guard
+    def list_views(self) -> dict[str, Any]:
+        """The named ways this project's model can be opened."""
+        from core.saved_views import ViewStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        views = ViewStore(Path(root) / "reconstruction").load()
+        return ok(views=[v.to_dict() for v in views])
+
+    @guard
+    def save_view(self, name: str, position: list[float], target: list[float],
+                  fov_deg: float = 50.0, visible_clips: list[str] | None = None,
+                  facade_mode: bool = False, show_annotations: bool = True,
+                  is_default: bool = False) -> dict[str, Any]:
+        """Save how the model should open: camera, clips, facade mode, annotations.
+
+        A view is a set of numbers pointing at the live model, not a render. The
+        recipient still orbits away from it, measures, and opens the source photographs
+        -- a picture would be smaller and would answer a different question.
+        """
+        from core.saved_views import SavedView, ViewRefused, ViewStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            views = ViewStore(Path(root) / "reconstruction").add(SavedView(
+                name=str(name),
+                position=tuple(float(v) for v in position),
+                target=tuple(float(v) for v in target),
+                fov_deg=float(fov_deg),
+                visible_clips=[str(c) for c in (visible_clips or [])],
+                facade_mode=bool(facade_mode),
+                show_annotations=bool(show_annotations),
+                is_default=bool(is_default),
+            ))
+        except (ViewRefused, TypeError, ValueError) as exc:
+            return fail(str(exc))
+        self._session.audit("view_saved", {"name": name})
+        return ok(views=[v.to_dict() for v in views])
+
+    @guard
+    def open_view(self, name: str) -> dict[str, Any]:
+        """Read a saved view back, reporting any clip it can no longer apply.
+
+        A clip can be deleted after a view referring to it was saved. Failing to open the
+        view is unhelpful; opening it silently showing more of the model than intended is
+        worse. So it opens, and says what it could not apply.
+        """
+        from core.model_clipping import ClipStore
+        from core.saved_views import ViewStore, resolve_clips
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        recon = Path(root) / "reconstruction"
+        view = next((v for v in ViewStore(recon).load() if v.name == str(name)), None)
+        if view is None:
+            return fail(f"No view named {name!r}.")
+
+        applied, missing = resolve_clips(view, [c.name for c in ClipStore(recon).load()])
+        result = ok(view=view.to_dict(), applied_clips=applied, missing_clips=missing)
+        if missing:
+            result["warning"] = (
+                f"This view refers to {len(missing)} clip(s) that no longer exist: "
+                + ", ".join(missing)
+                + ". It has opened without them, so more of the model is showing than "
+                "when it was saved."
+            )
+        return result
+
+    @guard
+    def set_default_view(self, name: str) -> dict[str, Any]:
+        """Choose the view a share link opens at."""
+        from core.saved_views import ViewRefused, ViewStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            views = ViewStore(Path(root) / "reconstruction").set_default(str(name))
+        except ViewRefused as exc:
+            return fail(str(exc))
+        self._session.audit("default_view_set", {"name": name})
+        return ok(views=[v.to_dict() for v in views])
+
+    @guard
+    def remove_view(self, name: str) -> dict[str, Any]:
+        from core.saved_views import ViewRefused, ViewStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            views = ViewStore(Path(root) / "reconstruction").remove(str(name))
+        except ViewRefused as exc:
+            return fail(str(exc))
+        return ok(views=[v.to_dict() for v in views])
+
+    @guard
     def list_clips(self) -> dict[str, Any]:
         """The named cuts saved against this project's model."""
         from core.model_clipping import ClipStore
