@@ -270,7 +270,25 @@ class _CapturePose:
 
 def _normalize_template(mode: str) -> str:
     value = str(mode or "grid").strip().lower()
-    table = {
+    table = TEMPLATE_ALIASES
+    return table.get(value, "grid")
+
+
+def available_templates() -> list[str]:
+    """Every template a caller can ask for, derived from the alias table itself.
+
+    app/api.py carried a hand-written list of fifteen. The planner accepted twenty-two,
+    so wind turbine, dome, box, closed loop, multi-facade and smart adaptive were all
+    plannable and none of them appeared in the application's own inventory of what it
+    could do. Nobody chooses a mission type they cannot see.
+
+    Deriving it here means the two cannot drift again: adding an alias adds the template
+    to the menu, and there is no second list to remember.
+    """
+    return sorted(set(TEMPLATE_ALIASES.values()))
+
+
+TEMPLATE_ALIASES: dict[str, str] = {
         "grid": "grid",
         "double_grid": "double_grid",
         # A 3D modelling mission compiles as a double grid and adds oblique bands;
@@ -358,8 +376,7 @@ def _normalize_template(mode: str) -> str:
         "wind_turbine": "wind_turbine",
         "turbine": "wind_turbine",
         "turbine_inspection": "wind_turbine",
-    }
-    return table.get(value, "grid")
+}
 
 
 # Templates that inspect a structure from outside it. For these the drawn polygon is

@@ -402,14 +402,16 @@ class Api:
 
     @guard
     def mission_templates(self) -> dict[str, Any]:
-        from mission.planner import MissionPlanner
+        """Every mission type the planner can actually generate.
 
-        templates = [
-            "grid", "double_grid", "corridor", "facade", "tower_mapping", "solar_inspection",
-            "orbit", "panorama", "bubble_360", "waypoints", "linear_inspection", "lateral_capture",
-            "roof_inspection", "magnetic_mapping", "linked_mission",
-        ]
-        return ok(templates=templates, planner=MissionPlanner.__name__)
+        This was a hand-written list of fifteen while the planner accepted twenty-two, so
+        wind turbine, dome, box, closed loop, multi-facade and smart adaptive were
+        plannable and invisible. A mission type nobody can see is a mission type nobody
+        uses, which is indistinguishable from one that was never built.
+        """
+        from mission.planner import MissionPlanner, available_templates
+
+        return ok(templates=available_templates(), planner=MissionPlanner.__name__)
 
     @guard
     def cache_terrain(self, path: str, name: str = "") -> dict[str, Any]:
