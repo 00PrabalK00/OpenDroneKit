@@ -500,6 +500,57 @@ nothing and the guard accused a panel that was correct -- the failure a guard ca
 afford. And counting braces without skipping string literals merged adjacent blocks, so
 one panel's variables were attributed to another panel's calls.
 
+## Seventy-two methods nobody could reach
+
+A count worth stating plainly: **72 of the Api's 149 methods are never called from
+anywhere in the interface.**
+
+Most of that number is fine. Helpers, alternate entry points, methods the REST service
+uses, calls one method wraps another to provide. What was not fine is what else was in
+the list -- most of what this project had recently built and recorded as done:
+
+    tag_annotations / untag_annotations      annotation tagging
+    add_site_marker / marker_kinds / check_hazards    site markers and clearance
+    import_cad_overlay / list_cad_overlays   CAD overlays
+    save_view / list_views / open_view       saved views
+    add_plane_clip / list_clips / export_clipped_model   model clipping
+    scale_thermal                            thermal palette scaling
+    set_layer_visible / set_layer_opacity    layer visibility
+
+Each had an Api method, a core module and passing tests. None had a control anywhere that
+reached it.
+
+The sharpest part is a test file written during this same audit: `test_special_missions_
+are_reachable.py`. What it checks is that `api.plan_pylon_mission(...)` answers. That is
+reachable from Python. It is **not** reachable by a person, which is the sense its name
+claims and the only sense that matters to somebody using the software. The rule this
+document already states was being broken by the test written to enforce it.
+
+So the two questions are now separated and kept separate:
+
+- **Can the Api do it?** The feature's own tests answer that.
+- **Can a person get there?** A toolbar button must resolve to an action that calls it.
+
+Six capabilities gained buttons that reach them: Tag, Add Marker, Check Hazards, Import
+CAD, Clear Alerts, and the layer visibility toggle.
+
+Three did not, and say so instead. Save View, Clip and Temperature Range each need the
+interactive 3D viewer -- a camera to read a position from, a model to place a cut plane
+against, a selectable radiometric raster. They are declared: the button says the
+capability is implemented and names what is missing. A button that always answered "no
+camera pose yet" would be the same dead control this audit exists to remove, and silently
+dropping them would lose the fact that the capability exists and is tested.
+
+Writing those ten buttons produced **seven signature errors in the first draft** --
+`tag_annotations` takes a list of tags and I passed a string, `add_plane_clip` takes a
+name and a point rather than an axis, `add_site_marker` argument order was wrong,
+`marker_kinds` rows are `{kind, describes}` not `{name}`, `scale_thermal` takes a raster
+path not an options object, `mark_all_notifications_read` returns `cleared` not `marked`,
+and two buttons called `ctx.cameraPose()` and `ctx.lastClickedPoint()`, neither of which
+the shell provides. The general key guard cannot see any of these: they are arguments and
+nested fields, not top-level response keys. Reading each signature before writing the call
+is still the only thing that catches them.
+
 ## What I am not going to pretend
 
 `pr.dense` has a row and does not work on this machine -- CUDA patch-match stereo rejects

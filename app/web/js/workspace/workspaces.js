@@ -435,7 +435,9 @@ const missionTypes = [
 const planning = {
   id: "planning",
   title: "Mission Planning",
-  toolbar: ["New Mission", "Open", "|", "Plan", "Validate", "Simulate", "|", "Upload", "Export", "Share"],
+  toolbar: ["New Mission", "Open", "|", "Plan", "Validate", "Simulate", "|",
+            "Add Marker", "Check Hazards", "Import CAD", "|",
+            "Upload", "Export", "Share"],
   left: [
     /* Three invented missions -- "Roof Block A v3", "Facade North v1", "Yard grid v2",
        one of them marked "current". This was the last panel in the cockpit still
@@ -642,7 +644,10 @@ const planning = {
 const flight = {
   id: "flight",
   title: "Flight",
-  toolbar: ["Preflight", "|", "Start", "Pause", "Resume", "Capture Now", "|", "Manual Override", "RTL", "Land", "Abort"],
+  /* Clear Alerts sits with Preflight rather than among the flight commands: it is the
+     only non-vehicle verb here, and it must not end up adjacent to Abort. */
+  toolbar: ["Preflight", "Clear Alerts", "|", "Start", "Pause", "Resume", "Capture Now",
+            "|", "Manual Override", "RTL", "Land", "Abort"],
   left: [
     /* An M350 RTK, linked, in AUTO, armed -- with nothing connected. "Armed" is a
        statement about whether the propellers will turn. */
@@ -1105,7 +1110,9 @@ const processing = {
 const twin = {
   id: "twin",
   title: "Digital Twin",
-  toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|", "Compare Dates", "Measure", "Annotate", "Export"],
+  toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|",
+            "Save View", "Clip", "|",
+            "Compare Dates", "Measure", "Annotate", "Export"],
   left: [
     /* A building with a roof, a facade and a stockpile volume, none of which existed.
        build_asset_inventory reports what was actually derived from the reconstruction. */
@@ -1188,7 +1195,8 @@ const inspection = {
   /* Validate resolves to verify_site -- "check the site against the plan" -- which is the
      Mission Planning meaning of the word. On this screen it should move a finding's
      status, which is what Accept already does. One label cannot carry two verbs. */
-  toolbar: ["Run AI", "|", "Accept", "Reject", "Edit", "Flag", "|", "Open in 3D", "Generate Report"],
+  toolbar: ["Run AI", "|", "Accept", "Reject", "Edit", "Flag", "Tag", "|",
+            "Open in 3D", "Generate Report"],
   left: [
     /* The class names were reasonable; the counts beside them -- 4, 1, 2, 1 -- were
        not. A count next to a defect class reads as "this project has four cracks", and
@@ -1299,7 +1307,8 @@ const inspection = {
 const thermal = {
   id: "thermal",
   title: "Thermal",
-  toolbar: ["RGB", "Thermal", "Fused", "3D Thermal", "|", "Radiometric", "Compare", "Export"],
+  toolbar: ["RGB", "Thermal", "Fused", "3D Thermal", "|",
+            "Radiometric", "Temperature Range", "Compare", "Export"],
   left: [
     /* Two blocks and two strings with module counts, for a solar site nobody surveyed.
        An array inventory is built by build_asset_inventory() from detected instances,

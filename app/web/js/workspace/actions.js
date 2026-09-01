@@ -334,6 +334,148 @@ export const ACTIONS = {
   Annotate: { tool: "annotate", describe: "Draw an annotation." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
+  /* -- the features that were built and could not be reached ---------------
+     Seventy-two of a hundred and forty-nine Api methods are never called from the
+     interface. Most of that is fine -- helpers, alternate entry points, methods the
+     REST service uses. What was not fine is that it included most of what this project
+     built recently: annotation tags, site markers, hazard clearance, CAD overlays,
+     saved views, model clipping and thermal scaling. Each had an Api method, a core
+     module and passing tests, and no control anywhere that reached it.
+
+     The ones below reach their function today. The four after them cannot, and say so
+     rather than becoming buttons that always decline. */
+
+  Tag: {
+    describe: "Group findings by elevation, reflight, client query -- whatever the job needs.",
+    async run(ctx) {
+      const id = ctx.selectedFinding();
+      if (!id) return { skipped: "Select a finding first, then Tag." };
+      const tag = await ctx.prompt("Tag", "");
+      if (!tag) return { skipped: "No tag given." };
+      /* tag_annotations takes a list of ids and a list of TAGS. Passing the string
+         would have spread it into one tag per character. */
+      const result = await call("tag_annotations", [id], [tag]);
+      /* add_tags() returns `updated` (the ids it changed) and `tags`. There is no
+         `tagged` count -- the first draft read one and would have printed 1 whatever
+         happened, including when nothing was tagged. */
+      const changed = (result.updated || []).length;
+      return {
+        message: changed ? `Tagged ${changed} finding(s) "${tag}".`
+                         : `Already tagged "${tag}".`,
+        refresh: true,
+      };
+    },
+  },
+  "Add Marker": {
+    describe: "Record a hazard, a takeoff point or an access gate on the site.",
+    async run(ctx) {
+      const kinds = await tryCall("marker_kinds");
+      /* Rows are {kind, describes}. The describes text is what tells an operator the
+         difference between a hazard and an obstacle, so it is shown in the chooser. */
+      const rows = (kinds && kinds.kinds) || [];
+      if (!rows.length) return { skipped: "No marker kinds available." };
+      const labels = rows.map((r) => `${r.kind} \u2014 ${r.describes}`);
+      const picked = await ctx.choose("Marker kind", labels);
+      if (!picked) return { skipped: "No kind chosen." };
+      const kind = rows[labels.indexOf(picked)].kind;
+
+      const name = await ctx.prompt("Marker name", "");
+      if (!name) return { skipped: "A marker needs a name to be found again." };
+      /* Typed rather than clicked. The canvas does not report a map coordinate, and a
+         button that waits for a click the UI cannot deliver is a dead control. An
+         operator placing a hazard usually has the coordinate written down anyway. */
+      const lon = await ctx.prompt("Longitude", "");
+      const lat = await ctx.prompt("Latitude", "");
+      if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
+      const result = await call("add_site_marker", name, kind, [[Number(lon), Number(lat)]]);
+      /* It answers with the whole marker list, not the one just added. */
+      const total = (result.markers || []).length;
+      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`,
+               refresh: true };
+    },
+  },
+  "Check Hazards": {
+    describe: "Report how close the planned route passes to each hazard.",
+    async run(ctx) {
+      const clearance = await ctx.prompt("Clearance (metres)", "30");
+      if (clearance === null || clearance === "") return { skipped: "No clearance given." };
+      const result = await call("check_hazards", Number(clearance));
+      /* The key is `hazards`, and a NEGATIVE clearance means the route passes inside
+         the hazard's own marked radius -- the most serious case, and the one that
+         reads as a typo if printed as "at -21 m". */
+      const found = result.hazards || [];
+      const inside = found.filter((h) => h.clearance_m < 0).length;
+      const breaches = found.length;
+      /* Reports, never refuses. Clearance is the operator's decision and the software
+         has no standing to take it. */
+      return {
+        message: breaches
+          ? `${breaches} hazard(s) within ${clearance} m of the route`
+            + (inside ? `, ${inside} of them passing INSIDE the marked radius` : "")
+            + ". The route was not changed."
+          : `No hazard is within ${clearance} m of the ${result.checked_waypoints} waypoint(s) checked.`,
+      };
+    },
+  },
+  "Import CAD": {
+    describe: "Place a DXF or a georeferenced image over the survey.",
+    async run(ctx) {
+      /* pick_file takes an EXTENSION LIST, not a title. Passing a title made pywebview
+         raise "is not a valid file filter" and the exception arrived at the toolbar as
+         the result of pressing the button. */
+      const picked = await tryCall("pick_file", ["dxf", "tif", "tiff", "png", "jpg"]);
+      const path = picked && picked.path;
+      if (!path) return { skipped: "No file chosen." };
+      /* Required, never guessed. An overlay placed in the wrong coordinate system lands
+         somewhere plausible and wrong, and import_cad_overlay refuses without it. */
+      const epsg = await ctx.prompt("Source EPSG code", "");
+      if (!epsg) return { skipped: "A CAD overlay needs the EPSG code its coordinates are in." };
+      const result = await call("import_cad_overlay", path, Number(epsg));
+      /* `entities` is a count per entity type, and `skipped` names what could not be
+         flattened. Reporting the placed count alone would present a partial import as
+         a complete one. */
+      const placed = Object.values(result.entities || {}).reduce((a, b) => a + b, 0);
+      return {
+        message: `Placed ${placed} entities from ${result.name}.`
+          + (result.warning ? ` ${result.warning}` : ""),
+        refresh: true,
+      };
+    },
+  },
+  "Clear Alerts": {
+    describe: "Mark every notification read.",
+    async run() {
+      const result = await call("mark_all_notifications_read");
+      return { message: `Marked ${result.cleared ?? 0} read.`, refresh: true };
+    },
+  },
+
+  /* These four are implemented, tested, and cannot be driven from this interface yet.
+     Each needs the 3D viewer: a camera to save, a model to cut against, and a selected
+     raster to scale. Declaring that is the honest state -- a button that always answers
+     "no camera pose yet" would be the same dead control this audit exists to remove. */
+  "Save View": {
+    describe: "Remember a camera position. Needs the interactive 3D viewer.",
+    async run() {
+      return { skipped: "save_view is implemented, but the cockpit has no interactive "
+                        + "3D camera to read a position from yet." };
+    },
+  },
+  Clip: {
+    describe: "Cut the model with a plane. Needs the interactive 3D viewer.",
+    async run() {
+      return { skipped: "add_plane_clip is implemented, but a cut plane has to be placed "
+                        + "against a model on screen, and the 3D viewer is not built." };
+    },
+  },
+  "Temperature Range": {
+    describe: "Set the palette range. Needs a selected radiometric raster.",
+    async run() {
+      return { skipped: "scale_thermal is implemented, but it takes a radiometric raster "
+                        + "and no thermal product is selectable in this build." };
+    },
+  },
+
   /* -- navigation --------------------------------------------------------- */
   "Open in 3D": { workspace: "twin", describe: "Open this in the digital twin." },
   Reset: {
