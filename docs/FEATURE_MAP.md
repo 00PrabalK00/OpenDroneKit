@@ -356,8 +356,23 @@ wired and reached nothing.
 | Reports (findings) | A preview listing three findings that were not in the project |
 | Settings | **Save resolved to the mission verb** — pressing it prompted "Mission name". Four preference fields nothing stored. A models table hardcoded to six, three digests written as a literal ellipsis. |
 
-The shape is consistent: the cockpit was built with plausible field names and plausible
-sample rows, and never checked against the API it talks to.
+Then the same check one level up, across all fourteen toolbars. `ACTIONS` is keyed by the
+button's LABEL, so a workspace reusing a word gets the other workspace's verb:
+
+| Screen / button | Resolved to |
+|---|---|
+| Settings / Save | the mission verb -- prompted "Mission name" |
+| **Processing / Pause** | **`{ vehicle: "pause" }` -- prompted "Pause the aircraft?" and sent a flight command** |
+| AI Inspection / Validate | `verify_site`, the mission-planning meaning |
+
+Processing/Pause is the worst thing found all session: a control that commands an aircraft,
+reachable from the screen you sit on while a reconstruction runs. It was also wrong in the
+other direction -- there is no `pause_job` in the Api, so it could not have paused the job
+either. The guard is the invariant rather than the fix: no screen but Flight may carry an
+action with a `vehicle:` key.
+
+The shape is consistent: the cockpit was built with plausible field names, plausible sample
+rows and familiar button labels, and never checked against the API it talks to.
 
 Two of these are worse than an absent feature rather than better. A mission that plans as
 something other than what was asked for, and a report preview listing findings that do not
@@ -370,6 +385,8 @@ Guards added, since removing the instances does not remove the class:
 - every report type offered must be one the engine builds
 - no `fields()` group may exist without an onChange
 - sixteen specific fabricated strings must not appear in any rendered code
+- no screen other than Flight may carry an aircraft command
+- every toolbar label must resolve to an action
 
 ## What I am not going to pretend
 
