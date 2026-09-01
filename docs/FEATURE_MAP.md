@@ -388,6 +388,75 @@ Guards added, since removing the instances does not remove the class:
 - no screen other than Flight may carry an aircraft command
 - every toolbar label must resolve to an action
 
+## The overlay sweep, and why three sweeps missed it
+
+The cockpit's invented sample data was swept three times: once for the panels, once for
+four blocks the first sweep's string list missed, and once for the settings and mission
+forms. All three searched **panel bodies**. An overlay is not a panel, and six of them
+were still printing figures written into the source:
+
+| Screen | What the corner of the canvas said |
+|---|---|
+| Mission map | `214 captures · 3.1 km · 18 min · GSD 1.8 cm` |
+| Flight | `62 / 214 captures · AUTO · RTK fixed` |
+| Flight | `Segment 1 of 4 — nadir grid pass A` |
+| Verification | `1836 matched · 3 out of tolerance · 3 missing` |
+| Thermal | `Fused · 7 anomalies`, `Ambient 34.2 °C` |
+| Measurement | `Vertical accuracy ±0.05 m — nothing below 0.10 m is reported` |
+
+An overlay sits where every instrument an operator has used puts its readout, so a fixed
+number there is read as a measurement of what is on screen more readily than a table is.
+
+**The measurement one is the worst thing found in the UI this whole session.** It states
+the threshold that decides whether a deformation is real, and no such constant exists:
+`detection_floor()` in `core/deformation.py` derives it per comparison from each survey's
+own accuracy and the registration residual between them. It is precisely the figure a
+reader would cite to argue that a movement was real.
+
+The lesson is not that the earlier sweeps were careless. They were scoped to a shape, and
+the fabrication had another shape. So the guard is now shape-independent: any overlay
+carrying a digit must be a `live()` that asked for it, and `canvas()` gained a `node`
+overlay so that asking is possible at all — before, a panel wanting a real figure in the
+corner had no option that was not a constant. That is the same structure as the panels
+before `live()`: **the honest path did not exist, so nobody took it.**
+
+Writing the six replacements found three invented field names in my own first draft --
+`capture_count` (it is `image_count`), and `checked` / `out_of_tolerance` on the GCP
+report (they are `used` / `point_count` / `outlier_count`). Same failure as the mission
+form. A plausible field name renders as blank or `undefined`; it never raises.
+
+## The CUDA change was not a pure speed change
+
+Turning on the GPU moved feature extraction and matching from pycolmap to the native
+COLMAP binary. Same engine, same database, so it looked like speed only. Two things were
+wrong, and only one was a bug.
+
+**The bug.** `_run_sparse_native()` forwarded `max_num_features` and nothing else, while
+the pycolmap path also set `max_image_size` and `num_threads` from the profile. The GPU
+path therefore ran at COLMAP's default resolution whatever profile was chosen. On eight
+frames the CPU path registered six images and the GPU path three — and one run registered
+none and failed with *"COLMAP could not register any images. The dataset may lack
+overlap, be motion blurred, or be too small"*: blaming the imagery for a setting the
+engine never received. Same shape as the mission form sending `gsd` to a planner that
+reads `target_gsd_cm` — wired, read, and stopped at a boundary.
+
+**The trade that is not a bug.** With settings equalised a gap remained. Measured through
+the same binary with identical options on the same eight frames:
+
+    use_gpu=0    97,934 keypoints
+    use_gpu=1    80,256 keypoints
+
+SiftGPU finds about a fifth fewer keypoints than the CPU detector. Immaterial on a
+comfortable survey; decisive on a marginal one. An operator who enabled the GPU for speed
+did not knowingly change the detector, so a short registration on the GPU path now says
+so and says what to try. The engine records whether GPU SIFT *ran*, not whether it was
+*requested*, because the binary can fall back on its own and a confident wrong
+explanation is worse than none.
+
+This also made the end-to-end reconstruction test flaky — it had been picking the weaker
+detector by default. It is now pinned to the CPU detector, because its job is to judge
+pipeline properties and it needs the same answer every run to do that.
+
 ## What I am not going to pretend
 
 `pr.dense` has a row and does not work on this machine -- CUDA patch-match stereo rejects

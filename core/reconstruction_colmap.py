@@ -377,6 +377,8 @@ class ColmapReconstructor:
         if dense is not None:
             self.settings["dense"] = bool(dense)
         self.use_gpu = bool(use_gpu)
+        # Whether GPU SIFT actually ran, as opposed to whether it was asked for.
+        self._used_gpu_sift = False
         self.target_epsg = target_epsg
         self.warnings: list[str] = []
 
@@ -419,7 +421,10 @@ class ColmapReconstructor:
         # it and pycolmap can map from it. Nothing downstream changes.
         if self.use_gpu and not pycolmap_has_cuda() and colmap_executable():
             if self._run_sparse_native(image_dir, database_path, image_count, progress):
-                return self._map_from_database(image_dir, database_path, sparse_dir, progress)
+                # image_count was omitted here, so a split reconstruction reported
+                # "using the largest (3 of 0 images)" whenever the GPU path was taken.
+                return self._map_from_database(
+                    image_dir, database_path, sparse_dir, progress, image_count)
             self._warn(
                 "The native COLMAP binary failed; falling back to the CPU bindings. "
                 "The result is the same, more slowly."
@@ -541,8 +546,24 @@ class ColmapReconstructor:
             return False
         gpu_flag = ("--FeatureExtraction.use_gpu" if "FeatureExtraction.use_gpu" in extract_help
                     else "--SiftExtraction.use_gpu")
-        features_flag = ("--SiftExtraction.max_num_features"
-                         if "SiftExtraction.max_num_features" in extract_help else "")
+        # Every knob the CPU path sets in _extraction_options() has to be set here too.
+        #
+        # This originally forwarded max_num_features and nothing else, so max_image_size
+        # was left at the binary's default while the pycolmap path honoured the profile.
+        # The two paths were therefore not the same reconstruction: on eight aerial
+        # frames the CPU path registered six images and the GPU path three, and in one
+        # run the GPU path registered none and the pipeline raised "COLMAP could not
+        # register any images. The dataset may lack overlap" -- blaming the imagery for
+        # a setting the engine never received.
+        #
+        # That is the failure this codebase keeps finding: the control was wired, the
+        # value was read, and it stopped at a boundary. Choosing the "fast" profile and
+        # silently getting a different one is worse than the profile having no effect,
+        # because the run still produces a plausible model.
+        def flag(name: str) -> str:
+            """The 4.1 name if this build has it, the legacy name if it does not."""
+            modern = f"FeatureExtraction.{name}"
+            return f"--{modern}" if modern in extract_help else f"--SiftExtraction.{name}"
 
         extract = [
             binary, "feature_extractor",
@@ -550,8 +571,14 @@ class ColmapReconstructor:
             "--image_path", str(image_dir),
             gpu_flag, "1",
         ]
-        if features_flag:
-            extract += [features_flag, str(int(self.settings["max_num_features"]))]
+        if "max_num_features" in extract_help:
+            extract += [flag("max_num_features"), str(int(self.settings["max_num_features"]))]
+        if "max_image_size" in extract_help:
+            extract += [flag("max_image_size"), str(int(self.settings["max_image_size"]))]
+        # Same reason as the CPU path: one full-resolution pyramid per thread exhausts
+        # memory on a laptop with many cores and 20 MP frames.
+        if "num_threads" in extract_help:
+            extract += [flag("num_threads"), str(self._worker_threads())]
 
         matcher = str(self.settings.get("matcher", "auto"))
         if matcher == "auto":
@@ -590,6 +617,11 @@ class ColmapReconstructor:
                 self._warn(
                     "The native COLMAP build did not use the GPU for feature extraction."
                 )
+            elif step == 1:
+                # Recorded rather than assumed from use_gpu: the binary can fall back to
+                # the CPU detector on its own, and a warning about GPU SIFT's weaker
+                # recall would be wrong about a run that did not use it.
+                self._used_gpu_sift = True
         return True
 
     def _worker_threads(self) -> int:
@@ -1111,6 +1143,23 @@ class ColmapReconstructor:
                 f"{len(image_paths) - len(registered)} of {len(image_paths)} images failed to register. "
                 "They are excluded from all downstream products."
             )
+            # GPU SIFT is not the same detector as CPU SIFT, and it is the weaker one.
+            # Measured on eight frames of the Aukerman survey through the same binary
+            # with identical options: 80,256 keypoints on the GPU against 97,934 on the
+            # CPU. On a comfortable dataset that costs nothing; on a marginal one it is
+            # the difference between six images registering and four.
+            #
+            # An operator who turned the GPU on for speed has no way to know they also
+            # changed the detector, so a partial registration on the GPU path has to say
+            # what to try. Speed and completeness are a real trade here -- the engine
+            # should not quietly pick one and present the result as the only outcome.
+            if getattr(self, "_used_gpu_sift", False):
+                self._warn(
+                    "Features were extracted with GPU SIFT, which finds roughly a fifth "
+                    "fewer keypoints than the CPU detector and registers fewer images on "
+                    "sparse or low-overlap surveys. Re-running with the GPU disabled is "
+                    "slower and may register more of them."
+                )
 
         centers: dict[str, list[float]] = {}
         for image in registered:

@@ -55,7 +55,22 @@ def survey(tmp_path_factory):
     for frame in frames:
         (images / frame.name).write_bytes(frame.read_bytes())
 
-    reconstructor = ColmapReconstructor(profile="fast", dense=False, max_image_size=1024)
+    # Pinned to the CPU detector, deliberately.
+    #
+    # This fixture judges pipeline properties -- registration, reprojection error, a
+    # metric CRS, rasters in the right place -- and it needs the same answer every run
+    # to do that. GPU SIFT finds about a fifth fewer keypoints than the CPU detector
+    # (80,256 against 97,934 on these eight frames), which is immaterial on a comfortable
+    # survey and decisive on a marginal one. Left on the default, this fixture registered
+    # six images, then four, then none, and the run that registered none failed with
+    # "COLMAP could not register any images. The dataset may lack overlap" -- a message
+    # about the imagery, on imagery that was fine.
+    #
+    # Eight frames is deliberately few, so the choice of detector is doing the work here
+    # rather than the pipeline. The GPU path's own behaviour is pinned separately, in
+    # tests/test_colmap_gpu_matches_the_cpu_settings.py.
+    reconstructor = ColmapReconstructor(
+        profile="fast", dense=False, max_image_size=1024, use_gpu=False)
     result = reconstructor.reconstruct(image_dir=images, output_dir=workspace / "out")
 
     twin_path = Path(result.digital_twin_path)
