@@ -127,3 +127,60 @@ class TestThePlannerHonoursWhatItIsGiven:
         right rather than approximately right."""
         api.plan_mission({"template": "grid", "alt": 42})
         assert api._session.mission_plan_dict["altitude_m"] != pytest.approx(42.0)
+
+
+class TestTheProcessingPanelReachesTheJob:
+    """Same failure, second panel.
+
+    reconstructionOptions() returned a hardcoded {engine: "auto", profile: "standard"},
+    so the Processing Settings panel was read by nobody. An operator selecting the
+    high-accuracy profile, or turning dense off to get a result before lunch, got a
+    standard run with dense at its default either way.
+    """
+
+    def test_the_panel_settings_are_read(self, shell_js) -> None:
+        body = shell_js.split("reconstructionOptions: () => {")[1].split("\n      },")[0]
+        assert "raw.profile" in body, "the profile selection never leaves the browser"
+        assert "raw.dense" in body, "the dense selection never leaves the browser"
+
+    def test_it_is_no_longer_a_fixed_object(self, shell_js) -> None:
+        assert 'reconstructionOptions: () => ({ engine: "auto", profile: "standard" })' \
+            not in shell_js
+
+    def test_dense_no_becomes_false_not_a_truthy_string(self, shell_js) -> None:
+        """The trap: "no" is truthy in JavaScript. Passing the select's value straight
+        through would turn dense ON when the operator asked for it off."""
+        body = shell_js.split("reconstructionOptions: () => {")[1].split("\n      },")[0]
+        assert 'toLowerCase() === "yes"' in body
+
+    @pytest.mark.parametrize("label,expected", [
+        ("fast", "fast_preview"),
+        ("standard", "standard"),
+        ("high", "inspection_high_accuracy"),
+    ])
+    def test_every_profile_the_panel_offers_resolves(self, label, expected) -> None:
+        """The panel is labelled for an operator and the engine takes ids. A label with
+        no alias falls back to standard, which is this bug wearing a different hat."""
+        from core.reconstruction import _normalize_profile
+
+        assert _normalize_profile(label) == expected
+
+    def test_the_options_the_job_reads_are_the_ones_sent(self, shell_js) -> None:
+        api_source = (REPO_ROOT / "app" / "api.py").read_text(encoding="utf-8")
+        body = api_source.split("def run_reconstruction")[1][:1500]
+        read = set(re.findall(r'opts\.get\("([a-z_0-9]+)"', body))
+        sent = set(re.findall(r'options\.(\w+) =',
+                              shell_js.split("reconstructionOptions: () => {")[1]
+                              .split("\n      },")[0]))
+        assert sent <= read | {"engine", "profile", "dense"}, (
+            f"sending options run_reconstruction does not read: {sorted(sent - read)}"
+        )
+
+    def test_the_unused_panel_fields_are_declared(self, shell_js) -> None:
+        """imgsize and mesh have no job option. Naming them makes the gap visible rather
+        than leaving two controls that quietly do nothing."""
+        assert "PROCESSING_FIELDS_NOT_USED" in shell_js
+        declared = set(re.findall(r'"(\w+)"',
+                                  shell_js.split("PROCESSING_FIELDS_NOT_USED = new Set([")[1]
+                                  .split("]")[0]))
+        assert {"imgsize", "mesh"} <= declared

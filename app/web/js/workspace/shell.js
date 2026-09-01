@@ -63,6 +63,17 @@ const MISSION_OPTION_KEYS = {
  */
 const MISSION_FIELDS_NOT_PLANNED = new Set(["gsd", "angle", "air", "batt"]);
 
+/* Processing Settings fields run_reconstruction has no option for.
+ *
+ * imgsize  max image size is a property of the chosen profile, not a separate input;
+ *          the profiles set it to 2400 / 4500 / 9000 features and their own resolution.
+ * mesh     mesh depth is fixed in the meshing step and not currently exposed.
+ *
+ * Listed here for the same reason as the mission fields: a control on screen that does
+ * nothing is worse than one that is absent, and naming it makes the gap visible.
+ */
+const PROCESSING_FIELDS_NOT_USED = new Set(["imgsize", "mesh"]);
+
 /* The human labels in the Mission Types list, and the templates they mean.
  *
  * The list is written for a pilot ("3D modelling", "Facade inspection"); the planner
@@ -755,7 +766,27 @@ export class Shell {
         }
         return options;
       },
-      reconstructionOptions: () => ({ engine: "auto", profile: "standard" }),
+      reconstructionOptions: () => {
+        // Was a hardcoded {engine: "auto", profile: "standard"}, so the Processing
+        // Settings panel -- Profile, Max image size, Dense cloud, Mesh depth -- was read
+        // by nobody. An operator selecting the high-accuracy profile, or turning dense
+        // off to get a result before lunch, got a standard run with dense left at its
+        // default either way, and nothing said so.
+        //
+        // run_reconstruction reads engine, profile, dense and epsg. profile and dense
+        // were already the panel's own field names; they simply never left the browser.
+        const raw = this.settings || {};
+        const options = { engine: "auto", profile: "standard" };
+
+        if (raw.profile) options.profile = String(raw.profile);
+        // The select offers yes/no; the Api takes a boolean or nothing at all, and
+        // "no" is truthy in JavaScript. Passing the string straight through would have
+        // turned dense ON when the operator asked for it off.
+        if (raw.dense !== undefined && raw.dense !== "") {
+          options.dense = String(raw.dense).toLowerCase() === "yes";
+        }
+        return options;
+      },
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
