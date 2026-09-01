@@ -32,6 +32,68 @@ const SHORTCUTS = [
   ["Ctrl/⌘ Z", "Undo"],
 ];
 
+/* The mission form's field keys, and what plan_mission actually reads.
+ *
+ * Kept as an explicit map rather than renaming the form fields, because the short names
+ * are what the panel displays and the long ones are the API contract. Either could
+ * reasonably change; this is the one place that has to know about both.
+ */
+const MISSION_OPTION_KEYS = {
+  alt: "altitude_m",
+  fwd: "front_overlap_pct",
+  side: "side_overlap_pct",
+  speed: "speed_m_s",
+  standoff: "standoff_m",
+  rth: "rth_altitude_m",
+};
+
+/* Fields the form shows that plan_mission has no option for.
+ *
+ * Listed rather than mapped to an invented name. Writing `gsd: "target_gsd_cm"` here
+ * would look like wiring and do nothing, which is the failure this whole change exists
+ * to remove -- the first version of this map did exactly that for two of them.
+ *
+ * Each is inert for a reason, and each is a real gap worth closing later:
+ *   gsd    the planner solves altitude FROM overlap and camera, not from a target GSD.
+ *          mp.gsd computes it the other way; wiring the two is its own piece of work.
+ *   angle  line heading is chosen by the grid generator; there is no override yet.
+ *   air    aircraft model affects battery and speed limits, which the planner does not
+ *          currently take from the form.
+ *   batt   battery count is an estimate output, not a planning input.
+ */
+const MISSION_FIELDS_NOT_PLANNED = new Set(["gsd", "angle", "air", "batt"]);
+
+/* The human labels in the Mission Types list, and the templates they mean.
+ *
+ * The list is written for a pilot ("3D modelling", "Facade inspection"); the planner
+ * takes ids. Selecting one used to send the label straight through, where
+ * _normalize_template did not recognise it and fell back to "grid".
+ */
+const MISSION_TEMPLATES = {
+  "2D mapping": "grid",
+  "3D modelling": "double_grid",
+  "Roof mapping": "grid",
+  "Roof inspection": "roof_inspection",
+  "Facade mapping": "facade_mapping",
+  "Facade inspection": "facade",
+  "Multi-facade": "multi_facade",
+  "Closed loop": "closed_loop",
+  "Linear mapping": "corridor",
+  "Linear inspection": "linear_inspection",
+  "Tower mapping": "tower_mapping",
+  "Orbit": "orbit",
+  "Waypoints": "waypoints",
+  "Panorama": "panorama",
+  "Solar inspection": "solar_inspection",
+  "Wind turbine": "wind_turbine",
+  "Magnetic mapping": "magnetic_mapping",
+  "Complex facade": "multi_facade",
+  "L-shaped": "grid",
+  "Utility pylon": "tower_mapping",
+  "Thermal": "grid",
+  "Multispectral": "grid",
+};
+
 export class Shell {
   constructor(root) {
     this.root = root;
@@ -649,14 +711,47 @@ export class Shell {
       prompt: (label, fallback) => askOne(label, label, fallback),
       choose: (title, options) => chooseModal(title, options),
       missionOptions: () => {
-        // What the mission panels were actually edited to. Numeric where the planner
-        // expects a number: a string altitude reaches Python and fails there, which
-        // reads as a planner bug rather than a form that never converted its input.
+        // What the mission panels were actually edited to, under the names the planner
+        // reads.
+        //
+        // The form's keys are short -- type, alt, fwd, side, standoff -- and plan_mission
+        // reads template, altitude_m, front_overlap_pct, side_overlap_pct, standoff_m.
+        // Not one of them matched. opts.get(...) found nothing every time and fell back
+        // to its defaults, so pressing Plan produced a nadir GRID at 55 m no matter what
+        // the operator typed: mission type, altitude, overlap, stand-off and speed were
+        // all discarded silently.
+        //
+        // Measured before the fix: {type: "Facade inspection", alt: 40, standoff: 12}
+        // planned template=grid at altitude 55. That is the worst shape a bug can take
+        // here -- a plausible mission that is not the one that was asked for, with
+        // nothing on screen to say so.
         const raw = this.settings || {};
-        const options = {};
+        const numeric = {};
         for (const [key, value] of Object.entries(raw)) {
           const asNumber = Number(value);
-          options[key] = value !== "" && Number.isFinite(asNumber) ? asNumber : value;
+          numeric[key] = value !== "" && Number.isFinite(asNumber) ? asNumber : value;
+        }
+
+        const options = {};
+        for (const [formKey, apiKey] of Object.entries(MISSION_OPTION_KEYS)) {
+          if (numeric[formKey] !== undefined && numeric[formKey] !== "") {
+            options[apiKey] = numeric[formKey];
+          }
+        }
+        // Anything the form gained since this map was written is passed through under its
+        // own name, so a new field reaches the planner if the planner happens to read it.
+        // The known-inert ones are deliberately NOT passed: sending "gsd" to an API that
+        // ignores it is indistinguishable from wiring it.
+        for (const [key, value] of Object.entries(numeric)) {
+          if (key === "type") continue;
+          if (key in MISSION_OPTION_KEYS) continue;
+          if (MISSION_FIELDS_NOT_PLANNED.has(key)) continue;
+          if (!(key in options)) options[key] = value;
+        }
+
+        if (numeric.type !== undefined) {
+          const template = MISSION_TEMPLATES[String(numeric.type)];
+          if (template) options.template = template;
         }
         return options;
       },
