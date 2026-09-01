@@ -457,6 +457,49 @@ This also made the end-to-end reconstruction test flaky — it had been picking 
 detector by default. It is now pinned to the CPU detector, because its job is to judge
 pipeline properties and it needs the same answer every run to do that.
 
+## The one guard that replaced nine
+
+The cockpit kept making the same mistake: a panel asks the application for something and
+reads a key off the answer that the answer does not have. It renders blank or `undefined`.
+It does not raise, nothing logs, and the result is indistinguishable from an empty
+project -- or worse, the `isEmpty` test passes and the panel shows its empty-state message
+on a project that has data.
+
+Found by hand, one screen at a time:
+
+| Read as | Really |
+|---|---|
+| `gsd` / `angle` | `target_gsd_cm` / `line_heading_deg` |
+| `capture_count` | `image_count` |
+| `checked` / `out_of_tolerance` | `used` / `point_count` / `outlier_count` |
+| `severity` / `message` / `created_at` | `level` / `title` / `created_utc` |
+| `entries` | `events` |
+| `present` | `exists` |
+| `temperature_c` | annotations have no temperature at all |
+
+Nine, and the last two were written by the person fixing the first seven. Per-screen tests
+catch these one at a time, and only where somebody thought to look.
+
+So there is now one guard that checks the shape: every `live()` block names the calls it
+makes, and the top-level key it reads off each answer must be one that call really
+returns. It found a bug nobody had looked for -- **the Verification Summary read
+`est.image_count` when `mission_estimates()` answers `{estimates: {...}}`, so the planned
+count was always undefined and the "Planned" readout never rendered.** The panel showed
+only "Captured", which reads as a panel with one row rather than as a comparison that
+cannot happen -- on the screen whose entire purpose is that comparison.
+
+It also found six dead `log.entries || log.events` fallbacks and four dead
+`state.project || state.active_project` ones. Those worked, because the correct name was
+second. But a fallback to a name no API has ever returned is not robustness; it is a
+record that whoever wrote it did not know the contract, and it makes the wrong name look
+supported.
+
+Writing the guard took two corrections of its own. Matching `ok(...)` with `[^)]*` stops
+at the first nested paren, so `ok(images=names[: int(limit)])` looked like it returned
+nothing and the guard accused a panel that was correct -- the failure a guard can least
+afford. And counting braces without skipping string literals merged adjacent blocks, so
+one panel's variables were attributed to another panel's calls.
+
 ## What I am not going to pretend
 
 `pr.dense` has a row and does not work on this machine -- CUDA patch-match stereo rejects

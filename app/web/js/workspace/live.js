@@ -85,7 +85,11 @@ export function emptyState(message) {
 export async function activeProject() {
   const state = await tryCall("get_state");
   if (!state) return null;
-  return state.project || state.active_project || null;
+  /* get_state() returns `project`. The `|| state.active_project` fallback beside it was
+     dead -- no Api method has ever returned that key -- and a defensive fallback to a
+     name that does not exist reads as uncertainty about the contract rather than
+     robustness. */
+  return state.project || null;
 }
 
 /** Rows for a properties() call, dropping anything the application did not report. */

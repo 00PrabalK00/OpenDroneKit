@@ -86,7 +86,7 @@ const projectTree = () => live({
   render: ([projects, models, state]) => {
     const installed = ((models && models.models) || [])
       .filter((m) => m.status !== "awaiting_weights");
-    const active = (state && (state.project || state.active_project)) || {};
+    const active = (state && state.project) || {};
     const rows = (projects && projects.projects) || [];
     return tree([
       ...(installed.length ? [{
@@ -159,9 +159,9 @@ const home = {
     { id: "home.active", title: "Active Project", render: () => live({
       calls: ["get_state", "list_layers", "list_dataset_images"],
       empty: "No project open. Use Open, or New Project to create one.",
-      isEmpty: ([state]) => !(state && (state.project || state.active_project)),
+      isEmpty: ([state]) => !(state && state.project),
       render: ([state, layers, images]) => {
-        const project = state.project || state.active_project || {};
+        const project = state.project || {};
         const twin = project.reconstruction || project.digital_twin || {};
         return properties([
           { group: project.name || "Project" },
@@ -184,8 +184,8 @@ const home = {
     { id: "home.alerts", title: "Recent activity", render: () => live({
       calls: ["audit_log"],
       empty: "Nothing has happened in this workspace yet.",
-      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
-      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 12).map((e) => ({
+      isEmpty: ([log]) => !(log && (log.events || []).length),
+      render: ([log]) => consoleView((log.events || []).slice(0, 12).map((e) => ({
         t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
         text: e.message || e.action || e.event || "—",
         level: /fail|error|refus/i.test(e.message || e.action || "") ? "error"
@@ -216,8 +216,8 @@ const home = {
     { id: "home.activity", title: "Activity Log", flex: 2, render: () => live({
       calls: ["audit_log"],
       empty: "No activity recorded yet.",
-      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
-      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 20).map((e) => ({
+      isEmpty: ([log]) => !(log && (log.events || []).length),
+      render: ([log]) => consoleView((log.events || []).slice(0, 20).map((e) => ({
         t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
         text: e.message || e.action || "—",
         level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
@@ -803,9 +803,17 @@ const verification = {
         meta: String(d.image_count ?? ""),
       })), { selectKind: "flight" }),
     }) },
-    { id: "ver.images", title: "Images", render: () => tree(
-      Array.from({ length: 8 }, (_, i) => ({ id: `i${i}`, label: `DJI_${1000 + i}.JPG`, icon: "▣" })),
-      { selectKind: "image" }) },
+    /* Eight filenames generated in a loop -- DJI_1000.JPG to DJI_1007.JPG -- which
+       looked exactly like a real card dump and belonged to no dataset. Selecting one
+       asked the application for an image that was not there. */
+    { id: "ver.images", title: "Images", render: () => live({
+      calls: ["list_dataset_images"],
+      empty: "No dataset selected. Import a folder of images to verify them.",
+      isEmpty: ([d]) => !(d && (d.images || []).length),
+      render: ([d]) => tree((d.images || []).map((name, i) => ({
+        id: `i${i}`, label: name, icon: "\u25a3",
+      })), { selectKind: "image" }),
+    }) },
   ],
   canvas: () => canvas({
     map: true,
@@ -861,10 +869,23 @@ const verification = {
       calls: ["list_dataset_images", "mission_estimates"],
       empty: "Nothing to verify yet: plan a mission and import the flight it produced.",
       isEmpty: ([imgs]) => !(imgs && (imgs.images || []).length),
-      render: ([imgs, est]) => readouts([
-        { k: "Captured", v: String(((imgs && imgs.images) || []).length) },
-        ...(est && est.image_count ? [{ k: "Planned", v: String(est.image_count) }] : []),
-      ]),
+      /* Read `est.image_count`, but mission_estimates() answers {estimates: {...}} --
+         so the planned count was always undefined and the "Planned" readout never
+         rendered at all. The panel showed only "Captured", which looks like a panel
+         with one row rather than a broken comparison, and Verification exists to make
+         exactly that comparison. Found by the general key guard, not by looking. */
+      render: ([imgs, est]) => {
+        const planned = ((est && est.estimates) || {}).image_count;
+        const captured = ((imgs && imgs.images) || []).length;
+        return readouts([
+          { k: "Captured", v: String(captured) },
+          ...(planned ? [{ k: "Planned", v: String(planned) }] : []),
+          /* The difference is the finding. Naming it costs nothing and is the number
+             an operator is actually looking for. */
+          ...(planned ? [{ k: "Difference", v: String(captured - planned),
+                           tone: captured < planned ? "warn" : "ok" }] : []),
+        ]);
+      },
     }) },
     /* Named three specific captures as missing -- C-1094, C-1095, C-1782 -- for a flight
        that was never flown. A missing capture is a finding; inventing one is not. */
@@ -1097,8 +1118,8 @@ const twin = {
     { id: "twin.history", title: "History", flex: 1, render: () => live({
       calls: ["audit_log"],
       empty: "No history for this project yet.",
-      isEmpty: ([log]) => !(log && (log.entries || log.events || []).length),
-      render: ([log]) => consoleView((log.entries || log.events || []).slice(0, 10).map((e) => ({
+      isEmpty: ([log]) => !(log && (log.events || []).length),
+      render: ([log]) => consoleView((log.events || []).slice(0, 10).map((e) => ({
         t: String(e.at || e.timestamp || "").slice(5, 10) || "—",
         text: e.message || e.action || "—",
       }))),
@@ -1192,13 +1213,34 @@ const thermal = {
   title: "Thermal",
   toolbar: ["RGB", "Thermal", "Fused", "3D Thermal", "|", "Radiometric", "Compare", "Export"],
   left: [
-    { id: "th.arrays", title: "Array Inventory", render: () => tree([
-      { id: "ar1", label: "Block 1", icon: "▦", children: [
-        { id: "st1", label: "String 1-A", icon: "▤", meta: "24" },
-        { id: "st2", label: "String 1-B", icon: "▤", meta: "24" },
-      ] },
-      { id: "ar2", label: "Block 2", icon: "▦", meta: "48" },
-    ], { selectKind: "array" }) },
+    /* Two blocks and two strings with module counts, for a solar site nobody surveyed.
+       An array inventory is built by build_asset_inventory() from detected instances,
+       and it refuses instances with no location, confidence or model digest -- because
+       a module count is a claim someone invoices against. Inventing one here bypassed
+       every one of those refusals. */
+    { id: "th.arrays", title: "Array Inventory", render: () => live({
+      calls: ["find_annotations"],
+      empty: "No array inventory. Run AI over thermal imagery to detect modules, then "
+             + "build an inventory from the detections.",
+      isEmpty: ([f]) => !(f && (f.annotations || []).length),
+      render: ([f]) => {
+        /* Grouped by the tag an inspector used, since that is the only grouping this
+           build really records. No tags means one flat list, not an invented hierarchy. */
+        const groups = new Map();
+        for (const a of f.annotations || []) {
+          const key = (a.tags && a.tags[0]) || "untagged";
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(a);
+        }
+        return tree([...groups.entries()].map(([name, items], i) => ({
+          id: `ar${i}`, label: name, icon: "\u25a6", meta: String(items.length),
+          children: items.slice(0, 50).map((a, k) => ({
+            id: `st${i}-${k}`, label: a.label || "(unlabelled)", icon: "\u25a4",
+            meta: a.severity || "",
+          })),
+        })), { selectKind: "array" });
+      },
+    }) },
   ],
   canvas: () => canvas({
     map: true,
@@ -1212,8 +1254,14 @@ const thermal = {
         empty: "No thermal anomalies recorded.",
         isEmpty: ([f]) => !(f && (f.annotations || []).length),
         render: ([f]) => {
+          /* An earlier version of this filter also tested `a.temperature_c`, which
+             Annotation does not have -- I added it while fixing the overlays and it was
+             always undefined, so the clause did nothing. Exactly the failure this file
+             keeps finding, committed by the person finding it. Annotations carry a
+             label and a severity; a temperature is not among them. */
           const thermal = (f.annotations || []).filter((a) =>
-            String(a.label || "").includes("thermal") || a.temperature_c !== undefined);
+            String(a.label || "").toLowerCase().includes("thermal")
+            || String(a.label || "").toLowerCase().includes("hot"));
           return [chip(`${thermal.length} thermal ${thermal.length === 1 ? "finding" : "findings"}`,
                        thermal.length ? "warn" : "ok")];
         },
@@ -1230,28 +1278,82 @@ const thermal = {
     ],
   }),
   right: [
-    { id: "th.module", title: "Selected Module", render: () => properties([
-      { group: "M-1-A-14" },
-      { label: "Anomaly", value: chip("Hot-Spot", "warn") },
-      { label: "Confidence", value: "0.70" },
-      { label: "Peak temp", value: "68.4", unit: "°C" },
-      { label: "Delta T", value: "34.2", unit: "K" },
-      { label: "Ambient", value: "34.2", unit: "°C" },
-      { group: "Model" },
-      { label: "Model", value: "solar_thermal_anomaly_classifier" },
-      { label: "Balanced acc.", value: "0.724" },
-      { label: "Soiling recall", value: chip("0.367 — weak", "error") },
-    ]) },
+    /* The F-118 pattern, in its worst form.
+       Module M-1-A-14, a Hot-Spot at 0.70 confidence, peak 68.4 C, delta T 34.2 K --
+       none of it measured -- presented directly above the REAL provenance of a real
+       model: solar_thermal_anomaly_classifier, balanced accuracy 0.724, soiling recall
+       0.367 marked weak. Those three figures are true and come from the registry, which
+       is precisely what made the four above them read as audited measurements.
+       Truthful provenance attached to an invented reading is worse than either alone.
+
+       Nothing in this build measures a module's peak temperature: there is a thermal
+       classifier and a palette scaler, and no per-module radiometric analysis. So the
+       panel shows the finding that is selected, and the model card stays -- separately,
+       and about the model rather than about a module. */
+    { id: "th.module", title: "Selected Module", render: () => live({
+      calls: ["find_annotations", "model_status"],
+      empty: "Select a thermal finding to see its class, severity and provenance.",
+      isEmpty: ([f]) => !(f && (f.annotations || []).length),
+      render: ([f, models]) => {
+        const chosen = selection.get("array") || selection.get("finding");
+        const all = f.annotations || [];
+        const found = (chosen && all.find((a) => a.label === chosen.label)) || null;
+        const card = ((models && models.models) || [])
+          .find((m) => String(m.key || "").includes("thermal"));
+        return properties([
+          ...(found ? [
+            { group: String(found.id || "").slice(0, 8) },
+            ...reported([
+              ["Class", found.label],
+              ["Severity", found.severity],
+              ["Status", found.status],
+              ["Source", found.created_by === "user" ? "drawn by a person" : found.created_by],
+              ["Image", found.source_id],
+            ]),
+          ] : [{ label: "Finding", value: "none selected" }]),
+          ...(card ? [
+            { group: "Model available for this class" },
+            /* model_status() rows are {key, exists, path, spec}. The first draft read
+               `present`, which is not one of them and would have printed "yes" for a
+               model that is not installed -- the exact opposite of what this row is for. */
+            ...reported([
+              ["Model", card.key],
+              ["Installed", card.exists ? "yes" : "no"],
+            ]),
+          ] : []),
+        ]);
+      },
+    }) },
   ],
   bottom: [
-    { id: "th.summary", title: "Anomaly Summary", flex: 2, render: () => table(
-      [{ title: "Class", key: "c" }, { title: "Count", key: "n", num: true }, { title: "Peak ΔT", key: "d", num: true }],
-      [
-        { c: "Hot-Spot", n: 3, d: "34.2 K" },
-        { c: "Diode", n: 2, d: "18.9 K" },
-        { c: "Soiling", n: 1, d: "6.1 K" },
-        { c: "Vegetation", n: 1, d: "4.4 K" },
-      ], { selectKind: "anomaly" }) },
+    /* Four anomaly classes with counts and peak temperature differences. The Peak
+       delta-T column is the problem: nothing in this build computes one, so the column
+       could only ever have been invented, and it is the number that decides whether a
+       hot-spot is a defect or a reflection. Counts by class and severity are real and
+       come from the findings; the temperature column is gone. */
+    { id: "th.summary", title: "Anomaly Summary", flex: 2, render: () => live({
+      calls: ["find_annotations"],
+      empty: "No anomalies recorded.",
+      isEmpty: ([f]) => !(f && (f.annotations || []).length),
+      render: ([f]) => {
+        const byClass = new Map();
+        for (const a of f.annotations || []) {
+          const key = a.label || "(unlabelled)";
+          const row = byClass.get(key) || { c: key, n: 0, severe: 0, human: 0 };
+          row.n += 1;
+          if (a.severity === "severe" || a.severity === "critical") row.severe += 1;
+          if (a.created_by === "user") row.human += 1;
+          byClass.set(key, row);
+        }
+        return table(
+          [{ title: "Class", key: "c" }, { title: "Count", key: "n", num: true },
+           { title: "Severe", key: "severe", num: true },
+           /* A finding a person drew and one a model proposed are different kinds of
+              evidence and a summary that merges them hides which is which. */
+           { title: "Drawn by a person", key: "human", num: true }],
+          [...byClass.values()], { selectKind: "anomaly" });
+      },
+    }) },
     { id: "th.hist", title: "Thermal Histogram", flex: 2, render: () => canvas({ title: "Temperature distribution", note: "Across the selected block" }) },
   ],
 };
