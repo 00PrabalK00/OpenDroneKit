@@ -223,18 +223,43 @@ const home = {
         level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
       }))),
     }) },
-    { id: "home.jobs", title: "Processing Queue", flex: 2, render: () => table(
-      [{ title: "Job", key: "job" }, { title: "Stage", key: "stage" },
-       { title: "Worker", key: "worker" }, { title: "Progress", value: (r) => meter(r.p, r.p > 0.9 ? "ok" : "") }],
-      [
-        { job: "#4471", stage: "Feature matching", worker: "w-02", p: 0.34 },
-        { job: "#4470", stage: "Dense cloud", worker: "w-01", p: 0.72 },
-        { job: "#4468", stage: "Orthomosaic", worker: "w-03", p: 0.95 },
-      ], { selectKind: "job" }) },
-    { id: "home.summary", title: "Fleet", flex: 1, render: () => readouts([
-      { k: "Aircraft", v: "6" }, { k: "Available", v: "4", tone: "ok" },
-      { k: "Flying", v: "1", tone: "accent" }, { k: "Service", v: "1", tone: "warn" },
-    ]) },
+    /* Three jobs at 34, 72 and 95 per cent on workers w-01 to w-03. This build runs
+       jobs on threads in this process; there are no workers, and a Worker column
+       describes a deployment that does not exist. */
+    { id: "home.jobs", title: "Processing Queue", flex: 2, render: () => live({
+      calls: ["list_jobs"],
+      empty: "Nothing running. Import a dataset and press Process.",
+      isEmpty: ([j]) => !(j && (j.jobs || []).length),
+      render: ([j]) => table(
+        [{ title: "Job", key: "name" }, { title: "State", key: "status" },
+         { title: "Detail", key: "message" },
+         { title: "Progress", value: (r) => meter((r.percent || 0) / 100,
+             r.status === "failed" ? "error" : r.percent >= 100 ? "ok" : "") }],
+        (j.jobs || []).slice(0, 50).map((job) => ({
+          id: job.id, name: job.name, status: job.status,
+          /* A failed job's error is the only thing worth reading on this row. */
+          message: job.error || job.message || "",
+          percent: job.percent || 0,
+        })), { selectKind: "job" }),
+    }) },
+    /* Six aircraft, four available, one flying, one in service -- on a machine with
+       no fleet registered. This is what fleet_status() is for: it returns exactly these
+       counts, and always did. */
+    { id: "home.summary", title: "Fleet", flex: 1, render: () => live({
+      calls: ["fleet_status"],
+      empty: "No fleet registered.",
+      isEmpty: ([f]) => !f || f.aircraft === undefined,
+      render: ([f]) => readouts([
+        { k: "Aircraft", v: String(f.aircraft ?? 0) },
+        { k: "Batteries", v: String(f.batteries ?? 0) },
+        { k: "Retired", v: String(f.retired_batteries ?? 0),
+          tone: (f.retired_batteries || 0) ? "warn" : "" },
+        { k: "Pilots", v: String(f.pilots ?? 0) },
+        /* The only one that asks for an action today. */
+        { k: "Service due", v: String((f.service_due || []).length),
+          tone: (f.service_due || []).length ? "warn" : "ok" },
+      ]),
+    }) },
   ],
 };
 
@@ -246,33 +271,86 @@ const projects = {
   toolbar: ["New Project", "New Folder", "Import", "|", "Archive", "Export", "Share"],
   left: [
     { id: "proj.tree", title: "Projects", render: projectTree },
+    /* One archived project that was never created. Nothing in this build archives a
+       project, so the honest state is empty rather than a plausible entry. */
     { id: "proj.archived", title: "Archived", height: 110, grow: false,
-      render: () => tree([{ id: "ar1", label: "Pune Depot 2025", icon: "▤", meta: "closed" }]) },
+      render: () => emptyState("No archived projects.") },
   ],
   canvas: () => canvas({ map: true, title: "Project extent", note: "Boundary, survey history and asset locations.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
   right: [
     { id: "proj.props", title: "Project Properties", tabs: [
-      { title: "General", render: () => properties([
-        { group: "Identity" },
-        { label: "Name", value: DATA.project.name },
-        { label: "Source", value: DATA.project.source },
-        { group: "Reconstruction" },
-        { label: "Images", value: DATA.project.images_registered },
-        { label: "Reprojection", value: String(DATA.project.reprojection_px), unit: "px" },
-        { label: "Geo RMSE", value: String(DATA.project.geo_rmse_m), unit: "m" },
-        { label: "CRS", value: DATA.project.epsg },
-      ]) },
-      { title: "Team", render: () => table(
-        [{ title: "Model", key: "name" }, { title: "Measured", key: "role" }],
-        DATA.models.slice(0, 5).map((model) => ({ name: model.key, role: model.headline || "installed" }))) },
-      { title: "Tags", render: () => el("div", { class: "panel-body pad" }, [chip("warehouse"), chip("roof"), chip("quarterly")]) },
+      /* Read straight from the bundled example, so every project showed the same
+         name, the same registered-image count, the same reprojection error and the same
+         geo RMSE. Reprojection error and RMSE are the two numbers a surveyor quotes to
+         say the work is good; they are not decoration. */
+      { title: "General", render: () => live({
+        calls: ["get_project", "list_layers"],
+        empty: "No project open.",
+        isEmpty: ([p]) => !(p && p.project),
+        render: ([p, l]) => {
+          const project = p.project;
+          const layers = ((l && l.layers) || []).filter((x) => x.crs_epsg);
+          const codes = [...new Set(layers.map((x) => x.crs_epsg))];
+          return properties([
+            { group: "Identity" },
+            ...reported([
+              ["Name", project.name],
+              ["Created", String(project.created_at || "").slice(0, 10) || undefined],
+              ["Root", project.root_dir],
+            ]),
+            { group: "Products" },
+            ...reported([
+              ["Georeferenced layers", layers.length || undefined],
+              ["CRS", codes.length ? codes.map((c) => `EPSG:${c}`).join(", ") : undefined],
+            ]),
+            /* Accuracy is deliberately absent rather than zeroed. It comes from the
+               reconstruction report and the control points, and a project that has
+               neither has no accuracy to quote. */
+            { label: "Accuracy", value: "reported on Verification, from control points" },
+          ]);
+        },
+      }) },
+      /* Labelled "Team" and listing MODELS, with columns Model and Measured. Whatever
+         this once was, the tab title and its contents had come apart, and a person
+         looking for who worked on a survey found a list of neural networks. There is no
+         team concept in this build -- no users, no assignment -- so the tab is named for
+         what it shows, and shows it from the registry rather than the example file. */
+      { title: "Models", render: () => live({
+        calls: ["verify_models"],
+        empty: "No models installed.",
+        isEmpty: ([r]) => !(r && (r.models || []).length),
+        render: ([r]) => table(
+          [{ title: "Model", key: "name" }, { title: "State", key: "state" }],
+          (r.models || []).map((m) => ({ name: m.model_key, state: m.status })),
+          { selectKind: "model" }),
+      }) },
+      /* Three chips -- warehouse, roof, quarterly -- that belonged to no project. */
+      { title: "Tags", render: () => live({
+        calls: ["list_annotation_tags"],
+        empty: "No tags yet. Select findings and tag them to group this project's work.",
+        isEmpty: ([t]) => !(t && (t.tags || []).length),
+        render: ([t]) => el("div", { class: "panel-body pad" },
+          (t.tags || []).map((tag) => chip(`${tag.tag} (${tag.count})`))),
+      }) },
     ] },
   ],
   bottom: [
-    { id: "proj.history", title: "Survey History", flex: 2, render: () => table(
-      [{ title: "Date", key: "date" }, { title: "Mission", key: "mission" }, { title: "Images", key: "images", num: true },
-       { title: "GSD cm", key: "gsd", num: true }, { title: "Coverage", key: "cov", num: true }],
-      [], { selectKind: "survey" }) },
+    /* Five column headings over zero rows. Not fabricated, but an empty grid reads as
+       "this project has no surveys" when it really means "nothing was ever asked". The
+       datasets in a project ARE its survey history, so it now says which. */
+    { id: "proj.history", title: "Survey History", flex: 2, render: () => live({
+      calls: ["list_datasets"],
+      empty: "No surveys yet. Import a folder of images to start one.",
+      isEmpty: ([d]) => !(d && (d.datasets || []).length),
+      render: ([d]) => table(
+        [{ title: "Survey", key: "name" }, { title: "Imported", key: "date" },
+         { title: "Images", key: "images", num: true }],
+        (d.datasets || []).map((set) => ({
+          name: set.name || set.path,
+          date: String(set.created_at || "").slice(0, 10) || "\u2014",
+          images: set.image_count ?? "\u2014",
+        })), { selectKind: "survey" }),
+    }) },
     { id: "proj.datasets", title: "Datasets", flex: 1, render: () => live({
       calls: ["list_datasets", "list_dataset_images"],
       empty: "No datasets. Use Import to add a folder of images.",
