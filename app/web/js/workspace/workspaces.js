@@ -486,30 +486,99 @@ const planning = {
         { label: "Obstacles", value: "1" },
       ]) },
     ] },
-    { id: "plan.estimates", title: "Estimates", height: 132, grow: false, render: () => readouts([
-      { k: "Area", v: "14.2 ha" }, { k: "Distance", v: "3.1 km" },
-      { k: "Duration", v: "18 min" }, { k: "Images", v: "214" },
-      { k: "Batteries", v: "1" }, { k: "Storage", v: "12.4 GB" },
-    ]) },
+    /* Six fixed numbers -- 14.2 ha, 3.1 km, 18 min, 214 images, 1 battery, 12.4 GB --
+       shown whether or not a mission had been planned. "Batteries 1" is the one that
+       sends someone to site with a single pack. */
+    { id: "plan.estimates", title: "Estimates", height: 132, grow: false, render: () => live({
+      calls: ["mission_estimates"],
+      empty: "Plan a mission to estimate its distance, duration, batteries and storage.",
+      isEmpty: ([e]) => !(e && e.estimates),
+      render: ([e]) => {
+        const est = e.estimates;
+        const battery = est.battery || {};
+        const storage = est.storage || {};
+        return readouts([
+          { k: "Images", v: String(est.image_count ?? "\u2014") },
+          { k: "Distance", v: est.distance_m ? `${(est.distance_m / 1000).toFixed(2)} km` : "\u2014" },
+          { k: "Duration", v: est.duration_min ? `${Math.round(est.duration_min)} min` : "\u2014" },
+          /* Batteries REQUIRED, and flagged when it is more than one, because that
+             changes what has to be in the car. */
+          { k: "Batteries", v: String(battery.batteries_required ?? "\u2014"),
+            tone: battery.fits_in_one_flight === false ? "warn" : "" },
+          { k: "Storage", v: storage.total_gb !== undefined ? `${storage.total_gb} GB` : "\u2014",
+            /* A storage figure computed for an unknown camera is a guess about file
+               size, and the operator should know which kind of number they have. */
+            tone: storage.known_camera === false ? "warn" : "" },
+        ]);
+      },
+    }) },
   ],
   bottom: [
     { id: "plan.timeline", title: "Simulation Timeline", flex: 3, render: () => canvas({
       title: "Altitude and speed over time", note: "Scrub to preview the flight. Playback follows the aircraft along the route.",
     }) },
-    { id: "plan.segments", title: "Mission Segments", flex: 2, render: () => table(
-      [{ title: "#", key: "n", num: true }, { title: "Segment", key: "name" },
-       { title: "Captures", key: "caps", num: true }, { title: "Battery", key: "batt" }],
-      [
-        { n: 1, name: "Nadir grid — pass A", caps: 96, batt: "1" },
-        { n: 2, name: "Nadir grid — cross", caps: 94, batt: "1" },
-        { n: 3, name: "Oblique ring −45°", caps: 12, batt: "1" },
-        { n: 4, name: "Oblique ring −60°", caps: 12, batt: "1" },
-      ], { selectKind: "segment" }) },
-    { id: "plan.log", title: "Validation", flex: 2, render: () => consoleView([
-      { t: "—", text: "geofence contains every capture point", level: "ok" },
-      { t: "—", text: "no terrain model loaded: altitudes are above a flat plane", level: "warn" },
-      { t: "—", text: "payload understands the planned trigger command", level: "ok" },
-    ]) },
+    /* Four segments with capture counts, for a mission that had not been planned.
+       plan_battery_segments() computes the real split -- sorties sized so each fits
+       inside one battery with its reserve intact. */
+    { id: "plan.segments", title: "Mission Segments", flex: 2, render: () => live({
+      calls: ["plan_battery_segments"],
+      empty: "Plan a mission to see how it splits across batteries.",
+      isEmpty: ([b]) => !(b && b.splits),
+      render: ([b]) => el("div", {}, [
+        table(
+          [{ title: "#", key: "n", num: true },
+           { title: "First capture", key: "first", num: true },
+           { title: "Last capture", key: "last", num: true },
+           { title: "Captures", key: "caps", num: true }],
+          (b.splits || []).map((seg) => ({
+            n: seg.segment, first: seg.first_capture,
+            last: seg.last_capture, caps: seg.capture_count,
+          })), { selectKind: "segment" }),
+        /* The note says segment boundaries are estimates from capture count and to fly
+           to the aircraft's own battery warning instead. Dropping it would leave a
+           table of numbers that look surveyed. */
+        b.note ? el("div", { class: "panel-body pad muted", text: b.note }) : null,
+      ]),
+    }) },
+    /* Three validation results for a plan nobody checked.
+       "geofence contains every capture point -- ok" is a safety check reported as
+       passed without having run, which is the preflight checklist's defect on the
+       planning screen. The middle line was even true by accident, which is worse: two
+       thirds of the panel was right, so the whole of it read as a real check.
+
+       Nothing validates a plan on render, and it should not -- validation is an action
+       with a cost. So the panel reports what the plan really contains, and names the
+       button that runs the checks. */
+    { id: "plan.log", title: "Validation", flex: 2, render: () => live({
+      calls: ["mission_estimates", "terrain_coverage"],
+      empty: "No mission planned. Plan one, then press Validate to check it.",
+      isEmpty: ([e]) => !(e && e.estimates),
+      render: ([e, terrain]) => {
+        const battery = (e.estimates || {}).battery || {};
+        const storage = (e.estimates || {}).storage || {};
+        const lines = [];
+        /* Warnings the estimator produced are real findings about this plan. */
+        for (const warning of battery.warnings || []) {
+          lines.push({ t: "plan", text: warning, level: "warn" });
+        }
+        if (storage.known_camera === false) {
+          lines.push({ t: "plan", text:
+            "Storage is estimated for an unrecognised camera, so file sizes are assumed.",
+            level: "warn" });
+        }
+        /* Terrain is the one that changes what altitude means, so it is stated either
+           way rather than only when missing. */
+        const covered = terrain && terrain.covered;
+        lines.push(covered
+          ? { t: "terrain", text: "Terrain model loaded; altitudes follow the ground.", level: "ok" }
+          : { t: "terrain", text:
+              "No terrain model loaded: planned altitudes are above a flat plane.",
+              level: "warn" });
+        lines.push({ t: "\u2014", text:
+          "Geofence, airspace and payload checks run when you press Validate.", level: "" });
+        return consoleView(lines);
+      },
+    }) },
   ],
 };
 
