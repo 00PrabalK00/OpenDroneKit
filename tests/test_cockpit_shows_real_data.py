@@ -56,14 +56,38 @@ FABRICATED = [
 ]
 
 
+def strip_comments(js: str) -> str:
+    """Remove /* */ blocks and // lines.
+
+    This started as a line-prefix filter, dropping lines that begin with `*`, `//` or
+    `/*`. Block comments in workspaces.js indent their continuation lines with plain
+    text, so those lines survived -- and the guard then failed on a comment explaining
+    that the value had been removed. It happened twice: once with "Storage 0 GB free",
+    once with "redis".
+
+    Both directions are wrong. A comment that quotes the string can satisfy a guard
+    looking for its absence, and can also break one. Parsing the comments out is the
+    only version that means what it says.
+    """
+    out, i = [], 0
+    while i < len(js):
+        if js.startswith("/*", i):
+            end = js.find("*/", i + 2)
+            i = len(js) if end == -1 else end + 2
+            continue
+        if js.startswith("//", i):
+            end = js.find("\n", i)
+            i = len(js) if end == -1 else end
+            continue
+        out.append(js[i])
+        i += 1
+    return "".join(out)
+
+
 @pytest.mark.parametrize("needle,why", FABRICATED, ids=[n for n, _ in FABRICATED])
 def test_no_fabricated_measurement_is_rendered(workspaces, needle, why) -> None:
     """A comment may DISCUSS the old value; no code may still render it."""
-    code = "\n".join(
-        line for line in workspaces.splitlines()
-        if not line.lstrip().startswith(("*", "//", "/*"))
-    )
-    assert needle not in code, f"{needle} is still rendered -- {why}"
+    assert needle not in strip_comments(workspaces), f"{needle} is still rendered -- {why}"
 
 
 def test_the_panels_that_replaced_them_read_from_the_application(workspaces) -> None:

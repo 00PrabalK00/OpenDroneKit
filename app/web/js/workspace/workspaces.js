@@ -1593,42 +1593,111 @@ const developers = {
       { id: "e8", label: "GET /measurements", icon: "▸" },
       { id: "e9", label: "GET /reports", icon: "▸" },
     ], { selectKind: "endpoint" }) },
-    { id: "dev.plugins", title: "Plugins", render: () => tree([
-      { id: "pl1", label: "shapefile-exporter", icon: "◈", meta: "enabled" },
-      { id: "pl2", label: "custom-drone", icon: "◈", meta: "enabled" },
-    ], { selectKind: "plugin" }) },
+    /* Two plugins reported enabled that were never installed. list_plugins() reports
+       what the registry has really loaded. */
+    { id: "dev.plugins", title: "Plugins", render: () => live({
+      calls: ["list_plugins"],
+      empty: "No plugins installed.",
+      isEmpty: ([p]) => !(p && (p.plugins || []).length),
+      render: ([p]) => tree((p.plugins || []).map((plugin, i) => ({
+        id: `pl${i}`,
+        label: plugin.name || "(unnamed)",
+        icon: "\u25c8",
+        meta: [plugin.kind, plugin.version].filter(Boolean).join(" ") || "",
+      })), { selectKind: "plugin" }),
+    }) },
   ],
   canvas: () => canvas({ title: "API console", note: "Request, response and authentication for the selected endpoint." }),
   right: [
+    /* Displayed an API key -- "odk_live_8f2a..." -- with scopes and a request count of
+       1,204. No key was ever issued. Showing a credential-shaped string is worse than
+       showing a wrong number: it tells the reader they HAVE a key, so the next thing
+       they do is look for the rest of it, or write to support about a key that was
+       never created. The request count implies traffic and therefore a running service.
+
+       The desktop application does not issue or hold API keys. Keys belong to the REST
+       service, which is a separate process this app does not start. Saying so is the
+       whole content of this panel. */
     { id: "dev.auth", title: "Authentication", render: () => properties([
-      { label: "Scheme", value: "Bearer" },
-      { label: "Key", value: "odk_live_8f2a…" },
-      { label: "Scopes", value: "read, write" },
-      { label: "Requests today", value: "1,204" },
+      { label: "This application", value: "runs locally; no API key is used or issued" },
+      { label: "Keys", value: "issued by the REST service, which this app does not run" },
+      { label: "Storage", value: "a key is shown once at creation and stored only as a hash" },
     ]) },
-    { id: "dev.webhooks", title: "Webhooks", render: () => table(
-      [{ title: "Event", key: "e" }, { title: "Status", key: "s" }],
-      [
-        { e: "mission.completed", s: "active" },
-        { e: "processing.completed", s: "active" },
-        { e: "findings.ready", s: "active" },
-        { e: "report.generated", s: "paused" },
-      ], { selectKind: "webhook" }) },
+    /* Four webhooks reported active, subscribing nobody. A webhook that looks
+       registered and is not means an integration silently never fires. */
+    { id: "dev.webhooks", title: "Webhooks", render: () => live({
+      calls: ["list_webhooks"],
+      empty: "No webhooks registered.",
+      isEmpty: ([w]) => !(w && (w.webhooks || []).length),
+      render: ([w]) => table(
+        [{ title: "Event", key: "e" }, { title: "URL", key: "u" },
+         { title: "Status", key: "s" }],
+        (w.webhooks || []).map((hook) => ({
+          /* The column is `events`, a list of subscribed event names -- not a single
+             `event`. One webhook routinely subscribes to several, and reading the
+             singular would have printed an em dash for every correctly configured one. */
+          e: (hook.events || []).join(", ") || "\u2014",
+          u: hook.url || "\u2014",
+          s: (hook.active === false ? "disabled" : "active")
+             + (hook.delivery_count ? ` \u00b7 ${hook.delivery_count} sent` : ""),
+        })), { selectKind: "webhook" }),
+    }) },
   ],
   bottom: [
-    { id: "dev.infra", title: "Infrastructure", flex: 3, render: () => table(
-      [{ title: "Component", key: "c" }, { title: "State", key: "s" }, { title: "Detail", key: "d" }],
-      [
-        { c: "REST API", s: "healthy", d: "8000" },
-        { c: "Processing workers", s: "3 online", d: "celery/redis" },
-        { c: "PostgreSQL + PostGIS", s: "healthy", d: "geometry stored as GeoJSON text" },
-        { c: "Object storage", s: "healthy", d: "s3 / minio" },
-        { c: "Observability", s: "healthy", d: "/metrics" },
-      ], { selectKind: "component" }) },
-    { id: "dev.events", title: "Event Stream", flex: 2, render: () => consoleView([
-      { t: "00:00:00", text: "processing.progress job=4471 pct=34" },
-      { t: "00:00:00", text: "processing.started job=4471" },
-    ]) },
+    /* The worst panel in the cockpit for the size of its claim.
+       Five components reported HEALTHY -- a REST API on 8000, three celery/redis workers
+       online, PostgreSQL with PostGIS, s3/minio object storage, and observability -- on a
+       desktop application that runs jobs on threads in this process and stores everything
+       in SQLite on the local disk. None of those services was contacted. None of them was
+       running. An earlier sweep banned the string "redis 7.4"; this row says
+       "celery/redis" and passed straight through it, which is the case for checking
+       shapes rather than maintaining a list of strings.
+
+       A green health table is acted on. Someone reads it and concludes the platform is
+       up. What this panel can honestly report is what THIS process has, which is what
+       capabilities() answers. */
+    { id: "dev.infra", title: "Infrastructure", flex: 3, render: () => live({
+      calls: ["capabilities"],
+      empty: "Could not read this installation's capabilities.",
+      isEmpty: ([c]) => !(c && c.capabilities),
+      render: ([c]) => {
+        const caps = c.capabilities;
+        const rows = [
+          { c: "Runtime", s: "local", d: caps.platform || "" },
+          { c: "Job execution", s: "in-process", d: "threads in this application" },
+          { c: "Storage", s: "local disk", d: "SQLite and files under the project root" },
+          /* engine_capabilities() reports pycolmap, colmap_binary, pycolmap_cuda,
+             dense_stereo and open3d. There is no `colmap` key: the first draft read one
+             and would have reported "missing" on a machine with COLMAP installed. */
+          { c: "Reconstruction",
+            s: (caps.pycolmap || caps.colmap_binary) ? "available" : "missing",
+            d: caps.colmap_binary ? "native COLMAP binary"
+               : caps.pycolmap ? "pycolmap (CPU)" : "install COLMAP or pycolmap" },
+          { c: "Dense stereo", s: caps.dense_stereo ? "available" : "not available",
+            d: caps.pycolmap_cuda ? "CUDA" : "needs a CUDA COLMAP build" },
+          { c: "Meshing", s: caps.open3d ? "available" : "missing",
+            d: caps.open3d ? "open3d" : "install open3d to build meshes" },
+          { c: "GPU", s: caps.cuda ? "available" : "not available", d: caps.gpu || "" },
+          { c: "Torch", s: caps.torch ? "available" : "missing", d: caps.torch || "" },
+          { c: "MAVLink", s: caps.pymavlink ? "available" : "missing",
+            d: caps.pymavlink ? "pymavlink" : "install pymavlink to fly" },
+        ];
+        return table(
+          [{ title: "Component", key: "c" }, { title: "State", key: "s" },
+           { title: "Detail", key: "d" }],
+          rows, { selectKind: "component" });
+      },
+    }) },
+    /* Two events for job 4471, which never ran. The audit log is the real stream. */
+    { id: "dev.events", title: "Event Stream", flex: 2, render: () => live({
+      calls: ["audit_log"],
+      empty: "No events recorded yet.",
+      isEmpty: ([a]) => !(a && (a.events || []).length),
+      render: ([a]) => consoleView((a.events || []).slice(0, 60).map((e) => ({
+        t: String(e.created_at || "").slice(11, 19) || "\u2014",
+        text: `${e.event_type || ""} ${e.payload_json && e.payload_json !== "{}" ? e.payload_json : ""}`.trim(),
+      }))),
+    }) },
   ],
 };
 
