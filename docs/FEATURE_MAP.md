@@ -204,7 +204,7 @@ turns a raw model into something a client can be handed.
 |---|---|---|
 | Distance | `me.2d`, `me.3d` | registered |
 | Area | `me.2d` | registered |
-| Perimeter | `me.2d` | partial — area exists; perimeter is not exported separately |
+| Perimeter | `me.2d` | registered — `measure_on_raster(kind="perimeter")`. Verified: a 20 x 20 m square gives area 400 m2, perimeter 80 m |
 | Volume | `me.volume` | registered |
 | Cut and fill | `me.volume` | registered |
 | Slope | `me.slope` | registered |
@@ -265,7 +265,7 @@ trajectory handling and 360 image projection.
 | Market feature | ODK name | State |
 |---|---|---|
 | PDF reports | `rp.reports`, `rp.formats` | registered |
-| Word output | `rp.formats` | partial — PDF ships; DOCX does not |
+| Word output | `rp.formats` | **now reachable** — `Api.export_report("docx")`; the writer existed and nothing called it |
 | Templates, logo, cover, intro | `rp.templates` | registered |
 | Severity-first ordering | `rp.reports` | partial |
 | Guest links per image | `sh.links` | registered |
@@ -299,12 +299,12 @@ by where they appear above.
 | 2 | `mp.tpl_box` | **done this session** | |
 | 3 | `mp.tpl_dome` | **done this session** — the tower alias was a real geometry defect, not a naming one | |
 | 4 | `mp.tpl_pylon` | **done this session** — was implemented and unreachable |
-| 5 | `hub.clipping` | Polygon and plane clipping, saved named clips | The main thing standing between a raw model and a deliverable |
-| 6 | `hub.saved_views` | Saved camera position, facade mode, curated share | Pairs with clipping; small once the viewer holds state |
-| 7 | `in.bulk_tagging` | Multi-select and tag | Cheap; large day-to-day effect |
-| 8 | `hub.cad_overlay` | DXF by EPSG, raster by bbox | Self-contained; we already handle CRS properly |
-| 9 | `rp.formats` (extend) | DOCX output | PDF pipeline already exists |
-| 10 | `me.2d` (extend) | Perimeter alongside area | Hours, not days |
+| 5 | `hub.clipping` | **done** — polygon + plane, saved named clips, non-destructive | |
+| 6 | `hub.saved_views` | **done** — camera, clips, facade mode, one enforced default | |
+| 7 | `in.bulk_tagging` | **done** — tags added to the annotation model, plus bulk apply/remove | |
+| 8 | `hub.cad_overlay` | **done** — DXF by EPSG, raster by bbox, alignment reported | |
+| 9 | `rp.formats` | **done** — was unreachable, not missing | |
+| 10 | `me.2d` | **already worked** — the map was wrong | |
 | 11 | `hub.notifications` | Job and AI completion notices | Needed the moment jobs run long |
 | 12 | `fl.log_sync` | Automatic flight-log upload | Small, regulatory value |
 | 13 | `ai.components` | Door/window counts | New model + corpus |
@@ -315,8 +315,34 @@ by where they appear above.
 **Items 1–3 are one focused piece of work** and would close §4 of their inventory
 outright; item 4 is already done. Items 5–7 are what an inspector notices first. Items 14–16 are each a project.
 
+## What building this actually found
+
+The gap list above was wrong five times, always in the same direction: I read the registry
+and inferred a gap where the code already existed. Every one was found by trying to USE
+the thing rather than by reading about it.
+
+| Listed as | Reality | Now |
+|---|---|---|
+| `mp.tpl_pylon` gap | Implemented and tested, on no route a user could reach | `Api.plan_pylon_mission` |
+| Thermal / multispectral partial | Same — implemented, tested, unreachable | Both on the Api |
+| `mp.tpl_turbine` gap | Fully implemented, 38 poses, absent from the menu | Advertised |
+| Word output missing | `write_docx` existed with tests; nothing called it | `Api.export_report("docx")` |
+| Perimeter partial | Implemented AND wired the whole time | Verified, no change needed |
+
+One was worse than a missing feature. `dome` aliased to `tower_mapping`, which flies every
+ring at the same radius because a tower is a cylinder. On a curved surface the stand-off
+was correct only at the widest ring and the crown was photographed side-on. That plan
+generated, flew and delivered with nothing reporting a problem.
+
+The lesson, stated plainly because it changed how the rest of this work was done: **a
+feature is not done when its function exists and its unit tests pass. It is done when
+something a person can press reaches it.** Four separate features in this codebase passed
+their own tests while being impossible to invoke, and the registry counted all four as
+complete.
+
 ## What I am not going to pretend
 
-`pr.dense` has a row and does not work on this machine. `eng.semantic` has a row and two
-of its six classes are usable. Counting either as parity with a shipped competitor feature
-would be exactly the kind of claim the rest of this repository is arranged to prevent.
+`pr.dense` has a row and does not work on this machine -- CUDA patch-match stereo rejects
+the driver's PTX. `eng.semantic` has a row and two of its six classes are usable. Counting
+either as parity with a shipped competitor feature would be exactly the kind of claim the
+rest of this repository is arranged to prevent.
