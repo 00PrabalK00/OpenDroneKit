@@ -355,6 +355,24 @@ export const ACTIONS = {
     },
   },
 
+  "Verify Models": {
+    describe: "Re-hash every installed model against its recorded digest.",
+    async run() {
+      const report = await call("verify_models");
+      const rows = report.models || [];
+      const mismatched = rows.filter((r) => r.status === "mismatch");
+      if (mismatched.length) {
+        return {
+          message: `${mismatched.length} model(s) do not match their recorded digest: `
+            + mismatched.map((r) => r.model_key).join(", ")
+            + ". Their published metrics describe a different file.",
+        };
+      }
+      const verified = rows.filter((r) => r.verified).length;
+      return { message: `${verified} of ${rows.length} model(s) verified against their digests.` };
+    },
+  },
+
   "Match Captures": {
     describe: "Compare what was captured against what was planned.",
     async run() {

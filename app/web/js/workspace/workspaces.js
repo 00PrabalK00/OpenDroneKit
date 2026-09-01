@@ -1078,7 +1078,12 @@ const developers = {
 const settings = {
   id: "settings",
   title: "Settings",
-  toolbar: ["Save", "Reset", "|", "Import", "Export"],
+  /* Was ["Save", "Reset", "|", "Import", "Export"]. Save resolves to the mission verb, so
+     pressing it here prompted "Mission name" and saved a mission from the Settings
+     screen; Import and Export are the dataset and mission verbs for the same reason.
+     Nothing in this build persists preferences, so a Save button here could only ever
+     have done something else's job. */
+  toolbar: ["Verify Models"],
   left: [
     { id: "set.sections", title: "Settings", render: () => tree([
       { id: "s1", label: "General", icon: "⚙" },
@@ -1092,24 +1097,51 @@ const settings = {
   ],
   canvas: () => canvas({ title: "Settings", note: "Select a section." }),
   right: [
-    { id: "set.detail", title: "Units & CRS", render: () => fields([
-      { key: "units", label: "Units", value: "metric", options: ["metric", "imperial"] },
-      { key: "crs", label: "Default CRS", value: "EPSG:4326" },
-      { key: "vert", label: "Vertical datum", value: "EGM96" },
-      { key: "angle", label: "Angles", value: "degrees", options: ["degrees", "mils"] },
-    ], settingChanged) },
+    /* Four editable controls -- Units, Default CRS, Vertical datum, Angles -- that no
+       code read and no Api stores. Editing one moved the input and changed nothing, and
+       a preference that silently fails to apply is worse than one that is absent because
+       the operator believes the setting took.
+
+       What IS true is the coordinate system the open project's products are in, so that
+       is what this shows. Editable preferences need somewhere to persist first; that is
+       real work rather than a wiring fix. */
+    { id: "set.detail", title: "Spatial reference", render: () => live({
+      calls: ["list_layers"],
+      empty: "No georeferenced products yet, so this project has no coordinate system.",
+      isEmpty: ([l]) => !(l && (l.layers || []).some((x) => x.crs_epsg)),
+      render: ([l]) => {
+        const layers = (l.layers || []).filter((x) => x.crs_epsg);
+        const codes = [...new Set(layers.map((x) => x.crs_epsg))];
+        return properties([
+          { label: "Project CRS", value: codes.map((c) => `EPSG:${c}`).join(", ") },
+          ...reported([
+            ["Georeferenced layers", layers.length],
+            /* More than one CRS in a project is worth surfacing: measurements taken
+               across the two are not comparable without a transform. */
+            ["Mixed systems", codes.length > 1 ? "yes" : undefined],
+          ]),
+          { label: "Units", value: "metre (SI)" },
+        ]);
+      },
+    }) },
   ],
   bottom: [
-    { id: "set.models", title: "Installed Models", flex: 1, render: () => table(
-      [{ title: "Model", key: "m" }, { title: "Metric", key: "v", num: true }, { title: "Digest", key: "d" }],
-      [
-        { m: "solar_cell_defect_detector", v: "mAP50 0.884", d: "…" },
-        { m: "crack_presence_classifier", v: "bal.acc 0.958", d: "92a4d142…" },
-        { m: "rail_obstacle_detector", v: "mAP50 0.824", d: "7a53c8b9…" },
-        { m: "solar_thermal_anomaly_classifier", v: "bal.acc 0.724", d: "6933a09a…" },
-        { m: "rail_corridor_segmentation", v: "IoU 0.681", d: "…" },
-        { m: "crack_segmentation", v: "IoU 0.606", d: "…" },
-      ], { selectKind: "model" }) },
+    /* A hardcoded six, three of whose digests were written as a literal ellipsis. Nine
+       models are installed today and the list could not know that. A digest is the whole
+       mechanism tying a published metric to a particular file, so showing "..." in that
+       column is worse than showing nothing: it looks like the check was done. */
+    { id: "set.models", title: "Installed Models", flex: 1, render: () => live({
+      calls: ["verify_models"],
+      empty: "No models installed.",
+      isEmpty: ([report]) => !(report && (report.models || []).length),
+      render: ([report]) => table(
+        [{ title: "Model", key: "m" }, { title: "State", key: "s" }, { title: "Digest", key: "d" }],
+        (report.models || []).map((row) => ({
+          m: row.model_key,
+          s: row.status,
+          d: (row.actual_sha256 || row.expected_sha256 || "").slice(0, 12) || "—",
+        })), { selectKind: "model" }),
+    }) },
   ],
 };
 
