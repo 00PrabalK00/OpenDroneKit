@@ -1767,6 +1767,21 @@ class Api:
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
+    @guard
+    def list_fleet(self, organization_id: int = 1) -> dict[str, Any]:
+        """The fleet row by row: which aircraft, which battery, which pilot.
+
+        fleet_status() returns counts, which is what a dashboard tile needs and not what
+        the Fleet screen needs. Without this the screen had nothing to draw and drew
+        four invented aircraft instead.
+        """
+        from app import desktop_ops
+
+        try:
+            return ok(**desktop_ops.list_fleet(organization_id))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
     # -------------------------------------------------------------- sharing
 
     @guard

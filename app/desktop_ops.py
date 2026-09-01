@@ -199,6 +199,90 @@ def fleet_status(organization_id: int) -> dict[str, Any]:
         }
 
 
+def list_fleet(organization_id: int) -> dict[str, Any]:
+    """The fleet itself, row by row, rather than counts of it.
+
+    fleet_status() answers "how many" -- four aircraft, three batteries, two overdue.
+    That is the right answer for a dashboard tile and useless for the Fleet screen,
+    which has to show which aircraft, which battery, and what is wrong with it. Having
+    only the counts is why that screen was drawn from four invented aircraft, two
+    invented pilots and three invented batteries with cycle counts and temperatures.
+
+    Service due is computed here rather than stored, for the same reason it is computed
+    in fleet_status(): an aircraft becomes overdue by flying, not by being edited, so a
+    stored flag would be stale exactly when it matters.
+    """
+    from sqlalchemy import select
+
+    from services.api.models import Aircraft, Battery, Maintenance, PilotProfile
+
+    with _session() as db:
+        aircraft = list(db.scalars(select(Aircraft).where(
+            Aircraft.organization_id == int(organization_id)).order_by(Aircraft.name)))
+        batteries = list(db.scalars(select(Battery).where(
+            Battery.organization_id == int(organization_id)).order_by(Battery.serial_number)))
+        pilots = list(db.scalars(select(PilotProfile).where(
+            PilotProfile.organization_id == int(organization_id)).order_by(
+                PilotProfile.display_name)))
+
+        ids = [a.id for a in aircraft]
+        recent = list(db.scalars(
+            select(Maintenance).where(Maintenance.aircraft_id.in_(ids))
+            .order_by(Maintenance.performed_at.desc()).limit(50)
+        )) if ids else []
+        names = {a.id: a.name for a in aircraft}
+
+        def hours_to_service(a: Any) -> float | None:
+            if not a.service_interval_hours:
+                return None
+            flown = float(a.flight_hours or 0.0) - float(a.hours_at_last_service or 0.0)
+            return round(float(a.service_interval_hours) - flown, 1)
+
+        return {
+            "aircraft": [{
+                "id": a.id,
+                "name": a.name,
+                "model": a.model or "",
+                "serial_number": a.serial_number or "",
+                "firmware": a.firmware or "",
+                "flight_hours": round(float(a.flight_hours or 0.0), 1),
+                "flight_count": int(a.flight_count or 0),
+                "status": a.status or "unknown",
+                # None means no interval is configured, which is not the same as
+                # "not due" and must not be rendered as a comfortable number.
+                "hours_to_service": hours_to_service(a),
+            } for a in aircraft],
+            "batteries": [{
+                "id": b.id,
+                "serial_number": b.serial_number or "",
+                "capacity_mah": int(b.capacity_mah or 0),
+                "cycle_count": int(b.cycle_count or 0),
+                "cycle_limit": int(b.cycle_limit or 0),
+                "health_pct": None if b.health_pct is None else round(float(b.health_pct), 1),
+                "retired": bool(b.retired),
+                # Past its rated cycles but not yet retired: the state that puts a pack
+                # in an aircraft when it should be on a shelf.
+                "over_cycle_limit": bool(
+                    b.cycle_limit and int(b.cycle_count or 0) >= int(b.cycle_limit)),
+            } for b in batteries],
+            "pilots": [{
+                "id": p.id,
+                "display_name": p.display_name or "",
+                "licence_number": p.licence_number or "",
+                "licence_expires_on": str(p.licence_expires_on or "") or None,
+                "medical_expires_on": str(p.medical_expires_on or "") or None,
+                "flight_hours": round(float(p.flight_hours or 0.0), 1),
+            } for p in pilots],
+            "maintenance": [{
+                "aircraft": names.get(m.aircraft_id, f"#{m.aircraft_id}"),
+                "kind": m.kind,
+                "description": m.description or "",
+                "hours_at_service": round(float(m.hours_at_service or 0.0), 1),
+                "performed_at": str(m.performed_at or ""),
+            } for m in recent],
+        }
+
+
 def assign_mission(aircraft_id: int, mission_name: str) -> dict[str, Any]:
     """Note which aircraft is flying which mission.
 

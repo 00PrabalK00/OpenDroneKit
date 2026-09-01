@@ -1167,44 +1167,100 @@ const fleet = {
   title: "Fleet",
   toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance", "Export"],
   left: [
-    { id: "fl.aircraft", title: "Aircraft", render: () => tree([
-      { id: "a1", label: "M350-01", icon: "▲", meta: "flying" },
-      { id: "a2", label: "M350-02", icon: "▲", meta: "available" },
-      { id: "a3", label: "M300-01", icon: "▲", meta: "service" },
-      { id: "a4", label: "Mavic-3E-01", icon: "▲", meta: "available" },
-    ], { selectKind: "aircraft" }) },
-    { id: "fl.pilots", title: "Pilots", render: () => tree([
-      { id: "p1", label: "A. Sharma", icon: "◉", meta: "142 h" },
-      { id: "p2", label: "R. Iyer", icon: "◉", meta: "88 h" },
-    ], { selectKind: "pilot" }) },
+    /* Four aircraft that do not exist, one of them "flying". */
+    { id: "fl.aircraft", title: "Aircraft", render: () => live({
+      calls: ["list_fleet"],
+      empty: "No aircraft registered. Add Aircraft to start a fleet.",
+      isEmpty: ([f]) => !(f && (f.aircraft || []).length),
+      render: ([f]) => tree((f.aircraft || []).map((a) => ({
+        id: `a${a.id}`, label: a.name, icon: "\u25b2",
+        /* Hours remaining until service, because that is the number that decides
+           whether this airframe flies today. null means no interval is configured,
+           which is not the same as "not due". */
+        meta: a.hours_to_service === null ? a.status
+          : a.hours_to_service <= 0 ? "service due"
+          : `${a.hours_to_service} h`,
+      })), { selectKind: "aircraft" }),
+    }) },
+    /* Two named people who do not work here, with flight hours. */
+    { id: "fl.pilots", title: "Pilots", render: () => live({
+      calls: ["list_fleet"],
+      empty: "No pilots registered.",
+      isEmpty: ([f]) => !(f && (f.pilots || []).length),
+      render: ([f]) => tree((f.pilots || []).map((p) => ({
+        id: `p${p.id}`, label: p.display_name || "(unnamed)", icon: "\u25c9",
+        meta: `${p.flight_hours} h`,
+      })), { selectKind: "pilot" }),
+    }) },
   ],
   canvas: () => canvas({ map: true, title: "Fleet map", note: "Aircraft locations, assignments and operational state.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
   right: [
-    { id: "fl.details", title: "Aircraft Details", render: () => properties([
-      { group: "M350-01" },
-      { label: "Model", value: "Matrice 350 RTK" },
-      { label: "Serial", value: "1ZNBJ9..." },
-      { label: "Firmware", value: "09.01.0034" },
-      { label: "Payload", value: "Zenmuse P1" },
-      { label: "Flight hours", value: "142.6" },
-      { label: "Last flight", value: "today" },
-      { label: "Next service", value: chip("in 7.4 h", "warn") },
-      { label: "State", value: chip("flying", "info") },
-    ]) },
+    /* A serial number, a firmware version and a service interval for an airframe
+       that does not exist. "Next service in 7.4 h" is an airworthiness statement. */
+    { id: "fl.details", title: "Aircraft Details", render: () => live({
+      calls: ["list_fleet"],
+      empty: "Select an aircraft to see its serial, firmware, hours and service state.",
+      isEmpty: ([f]) => !(f && (f.aircraft || []).length),
+      render: ([f]) => {
+        const chosen = selection.get("aircraft");
+        const all = f.aircraft || [];
+        const a = (chosen && all.find((x) => `a${x.id}` === chosen.id)) || all[0];
+        const due = a.hours_to_service;
+        return properties([
+          { group: a.name },
+          ...reported([
+            ["Model", a.model],
+            ["Serial", a.serial_number],
+            ["Firmware", a.firmware],
+            ["Flight hours", a.flight_hours],
+            ["Flights", a.flight_count || undefined],
+          ]),
+          { label: "Next service", value: due === null
+            ? chip("no interval set", "warn")
+            : due <= 0 ? chip("overdue", "error") : chip(`in ${due} h`, due < 10 ? "warn" : "ok") },
+          { label: "State", value: chip(a.status || "unknown", "info") },
+        ]);
+      },
+    }) },
   ],
   bottom: [
-    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => table(
-      [{ title: "ID", key: "id" }, { title: "Charge", key: "c", num: true }, { title: "Cycles", key: "n", num: true },
-       { title: "Health", key: "h" }, { title: "Temp", key: "t", num: true }, { title: "State", key: "s" }],
-      [
-        { id: "B-05", c: "96%", n: 142, h: "good", t: "31 °C", s: "in use" },
-        { id: "B-06", c: "100%", n: 118, h: "good", t: "24 °C", s: "ready" },
-        { id: "B-07", c: "88%", n: 298, h: "service", t: "26 °C", s: "reserved" },
-      ], { selectKind: "battery" }) },
-    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => consoleView([
-      { t: "08-14", text: "M300-01 propeller set replaced" },
-      { t: "07-30", text: "B-07 flagged: cycle count above 250", level: "warn" },
-    ]) },
+    /* Three packs with charge, cycle counts, health and cell temperatures. Nothing in
+       this build reads a battery's charge or temperature -- those come off the pack over
+       a link the desktop app does not have -- so the columns are the ones the record
+       really holds. Inventing a temperature for a lithium pack is not a neutral
+       placeholder. */
+    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => live({
+      calls: ["list_fleet"],
+      empty: "No batteries registered. Add Battery to track cycles and health.",
+      isEmpty: ([f]) => !(f && (f.batteries || []).length),
+      render: ([f]) => table(
+        [{ title: "Serial", key: "s" }, { title: "Cycles", key: "n", num: true },
+         { title: "Limit", key: "l", num: true }, { title: "Health", key: "h", num: true },
+         { title: "State", key: "st" }],
+        (f.batteries || []).map((b) => ({
+          s: b.serial_number || `#${b.id}`,
+          n: b.cycle_count,
+          l: b.cycle_limit || "\u2014",
+          h: b.health_pct === null ? "\u2014" : `${b.health_pct}%`,
+          /* Retired is a decision someone made; over its cycle limit and still in
+             service is the state worth surfacing. */
+          st: b.retired ? "retired" : b.over_cycle_limit ? "past cycle limit" : "in service",
+        })), { selectKind: "battery" }),
+    }) },
+    /* Two maintenance records for aircraft that do not exist. A maintenance log is
+       the document an operator points at to say the airframe was airworthy. */
+    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => live({
+      calls: ["list_fleet"],
+      empty: "No maintenance recorded. Log Maintenance writes a record and resets the "
+             + "aircraft's service clock.",
+      isEmpty: ([f]) => !(f && (f.maintenance || []).length),
+      render: ([f]) => consoleView((f.maintenance || []).map((m) => ({
+        t: String(m.performed_at || "").slice(0, 10),
+        text: `${m.aircraft} \u2014 ${m.kind}`
+          + (m.description ? `: ${m.description}` : "")
+          + ` (at ${m.hours_at_service} h)`,
+      }))),
+    }) },
   ],
 };
 
