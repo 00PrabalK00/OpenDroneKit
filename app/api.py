@@ -1890,6 +1890,66 @@ class Api:
             return fail(str(exc))
 
     @guard
+    def thermal_palettes(self) -> dict[str, Any]:
+        """Palettes this build can draw a thermal frame in."""
+        from core.thermal_scaling import PALETTES
+
+        return ok(palettes=sorted(PALETTES))
+
+    @guard
+    def scale_thermal(self, path: str, mode: str = "auto",
+                      min_c: float | None = None, max_c: float | None = None,
+                      low_percentile: float = 1.0, high_percentile: float = 99.0,
+                      sigma: float = 2.0, palette: str = "ironbow") -> dict[str, Any]:
+        """Choose the temperature range a radiometric frame is drawn in.
+
+        This decision changes what an inspector sees more than any other step in the
+        thermal workflow. One 80 C flue in the frame stretches a full-range scale until
+        the 3 C delta across a wet roof renders as flat grey; a range tight enough to show
+        that delta clips the flue, so a dangerous hotspot is drawn the same colour as a
+        merely warm one.
+
+        The second is the one that gets missed, because the image looks fine. So the
+        result always carries what the range excluded, and a warning when the hottest
+        pixels in the frame are saturated.
+        """
+        from core.thermal import NotRadiometric, load_radiometric_file
+        from core.thermal_scaling import (
+            ScalingRefused, anomaly_scale, auto_scale, legend, manual_scale,
+        )
+
+        try:
+            frame = load_radiometric_file(path)
+        except (NotRadiometric, FileNotFoundError, OSError) as exc:
+            return fail(str(exc))
+
+        chosen = str(mode).strip().lower()
+        try:
+            if chosen == "manual":
+                if min_c is None or max_c is None:
+                    return fail("A manual range needs both min_c and max_c.")
+                scale = manual_scale(frame.celsius, float(min_c), float(max_c), palette)
+            elif chosen == "anomaly":
+                scale = anomaly_scale(frame.celsius, float(sigma), palette)
+            elif chosen == "auto":
+                scale = auto_scale(frame.celsius, float(low_percentile),
+                                   float(high_percentile), palette)
+            else:
+                return fail(f"Unknown mode {mode!r}. Use auto, manual or anomaly.")
+        except ScalingRefused as exc:
+            return fail(str(exc))
+
+        result = ok(
+            scale=scale.to_dict(),
+            legend=legend(scale),
+            stats=frame.stats,
+        )
+        warning = scale.warning()
+        if warning:
+            result["warning"] = warning
+        return result
+
+    @guard
     def marker_kinds(self) -> dict[str, Any]:
         """What a site marker can be, and what each kind means."""
         from core.site_markers import MARKER_KINDS
