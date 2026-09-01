@@ -753,46 +753,57 @@ const inspection = {
     ], { selectKind: "modelRun" }) },
   ],
   canvas: () => splitCanvas([
-    { title: "Source image", note: "DJI_1094.JPG — capture C-1094" },
+    { title: "Source image", note: "The frame the selected finding was detected in" },
     { title: "Detection", note: "Mask and confidence at full resolution" },
     { title: "3D context", note: "Back-projected onto the surface it belongs to" },
   ]),
   right: [
-    { id: "ai.finding", title: "Finding Details", render: () => properties([
-      { group: "F-118" },
-      { label: "Class", value: chip("crack", "warn") },
-      { label: "Confidence", value: "0.91" },
-      { label: "Severity", value: chip("moderate", "warn") },
-      { label: "Length", value: "1.42", unit: "m" },
-      { label: "Width", value: chip("not measured", "") },
-      { group: "Provenance" },
-      { label: "Model", value: "crack_presence_classifier" },
-      { label: "Digest", value: "92a4d142…" },
-      { label: "Run", value: "#91" },
-      { label: "Source image", value: "DJI_1094.JPG" },
-      { label: "Mission", value: "Roof Block A v3" },
-      { label: "Captured", value: "2026-08-02 09:14" },
-      { group: "Location" },
-      { label: "Asset", value: "Roof — Block A" },
-      { label: "Coordinate", value: "23.25914 N, 77.40218 E" },
-      { label: "Validation", value: chip("unreviewed", "info") },
-    ]) },
+    /* An invented crack: 0.91 confidence, 1.42 m long, on a roof that does not exist, at
+       a coordinate in Madhya Pradesh, attributed to a real model with a real digest. The
+       provenance being real is what made it dangerous -- it read as a measurement with a
+       audit trail. Selection is what fills this panel. */
+    { id: "ai.finding", title: "Finding Details", render: () =>
+      emptyState("Select a finding to see its class, severity, provenance and location.") },
   ],
   bottom: [
-    { id: "ai.findings", title: "Findings", flex: 4, render: () => table(
-      [{ title: "ID", key: "id" }, { title: "Class", key: "cls" }, { title: "Conf", key: "conf", num: true },
-       { title: "Severity", key: "sev" }, { title: "Asset", key: "asset" }, { title: "Status", key: "status" }],
-      [
-        { id: "F-118", cls: "crack", conf: 0.91, sev: "moderate", asset: "Roof — Block A", status: "unreviewed" },
-        { id: "F-117", cls: "crack", conf: 0.88, sev: "minor", asset: "Roof — Block A", status: "validated" },
-        { id: "F-116", cls: "corrosion", conf: 0.74, sev: "severe", asset: "North facade", status: "unreviewed" },
-        { id: "F-112", cls: "ponding", conf: 0.96, sev: "moderate", asset: "Roof — Block A", status: "validated" },
-      ], { selectKind: "finding" }) },
-    { id: "ai.filters", title: "Filters", flex: 1, render: () => fields([
-      { key: "min", label: "Min confidence", value: "0.50" },
-      { key: "cls", label: "Class", value: "all", options: ["all", "crack", "corrosion", "ponding"] },
-      { key: "status", label: "Status", value: "all", options: ["all", "unreviewed", "validated", "rejected"] },
-    ], settingChanged) },
+    /* Four invented findings used to sit here -- F-118 through F-112, on a "Roof --
+       Block A" that does not exist -- with confidences to two decimal places. They
+       survived the earlier sweep because that test looked for specific strings and this
+       table used different ones, which is a fair argument for the sweep having been too
+       narrow rather than for these having been acceptable.
+
+       These are the project's own annotations. A finding a person drew and one a model
+       proposed are different kinds of evidence, so the table says which. */
+    { id: "ai.findings", title: "Findings", flex: 4, render: () => live({
+      calls: ["find_annotations"],
+      empty: "No findings yet. Run AI, or annotate an image.",
+      isEmpty: ([found]) => !(found && (found.annotations || []).length),
+      render: ([found]) => table(
+        [{ title: "Finding", key: "id" }, { title: "Class", key: "cls" },
+         { title: "Severity", key: "sev" }, { title: "Source", key: "src" },
+         { title: "Status", key: "status" }],
+        (found.annotations || []).slice(0, 200).map((a) => ({
+          id: String(a.id || "").slice(0, 8),
+          cls: a.label || "\u2014",
+          sev: a.severity || "\u2014",
+          src: a.created_by === "user" ? "human" : "model",
+          status: a.status || "\u2014",
+        })), { selectKind: "finding" }),
+    }) },
+    /* The class list was crack / corrosion / ponding -- three of the labels the sample
+       table happened to use. Filtering is now done on the tags the project actually
+       carries, which is what an inspector groups findings by, and the list is read from
+       the project rather than written here. Minimum confidence was removed: annotations
+       do not store a confidence, so the control filtered nothing. */
+    { id: "ai.filters", title: "Filter by tag", flex: 1, render: () => live({
+      calls: ["list_annotation_tags"],
+      empty: "No tags yet. Select findings and tag them to group by elevation, "
+             + "reflight or whatever the job needs.",
+      isEmpty: ([tags]) => !(tags && (tags.tags || []).length),
+      render: ([tags]) => tree((tags.tags || []).map((t, i) => ({
+        id: `tag${i}`, label: t.tag, icon: "\u25c7", meta: String(t.count),
+      })), { selectKind: "tag" }),
+    }) },
   ],
 };
 
@@ -982,13 +993,23 @@ const reports = {
     ], settingChanged) },
   ],
   bottom: [
-    { id: "rp.included", title: "Included Findings", flex: 3, render: () => table(
-      [{ title: "ID", key: "id" }, { title: "Class", key: "c" }, { title: "Severity", key: "s" }, { title: "Asset", key: "a" }],
-      [
-        { id: "F-118", c: "crack", s: "moderate", a: "Roof — Block A" },
-        { id: "F-116", c: "corrosion", s: "severe", a: "North facade" },
-        { id: "F-112", c: "ponding", s: "moderate", a: "Roof — Block A" },
-      ]) },
+    /* Three invented findings, listed as what the report would contain. A report preview
+       showing findings that are not in the project is the most direct way to put an
+       invented defect in front of a client. */
+    { id: "rp.included", title: "Included Findings", flex: 3, render: () => live({
+      calls: ["find_annotations"],
+      empty: "No findings to include yet.",
+      isEmpty: ([found]) => !(found && (found.annotations || []).length),
+      render: ([found]) => table(
+        [{ title: "Finding", key: "id" }, { title: "Class", key: "c" },
+         { title: "Severity", key: "s" }, { title: "Source", key: "src" }],
+        (found.annotations || []).slice(0, 100).map((a) => ({
+          id: String(a.id || "").slice(0, 8),
+          c: a.label || "—",
+          s: a.severity || "—",
+          src: a.created_by === "user" ? "human" : "model",
+        }))),
+    }) },
     { id: "rp.log", title: "Generation Log", flex: 2, render: () => consoleView([
       { t: "—", text: "every figure carries its model digest and run id", level: "ok" },
     ]) },

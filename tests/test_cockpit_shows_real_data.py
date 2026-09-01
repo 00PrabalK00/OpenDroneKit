@@ -44,6 +44,15 @@ FABRICATED = [
     ("98.4%", "an invented coverage figure"),
     ("asset/roof-block-a", "an asset id that belongs to no project"),
     ("23.2591 N", "a centroid for an asset that does not exist"),
+    # Found later, in three more panels the first sweep missed: it searched for specific
+    # strings and these tables used different ones. A finding id and an asset name are
+    # the most direct way to put an invented defect in front of a client.
+    ("F-118", "an invented finding id"),
+    ("F-116", "an invented finding id"),
+    ("F-112", "an invented finding id"),
+    ("Roof — Block A", "an asset that does not exist"),
+    ("23.25914 N", "a coordinate for a finding that was never made"),
+    ("DJI_1094.JPG", "a source image that is not in any project"),
 ]
 
 

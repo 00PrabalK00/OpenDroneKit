@@ -410,9 +410,26 @@ class TestEditingAFieldReachesThePlanner:
     """
 
     def test_every_field_group_reports_its_edits(self) -> None:
+        """The invariant, rather than a count.
+
+        This asserted `count("settingChanged)") >= 7`, which is a snapshot of how many
+        field groups existed on the day it was written. Removing a panel that could not
+        work -- the AI filters, whose Min confidence filtered a value annotations do not
+        store -- failed it for the wrong reason. What matters is that no fields() group
+        exists WITHOUT an onChange, since that is the fault the class documents.
+        """
+        import re
+
         workspaces = (WORKSPACE_JS / "workspaces.js").read_text(encoding="utf-8")
         assert "const settingChanged" in workspaces
-        assert workspaces.count("settingChanged)") >= 7
+
+        groups = re.findall(r"fields\(\[.*?\]\s*,?\s*([A-Za-z]*)\)", workspaces, re.S)
+        assert groups, "no fields() groups found at all"
+        silent = [g for g in groups if g != "settingChanged"]
+        assert not silent, (
+            f"{len(silent)} fields() group(s) accept edits and report them nowhere; "
+            "editing one updates the input and changes nothing else"
+        )
 
     def test_the_shell_keeps_what_was_typed(self, shell_js) -> None:
         assert 'case "setting"' in shell_js
