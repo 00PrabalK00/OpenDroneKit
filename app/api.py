@@ -1885,6 +1885,101 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
             return fail(str(exc))
 
+    @guard
+    def export_report(self, output_format: str = "pdf", title: str = "Inspection report",
+                      organization: str = "", client: str = "", author: str = "",
+                      output_path: str = "") -> dict[str, Any]:
+        """Write the findings out as a PDF or Word deliverable.
+
+        core/report_formats.py has written both since that work landed, with severity
+        ordering, the measurement caveat and the unreviewed-findings caveat built in, and
+        nothing called either function. The report engine takes a different route
+        (HTML then weasyprint), so the Word output in particular was implemented, tested
+        and impossible to obtain.
+
+        Findings come from this project's annotations, so the deliverable describes what
+        was actually recorded rather than a fixed example.
+        """
+        from core.annotations import list_annotations
+        from core.report_formats import ReportTemplate, write_docx, write_pdf
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+
+        fmt = str(output_format).strip().lower()
+        if fmt not in ("pdf", "docx"):
+            return fail(f"Unknown report format {output_format!r}. Use pdf or docx.")
+
+        annotations = list_annotations(Path(root))
+        if not annotations:
+            return fail(
+                "No findings recorded yet, so there is nothing to report. Annotate the "
+                "imagery or run an AI inspection first."
+            )
+
+        layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
+        findings = []
+        for annotation in annotations:
+            finding: dict[str, Any] = {
+                "category": annotation.label,
+                "severity": annotation.severity,
+                # A finding a person drew and one a model proposed are different kinds of
+                # evidence, and the report says which.
+                "source": "model" if annotation.created_by != "user" else "human",
+                "review_state": annotation.status,
+            }
+            if annotation.tags:
+                finding["tags"] = list(annotation.tags)
+            if annotation.note:
+                finding["note"] = annotation.note
+            findings.append(finding)
+
+        payload: dict[str, Any] = {
+            "project_name": Path(root).name,
+            "client": client,
+            "findings": findings,
+        }
+        if layers:
+            payload["crs_epsg"] = int(layers[0].crs_epsg)
+
+        template = ReportTemplate(
+            title=str(title),
+            organization=str(organization),
+            client=str(client),
+            author=str(author),
+        )
+
+        reports_dir = Path(root) / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        target = Path(output_path) if output_path else reports_dir / f"report.{fmt}"
+
+        writer = write_pdf if fmt == "pdf" else write_docx
+        try:
+            written = writer(target, payload, template)
+        except Exception as exc:  # noqa: BLE001 - reportlab/docx raise their own types
+            return fail(f"Could not write the {fmt.upper()}: {exc}")
+
+        self._session.audit("report_exported",
+                            {"format": fmt, "findings": len(findings)})
+        return ok(path=str(written), format=fmt, findings=len(findings))
+
+    @guard
+    def report_formats(self) -> dict[str, Any]:
+        """Which deliverable formats this build can actually write."""
+        available = []
+        try:
+            import reportlab  # noqa: F401
+            available.append("pdf")
+        except ImportError:
+            pass
+        try:
+            import docx  # noqa: F401
+            available.append("docx")
+        except ImportError:
+            pass
+        return ok(formats=available)
+
     # --------------------------------------------------------------- review
 
     @guard
