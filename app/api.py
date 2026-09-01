@@ -905,6 +905,107 @@ class Api:
 
     @guard
     @guard
+    def import_cad_overlay(self, path: str, source_epsg: int,
+                           name: str = "") -> dict[str, Any]:
+        """Lay a DXF over the survey, in the project's coordinate system.
+
+        source_epsg is required rather than guessed. A DXF carries no CRS of its own, and
+        assuming it matches the project puts the drawing somewhere plausible and wrong --
+        which on top of an orthomosaic reads as a construction error rather than a
+        placement error, and sends somebody to measure a wall that is exactly where it
+        should be.
+
+        The alignment against the project's own rasters is checked and reported for the
+        same reason.
+        """
+        from core.cad_overlay import OverlayRefused, alignment_report, read_dxf, reproject
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+
+        layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
+        if not layers:
+            return fail(
+                "This project has no georeferenced products yet, so there is nothing to "
+                "lay the drawing over. Run a reconstruction first."
+            )
+        target_epsg = int(layers[0].crs_epsg)
+
+        try:
+            drawing = reproject(read_dxf(path), int(source_epsg), target_epsg)
+        except OverlayRefused as exc:
+            return fail(str(exc))
+
+        # Bounds of the products, in their own CRS, to check the drawing landed on them.
+        boxes = [l.metadata.get("bounds") for l in layers if (l.metadata or {}).get("bounds")]
+        report = {}
+        if boxes:
+            target = [
+                min(b[0] for b in boxes), min(b[1] for b in boxes),
+                max(b[2] for b in boxes), max(b[3] for b in boxes),
+            ]
+            report = alignment_report(drawing, target)
+
+        overlay_dir = Path(root) / "overlays"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        label = name or Path(path).stem
+        target_path = overlay_dir / f"{label}.geojson"
+        import json as _json
+
+        target_path.write_text(_json.dumps(drawing.to_geojson()), encoding="utf-8")
+
+        self._session.audit("cad_overlay_imported",
+                            {"name": label, "source_epsg": int(source_epsg)})
+        result = ok(
+            name=label,
+            path=str(target_path),
+            epsg=target_epsg,
+            entities=drawing.entity_counts,
+            skipped=drawing.skipped_entities,
+            alignment=report,
+        )
+        if drawing.skipped_entities:
+            named = ", ".join(f"{k} x{v}" for k, v in sorted(drawing.skipped_entities.items()))
+            result["warning"] = (
+                f"Not everything in the drawing was flattened: {named}. Explode blocks "
+                "and hatches in the CAD package and export again if geometry is missing."
+            )
+        if report.get("warning"):
+            result["warning"] = (result.get("warning", "") + " " + report["warning"]).strip()
+        return result
+
+    @guard
+    def place_image_overlay(self, path: str, west: float, south: float,
+                            east: float, north: float, epsg: int = 4326,
+                            name: str = "") -> dict[str, Any]:
+        """Georeference a plain scan or screenshot by its bounding box."""
+        from core.cad_overlay import OverlayRefused, place_raster
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            placed = place_raster(path, float(west), float(south),
+                                  float(east), float(north), int(epsg))
+        except OverlayRefused as exc:
+            return fail(str(exc))
+        self._session.audit("image_overlay_placed", {"name": name or Path(path).stem})
+        return ok(overlay=placed.to_dict(), name=name or Path(path).stem)
+
+    @guard
+    def list_cad_overlays(self) -> dict[str, Any]:
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        overlay_dir = Path(root) / "overlays"
+        if not overlay_dir.is_dir():
+            return ok(overlays=[])
+        return ok(overlays=[
+            {"name": p.stem, "path": str(p)} for p in sorted(overlay_dir.glob("*.geojson"))
+        ])
+
+    @guard
     def tag_annotations(self, annotation_ids: list[str], tags: list[str]) -> dict[str, Any]:
         """Apply tags to many findings at once.
 
