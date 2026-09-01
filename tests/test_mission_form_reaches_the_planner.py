@@ -231,3 +231,81 @@ class TestTheReportPanelReachesTheEngine:
         body = shell_js.split("reportOptions: () => {")[1].split("\n      },")[0]
         for field in ("tpl", "fmt", "org"):
             assert f"raw.{field}" in body, f"{field} is still discarded"
+
+
+class TestAButtonMeansTheSameThingEverywhere:
+    """One label cannot carry two verbs.
+
+    ACTIONS is keyed by the button's label, so a workspace that reuses a word gets the
+    other workspace's behaviour. Three found:
+
+      Settings / Save      resolved to the MISSION verb and prompted "Mission name"
+      Processing / Pause   resolves to the VEHICLE verb and prompts "Pause the aircraft?"
+                           -- a flight command from the processing screen, with no
+                           pause_job in the Api behind it in the other direction either
+      AI Inspection / Validate  resolves to verify_site, the mission-planning meaning,
+                           rather than moving the selected finding's status
+
+    The vehicle one is the reason this class exists rather than being three separate
+    fixes: a control that commands an aircraft must not be reachable from a screen about
+    something else.
+    """
+
+    @pytest.fixture(scope="class")
+    def actions_js(self) -> str:
+        return (REPO_ROOT / "app" / "web" / "js" / "workspace" / "actions.js").read_text(
+            encoding="utf-8")
+
+    @pytest.fixture(scope="class")
+    def toolbars(self) -> dict[str, list[str]]:
+        panel = WORKSPACES.read_text(encoding="utf-8")
+        found = {}
+        for match in re.finditer(
+            r'id: "(\w+)",\s*\n\s*title: "([^"]+)",\s*\n(?:\s*/\*.*?\*/\s*\n)?\s*toolbar: \[([^\]]+)\]',
+            panel, re.S,
+        ):
+            labels = [x.strip().strip('"') for x in match.group(3).split(",")]
+            found[match.group(2)] = [x for x in labels if x and x != "|"]
+        return found
+
+    def _vehicle_actions(self, actions_js: str) -> set[str]:
+        return set(re.findall(r'^  "?([\w ]+?)"?: \{ vehicle:', actions_js, re.M))
+
+    def test_only_the_flight_screen_can_command_the_aircraft(self, toolbars, actions_js) -> None:
+        """The one that matters. A vehicle command reachable from Processing is a flight
+        command one misclick from someone watching a reconstruction."""
+        vehicle = self._vehicle_actions(actions_js)
+        assert vehicle, "no vehicle actions found; the check would pass vacuously"
+
+        offenders = {
+            screen: sorted(set(labels) & vehicle)
+            for screen, labels in toolbars.items()
+            if screen != "Flight" and set(labels) & vehicle
+        }
+        assert not offenders, f"aircraft commands on non-flight screens: {offenders}"
+
+    def test_processing_no_longer_offers_pause(self, toolbars) -> None:
+        assert "Pause" not in toolbars["Processing"]
+
+    def test_ai_inspection_moves_a_finding_rather_than_checking_the_site(
+        self, toolbars, actions_js
+    ) -> None:
+        assert "Validate" not in toolbars["AI Inspection"]
+        assert "Accept" in toolbars["AI Inspection"]
+        body = actions_js.split("  Accept: {")[1].split("\n  },")[0]
+        assert "review_finding" in body
+
+    def test_validate_still_belongs_to_mission_planning(self, toolbars) -> None:
+        """Removing the collision must not remove the verb from where it does mean
+        something."""
+        assert "Validate" in toolbars["Mission Planning"]
+
+    def test_every_toolbar_label_resolves_to_an_action(self, toolbars, actions_js) -> None:
+        """A label with no entry is a button that does nothing at all."""
+        declared = set(re.findall(r'^  "?([\w &\u2019-]+?)"?: \{', actions_js, re.M))
+        missing = {
+            screen: sorted(set(labels) - declared)
+            for screen, labels in toolbars.items()
+            if set(labels) - declared
+        }
+        assert not missing, f"toolbar labels with no action: {missing}"

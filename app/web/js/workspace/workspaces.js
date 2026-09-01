@@ -509,7 +509,11 @@ const verification = {
 const processing = {
   id: "processing",
   title: "Processing",
-  toolbar: ["New Job", "|", "Process", "Pause", "Cancel", "|", "Add GCPs", "Set CRS", "Export Products"],
+  /* Pause was here and resolves to the VEHICLE verb: pressing it on the Processing
+     screen prompted "Pause the aircraft?" and sent a flight command while a
+     reconstruction was running. There is no pause_job in the Api either -- a job can be
+     cancelled and nothing else -- so the button had nothing behind it in both directions. */
+  toolbar: ["New Job", "|", "Process", "Cancel", "|", "Add GCPs", "Set CRS", "Export Products"],
   left: [
     { id: "proc.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets", "list_dataset_images"],
@@ -736,7 +740,10 @@ const twin = {
 const inspection = {
   id: "inspection",
   title: "AI Inspection",
-  toolbar: ["Run AI", "|", "Validate", "Reject", "Edit", "Flag", "|", "Open in 3D", "Generate Report"],
+  /* Validate resolves to verify_site -- "check the site against the plan" -- which is the
+     Mission Planning meaning of the word. On this screen it should move a finding's
+     status, which is what Accept already does. One label cannot carry two verbs. */
+  toolbar: ["Run AI", "|", "Accept", "Reject", "Edit", "Flag", "|", "Open in 3D", "Generate Report"],
   left: [
     { id: "ai.library", title: "Defect Library", render: () => tree([
       { id: "dl1", label: "Crack", icon: "⚡", meta: "4" },
