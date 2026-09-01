@@ -149,6 +149,22 @@ class AppSession:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def announce_finished_job(self, job: dict[str, Any]) -> None:
+        """Record a finished job as a notification against the open project.
+
+        Registered with the job manager once, at startup. A reconstruction is minutes
+        long; the operator has switched workspace by the time it lands, and without this
+        the result appears in a panel nobody is looking at.
+        """
+        from core.notifications import NotificationCentre, describe_job
+
+        root = self.project_root()
+        if not root:
+            return
+        level, title, detail = describe_job(job)
+        NotificationCentre(Path(root)).notify(
+            title, detail, level=level, subject_kind="job", subject_id=str(job.get("id", "")))
+
     def audit(self, event_type: str, payload: dict[str, Any] | None = None) -> None:
         try:
             self.store.append_audit_event(self.project_id(), event_type, payload or {})

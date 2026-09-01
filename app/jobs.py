@@ -53,6 +53,7 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._cancels: dict[str, threading.Event] = {}
         self._threads: dict[str, threading.Thread] = {}
+        self._finished_listeners: list[Callable[[dict[str, Any]], None]] = []
         self._lock = threading.RLock()
         self._max_history = int(max_history)
 
@@ -121,12 +122,34 @@ class JobManager:
                         job.error = job.error or "Job thread ended without reporting a result."
                         job.message = job.error
                     job.finished_utc = _now()
+                    finished = job.to_dict()
+                # Announce OUTSIDE the lock: a listener that blocks would otherwise hold
+                # the job manager shut for every other thread.
+                self._announce(finished)
 
         thread = threading.Thread(target=run, name=f"job-{name}-{job_id}", daemon=True)
         with self._lock:
             self._threads[job_id] = thread
         thread.start()
         return job_id
+
+    def on_finished(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Called with the job dict whenever a job reaches a terminal state.
+
+        A reconstruction is minutes long and nobody watches a progress bar for that, so
+        the result lands in a panel the operator is not looking at. This is how the shell
+        finds out in order to say so.
+        """
+        self._finished_listeners.append(listener)
+
+    def _announce(self, job: dict[str, Any]) -> None:
+        for listener in list(getattr(self, "_finished_listeners", [])):
+            # A listener that raises must not turn a completed job into a failed one.
+            # The work is already done; only the announcement broke.
+            try:
+                listener(job)
+            except Exception:  # noqa: BLE001
+                pass
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:

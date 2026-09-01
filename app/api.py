@@ -51,6 +51,10 @@ class Api:
     def __init__(self, session: AppSession | None = None):
         self._session = session or AppSession()
         self._jobs = JobManager()
+        # A reconstruction runs for minutes and the operator has switched workspace long
+        # before it lands. Without this the result appears in a panel nobody is looking
+        # at, and they cannot tell whether it finished two seconds or forty minutes ago.
+        self._jobs.on_finished(self._session.announce_finished_job)
         self._window: Any = None
 
     def bind_window(self, window: Any) -> None:
@@ -1884,6 +1888,46 @@ class Api:
                 target, title=title, report_type=report_type, author=author))
         except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
             return fail(str(exc))
+
+    def _notifications(self):
+        """The notification centre for the open project, or None."""
+        from core.notifications import NotificationCentre
+
+        root = self._session.project_root()
+        return NotificationCentre(Path(root)) if root else None
+
+    @guard
+    def list_notifications(self, unread_only: bool = False) -> dict[str, Any]:
+        """What has happened while the operator was looking somewhere else."""
+        centre = self._notifications()
+        if centre is None:
+            return fail("Open a project first.")
+        items = centre.unread() if unread_only else centre.load()
+        return ok(notifications=[n.to_dict() for n in items],
+                  unread=centre.unread_count())
+
+    @guard
+    def mark_notification_read(self, notification_id: str) -> dict[str, Any]:
+        centre = self._notifications()
+        if centre is None:
+            return fail("Open a project first.")
+        if not centre.mark_read(str(notification_id)):
+            return fail(f"No notification {notification_id!r}.")
+        return ok(unread=centre.unread_count())
+
+    @guard
+    def mark_all_notifications_read(self) -> dict[str, Any]:
+        centre = self._notifications()
+        if centre is None:
+            return fail("Open a project first.")
+        return ok(cleared=centre.mark_all_read(), unread=centre.unread_count())
+
+    @guard
+    def clear_notifications(self) -> dict[str, Any]:
+        centre = self._notifications()
+        if centre is None:
+            return fail("Open a project first.")
+        return ok(removed=centre.clear())
 
     @guard
     def export_report(self, output_format: str = "pdf", title: str = "Inspection report",
