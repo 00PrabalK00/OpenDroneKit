@@ -74,6 +74,22 @@ def action_names(actions: str) -> set[str]:
 
 
 class TestEveryButtonResolves:
+    def test_no_action_name_is_defined_twice(self, actions) -> None:
+        """ACTIONS is an object literal, so a repeated key silently REPLACES the first.
+
+        Adding a mission-version diff called `Compare` overwrote the survey-comparison
+        verb that Thermal's Compare button and the "Compare Dates" alias both resolve
+        to. Two working buttons would have started doing something else, with no error
+        raised anywhere and nothing on screen to say so.
+
+        This is the same collision class as the Processing screen's Pause resolving to
+        the aircraft's -- reintroduced, during the audit of it, by me.
+        """
+        body = actions.split("export const ACTIONS = {")[1]
+        names = [a or b for a, b in re.findall(r'^  "([^"]+)":|^  (\w+):', body, re.M)]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        assert not duplicates, f"action names defined more than once: {duplicates}"
+
     def test_no_toolbar_offers_a_button_with_no_action(self, actions, workspaces) -> None:
         """A label with no entry falls through to "not wired", which looks like a bug
         in the application rather than a feature that does not exist."""
@@ -95,6 +111,31 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("check_hazards", "Check Hazards"),
         ("import_cad_overlay", "Import CAD"),
         ("mark_all_notifications_read", "Clear Alerts"),
+        # Thirteen rows the registry marked verified while nothing in the interface
+        # could reach them. Each named its Api method in its own note, and each had
+        # tests that passed at the Api and proved nothing about the software being
+        # usable.
+        ("repeat_mission", "Repeat Survey"),
+        ("import_boundary", "Import Boundary"),
+        ("list_cameras", "Cameras"),
+        ("describe_camera", "Cameras"),
+        ("list_payloads", "Payloads"),
+        ("describe_payload", "Payloads"),
+        ("cache_terrain", "Cache Terrain"),
+        ("linked_mission_progress", "Linked Progress"),
+        ("export_flight_log", "Export Log"),
+        ("check_ppk_inputs", "Check PPK"),
+        ("size_reconstruction_job", "Size Job"),
+        ("mission_version_history", "History"),
+        ("restore_mission_version", "History"),
+        # Fly to draw: the pilot flies to each corner of the site and presses a button.
+        # It is the one case where a boundary comes from where the aircraft actually is
+        # rather than from a map drawn at a desk, which is the point of it for sites
+        # whose extent is on no map. It needed a connected aircraft and nothing else.
+        ("mark_boundary_corner", "Mark Corner"),
+        ("boundary_from_marks", "Close Boundary"),
+        ("clear_boundary_marks", "Clear Corners"),
+        ("diff_mission_versions", "Compare Versions"),
     ]
 
     @pytest.mark.parametrize("method,button", REACHABLE, ids=[m for m, _ in REACHABLE])
@@ -116,7 +157,7 @@ class TestWhatCannotBeReachedSaysWhy:
     dropping them would lose the fact that the capability exists and is tested.
     """
 
-    DECLARED = ["Save View", "Clip", "Temperature Range"]
+    DECLARED = ["Save View", "Clip", "Temperature Range", "Measure in 3D"]
 
     @pytest.mark.parametrize("button", DECLARED)
     def test_it_names_the_missing_capability(self, actions, button) -> None:
@@ -132,7 +173,8 @@ class TestWhatCannotBeReachedSaysWhy:
         capability is implemented, so it had better be."""
         api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
         method = {"Save View": "save_view", "Clip": "add_plane_clip",
-                  "Temperature Range": "scale_thermal"}[button]
+                  "Temperature Range": "scale_thermal",
+                  "Measure in 3D": "measure_in_model"}[button]
         assert f"def {method}(" in api
 
 

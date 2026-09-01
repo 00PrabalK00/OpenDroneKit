@@ -435,9 +435,10 @@ const missionTypes = [
 const planning = {
   id: "planning",
   title: "Mission Planning",
-  toolbar: ["New Mission", "Open", "|", "Plan", "Validate", "Simulate", "|",
+  toolbar: ["New Mission", "Open", "History", "Compare Versions", "|", "Plan", "Validate", "Simulate", "|",
+            "Import Boundary", "Cache Terrain", "Cameras", "Payloads", "|",
             "Add Marker", "Check Hazards", "Import CAD", "|",
-            "Upload", "Export", "Share"],
+            "Repeat Survey", "Upload", "Export", "Share"],
   left: [
     /* Three invented missions -- "Roof Block A v3", "Facade North v1", "Yard grid v2",
        one of them marked "current". This was the last panel in the cockpit still
@@ -647,17 +648,26 @@ const flight = {
   /* Clear Alerts sits with Preflight rather than among the flight commands: it is the
      only non-vehicle verb here, and it must not end up adjacent to Abort. */
   toolbar: ["Preflight", "Clear Alerts", "|", "Start", "Pause", "Resume", "Capture Now",
+            "|", "Mark Corner", "Close Boundary", "Clear Corners",
+            "|", "Export Log", "Linked Progress",
             "|", "Manual Override", "RTL", "Land", "Abort"],
   left: [
     /* An M350 RTK, linked, in AUTO, armed -- with nothing connected. "Armed" is a
        statement about whether the propellers will turn. */
     { id: "fly.aircraft", title: "Aircraft", render: () => live({
-      calls: ["telemetry"],
+      /* control_state answers who is flying right now -- autonomy or the pilot -- and
+         nothing in the interface asked it. On the screen that hands control back and
+         forth, that is the first thing an operator needs to read. */
+      calls: ["telemetry", "control_state"],
       empty: "No aircraft connected.",
       isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
-      render: ([t]) => {
+      render: ([t, ctl]) => {
         const tm = t.telemetry;
+        const state = (ctl && ctl.state) || {};
         return properties([
+          { label: "Control", value: chip(
+            state.pilot_has_control ? "pilot" : state.control || "unknown",
+            state.pilot_has_control ? "warn" : "info") },
           { label: "Driver", value: tm.driver || "\u2014" },
           /* A simulated vehicle must never be mistaken for a real one on the screen
              that arms it. */
@@ -966,7 +976,8 @@ const processing = {
      screen prompted "Pause the aircraft?" and sent a flight command while a
      reconstruction was running. There is no pause_job in the Api either -- a job can be
      cancelled and nothing else -- so the button had nothing behind it in both directions. */
-  toolbar: ["New Job", "|", "Process", "Cancel", "|", "Add GCPs", "Set CRS", "Export Products"],
+  toolbar: ["New Job", "Size Job", "|", "Process", "Cancel", "|",
+            "Add GCPs", "Set CRS", "Check PPK", "Export Products"],
   left: [
     { id: "proc.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets", "list_dataset_images"],
@@ -1460,7 +1471,8 @@ const thermal = {
 const measurements = {
   id: "measurements",
   title: "Measurements",
-  toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile", "|", "Compare Dates", "Export"],
+  toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
+            "Measure in 3D", "|", "Compare Dates", "Export"],
   left: [
     { id: "ms.tools", title: "Tools", render: () => tree([
       { id: "t1", label: "Distance", icon: "↔" },

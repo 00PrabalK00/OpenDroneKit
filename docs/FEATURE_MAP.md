@@ -551,6 +551,49 @@ the shell provides. The general key guard cannot see any of these: they are argu
 nested fields, not top-level response keys. Reading each signature before writing the call
 is still the only thing that catches them.
 
+## Thirteen verified rows that nothing could reach
+
+Applying the reachability rule to the status file rather than the UI, the question is:
+which rows does the registry mark **verified** while naming an Api method no button
+calls? Thirteen.
+
+    mp.versioning        diff_mission_versions      mp.repeatable      repeat_mission
+    mp.import            import_boundary            mp.camera_db       list_cameras
+    mp.payload_db        list_payloads              mp.terrain_offline cache_terrain
+    mp.linking           linked_mission_progress    mp.fly_to_draw     mark_boundary_corner
+    fl.logging           export_flight_log          fl.manual_override control_state
+    pr.rtk_ppk           check_ppk_inputs           pr.large_datasets  size_reconstruction_job
+    me.3d                measure_in_model
+
+Each names its Api method in its own registry note. Each has tests that pass. The status
+file said the feature was done; a person using the software could not do it.
+
+**Fly to draw is the one that shows what was lost.** The pilot flies the aircraft to each
+corner of the site and presses a button, and that is the whole feature -- the one case
+where a boundary comes from where the aircraft actually *is* rather than from a map
+someone drew at a desk, which is the entire reason it exists for sites whose extent is on
+no map. It needed a connected aircraft and nothing else. It had no button.
+
+Twelve now have controls. Two do not and say so: `measure_in_model` and the clipping and
+saved-view calls all need points picked on a mesh that is on screen, and the interactive
+3D viewer is not built.
+
+Unreachable Api methods: **72 down to 51**, and registry-named ones **13 down to 0**.
+
+### The collision I reintroduced while fixing collisions
+
+Adding a mission-version diff called `Compare` overwrote the existing `Compare` -- the
+survey-comparison verb that Thermal's Compare button and the `Compare Dates` alias both
+resolve to. ACTIONS is an object literal, so the second key silently replaces the first:
+two working buttons would have quietly started doing something else, with nothing raised
+and nothing on screen to say so.
+
+That is exactly the defect this document already records under the panel audit, where
+Processing's Pause resolved to the aircraft's. I reintroduced it during the audit of it.
+Renamed to `Compare Versions`, and there is now a guard asserting no action name is
+defined twice -- which is the check that should have existed the first time, and which
+caught this one.
+
 ## What I am not going to pretend
 
 `pr.dense` has a row and does not work on this machine -- CUDA patch-match stereo rejects

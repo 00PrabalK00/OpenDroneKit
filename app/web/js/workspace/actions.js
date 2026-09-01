@@ -334,6 +334,258 @@ export const ACTIONS = {
   Annotate: { tool: "annotate", describe: "Draw an annotation." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
+  /* -- fly to draw --------------------------------------------------------
+     The pilot flies the aircraft to each corner of the site and presses a button. That
+     is the whole feature, and it is the one case where a boundary comes from where the
+     aircraft actually is rather than from a map someone drew at a desk -- which is why
+     it exists for sites whose extent is not on any map.
+
+     It needs a connected aircraft and nothing else. It had no button. */
+  "Mark Corner": {
+    describe: "Record the aircraft's current position as a boundary corner.",
+    async run(ctx) {
+      const note = await ctx.prompt("Note for this corner (optional)", "");
+      const result = await call("mark_boundary_corner", note || "");
+      return {
+        message: `Corner ${result.corner} marked. `
+          + (result.corner >= 3
+            ? "Close Boundary will turn these into the area of interest."
+            : `${3 - result.corner} more needed before a boundary can be closed.`),
+        refresh: true,
+      };
+    },
+  },
+  "Close Boundary": {
+    describe: "Turn the marked corners into the area of interest.",
+    async run() {
+      const result = await call("boundary_from_marks", true);
+      /* Three points is a triangle and the minimum that encloses anything. The Api
+         refuses below that, and saying so here means the operator learns it while
+         still standing on site rather than afterwards. */
+      return {
+        message: `Boundary closed from ${result.corner_count ?? "?"} corner(s)`
+          + (result.area_m2 ? `, ${(result.area_m2 / 10000).toFixed(2)} ha.` : "."),
+        refresh: true,
+      };
+    },
+  },
+  "Clear Corners": {
+    describe: "Discard the marked corners and start the boundary again.",
+    confirm: "Discard every marked corner?",
+    async run() {
+      const result = await call("clear_boundary_marks");
+      return { message: `Cleared. ${result.corner_count ?? 0} corners remain.`, refresh: true };
+    },
+  },
+
+  /* Named "Compare Versions", not "Compare".
+     ACTIONS is an object literal, so a second `Compare:` key silently REPLACES the
+     first -- and the first is the survey-comparison verb that Thermal's Compare button
+     and the "Compare Dates" alias both resolve to. Two working buttons would have gone
+     to a mission-version diff, with no error anywhere. This is the collision this file
+     already carries scars from; I reintroduced it and the duplicate-key guard below is
+     what caught it. */
+  "Compare Versions": {
+    describe: "What changed between two saved versions of this mission.",
+    async run(ctx) {
+      const listed = await tryCall("mission_version_history");
+      const history = (listed && listed.history) || [];
+      if (history.length < 2) {
+        return { skipped: "Two saved versions are needed to compare. Save again first." };
+      }
+      const labels = history.map((h) => `v${h.version_num}`);
+      const from = await ctx.choose("Compare from", labels);
+      if (!from) return { skipped: "No version chosen." };
+      const to = await ctx.choose("Compare to", labels.filter((l) => l !== from));
+      if (!to) return { skipped: "No second version chosen." };
+      const result = await call("diff_mission_versions",
+        Number(from.slice(1)), Number(to.slice(1)));
+      const diff = result.diff || {};
+      const changes = diff.changes || diff.fields || [];
+      return {
+        message: changes.length
+          ? `${from} to ${to}: ${changes.length} change(s). `
+            + changes.slice(0, 4).map((c) => (typeof c === "string" ? c : c.field || "")).join(", ")
+          : `${from} and ${to} are identical.`,
+      };
+    },
+  },
+
+  /* measure_in_model joins Save View and Clip: implemented, tested, and it needs points
+     picked on a mesh that is on screen. */
+  "Measure in 3D": {
+    describe: "Measure between two points on the model. Needs the interactive 3D viewer.",
+    async run() {
+      return { skipped: "measure_in_model is implemented, but a 3D measurement is two "
+                        + "points picked on a mesh, and the interactive viewer is not built." };
+    },
+  },
+
+  /* -- thirteen rows that were verified and unreachable ---------------------
+     Mission versioning, repeat surveys, boundary import, the camera and payload
+     databases, the offline terrain cache, linked-sortie progress, flight log export,
+     PPK input checking and job sizing. Each names its Api method in its own registry
+     note and each has passing tests. None had a button. */
+
+  "Repeat Survey": {
+    describe: "Fly a saved mission again, so two surveys are comparable.",
+    async run(ctx) {
+      const mode = await ctx.choose("Repeat as",
+        ["exact", "same-camera", "same-terrain"]);
+      if (!mode) return { skipped: "No mode chosen." };
+      /* "exact" is the one that makes two surveys comparable: same lines, same
+         altitudes, same capture points. The others re-solve part of the plan and are
+         offered because a changed camera or a new terrain model is a real reason to. */
+      const result = await call("repeat_mission", null, mode === "exact" ? "exact" : mode);
+      const repeat = result.repeat || {};
+      return {
+        message: `Repeat prepared${repeat.name ? ` as "${repeat.name}"` : ""}`
+          + (repeat.differences ? `; ${repeat.differences} difference(s) from the original.` : "."),
+        refresh: true,
+      };
+    },
+  },
+  "Import Boundary": {
+    describe: "Load an area of interest from KML, KMZ, GeoJSON, GPX or CSV.",
+    async run() {
+      const picked = await tryCall("pick_file", ["kml", "kmz", "geojson", "json", "gpx", "csv"]);
+      const path = picked && picked.path;
+      if (!path) return { skipped: "No file chosen." };
+      const result = await call("import_boundary", path);
+      const ring = result.polygon || [];
+      return { message: `Boundary loaded: ${ring.length} vertices.`, refresh: true };
+    },
+  },
+  Cameras: {
+    describe: "What each camera yields at a working altitude.",
+    async run(ctx) {
+      const listed = await tryCall("list_cameras");
+      const cameras = (listed && listed.cameras) || [];
+      if (!cameras.length) return { skipped: "No camera profiles available." };
+      const pick = await ctx.choose("Camera", cameras.map((c) => c.name || c.key || String(c)));
+      if (!pick) return { skipped: "No camera chosen." };
+      const altitude = await ctx.prompt("At what altitude (m)?", "60");
+      const described = await call("describe_camera", pick, Number(altitude || 60));
+      const cam = described.camera || {};
+      /* GSD is the number that decides whether the survey can see the defect, so it
+         leads. */
+      return {
+        message: `${pick} at ${altitude} m: `
+          + (cam.gsd_cm !== undefined ? `GSD ${Number(cam.gsd_cm).toFixed(2)} cm` : "GSD not reported")
+          + (cam.footprint_m ? `, footprint ${cam.footprint_m}` : ""),
+      };
+    },
+  },
+  Payloads: {
+    describe: "What fitting a payload changes about the mission.",
+    async run(ctx) {
+      const listed = await tryCall("list_payloads");
+      const payloads = (listed && listed.payloads) || [];
+      if (!payloads.length) return { skipped: "No payloads available." };
+      const pick = await ctx.choose("Payload", payloads.map((p) => p.key || p.name || String(p)));
+      if (!pick) return { skipped: "No payload chosen." };
+      const described = await call("describe_payload", pick);
+      const notes = described.plan_notes || described.notes || [];
+      return {
+        message: notes.length ? notes.join(" ") : `${pick} carries no planning notes.`,
+      };
+    },
+  },
+  "Cache Terrain": {
+    describe: "Copy a terrain raster into the project, for flying with no connectivity.",
+    async run() {
+      const picked = await tryCall("pick_file", ["tif", "tiff", "hgt"]);
+      const path = picked && picked.path;
+      if (!path) return { skipped: "No terrain file chosen." };
+      const result = await call("cache_terrain", path);
+      const tile = result.tile || {};
+      return {
+        message: `Cached ${tile.name || path}.`
+          + (tile.bounds_lonlat ? " Coverage is checked against the drawn area on Validate." : ""),
+        refresh: true,
+      };
+    },
+  },
+  "Linked Progress": {
+    describe: "Which survey inside a linked sortie is finished, and which is part flown.",
+    async run() {
+      const picked = await tryCall("pick_folder");
+      const folder = picked && picked.path;
+      if (!folder) return { skipped: "No folder chosen." };
+      const result = await call("linked_mission_progress", folder);
+      /* An overall percentage cannot tell "every survey is nearly done" from "three are
+         finished and the fourth was never started", and those call for opposite actions
+         on site. So both counts are reported, never a single figure. */
+      return {
+        message: `${result.complete_segments ?? 0} segment(s) complete, `
+          + `${result.partial_segments ?? 0} part flown.`,
+      };
+    },
+  },
+  "Export Log": {
+    describe: "Write the recorded flight to CSV, JSON, GPX and KML.",
+    async run() {
+      const result = await call("export_flight_log");
+      const files = result.files || [];
+      if (!files.length) return { skipped: "No flight has been recorded yet." };
+      return { message: `Wrote ${files.length} file(s): ${files.join(", ")}` };
+    },
+  },
+  "Check PPK": {
+    describe: "Whether the camera events and base observations can support PPK.",
+    async run(ctx) {
+      const events = await tryCall("pick_file", ["csv", "txt", "mrk"]);
+      if (!(events && events.path)) return { skipped: "No camera-event file chosen." };
+      const rinex = await tryCall("pick_file", ["obs", "rnx", "zip", "o"]);
+      if (!(rinex && rinex.path)) return { skipped: "No base observation file chosen." };
+      const result = await call("check_ppk_inputs", events.path, rinex.path);
+      /* It answers with what is wrong, not merely whether. An overlap that is short by
+         four minutes and one that is short by four hours need different responses. */
+      const problems = result.problems || result.warnings || [];
+      return {
+        message: problems.length
+          ? `PPK inputs are not usable: ${problems.join(" ")}`
+          : `PPK inputs check out${result.overlap_s ? `; ${Math.round(result.overlap_s)} s of overlap.` : "."}`,
+      };
+    },
+  },
+  "Size Job": {
+    describe: "Whether this machine can finish a reconstruction of this size.",
+    async run(ctx) {
+      const listed = await tryCall("list_dataset_images");
+      const count = ((listed && listed.images) || []).length;
+      if (!count) return { skipped: "Select a dataset first." };
+      const result = await call("size_reconstruction_job", count);
+      /* Answered before the run rather than after the failure. A reconstruction that
+         exhausts memory eight hours in has cost the whole night. */
+      return {
+        message: `${count} images: ${result.verdict || (result.fits ? "should fit" : "may not fit")}`
+          + (result.peak_ram_gb ? `, about ${result.peak_ram_gb} GB peak RAM` : "")
+          + (result.note ? `. ${result.note}` : ""),
+      };
+    },
+  },
+  History: {
+    describe: "Every saved version of this mission, and what changed.",
+    async run(ctx) {
+      const listed = await tryCall("mission_version_history");
+      const history = (listed && listed.history) || [];
+      if (!history.length) return { skipped: "This mission has no saved versions yet." };
+      const labels = history.map((h) =>
+        `v${h.version_num}${h.summary ? ` \u2014 ${h.summary}` : ""}`);
+      const pick = await ctx.choose("Restore which version?", labels);
+      if (!pick) return { skipped: "No version chosen." };
+      const version = history[labels.indexOf(pick)].version_num;
+      /* Restoring saves the old plan as a NEW version rather than rewinding, so the
+         history stays a record of what happened rather than of what is current. */
+      const result = await call("restore_mission_version", version);
+      return {
+        message: `Restored v${version} as v${result.version?.version_num ?? "?"}.`,
+        refresh: true,
+      };
+    },
+  },
+
   /* -- the features that were built and could not be reached ---------------
      Seventy-two of a hundred and forty-nine Api methods are never called from the
      interface. Most of that is fine -- helpers, alternate entry points, methods the
