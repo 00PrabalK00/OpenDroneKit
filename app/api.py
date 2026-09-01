@@ -905,6 +905,81 @@ class Api:
 
     @guard
     @guard
+    def tag_annotations(self, annotation_ids: list[str], tags: list[str]) -> dict[str, Any]:
+        """Apply tags to many findings at once.
+
+        The bulk case is the normal case: an inspector reviews forty roof photographs and
+        wants them all marked "north elevation". One at a time is why people stop tagging,
+        and an untagged set cannot be filtered, reported on or handed over.
+
+        A stale id in the selection is reported rather than fatal -- something deleted
+        since the selection was made should not discard the other thirty-nine.
+        """
+        from core.annotations import add_tags
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        if not annotation_ids:
+            return fail("Select the findings to tag first.")
+        try:
+            result = add_tags(Path(root), [str(i) for i in annotation_ids],
+                              [str(t) for t in tags])
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("annotations_tagged",
+                            {"count": len(result["updated"]), "tags": result["tags"]})
+        return ok(**result)
+
+    @guard
+    def untag_annotations(self, annotation_ids: list[str], tags: list[str]) -> dict[str, Any]:
+        """Take tags off many findings at once."""
+        from core.annotations import remove_tags
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        if not annotation_ids:
+            return fail("Select the findings to untag first.")
+        try:
+            result = remove_tags(Path(root), [str(i) for i in annotation_ids],
+                                 [str(t) for t in tags])
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(**result)
+
+    @guard
+    def list_annotation_tags(self, project_id: str = "") -> dict[str, Any]:
+        """Every tag in use, with how many findings carry it.
+
+        The count is what makes the list usable: a tag on one finding out of four hundred
+        is usually a typo, and it shows up beside the one it should have been.
+        """
+        from core.annotations import all_tags
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        return ok(tags=all_tags(Path(root), project_id or None))
+
+    @guard
+    def find_annotations(self, tag: str = "", source_type: str = "",
+                         source_id: str = "") -> dict[str, Any]:
+        """Findings filtered by tag, surface or image."""
+        from core.annotations import list_annotations
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        found = list_annotations(
+            Path(root),
+            source_id=source_id or None,
+            source_type=source_type or None,
+            tag=tag or None,
+        )
+        return ok(annotations=[a.to_dict() for a in found], count=len(found))
+
+    @guard
     def list_views(self) -> dict[str, Any]:
         """The named ways this project's model can be opened."""
         from core.saved_views import ViewStore

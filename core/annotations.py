@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 import math
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 ANNOTATION_TYPES = Literal[
     "point", "line", "polygon", "rectangle", "circle", "freehand", "text"
@@ -43,6 +43,11 @@ class Annotation:
     severity: str
     status: str
     note: str | None = None
+    #: Free-form labels for grouping. Distinct from `label`, which names WHAT the finding
+    #: is, and from `severity`, which says how bad. A tag is how an inspector slices the
+    #: set afterwards -- "north elevation", "reflight", "client query" -- and one finding
+    #: routinely needs several.
+    tags: list[str] = field(default_factory=list)
     include_in_report: bool = True
     created_by: str = "user"
     created_at: str = field(default_factory=_now_iso)
@@ -200,6 +205,7 @@ def list_annotations(
     project_id: str | None = None,
     source_id: str | None = None,
     source_type: str | None = None,
+    tag: str | None = None,
 ) -> list[Annotation]:
     items = _load_store(project_root)
     result = []
@@ -211,6 +217,8 @@ def list_annotations(
             if source_id and a.source_id != source_id:
                 continue
             if source_type and a.source_type != source_type:
+                continue
+            if tag and normalise_tag(tag) not in [normalise_tag(t) for t in a.tags]:
                 continue
             result.append(a)
         except Exception:
@@ -236,6 +244,103 @@ def update_annotation(
             _save_store(project_root, items)
             return validated
     return None
+
+
+def normalise_tag(tag: str) -> str:
+    """One spelling per tag.
+
+    "North Elevation", "north elevation" and " north elevation " are one tag to an
+    inspector and three to a filter, which is how a tag list becomes useless by the
+    second survey.
+    """
+    return " ".join(str(tag).strip().lower().split())
+
+
+def add_tags(
+    project_root: Path,
+    annotation_ids: Sequence[str],
+    tags: Sequence[str],
+) -> dict[str, Any]:
+    """Apply tags to many annotations at once.
+
+    The bulk case is the normal case: an inspector reviews forty roof photographs and
+    wants them all marked "north elevation". Doing that one at a time is why people stop
+    tagging, and an untagged set cannot be filtered, reported on or handed over.
+
+    Reports which ids were not found rather than failing the whole call -- a stale id in a
+    selection should not discard the other thirty-nine.
+    """
+    wanted = [t for t in (normalise_tag(t) for t in tags) if t]
+    if not wanted:
+        raise ValueError("No tags given.")
+
+    items = _load_store(project_root)
+    by_id = {d.get("id"): d for d in items}
+    updated: list[str] = []
+    missing: list[str] = []
+
+    for annotation_id in annotation_ids:
+        record = by_id.get(annotation_id)
+        if record is None:
+            missing.append(annotation_id)
+            continue
+        existing = [normalise_tag(t) for t in (record.get("tags") or [])]
+        merged = list(dict.fromkeys(existing + wanted))
+        if merged != existing:
+            record["tags"] = merged
+            record["updated_at"] = _now_iso()
+            updated.append(annotation_id)
+
+    if updated:
+        _save_store(project_root, items)
+    return {"updated": updated, "missing": missing, "tags": wanted}
+
+
+def remove_tags(
+    project_root: Path,
+    annotation_ids: Sequence[str],
+    tags: Sequence[str],
+) -> dict[str, Any]:
+    """Take tags off many annotations at once."""
+    unwanted = {t for t in (normalise_tag(t) for t in tags) if t}
+    if not unwanted:
+        raise ValueError("No tags given.")
+
+    items = _load_store(project_root)
+    by_id = {d.get("id"): d for d in items}
+    updated: list[str] = []
+    missing: list[str] = []
+
+    for annotation_id in annotation_ids:
+        record = by_id.get(annotation_id)
+        if record is None:
+            missing.append(annotation_id)
+            continue
+        existing = [normalise_tag(t) for t in (record.get("tags") or [])]
+        kept = [t for t in existing if t not in unwanted]
+        if kept != existing:
+            record["tags"] = kept
+            record["updated_at"] = _now_iso()
+            updated.append(annotation_id)
+
+    if updated:
+        _save_store(project_root, items)
+    return {"updated": updated, "missing": missing, "tags": sorted(unwanted)}
+
+
+def all_tags(project_root: Path, project_id: str | None = None) -> list[dict[str, Any]]:
+    """Every tag in use, with how many findings carry it.
+
+    The count is what makes the list usable: a tag on one finding out of four hundred is
+    usually a typo, and it shows up here next to the one it should have been.
+    """
+    counts: dict[str, int] = {}
+    for annotation in list_annotations(project_root, project_id=project_id):
+        for tag in annotation.tags:
+            key = normalise_tag(tag)
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    return [{"tag": tag, "count": counts[tag]} for tag in sorted(counts)]
 
 
 def delete_annotation(project_root: Path, annotation_id: str) -> bool:
