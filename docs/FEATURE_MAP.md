@@ -75,7 +75,7 @@ We generate **15 templates today**: `grid`, `double_grid`, `corridor`, `facade`,
 | 3D mapping | `double_grid` | registered |
 | Roof inspection | `roof_inspection` | registered |
 | Facade inspection | `facade` | registered |
-| Facade **mapping** | `facade` | partial — inspection geometry only; the photogrammetry variant is not separated |
+| Facade **mapping** | `facade_mapping` | registered — its own camera policy, capture dataset and smooth-motion profile; the map was wrong |
 | Lateral capture | `lateral_capture` | registered |
 | Linear mapping/inspection | `linear_inspection`, `corridor` | registered |
 | Solar inspection | `solar_inspection` | registered |
@@ -194,7 +194,7 @@ turns a raw model into something a client can be handed.
 | Full-resolution image review | `hub.viewer_2d` | registered |
 | Rectangle/polygon annotations, comments, tags, severity | `in.annotations`, `in.defect_record` | registered |
 | Defect library | `in.defect_library` | registered |
-| Filtering by tag/AI/severity | `in.annotations` | partial — the record supports it; filtering UI is thin |
+| Filtering by tag/AI/severity | `in.annotations` | **built** — findings and tag list both read the project |
 | Bulk tagging | — | **gap — `in.bulk_tagging`** |
 | AI-assisted comments | `ai.assisted_annotation` | registered |
 
@@ -219,7 +219,7 @@ turns a raw model into something a client can be handed.
 | 2D thermal map | `th.map_2d` | registered |
 | 3D thermal model | `th.model_3d` | registered |
 | RGB/thermal comparison | `th.comparison` | registered |
-| Temperature scaling | `th.radiometric` | partial |
+| Temperature scaling | `th.scaling` | **built** — auto/manual/anomaly ranges, and every range reports what it clipped |
 
 ## 17. Inspection AI
 
@@ -339,6 +339,37 @@ feature is not done when its function exists and its unit tests pass. It is done
 something a person can press reaches it.** Four separate features in this codebase passed
 their own tests while being impossible to invoke, and the registry counted all four as
 complete.
+
+## The panel audit
+
+Checking whether one market feature was really a gap turned up a bug in the mission form,
+which prompted an audit of every settings panel in the cockpit. **Six panels, six with
+defects.** None of them was a missing feature; all of them were a control that looked
+wired and reached nothing.
+
+| Panel | What it did |
+|---|---|
+| Mission | Field keys were `type`, `alt`, `fwd`, `side`, `standoff`; the planner reads `template`, `altitude_m`, `front_overlap_pct`, `side_overlap_pct`, `standoff_m`. **A facade inspection at 40 m planned as a nadir grid at 55 m.** |
+| Processing | `reconstructionOptions()` returned a hardcoded object, so Profile and Dense cloud never left the browser |
+| Report | Type and author hardcoded; the Template selector offered four report types the engine has never built |
+| AI Inspection | Findings table, Finding Details and the source-image caption were all invented; Min confidence filtered a value annotations do not store |
+| Reports (findings) | A preview listing three findings that were not in the project |
+| Settings | **Save resolved to the mission verb** — pressing it prompted "Mission name". Four preference fields nothing stored. A models table hardcoded to six, three digests written as a literal ellipsis. |
+
+The shape is consistent: the cockpit was built with plausible field names and plausible
+sample rows, and never checked against the API it talks to.
+
+Two of these are worse than an absent feature rather than better. A mission that plans as
+something other than what was asked for, and a report preview listing findings that do not
+exist, both produce a *plausible* output with nothing on screen to say it is wrong.
+
+Guards added, since removing the instances does not remove the class:
+
+- every mission field must map to an option `plan_mission` really reads, or be declared inert
+- every mission-type label must resolve to a template the planner accepts
+- every report type offered must be one the engine builds
+- no `fields()` group may exist without an onChange
+- sixteen specific fabricated strings must not appear in any rendered code
 
 ## What I am not going to pretend
 
