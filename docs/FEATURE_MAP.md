@@ -44,7 +44,7 @@ item in the whole inventory and is a different application, not a feature.
 | KML import | `mp.import` | registered |
 | Planning from an existing 3D model | `mp.geometry_3d` | registered |
 | 3D building outlines | `mp.geometry_3d`, `mp.standoff` | registered |
-| Site planning tools (markers, named measurements) | `me.2d` | partial — measurement exists; named non-flight site objects do not |
+| Site planning tools (markers, named measurements) | `mp.site_markers` | **built** — seven fixed kinds, hazard clearance reported against the planned route |
 | Planning estimates | `mp.estimates` | registered |
 | Simulation | `mp.simulation` | registered |
 | Mission sharing before deployment | `mp.sharing` | registered |
@@ -233,7 +233,7 @@ turns a raw model into something a client can be handed.
 | Back-projection to 3D | `ai.projection` | registered |
 | Change monitoring | `ai.change_detection`, `eng.change` | registered |
 | Colour-coded severity | `in.defect_record` | registered |
-| Result notifications | — | **gap — `hub.notifications`** |
+| Result notifications | `hub.notifications` | **built** — job completion, unread state, failures carry their reason |
 | **AI project assistant (natural language)** | — | **gap — `ai.assistant`** |
 | Parking-structure workflow | — | **gap — `ai.parking`** (depends on `hub.slam_capture`) |
 
@@ -305,8 +305,8 @@ by where they appear above.
 | 8 | `hub.cad_overlay` | **done** — DXF by EPSG, raster by bbox, alignment reported | |
 | 9 | `rp.formats` | **done** — was unreachable, not missing | |
 | 10 | `me.2d` | **already worked** — the map was wrong | |
-| 11 | `hub.notifications` | Job and AI completion notices | Needed the moment jobs run long |
-| 12 | `fl.log_sync` | Automatic flight-log upload | Small, regulatory value |
+| 11 | `hub.notifications` | **done** | |
+| 12 | `fl.log_sync` | **not applicable** — this build is local-first and has no remote to sync to | |
 | 13 | `ai.components` | Door/window counts | New model + corpus |
 | 14 | `ai.assistant` | Natural-language project questions | Large; needs an LLM path and a grounding story |
 | 15 | `hub.slam_capture` | Handheld LiDAR + 360 ingest | A second capture modality |
