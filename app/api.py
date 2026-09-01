@@ -905,6 +905,130 @@ class Api:
 
     @guard
     @guard
+    def list_clips(self) -> dict[str, Any]:
+        """The named cuts saved against this project's model."""
+        from core.model_clipping import ClipStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        clips = ClipStore(Path(root) / "reconstruction").load()
+        return ok(clips=[c.to_dict() for c in clips])
+
+    @guard
+    def add_polygon_clip(self, name: str, polygon_xy: list[list[float]]) -> dict[str, Any]:
+        """Keep what is inside a footprint; remove the neighbours and the car park."""
+        from core.model_clipping import Clip, ClipRefused, ClipStore, points_inside_polygon
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            # Validate the ring now rather than at render time, so a bad boundary is
+            # refused while the operator is still looking at the drawing they made.
+            import numpy as np
+
+            points_inside_polygon(np.zeros((1, 3)), polygon_xy)
+            clips = ClipStore(Path(root) / "reconstruction").add(
+                Clip(name=str(name), kind="polygon",
+                     polygon_xy=[list(map(float, p)) for p in polygon_xy]))
+        except ClipRefused as exc:
+            return fail(str(exc))
+        self._session.audit("clip_added", {"name": name, "kind": "polygon"})
+        return ok(clips=[c.to_dict() for c in clips])
+
+    @guard
+    def add_plane_clip(self, name: str, point_xyz: list[float],
+                       heading_deg: float = 0.0, pitch_deg: float = 0.0,
+                       roll_deg: float = 0.0) -> dict[str, Any]:
+        """Cut on an oriented plane, to isolate a facade or expose a section."""
+        from core.model_clipping import Clip, ClipPlane, ClipRefused, ClipStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            plane = ClipPlane.from_orientation(
+                point_xyz, float(heading_deg), float(pitch_deg), float(roll_deg))
+            clips = ClipStore(Path(root) / "reconstruction").add(
+                Clip(name=str(name), kind="plane", plane=plane))
+        except ClipRefused as exc:
+            return fail(str(exc))
+        self._session.audit("clip_added", {"name": name, "kind": "plane"})
+        return ok(clips=[c.to_dict() for c in clips])
+
+    @guard
+    def set_clip_visible(self, name: str, visible: bool) -> dict[str, Any]:
+        """Show or hide a clip without deleting it.
+
+        Hiding is what makes a clip a view rather than an edit: the geometry it removed
+        comes back, and no survey data was ever destroyed to produce the deliverable.
+        """
+        from core.model_clipping import ClipRefused, ClipStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            clips = ClipStore(Path(root) / "reconstruction").set_visible(str(name), bool(visible))
+        except ClipRefused as exc:
+            return fail(str(exc))
+        return ok(clips=[c.to_dict() for c in clips])
+
+    @guard
+    def remove_clip(self, name: str) -> dict[str, Any]:
+        from core.model_clipping import ClipRefused, ClipStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            clips = ClipStore(Path(root) / "reconstruction").remove(str(name))
+        except ClipRefused as exc:
+            return fail(str(exc))
+        self._session.audit("clip_removed", {"name": name})
+        return ok(clips=[c.to_dict() for c in clips])
+
+    @guard
+    def export_clipped_model(self, output_path: str = "") -> dict[str, Any]:
+        """Write the model as the visible clips leave it.
+
+        The export is a new file. Cutting the only copy of a reconstruction would turn a
+        presentation decision into data loss, so the source mesh is never touched.
+        """
+        from core.model_clipping import ClipStore, clip_mesh
+        from core.model_measurement import read_mesh
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        recon = Path(root) / "reconstruction"
+        source = recon / "mesh.obj"
+        if not source.is_file():
+            return fail("No mesh in this project yet. Run a reconstruction first.")
+
+        clips = [c for c in ClipStore(recon).load() if c.visible]
+        if not clips:
+            return fail("No visible clips, so there is nothing to cut to.")
+
+        vertices, faces = read_mesh(source)
+        kept_v, kept_f = clip_mesh(vertices, faces, clips)
+        if len(kept_f) == 0:
+            return fail(
+                "Those clips remove the entire model. Check the boundary is drawn around "
+                "the asset rather than beside it."
+            )
+
+        target = Path(output_path) if output_path else recon / "mesh_clipped.obj"
+        lines = [f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}" for v in kept_v]
+        lines += [f"f {f[0] + 1} {f[1] + 1} {f[2] + 1}" for f in kept_f]
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        self._session.audit("clipped_model_exported", {"path": str(target)})
+        return ok(path=str(target), vertices=int(len(kept_v)), faces=int(len(kept_f)),
+                  source_vertices=int(len(vertices)), source_faces=int(len(faces)))
+
+    @guard
     def plan_pylon_mission(self, center_lonlat: list[float],
                            elements: list[dict[str, Any]],
                            standoff_m: float = 12.0,
