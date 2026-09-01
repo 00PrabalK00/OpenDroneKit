@@ -850,16 +850,17 @@ const verification = {
     ],
   }),
   right: [
-    { id: "ver.capture", title: "Capture Properties", render: () => table(
-      [{ title: "Field", key: "f" }, { title: "Planned", key: "p" }, { title: "Actual", key: "a" }, { title: "Δ", key: "d", num: true }],
-      [
-        { f: "Latitude", p: "23.25914", a: "23.25913", d: "1.1 m" },
-        { f: "Longitude", p: "77.40218", a: "77.40219", d: "0.9 m" },
-        { f: "Altitude", p: "60.0 m", a: "59.4 m", d: "0.6 m" },
-        { f: "Heading", p: "090°", a: "091°", d: "1°" },
-        { f: "Gimbal", p: "−90°", a: "−90°", d: "0°" },
-        { f: "GSD", p: "1.80 cm", a: "1.78 cm", d: "0.02" },
-      ]) },
+    /* Six planned-versus-actual rows with sub-metre deltas, at a coordinate in Madhya
+       Pradesh, for a capture that was never taken. This is a table whose entire purpose
+       is to state how closely a flight matched its plan -- an accuracy claim, given to
+       five decimal places, about nothing.
+
+       Comparing a capture to its planned position needs the plan and the image's EXIF
+       together, which is what Match Captures does. Until it has run there is nothing to
+       compare, and saying so is the whole content of the panel. */
+    { id: "ver.capture", title: "Capture Properties", render: () =>
+      emptyState("Select a capture after running Match Captures to compare it against "
+                 + "the planned position, altitude and GSD.") },
   ],
   bottom: [
     /* Reported 1,842 planned against 1,836 matched with 98.4% coverage, on projects
@@ -1137,19 +1138,54 @@ const inspection = {
      status, which is what Accept already does. One label cannot carry two verbs. */
   toolbar: ["Run AI", "|", "Accept", "Reject", "Edit", "Flag", "|", "Open in 3D", "Generate Report"],
   left: [
-    { id: "ai.library", title: "Defect Library", render: () => tree([
-      { id: "dl1", label: "Crack", icon: "⚡", meta: "4" },
-      { id: "dl2", label: "Spalling", icon: "◆", meta: "1" },
-      { id: "dl3", label: "Corrosion", icon: "▨", meta: "2" },
-      { id: "dl4", label: "Water ponding", icon: "≈", meta: "1" },
-      { id: "dl5", label: "Deformation", icon: "◠" },
-      { id: "dl6", label: "Solar defect", icon: "▣" },
-    ], { selectKind: "defectClass" }) },
-    { id: "ai.datasets", title: "Model Runs", render: () => tree([
-      { id: "r1", label: "crack_presence 0.958", icon: "◈", meta: "run 91" },
-      { id: "r2", label: "crack_segmentation 0.606", icon: "◈", meta: "run 91" },
-      { id: "r3", label: "rail_obstacle 0.824", icon: "◈", meta: "run 88" },
-    ], { selectKind: "modelRun" }) },
+    /* The class names were reasonable; the counts beside them -- 4, 1, 2, 1 -- were
+       not. A count next to a defect class reads as "this project has four cracks", and
+       the project had none. The vocabulary is real and comes from the shared taxonomy;
+       the counts come from the project's own findings or are absent. */
+    { id: "ai.library", title: "Defect Library", render: () => live({
+      calls: ["asset_taxonomy", "find_annotations"],
+      empty: "No defect vocabulary available.",
+      isEmpty: ([t]) => !(t && (t.asset_types || []).length),
+      render: ([t, found]) => {
+        const counts = new Map();
+        for (const a of ((found && found.annotations) || [])) {
+          const key = String(a.label || "").toLowerCase();
+          counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        return tree((t.asset_types || []).map((asset, i) => {
+          const n = counts.get(String(asset.name).toLowerCase());
+          return {
+            id: `dl${i}`,
+            label: asset.name,
+            icon: "\u25c8",
+            /* Absent rather than zero: "0" and "not looked for" are different claims,
+               and only one of them is true before a model has run. */
+            meta: n ? String(n) : "",
+          };
+        }), { selectKind: "defectClass" });
+      },
+    }) },
+    /* Three model runs -- "run 91", "run 88" -- with real published metrics beside
+       them. The metrics are true; the runs never happened. Attaching a true number to an
+       invented run is the same defect as the thermal module panel: the accurate half is
+       what makes the invented half credible.
+
+       Nothing in this build records a run id yet. What it does record is which models
+       are installed and whether each still matches the digest its metrics were measured
+       on, which is the question this panel was reaching for. */
+    { id: "ai.datasets", title: "Installed Models", render: () => live({
+      calls: ["verify_models"],
+      empty: "No models installed.",
+      isEmpty: ([r]) => !(r && (r.models || []).length),
+      render: ([r]) => tree((r.models || []).map((m, i) => ({
+        id: `r${i}`,
+        label: m.model_key,
+        icon: "\u25c8",
+        /* A mismatch means the published metric describes a different file, so it is
+           the only thing worth putting in the margin. */
+        meta: m.status === "mismatch" ? "digest mismatch" : m.status,
+      })), { selectKind: "model" }),
+    }) },
   ],
   canvas: () => splitCanvas([
     { title: "Source image", note: "The frame the selected finding was detected in" },
@@ -1401,10 +1437,25 @@ const measurements = {
       emptyState("No measurement selected. Use Volume, Area or Distance on the canvas.") },
   ],
   bottom: [
-    { id: "ms.history", title: "Measurement History", flex: 3, render: () => table(
-      [{ title: "Name", key: "n" }, { title: "Type", key: "t" }, { title: "Value", key: "v", num: true },
-       { title: "Date", key: "d" }, { title: "Δ", key: "c", num: true }],
-      [], { selectKind: "measurement" }) },
+    /* Five column headings over zero rows, including a change column. An empty grid
+       reads as "no measurements have been taken", when it means the panel was never
+       wired to anything. Measurements are saved as annotations. */
+    { id: "ms.history", title: "Measurement History", flex: 3, render: () => live({
+      calls: ["find_annotations"],
+      empty: "No measurements yet. Use the measure tools on the canvas, then save one.",
+      isEmpty: ([f]) => !(f && (f.annotations || []).some((a) =>
+        String(a.annotation_type || "").includes("measure"))),
+      render: ([f]) => table(
+        [{ title: "Name", key: "n" }, { title: "Type", key: "t" },
+         { title: "Recorded", key: "d" }],
+        (f.annotations || [])
+          .filter((a) => String(a.annotation_type || "").includes("measure"))
+          .map((a) => ({
+            n: a.label || String(a.id || "").slice(0, 8),
+            t: a.annotation_type,
+            d: String(a.created_at || "").slice(0, 10),
+          })), { selectKind: "measurement" }),
+    }) },
     { id: "ms.profile", title: "Profile", flex: 2, render: () => canvas({ title: "Elevation profile", note: "Along the selected profile line" }) },
   ],
 };
@@ -1569,9 +1620,25 @@ const reports = {
           src: a.created_by === "user" ? "human" : "model",
         }))),
     }) },
-    { id: "rp.log", title: "Generation Log", flex: 2, render: () => consoleView([
-      { t: "—", text: "every figure carries its model digest and run id", level: "ok" },
-    ]) },
+    /* "every figure carries its model digest and run id -- ok".
+       The application asserting its own provenance guarantee, marked as passed, with
+       nothing having been checked and no report having been generated. Of everything in
+       this cockpit this is the one claim that most needs to be earned rather than
+       printed, because it is the claim a reader would rely on when deciding to trust
+       every other number in the document.
+
+       report_readiness() answers what a report still needs before anyone presses
+       Generate, which is a real check with a real answer. */
+    { id: "rp.log", title: "Readiness", flex: 2, render: () => live({
+      calls: ["report_readiness"],
+      empty: "Open a project to check what a report still needs.",
+      isEmpty: ([r]) => !r,
+      render: ([r]) => consoleView(
+        (r.missing || []).length
+          ? (r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "warn" }))
+          : [{ t: "ready", text: "Nothing missing. Generate writes the report and its "
+               + "provenance together.", level: "ok" }]),
+    }) },
   ],
 };
 
