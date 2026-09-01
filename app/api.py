@@ -1889,6 +1889,116 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
             return fail(str(exc))
 
+    @guard
+    def marker_kinds(self) -> dict[str, Any]:
+        """What a site marker can be, and what each kind means."""
+        from core.site_markers import MARKER_KINDS
+
+        return ok(kinds=[{"kind": k, "describes": v} for k, v in sorted(MARKER_KINDS.items())])
+
+    @guard
+    def list_site_markers(self) -> dict[str, Any]:
+        from core.site_markers import MarkerStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        store = MarkerStore(Path(root))
+        return ok(markers=[m.to_dict() for m in store.load()],
+                  geojson=store.to_geojson())
+
+    @guard
+    def add_site_marker(self, name: str, kind: str, points: list[list[float]],
+                        note: str = "", radius_m: float = 0.0) -> dict[str, Any]:
+        """Record something on the ground that is not part of the flight.
+
+        Where the pilot stands, where the van parks, which corner has the overhead line.
+        Those live in somebody's head on the day and in nobody's head six months later
+        when a different crew reflies the site.
+        """
+        from core.site_markers import MarkerRefused, MarkerStore, SiteMarker
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            markers = MarkerStore(Path(root)).add(SiteMarker(
+                name=str(name), kind=str(kind),
+                points=[[float(c) for c in p] for p in points],
+                note=str(note), radius_m=float(radius_m),
+            ))
+        except (MarkerRefused, TypeError, ValueError) as exc:
+            return fail(str(exc))
+        self._session.audit("site_marker_added", {"name": name, "kind": kind})
+        return ok(markers=[m.to_dict() for m in markers])
+
+    @guard
+    def remove_site_marker(self, marker_id: str) -> dict[str, Any]:
+        from core.site_markers import MarkerRefused, MarkerStore
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            markers = MarkerStore(Path(root)).remove(str(marker_id))
+        except MarkerRefused as exc:
+            return fail(str(exc))
+        return ok(markers=[m.to_dict() for m in markers])
+
+    @guard
+    def check_hazards(self, clearance_m: float = 30.0) -> dict[str, Any]:
+        """Which hazard markers the planned mission passes close to.
+
+        Reports; does not reroute. Markers are information the crew wrote down, not
+        constraints the planner enforces -- a planner that silently flew around a note
+        somebody typed would be worse than one that says nothing, because the crew would
+        stop trusting that the plan is the plan.
+        """
+        from core.site_markers import MarkerStore, hazards_near
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        plan = self._session.mission_plan_dict
+        if not plan:
+            return fail("No mission has been planned yet, so there is no route to check.")
+
+        # The planner emits [lon, lat, alt] lists. Older recipes and some exporters carry
+        # dicts instead, so both are read -- a hazard check that silently found no
+        # positions would report "no hazards" and be believed.
+        waypoints: list[list[float]] = []
+        for entry in plan.get("waypoints") or []:
+            if isinstance(entry, dict):
+                lon, lat = entry.get("lon"), entry.get("lat")
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                lon, lat = entry[0], entry[1]
+            else:
+                continue
+            if lon is not None and lat is not None:
+                waypoints.append([float(lon), float(lat)])
+        if not waypoints:
+            return fail("The planned mission carries no positions to check.")
+
+        found = hazards_near(MarkerStore(Path(root)).load(), waypoints, float(clearance_m))
+        result = ok(hazards=found, checked_waypoints=len(waypoints),
+                    clearance_m=float(clearance_m))
+        if found:
+            closest = found[0]
+            # A negative clearance means the route passes INSIDE the hazard's own radius,
+            # which is the most serious case and the one that reads as a typo if it is
+            # printed as "at -21 m".
+            if closest["clearance_m"] < 0:
+                how = (f"the route passes through {closest['name']}, "
+                       f"{abs(closest['clearance_m']):.0f} m inside its {'' if not closest.get('note') else ''}"
+                       f"marked radius")
+            else:
+                how = f"closest is {closest['name']} at {closest['clearance_m']:.0f} m"
+            result["warning"] = (
+                f"{len(found)} hazard marker(s) within {clearance_m:g} m of the route: {how}. "
+                "Markers are a briefing note, not a constraint -- the plan has not been changed."
+            )
+        return result
+
     def _notifications(self):
         """The notification centre for the open project, or None."""
         from core.notifications import NotificationCentre
