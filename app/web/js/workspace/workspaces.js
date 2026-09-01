@@ -966,11 +966,15 @@ const reports = {
   canvas: () => canvas({ title: "Report preview", note: "Live preview of the generated document." }),
   right: [
     { id: "rp.settings", title: "Template", render: () => fields([
-      { key: "tpl", label: "Template", value: "Inspection", options: ["Inspection", "Survey", "Progress", "Thermal"] },
-      { key: "sev", label: "Min severity", value: "minor", options: ["any", "minor", "moderate", "severe"] },
-      { key: "from", label: "From", value: "2026-05-14" },
-      { key: "to", label: "To", value: "2026-08-02" },
-      { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX", "HTML"] },
+      /* The options are the report types core/report_engine.py actually builds. They
+         used to read Inspection / Survey / Progress / Thermal, none of which the engine
+         has ever produced -- picking one sent a name it did not recognise and got the
+         standard report regardless. Offering a choice that does not exist is worse than
+         offering none, because the operator believes they made one. */
+      { key: "tpl", label: "Report", value: "standard",
+        options: ["standard", "engineering", "executive", "defect_only",
+                  "dataset_quality", "mission_summary"] },
+      { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX"] },
     ], settingChanged) },
     { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
       { key: "org", label: "Organisation", value: "DEMO organisation" },

@@ -184,3 +184,50 @@ class TestTheProcessingPanelReachesTheJob:
                                   shell_js.split("PROCESSING_FIELDS_NOT_USED = new Set([")[1]
                                   .split("]")[0]))
         assert {"imgsize", "mesh"} <= declared
+
+
+class TestTheReportPanelReachesTheEngine:
+    """Third panel, same fault.
+
+    Generate Report called generate_report("", title, "standard", "") with the type and
+    author hardcoded, so Report, Format, Organisation and Logo were read by nobody. The
+    panel also offered four templates -- Inspection, Survey, Progress, Thermal -- that the
+    engine has never built, so picking one got the standard report regardless.
+    """
+
+    @pytest.fixture(scope="class")
+    def actions_js(self) -> str:
+        return (REPO_ROOT / "app" / "web" / "js" / "workspace" / "actions.js").read_text(
+            encoding="utf-8")
+
+    def test_every_report_type_the_panel_offers_is_one_the_engine_builds(self) -> None:
+        """Offering a choice that does not exist is worse than offering none, because the
+        operator believes they made one."""
+        panel = WORKSPACES.read_text(encoding="utf-8")
+        block = panel.split('{ key: "tpl"')[1].split("},")[0]
+        offered = set(re.findall(r'"(\w+)"', block.split("options:")[1]))
+
+        engine = (REPO_ROOT / "core" / "report_engine.py").read_text(encoding="utf-8")
+        declared = engine.split("report_type: str = \"standard\"")[1].split("\n")[0]
+        known = set(re.findall(r"(\w+)", declared)) - {"standard"} | {"standard"}
+        assert offered <= known, f"panel offers types the engine cannot build: {offered - known}"
+
+    def test_the_action_no_longer_hardcodes_the_type(self, actions_js) -> None:
+        assert 'call("generate_report", "", title, "standard", "")' not in actions_js
+
+    def test_it_reads_the_panel(self, actions_js) -> None:
+        body = actions_js.split('"Generate Report": {')[1].split("\n  },")[0]
+        assert "reportOptions" in body
+
+    def test_a_word_request_does_not_go_to_the_pdf_engine(self, actions_js) -> None:
+        """The report engine renders HTML then PDF. Sending it a Word request would
+        produce a PDF named correctly -- wrong in the one way nobody checks."""
+        body = actions_js.split('"Generate Report": {')[1].split("\n  },")[0]
+        assert 'export_report' in body
+        assert 'docx' in body
+
+    def test_the_shell_exposes_the_panel_settings(self, shell_js) -> None:
+        assert "reportOptions:" in shell_js
+        body = shell_js.split("reportOptions: () => {")[1].split("\n      },")[0]
+        for field in ("tpl", "fmt", "org"):
+            assert f"raw.{field}" in body, f"{field} is still discarded"

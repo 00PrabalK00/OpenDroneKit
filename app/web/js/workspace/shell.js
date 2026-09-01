@@ -787,6 +787,19 @@ export class Shell {
         }
         return options;
       },
+      /* What the Report panel was set to.
+       *
+       * Generate Report used to call generate_report("", title, "standard", "") with the
+       * type and author hardcoded, so Report, Format, Organisation and Logo were all
+       * read by nobody -- the third panel in this shell with that fault. */
+      reportOptions: () => {
+        const raw = this.settings || {};
+        return {
+          reportType: String(raw.tpl || "standard"),
+          format: String(raw.fmt || "PDF").toLowerCase(),
+          organization: String(raw.org || ""),
+        };
+      },
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,

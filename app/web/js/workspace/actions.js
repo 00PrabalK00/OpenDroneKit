@@ -535,7 +535,20 @@ export const ACTIONS = {
         return { skipped: `Not ready: ${(readiness.missing || []).join(", ") || "unknown"}` };
       }
       const title = await ctx.prompt("Report title", "Inspection report") || "Inspection report";
-      const result = await call("generate_report", "", title, "standard", "");
+      const chosen = ctx.reportOptions ? ctx.reportOptions() : {};
+
+      // DOCX only exists on the export_report path; the report engine renders HTML and
+      // then PDF. Sending a Word request to the engine would produce a PDF named
+      // correctly and be wrong in the one way nobody checks.
+      if (chosen.format === "docx") {
+        const written = await call("export_report", "docx", title,
+                                   chosen.organization || "");
+        return { message: `Word report written to ${written.path}.`, refresh: true };
+      }
+
+      const result = await call("generate_report", "", title,
+                                chosen.reportType || "standard",
+                                chosen.organization || "");
       return { message: `Report built: ${result.id || "done"}.`, refresh: true };
     },
   },
