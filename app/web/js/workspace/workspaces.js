@@ -24,6 +24,34 @@ import {
 import { DATA, DEMO, demoCoords } from "./demo.js";
 import { emptyState, live, reported } from "./live.js";
 
+/* A readout in the corner of the canvas, asking the application for its numbers.
+ *
+ * Six overlays used to carry figures written into this file: the mission map's capture
+ * count, distance, duration and GSD; the flight screen's progress, mode and fix quality;
+ * the verification screen's matched and out-of-tolerance counts; the thermal screen's
+ * anomaly count and ambient temperature; and the measurement screen's vertical accuracy.
+ *
+ * They survived every earlier fabrication sweep because those searched panel bodies, and
+ * an overlay is not a panel. That is worth naming: the sweeps were not careless, they
+ * were scoped to a shape, and the fabrication had another shape. An overlay sits in the
+ * corner of the view, where every instrument an operator has used puts its readout, so a
+ * fixed number there is read as a measurement of what is on screen more readily than a
+ * table would be.
+ *
+ * The measurement one was the most serious. "Vertical accuracy +/-0.05 m -- nothing below
+ * 0.10 m is reported" states the threshold that decides whether a deformation is real,
+ * and there is no such constant: detection_floor() in core/deformation.py derives it per
+ * comparison from each survey's own accuracy and the registration residual between them.
+ * A fixed floor printed beside a measurement claims a precision the data may not support,
+ * and it is exactly the figure a reader would cite to argue that a movement was real.
+ */
+function readout({ calls, isEmpty, empty, render }) {
+  return live({
+    calls, isEmpty, empty,
+    render: (r) => el("div", { class: "canvas-readout" }, render(r)),
+  });
+}
+
 /* Every editable field reports onto the same bus the trees and tables use.
  *
  * fields() has always accepted an onChange and no caller passed one, so editing an
@@ -278,11 +306,33 @@ const planning = {
   title: "Mission Planning",
   toolbar: ["New Mission", "Open", "|", "Plan", "Validate", "Simulate", "|", "Upload", "Export", "Share"],
   left: [
-    { id: "plan.browser", title: "Mission Browser", render: () => tree([
-      { id: "m1", label: "Roof Block A v3", icon: "⟋", meta: "current" },
-      { id: "m2", label: "Facade North v1", icon: "▯" },
-      { id: "m3", label: "Yard grid v2", icon: "▦" },
-    ], { selectKind: "mission" }) },
+    /* Three invented missions -- "Roof Block A v3", "Facade North v1", "Yard grid v2",
+       one of them marked "current". This was the last panel in the cockpit still
+       rendering a literal, and a bad one to leave: the planner's browser is a list of
+       saved work, so picking a mission from it that does not exist is a click that can
+       only fail.
+
+       list_mission_versions("") returns every version in the project, newest first, so
+       the browser shows each mission once at its highest version. */
+    { id: "plan.browser", title: "Mission Browser", render: () => live({
+      calls: ["list_mission_versions"],
+      empty: "No saved missions in this project. Plan one, then Save.",
+      isEmpty: ([v]) => !(v && (v.versions || []).length),
+      render: ([v]) => {
+        const latest = new Map();
+        for (const row of v.versions || []) {
+          const name = row.mission_name || "(unnamed)";
+          const seen = latest.get(name);
+          if (!seen || (row.version_num || 0) > (seen.version_num || 0)) latest.set(name, row);
+        }
+        return tree([...latest.values()].map((row, i) => ({
+          id: `m${i}`,
+          label: row.mission_name || "(unnamed)",
+          icon: "\u25c7",
+          meta: `v${row.version_num ?? 1}`,
+        })), { selectKind: "mission" });
+      },
+    }) },
     { id: "plan.templates", title: "Mission Types", render: () => tree(
       missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })), { selectKind: "template" }) },
     { id: "plan.layers", title: "Layers", height: 150, grow: false, render: () => layerTree([
@@ -296,7 +346,24 @@ const planning = {
     note: "Flight lines, capture points, camera footprints, geofence, terrain and obstacles.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `<strong>214</strong> captures &nbsp; <strong>3.1</strong> km &nbsp; <strong>18</strong> min &nbsp; GSD <strong>1.8</strong> cm` },
+      /* Was a fixed "214 captures, 3.1 km, 18 min, GSD 1.8 cm", printed over whatever
+         mission was open -- including one that had not been planned yet. */
+      { at: "tr", node: readout({
+        calls: ["mission_estimates"],
+        empty: "Plan a mission to see captures, distance, duration and GSD.",
+        isEmpty: ([e]) => !(e && e.estimates),
+        render: ([e]) => {
+          const est = e.estimates;
+          return [
+            chip(`${est.image_count ?? "\u2014"} captures`),
+            chip(est.distance_m ? `${(est.distance_m / 1000).toFixed(2)} km` : "\u2014"),
+            chip(est.duration_min ? `${Math.round(est.duration_min)} min` : "\u2014"),
+            /* estimate_mission() leaves gsd_cm null when no camera is declared, and
+               saying so beats printing a GSD the plan cannot support. */
+            chip(est.gsd_cm ? `GSD ${Number(est.gsd_cm).toFixed(1)} cm` : "GSD not reported"),
+          ];
+        },
+      }) },
       { at: "bl", html: `Terrain: <span class="chip warn">flat plane — no DEM loaded</span>` },
       { at: "br", html: COORD },
     ],
@@ -403,8 +470,38 @@ const flight = {
     note: "Aircraft position and heading, completed and remaining route, geofence, rally points and obstacles.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `<strong>62 / 214</strong> captures &nbsp; <span class="chip ok">AUTO</span> &nbsp; <span class="chip info">RTK fixed</span>` },
-      { at: "bl", html: `Segment <strong>1 of 4</strong> — nadir grid pass A` },
+      /* "62 / 214 captures, AUTO, RTK fixed" over an aircraft that was not connected.
+         A fix-quality chip is what an operator reads to decide whether the survey is
+         worth flying at all, so inventing one is worse than an empty corner. */
+      { at: "tr", node: readout({
+        calls: ["telemetry"],
+        empty: "No aircraft connected.",
+        /* session.telemetry() returns {connected: false, reason} rather than nothing when
+           there is no vehicle, so a plain null check would treat "not connected" as live
+           data and render a disarmed aircraft at 0% battery with no GPS. */
+        isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
+        render: ([t]) => {
+          const tm = t.telemetry;
+          /* gps_fix is the integer MAVLink reports. The difference between 4 and 5 is the
+             difference between decimetre and centimetre work, so it is named exactly
+             rather than flattened to good/bad. */
+          const FIX = ["no GPS", "no fix", "2D fix", "3D fix", "RTK float", "RTK fixed"];
+          const fix = FIX[tm.gps_fix] || `fix ${tm.gps_fix}`;
+          return [
+            chip(tm.flight_mode || "mode unknown"),
+            chip(`${fix} \u00b7 ${tm.satellites ?? 0} sats`, tm.gps_fix >= 3 ? "ok" : "warn"),
+            chip(`battery ${Math.round(tm.battery_pct ?? 0)}%`,
+                 (tm.battery_pct ?? 0) < 25 ? "warn" : "ok"),
+            ...(tm.waypoint_total
+              ? [chip(`waypoint ${tm.waypoint_index ?? 0} / ${tm.waypoint_total}`)]
+              : []),
+          ];
+        },
+      }) },
+      /* Segment progress is real, but linked_mission_progress() computes it from a
+         folder of captured images the operator has to point at. Until then this says so,
+         rather than claiming a sortie is on the first of four segments. */
+      { at: "bl", html: "Segment progress is reported once captured images are linked to the plan." },
       { at: "br", html: COORD },
     ],
   }),
@@ -466,7 +563,31 @@ const verification = {
     note: "Planned capture positions, actual positions, deviation vectors and coverage footprints.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `<span class="chip ok">1836 matched</span> <span class="chip warn">3 out of tolerance</span> <span class="chip error">3 missing</span>` },
+      /* "1836 matched / 3 out of tolerance / 3 missing" -- an accuracy verdict on
+         control points that were never imported. This is the screen whose entire job is
+         to say whether the survey met its tolerance, so a fixed answer defeats it. */
+      { at: "tr", node: readout({
+        calls: ["gcp_accuracy_report"],
+        empty: "Import ground control points to check the survey against them.",
+        isEmpty: ([g]) => !(g && g.report),
+        render: ([g]) => {
+          const r = g.report;
+          /* accuracy_report() returns rmse_m: null when no residuals could be computed,
+             and its own warnings say not to quote an accuracy in that case. Rendering
+             that as "RMSE 0.000 m" would turn "this survey has no measured accuracy"
+             into the best result the screen can show. */
+          if (r.rmse_m === null || r.rmse_m === undefined) {
+            return [chip(`${r.point_count ?? 0} control points \u00b7 no measured accuracy`, "warn")];
+          }
+          return [
+            chip(`${r.used} of ${r.point_count} used`, "ok"),
+            chip(`RMSE ${Number(r.rmse_m).toFixed(3)} m`, r.meets_survey_grade ? "ok" : "warn"),
+            ...(r.outlier_count
+              ? [chip(`${r.outlier_count} outlier${r.outlier_count === 1 ? "" : "s"}`, "error")]
+              : []),
+          ];
+        },
+      }) },
       { at: "br", html: COORD },
     ],
   }),
@@ -835,8 +956,27 @@ const thermal = {
     note: "Module boundaries, anomaly overlays and temperature labels over the array.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `<span class="chip thermal">Fused</span> <span class="chip warn">7 anomalies</span>` },
-      { at: "br", html: `Ambient 34.2 °C · palette ironbow` },
+      /* "Fused, 7 anomalies" on a project with no thermal imagery loaded. */
+      { at: "tr", node: readout({
+        calls: ["find_annotations"],
+        empty: "No thermal anomalies recorded.",
+        isEmpty: ([f]) => !(f && (f.annotations || []).length),
+        render: ([f]) => {
+          const thermal = (f.annotations || []).filter((a) =>
+            String(a.label || "").includes("thermal") || a.temperature_c !== undefined);
+          return [chip(`${thermal.length} thermal ${thermal.length === 1 ? "finding" : "findings"}`,
+                       thermal.length ? "warn" : "ok")];
+        },
+      }) },
+      /* Ambient temperature is the reference every relative thermal reading is taken
+         against, so a fixed 34.2 C would silently rescale every anomaly on screen. It
+         comes from the imagery's own metadata or it is not known. */
+      { at: "br", node: readout({
+        calls: ["thermal_palettes"],
+        empty: "Load radiometric imagery to set a palette and temperature range.",
+        isEmpty: ([p]) => !(p && (p.palettes || []).length),
+        render: ([p]) => [chip(`${(p.palettes || []).length} palettes available`)],
+      }) },
     ],
   }),
   right: [
@@ -893,7 +1033,11 @@ const measurements = {
     note: "Orthomosaic, terrain and point cloud with measurement overlays.",
     tools: MAP_TOOLS,
     overlays: [
-      { at: "tr", html: `Vertical accuracy <strong>±0.05 m</strong> — nothing below 0.10 m is reported` },
+      /* The worst of the six. There is no fixed vertical accuracy and no fixed
+         reporting floor: detection_floor() derives it per comparison from each survey's
+         accuracy and the registration residual between them. */
+      { at: "tr", html: "Detection floor is computed per comparison, from each survey's "
+        + "accuracy and the registration residual between them." },
       { at: "br", html: COORD },
     ],
   }),

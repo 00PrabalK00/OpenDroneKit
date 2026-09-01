@@ -277,8 +277,18 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     root.appendChild(bar);
   }
 
+  /* An overlay may carry `html` (a fixed caption -- a legend, a units note) or `node` (an
+     element, in practice a live() that asks the application). The distinction matters:
+     every overlay that carried a NUMBER used to carry it as `html`, which is how the
+     mission map came to print "214 captures, 3.1 km, 18 min, GSD 1.8 cm" over whatever
+     project was open. A figure in the corner of the canvas reads as a readout of what is
+     on screen, so a fixed one is a fabricated measurement in the most credible position
+     the UI has. Fixed `html` is for text that is true of every project or none. */
   for (const overlay of overlays) {
-    root.appendChild(el("div", { class: `canvas-overlay ${overlay.at || "tr"}`, html: overlay.html }));
+    const box = el("div", { class: `canvas-overlay ${overlay.at || "tr"}` });
+    if (overlay.node) box.appendChild(overlay.node);
+    else box.innerHTML = overlay.html;
+    root.appendChild(box);
   }
 
   // What the current view mode actually has to show. A map canvas keeps its map; every
