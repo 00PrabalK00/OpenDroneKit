@@ -23,6 +23,10 @@ import {
 } from "./primitives.js";
 import { DATA, DEMO, demoCoords } from "./demo.js";
 import { emptyState, live, reported } from "./live.js";
+/* The layer panel writes as well as reads: toggling visibility calls the application.
+   tryCall returns null rather than throwing, which is what lets the checkbox revert
+   instead of showing a state the application never accepted. */
+import { tryCall } from "./api.js";
 
 /* A readout in the corner of the canvas, asking the application for its numbers.
  *
@@ -109,15 +113,64 @@ const projectTree = () => live({
   },
 });
 
-const layerTree = (extra = []) => tree([
-  { id: "l-base", label: "Basemap — Satellite", icon: "◈" },
-  { id: "l-terrain", label: "Terrain (SRTM)", icon: "◭" },
-  { id: "l-ortho", label: "Orthomosaic", icon: "▦" },
-  { id: "l-dsm", label: "DSM", icon: "◰" },
-  { id: "l-mission", label: "Mission", icon: "⟋" },
-  { id: "l-fence", label: "Geofence", icon: "⬡" },
-  ...extra,
-], { selectKind: "layer" });
+/* The layer panel, which listed layers a project did not have and could not toggle one.
+ *
+ * Six fixed rows -- Basemap, Terrain (SRTM), Orthomosaic, DSM, Mission, Geofence --
+ * rendered on every project regardless of what it held. A project with no orthomosaic
+ * still showed "Orthomosaic", so the panel whose job is to say which products exist said
+ * the same thing for all of them.
+ *
+ * The worse half took longer to notice. There was no toggle. set_layer_visible and
+ * set_layer_opacity have been on the Api the whole time, both implemented, and nothing
+ * anywhere in the interface ever called either one. A panel titled Layers, in a mapping
+ * application, containing no layer control.
+ *
+ * That is this codebase's recurring shape in its plainest form: the feature exists, it
+ * works, its tests pass, and there is nothing a person can press that arrives at it.
+ *
+ * `extra` let a workspace append its own rows -- Obstacles, No-fly regions, Defects,
+ * Thermal, Change, Volumes, Slope map -- labels for layers that were never registered.
+ * A caller now passes a filter saying which KINDS of real layer it wants instead.
+ */
+const layerTree = (kinds = []) => live({
+  calls: ["list_layers"],
+  empty: "No layers yet. Products appear here once a reconstruction has run.",
+  isEmpty: ([l]) => !(l && (l.layers || []).length),
+  render: ([l]) => {
+    const layers = (l.layers || [])
+      .filter((layer) => !kinds.length || kinds.includes(layer.kind));
+    if (!layers.length) {
+      return emptyState(`No ${kinds.join(" or ")} layers in this project.`);
+    }
+    const rows = layers.map((layer) => {
+      const box = el("input", { type: "checkbox", class: "layer-toggle" });
+      box.checked = layer.visible !== false;
+      box.onchange = async () => {
+        /* The whole point of the panel. If the call fails the checkbox goes back: a
+           control showing a state the application did not accept is how the rest of
+           this cockpit went wrong. */
+        const result = await tryCall("set_layer_visible", layer.id, box.checked);
+        if (!result) box.checked = !box.checked;
+      };
+      const row = el("div", { class: "tree-node" }, [
+        box,
+        el("span", { class: "ico", text: layer.kind === "raster" ? "\u25a6" : "\u25c8" }),
+        el("span", { class: "label", text: layer.name || layer.id }),
+        /* A layer with no CRS cannot be placed on the map, and saying so is more use
+           than leaving the operator to wonder why it never appears. */
+        layer.crs_epsg
+          ? el("span", { class: "meta", text: `EPSG:${layer.crs_epsg}` })
+          : el("span", { class: "meta warn", text: "no CRS" }),
+      ]);
+      row.onclick = (event) => {
+        if (event.target === box) return;
+        selection.select("layer", layer);
+      };
+      return row;
+    });
+    return el("div", { class: "tree", "data-rows": "layers" }, rows);
+  },
+});
 
 /* --------------------------------------------------------------------- HOME */
 
@@ -413,10 +466,12 @@ const planning = {
     }) },
     { id: "plan.templates", title: "Mission Types", render: () => tree(
       missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })), { selectKind: "template" }) },
-    { id: "plan.layers", title: "Layers", height: 150, grow: false, render: () => layerTree([
-      { id: "l-obst", label: "Obstacles", icon: "⛔" },
-      { id: "l-nofly", label: "No-fly regions", icon: "⊘" },
-    ]) },
+    /* Appended "Obstacles" and "No-fly regions" as layer rows. Both are real concepts
+       -- set_no_fly_zones stores them -- but they are session geometry rather than
+       registered layers, so the rows toggled nothing and implied the project held
+       obstacle data it did not have. */
+    { id: "plan.layers", title: "Layers", height: 150, grow: false,
+      render: () => layerTree() },
   ],
   canvas: () => canvas({
     map: true,
@@ -1074,11 +1129,8 @@ const twin = {
         })), { selectKind: "asset" });
       },
     }) },
-    { id: "twin.layers", title: "Layers", height: 160, grow: false, render: () => layerTree([
-      { id: "l-defect", label: "Defects", icon: "⚠" },
-      { id: "l-thermal", label: "Thermal", icon: "◍" },
-      { id: "l-change", label: "Change", icon: "±" },
-    ]) },
+    { id: "twin.layers", title: "Layers", height: 160, grow: false,
+      render: () => layerTree() },
   ],
   canvas: () => canvas({
     title: "Digital twin",
@@ -1410,10 +1462,9 @@ const measurements = {
       { id: "t6", label: "Slope", icon: "◺" },
       { id: "t7", label: "Profile line", icon: "∿" },
     ], { selectKind: "tool" }) },
-    { id: "ms.layers", title: "Layers", render: () => layerTree([
-      { id: "l-vol", label: "Volumes", icon: "◙" },
-      { id: "l-slope", label: "Slope map", icon: "◺" },
-    ]) },
+    /* Measurement works on rasters -- orthomosaic, DSM, DTM -- so this filters rather
+       than listing every layer in the project. */
+    { id: "ms.layers", title: "Layers", render: () => layerTree(["raster"]) },
   ],
   canvas: () => canvas({
     map: true,
