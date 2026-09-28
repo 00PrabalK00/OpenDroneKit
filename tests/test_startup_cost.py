@@ -27,7 +27,7 @@ def test_building_the_shell_leaves_the_heavy_stack_unloaded(tmp_path) -> None:
         "from app.shell import Shell\n"
         "Shell()\n"
         f"print(json.dumps({{'loaded': [m for m in {HEAVY!r} if m in sys.modules],"
-        " 'seconds': time.perf_counter() - t}}))\n"
+        " 'seconds': time.perf_counter() - t}))\n"
     )
     env = dict(os.environ, ODK_DATA_DIR=str(tmp_path / "data"))
     done = subprocess.run([sys.executable, "-B", "-c", code], cwd=str(tmp_path), env=env,
