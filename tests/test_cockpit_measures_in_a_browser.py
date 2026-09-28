@@ -124,6 +124,9 @@ def _serve(api: Api, plan: list[dict], pick: str):
             path = self.path.split("?")[0]
             if path == "/harness.html":
                 return self._send(page, "text/html")
+            extra = getattr(type(self), "extra_pages", {})
+            if path in extra:
+                return self._send(extra[path], "text/html")
             target = (WEB_ROOT / path.lstrip("/")).resolve()
             if WEB_ROOT not in target.parents or not target.is_file():
                 return self._send(b"", "text/plain", 404)
@@ -229,3 +232,63 @@ def test_measurement_buttons_measure_the_project_in_a_browser(tmp_path, project)
         ["distance", "area", "volume", "cut_fill", "slope", "stockpile", "profile",
          "surface_change"])
     assert "volume" in results["historyPanel"]
+
+
+MAP_HARNESS = r"""<!doctype html><html><head><meta charset="utf-8"></head>
+<body data-result="pending"><div id="map" style="width:640px;height:400px"></div><pre id="out"></pre>
+<script src="vendor/maplibre/maplibre-gl.js"></script>
+<script src="vendor/maplibre/maplibre-gl-draw.js"></script>
+<script src="js/map.js"></script>
+<script>
+const LINE = __LINE__;
+const post = (name, ...args) => fetch("/api/" + name, { method: "POST",
+  body: JSON.stringify(args) }).then((r) => r.json());
+const style = { version: 8, sources: {}, layers: [{ id: "bg", type: "background",
+  paint: { "background-color": "#0d1117" } }] };
+let viewer;
+viewer = new OdkMap("map", { center: LINE[0], zoom: 17, style,
+  // The same call app.js makes from its onMeasureDone.
+  onMeasureDone: async (kind, points) => {
+    const result = await post("measure_drawn", kind, points);
+    document.getElementById("out").textContent = JSON.stringify({ kind, points: points.length, result });
+    document.body.dataset.result = "done";
+  },
+  onReady: () => {
+    viewer.setTool("measure-distance");
+    for (const p of LINE) viewer.map.fire("click", { lngLat: { lng: p[0], lat: p[1] } });
+    const last = LINE[LINE.length - 1];
+    viewer.map.fire("click", { lngLat: { lng: last[0], lat: last[1] } });
+    viewer.map.fire("dblclick", { lngLat: { lng: last[0], lat: last[1] }, preventDefault() {} });
+  } });
+</script></body></html>"""
+
+
+def test_the_default_map_saves_a_measurement_on_double_click(tmp_path, project):
+    """The launcher's map measured only in the status bar and kept nothing."""
+    api, _earlier = project
+    start = (GRID - BLOCK_CELLS) // 2
+    mid_y = ORIGIN_Y - (start + BLOCK_CELLS / 2) * PIXEL_SIZE_M
+    line = _lonlat([(ORIGIN_X + 2.0, mid_y), (ORIGIN_X + 38.0, mid_y)])
+    page = MAP_HARNESS.replace("__LINE__", json.dumps(line))
+    server, thread = _serve(api, [], "")
+    server.RequestHandlerClass.extra_pages = {"/map.html": page.encode("utf-8")}
+    try:
+        completed = subprocess.run(dump_dom_command(
+            "the default-map measurement evidence test", tmp_path / "edge-map",
+            f"http://127.0.0.1:{server.server_port}/map.html",
+            virtual_time_ms=20000, webgl=True,
+        ), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    dom = completed.stdout
+    assert 'data-result="done"' in dom, dom[-2000:]
+    import html
+
+    payload = json.loads(html.unescape(re.search(r'<pre id="out">(.*?)</pre>', dom, re.S).group(1)))
+    assert payload["kind"] == "distance"
+    assert payload["points"] == 2
+    assert payload["result"]["ok"], payload
+    assert payload["result"]["measurement"]["value"] == pytest.approx(36.0, abs=0.01)
+    assert api.list_measurements()["count"] == 1

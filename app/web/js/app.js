@@ -760,7 +760,21 @@
         $('#status-coords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;
       },
-      onMeasure: (text) => { $('#status-message').textContent = text; },
+      onMeasure: (text) => { $('#status-message').textContent = `${text} (map estimate; double-click to measure on the survey)`; },
+      /* The running figure above is a spherical estimate from the basemap. On
+         double-click the shape goes to the application, which measures it on the
+         project's own orthomosaic/DSM -- with the over-the-ground length for a line --
+         and keeps it in the project's measurement history. */
+      onMeasureDone: async (kind, points) => {
+        const result = await tryCall('measure_drawn', kind, points);
+        if (!result) return;
+        const m = result.measurement || {};
+        const unit = kind === 'area' ? 'm²' : 'm';
+        const ground = result.surface_length_m !== undefined
+          ? `, ${Number(result.surface_length_m).toFixed(2)} m over the ground` : '';
+        status(`${kind === 'area' ? 'Area' : 'Distance'} on the survey: `
+          + `${Number(m.value).toFixed(2)} ${unit}${ground} (EPSG:${m.epsg}). Saved to measurements.`);
+      },
       onGeometryChange: async (geometry) => {
         if (geometry.aoi) {
           const result = await tryCall('set_aoi', geometry.aoi);
