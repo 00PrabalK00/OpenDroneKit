@@ -76,7 +76,9 @@ def _toolkit_root() -> Path:
 
 
 def _default_workspace() -> Path:
-    return _toolkit_root().parent / "opendrone_workspace"
+    from .paths import engine_workspace_dir
+
+    return engine_workspace_dir()
 
 
 def user_config_dir() -> Path:

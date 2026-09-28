@@ -129,7 +129,11 @@ class MissionManager:
         flight_manager: FlightManager | None = None,
         worker_pool: WorkerPool | None = None,
     ) -> None:
-        self.project_root = Path(project_root) if project_root is not None else Path("final_toolkit_outputs") / "missions"
+        if project_root is None:
+            from .paths import missions_dir
+
+            project_root = missions_dir()
+        self.project_root = Path(project_root)
         self.project_id = str(project_id or "default_project")
         self.planner = planner or MissionPlanner()
         self.drone: DroneClient = drone or create_drone_client("mock")

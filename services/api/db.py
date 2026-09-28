@@ -20,12 +20,22 @@ from typing import Any, Iterator
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-DEFAULT_SQLITE_URL = "sqlite:///./opendronekit.db"
+def default_sqlite_url() -> str:
+    """The development/desktop fallback: an absolute file under the one data root.
+
+    This was `sqlite:///./opendronekit.db`, relative to the working directory, so the
+    desktop app's fleet, share links and webhooks lived in whichever folder it happened
+    to be started from.
+    """
+    from core.paths import data_root, service_sqlite_url
+
+    data_root().mkdir(parents=True, exist_ok=True)
+    return service_sqlite_url()
 
 
 def database_url() -> str:
     """Connection string, from the environment so deployment does not need a rebuild."""
-    return os.environ.get("ODK_DATABASE_URL", DEFAULT_SQLITE_URL).strip() or DEFAULT_SQLITE_URL
+    return os.environ.get("ODK_DATABASE_URL", "").strip() or default_sqlite_url()
 
 
 def is_postgres(url: str | None = None) -> bool:
