@@ -1,0 +1,16 @@
+# The reference environment the launcher (OpenDroneKit.bat) uses by default.
+#
+#   conda env create -f environment.yml      # first time
+#   conda env update -f environment.yml      # after requirements.txt changes
+#
+# requirements.txt stays the single list of packages; this only pins the interpreter
+# (the code needs Python 3.11+) and installs that list into it. `python main.py
+# --check-deps` verifies the result, and the launcher runs it before every start.
+name: odk
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -r requirements.txt
