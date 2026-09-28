@@ -479,11 +479,21 @@ def review_finding(project_root: str | Path, annotation_id: str, decision: str,
     # field and update_annotation silently drops unknown keys, so a reviewer recorded
     # that way would disappear without an error and the audit trail would read as though
     # nobody had looked at it.
-    stamp = f"{decision} by {reviewer} at {_utc_now().isoformat(timespec='seconds')}"
+    #
+    # Appended, never substituted: replacing the note erased what the finding's author
+    # had written ("hairline crack on roof edge" became "accept by operator at ..."), and
+    # that note is the description the deliverable prints under the finding.
+    from core.annotations import get_annotation
+
+    existing = get_annotation(Path(project_root), str(annotation_id))
+    if existing is None:
+        raise ValueError(f"No annotation with id {annotation_id!r} in this project.")
+    stamp = f"[{decision} by {reviewer} at {_utc_now().isoformat(timespec='seconds')}]"
+    previous = str(existing.note or "").strip()
     updated = update_annotation(
         Path(project_root),
         str(annotation_id),
-        {"status": status, "note": stamp},
+        {"status": status, "note": f"{previous}\n{stamp}" if previous else stamp},
     )
     if updated is None:
         raise ValueError(f"No annotation with id {annotation_id!r} in this project.")

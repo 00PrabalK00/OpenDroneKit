@@ -21,6 +21,23 @@ from typing import Any
 # Ordered worst first. Anything unrecognised sorts last rather than being dropped.
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
+# The annotation store records a review as a STATUS (open / in_review / resolved /
+# dismissed) while deliverables speak of review states. The two vocabularies met here
+# with no translation, so an accepted finding (status "resolved") was still printed as
+# "not confirmed by an inspector" and include_unreviewed=False dropped every finding.
+REVIEW_STATE_ALIASES = {
+    "accepted": "accepted", "resolved": "accepted",
+    "rejected": "rejected", "dismissed": "rejected",
+    "flagged": "flagged", "in_review": "flagged",
+    "unreviewed": "unreviewed", "open": "unreviewed", "": "unreviewed",
+}
+
+
+def review_state(finding: dict[str, Any]) -> str:
+    """The finding's review state in the deliverable's vocabulary."""
+    raw = str(finding.get("review_state", "") or "").strip().lower()
+    return REVIEW_STATE_ALIASES.get(raw, raw)
+
 
 @dataclass
 class ReportTemplate:
@@ -59,10 +76,18 @@ def prepare_findings(
     Numbering happens after ordering so the numbers match the printed sequence, and a
     finding referred to as "3" in correspondence is the third one in the document.
     """
-    selected = [
-        dict(finding) for finding in findings
-        if template.include_unreviewed or finding.get("review_state") == "accepted"
-    ]
+    selected = []
+    for finding in findings:
+        state = review_state(finding)
+        # A finding the reviewer rejected is a model's false positive, not a finding.
+        # Printing it would put a defect the inspector ruled out in front of the client.
+        if state == "rejected":
+            continue
+        if not template.include_unreviewed and state != "accepted":
+            continue
+        entry = dict(finding)
+        entry["review_state"] = state
+        selected.append(entry)
     if template.severity_order:
         selected.sort(key=_severity_rank)
     for index, finding in enumerate(selected, start=1):
@@ -88,7 +113,7 @@ def _unreviewed_caveat(findings: list[dict[str, Any]]) -> str:
     """State when the document contains claims no human has confirmed."""
     model_unreviewed = sum(
         1 for finding in findings
-        if finding.get("source") == "model" and finding.get("review_state") != "accepted"
+        if finding.get("source") == "model" and review_state(finding) != "accepted"
     )
     if not model_unreviewed:
         return ""
@@ -99,14 +124,102 @@ def _unreviewed_caveat(findings: list[dict[str, Any]]) -> str:
     )
 
 
+def _rejected_caveat(all_findings: list[dict[str, Any]]) -> str:
+    rejected = sum(1 for finding in all_findings if review_state(finding) == "rejected")
+    if not rejected:
+        return ""
+    return (
+        f"{rejected} proposed finding(s) were rejected by the reviewer and are not "
+        "included in this report."
+    )
+
+
+def _caveats(all_findings: list[dict[str, Any]], findings: list[dict[str, Any]],
+             payload: dict[str, Any], sections: list[str] | None = None) -> list[str]:
+    found: list[str] = []
+    if sections is None or "findings" in sections:
+        # About the findings table; meaningless in a document that has none.
+        found += [
+            _unreviewed_caveat(findings),
+            _measurement_caveat(findings),
+            _rejected_caveat(all_findings),
+        ]
+    found.extend(str(c) for c in payload.get("caveats", []) or [])
+    return [c for c in found if c]
+
+
+def _where(finding: dict[str, Any]) -> str:
+    """Source image and, when known, the map position of a finding."""
+    parts = []
+    if finding.get("image"):
+        parts.append(str(finding["image"]))
+    location = finding.get("location_lonlat")
+    if isinstance(location, (list, tuple)) and len(location) >= 2:
+        # Say what the position is: for a photo finding it is where the camera was.
+        kind = finding.get("location_kind") or "position"
+        parts.append(f"{kind} {float(location[1]):.6f}, {float(location[0]):.6f}")
+    return "; ".join(parts) or "-"
+
+
+def _extent(finding: dict[str, Any]) -> str:
+    parts = []
+    if finding.get("area_m2"):
+        parts.append(f"{finding['area_m2']:.3f} m2")
+    if finding.get("length_m"):
+        parts.append(f"{finding['length_m']:.2f} m")
+    return ", ".join(parts) or "not measured"
+
+
+def _usable_image(path: Any) -> str:
+    if not path:
+        return ""
+    candidate = Path(str(path))
+    return str(candidate) if candidate.is_file() else ""
+
+
+def _image_size(path: str, max_w: float, max_h: float) -> tuple[float, float]:
+    """Fit an image into a box, keeping its aspect ratio."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+    except Exception:  # noqa: BLE001 - unreadable image: fall back to the box
+        return max_w, max_h
+    scale = min(max_w / max(width, 1), max_h / max(height, 1))
+    return width * scale, height * scale
+
+
+def _measurement_rows(measurements: Any) -> list[list[str]]:
+    if isinstance(measurements, dict):
+        return [[str(k).replace("_", " "), str(v)] for k, v in measurements.items()]
+    rows = []
+    for item in measurements or []:
+        if isinstance(item, dict):
+            rows.append([str(item.get("label") or item.get("measurement_type") or "-"),
+                         f"{item.get('value', '-')} {item.get('unit', '')}".strip()])
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            rows.append([str(item[0]), str(item[1])])
+    return rows
+
+
 def write_pdf(path: str | Path, payload: dict[str, Any], template: ReportTemplate | None = None) -> str:
-    """Render a PDF deliverable."""
+    """Render a PDF deliverable.
+
+    Besides the named sections (summary, methodology, findings, measurements,
+    recommendations) any section key in the template that matches an entry in
+    payload["blocks"] is rendered as a generic block: paragraphs, an optional table and
+    optional figures. That is how the report engine hands over site, mission, dataset,
+    reconstruction and audit sections without this module knowing about each one.
+    """
+    from xml.sax.saxutils import escape
+
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
     from reportlab.platypus import (
-        PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        Image, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
     )
 
     template = template or ReportTemplate()
@@ -118,6 +231,32 @@ def write_pdf(path: str | Path, payload: dict[str, Any], template: ReportTemplat
         "Caveat", parent=styles["BodyText"], textColor=colors.HexColor("#8a4b00"),
         backColor=colors.HexColor("#fff4e5"), borderPadding=6, spaceBefore=6, spaceAfter=10,
     )
+    cell_style = ParagraphStyle("Cell", parent=styles["BodyText"], fontSize=8, leading=10)
+    caption_style = ParagraphStyle("Caption", parent=styles["BodyText"], fontSize=8,
+                                   textColor=colors.HexColor("#555555"))
+
+    def para(text: Any, style: Any = None) -> Any:
+        return Paragraph(escape(str(text)), style or styles["BodyText"])
+
+    def grid(rows: list[list[Any]], widths: list[float], header: bool = True) -> Any:
+        body = [[para(cell, cell_style) for cell in row] for row in rows]
+        table = Table(body, repeatRows=1 if header else 0, colWidths=widths)
+        style = [
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]
+        if header:
+            style.append(("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef5")))
+        else:
+            style.append(("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f4f4f4")))
+        table.setStyle(TableStyle(style))
+        return table
+
+    def figure(image_path: str, caption: str, max_w: float = 160 * mm,
+               max_h: float = 95 * mm) -> Any:
+        width, height = _image_size(image_path, max_w, max_h)
+        return KeepTogether([Image(image_path, width=width, height=height),
+                             para(caption, caption_style), Spacer(1, 3 * mm)])
 
     document = SimpleDocTemplate(
         str(target), pagesize=A4,
@@ -125,88 +264,112 @@ def write_pdf(path: str | Path, payload: dict[str, Any], template: ReportTemplat
         title=template.title, author=template.author or template.organization or "OpenDroneKit",
     )
 
-    findings = prepare_findings(payload.get("findings", []), template)
+    all_findings = list(payload.get("findings", []) or [])
+    findings = prepare_findings(all_findings, template)
     story: list[Any] = []
 
-    story.append(Paragraph(template.title, styles["Title"]))
+    logo = _usable_image(template.logo_path)
+    if logo:
+        width, height = _image_size(logo, 50 * mm, 20 * mm)
+        story.append(Image(logo, width=width, height=height, hAlign="LEFT"))
+    story.append(para(template.title, styles["Title"]))
     meta = [
         ["Organization", template.organization or "-"],
         ["Client", template.client or payload.get("client", "-") or "-"],
         ["Project", str(payload.get("project_name", "-"))],
         ["Generated", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")],
     ]
+    if template.author:
+        meta.append(["Prepared by", template.author])
+    if payload.get("report_type"):
+        meta.append(["Report type", str(payload["report_type"])])
     if payload.get("crs_epsg"):
         # A report carrying measurements must say which coordinate system they are in.
         meta.append(["Coordinate system", f"EPSG:{payload['crs_epsg']}"])
-    table = Table(meta, colWidths=[45 * mm, 110 * mm])
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f4f4f4")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-    ]))
-    story.extend([Spacer(1, 6 * mm), table, Spacer(1, 8 * mm)])
+    story.extend([Spacer(1, 6 * mm), grid(meta, [45 * mm, 110 * mm], header=False),
+                  Spacer(1, 8 * mm)])
 
-    for caveat in (_unreviewed_caveat(findings), _measurement_caveat(findings)):
-        if caveat:
-            story.append(Paragraph(caveat, caveat_style))
+    for caveat in _caveats(all_findings, findings, payload, template.sections):
+        story.append(para(caveat, caveat_style))
 
-    if "summary" in template.sections and payload.get("summary"):
-        story.append(Paragraph("Executive summary", styles["Heading2"]))
-        story.append(Paragraph(str(payload["summary"]), styles["BodyText"]))
-        story.append(Spacer(1, 4 * mm))
-
-    if "methodology" in template.sections and payload.get("methodology"):
-        story.append(Paragraph("Methodology", styles["Heading2"]))
-        story.append(Paragraph(str(payload["methodology"]), styles["BodyText"]))
-        story.append(Spacer(1, 4 * mm))
-
-    if "findings" in template.sections:
-        story.append(Paragraph(f"Findings ({len(findings)})", styles["Heading2"]))
-        if findings:
-            rows = [["#", "Category", "Severity", "Area m2", "Length m", "Source", "Review"]]
-            for finding in findings:
-                rows.append([
-                    str(finding["number"]),
-                    str(finding.get("category", "-")),
-                    str(finding.get("severity", "-")),
-                    f"{finding['area_m2']:.3f}" if finding.get("area_m2") else "not measured",
-                    f"{finding['length_m']:.2f}" if finding.get("length_m") else "not measured",
-                    str(finding.get("source", "-")),
-                    str(finding.get("review_state", "-")),
-                ])
-            findings_table = Table(rows, repeatRows=1,
-                                   colWidths=[10 * mm, 35 * mm, 20 * mm, 24 * mm, 24 * mm, 20 * mm, 24 * mm])
-            findings_table.setStyle(TableStyle([
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef5")),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ]))
-            story.append(findings_table)
-        else:
-            story.append(Paragraph("No findings were recorded for this inspection.",
-                                   styles["BodyText"]))
-        story.append(Spacer(1, 6 * mm))
-
-    if "measurements" in template.sections and payload.get("measurements"):
-        story.append(Paragraph("Measurements", styles["Heading2"]))
-        measurement_rows = [["Quantity", "Value"]]
-        for key, value in payload["measurements"].items():
-            measurement_rows.append([str(key).replace("_", " "), str(value)])
-        measurement_table = Table(measurement_rows, colWidths=[70 * mm, 85 * mm])
-        measurement_table.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#cccccc")),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e8eef5")),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ]))
-        story.append(measurement_table)
-        story.append(Spacer(1, 6 * mm))
-
-    if "recommendations" in template.sections and payload.get("recommendations"):
-        story.append(Paragraph("Recommendations", styles["Heading2"]))
-        for item in payload["recommendations"]:
-            story.append(Paragraph(f"• {item}", styles["BodyText"]))
+    blocks = payload.get("blocks", {}) or {}
+    for section in template.sections:
+        if section == "summary" and payload.get("summary"):
+            story.append(para("Executive summary", styles["Heading2"]))
+            story.append(para(payload["summary"]))
+            story.append(Spacer(1, 4 * mm))
+        elif section == "methodology" and payload.get("methodology"):
+            story.append(para("Methodology", styles["Heading2"]))
+            for line in str(payload["methodology"]).split("\n"):
+                if line.strip():
+                    story.append(para(line))
+            story.append(Spacer(1, 4 * mm))
+        elif section == "findings":
+            story.append(para(f"Findings ({len(findings)})", styles["Heading2"]))
+            if findings:
+                rows = [["#", "Category", "Severity", "Where", "Extent", "Source", "Review"]]
+                for finding in findings:
+                    rows.append([
+                        str(finding["number"]),
+                        str(finding.get("category", "-")),
+                        str(finding.get("severity", "-")),
+                        _where(finding),
+                        _extent(finding),
+                        str(finding.get("source", "-")),
+                        str(finding.get("review_state", "-")),
+                    ])
+                story.append(grid(rows, [8 * mm, 26 * mm, 17 * mm, 45 * mm, 22 * mm,
+                                         17 * mm, 20 * mm]))
+                story.append(Spacer(1, 4 * mm))
+                for finding in findings:
+                    note = str(finding.get("note") or "").strip()
+                    crop = _usable_image(finding.get("image_path"))
+                    if not note and not crop:
+                        continue
+                    detail: list[Any] = [para(
+                        f"Finding {finding['number']}: {finding.get('category', '-')} "
+                        f"({finding.get('severity', '-')})", styles["Heading4"])]
+                    if note:
+                        detail.append(para(note))
+                    if crop:
+                        width, height = _image_size(crop, 90 * mm, 60 * mm)
+                        detail.append(Image(crop, width=width, height=height, hAlign="LEFT"))
+                        detail.append(para(f"Source image: {finding.get('image', '-')}",
+                                           caption_style))
+                    detail.append(Spacer(1, 3 * mm))
+                    story.append(KeepTogether(detail))
+            else:
+                story.append(para("No findings were recorded for this inspection."))
+            story.append(Spacer(1, 6 * mm))
+        elif section == "measurements" and payload.get("measurements"):
+            rows = _measurement_rows(payload["measurements"])
+            if rows:
+                story.append(para("Measurements", styles["Heading2"]))
+                story.append(grid([["Quantity", "Value"]] + rows, [70 * mm, 85 * mm]))
+                story.append(Spacer(1, 6 * mm))
+        elif section == "recommendations" and payload.get("recommendations"):
+            story.append(para("Recommendations", styles["Heading2"]))
+            for item in payload["recommendations"]:
+                story.append(para(f"- {item}"))
+            story.append(Spacer(1, 4 * mm))
+        elif section in blocks:
+            block = blocks[section] or {}
+            story.append(para(block.get("title") or section.replace("_", " ").title(),
+                              styles["Heading2"]))
+            for line in block.get("paragraphs", []) or []:
+                story.append(para(line))
+            table = block.get("table")
+            if table and table.get("rows"):
+                header = [str(h) for h in table.get("header", [])]
+                columns = max(len(header), max(len(r) for r in table["rows"]))
+                width = 155 * mm / max(columns, 1)
+                rows = ([header] if header else []) + [[str(c) for c in r] for r in table["rows"]]
+                story.append(grid(rows, [width] * columns, header=bool(header)))
+            for image in block.get("images", []) or []:
+                usable = _usable_image(image.get("path"))
+                if usable:
+                    story.append(figure(usable, str(image.get("caption", ""))))
+            story.append(Spacer(1, 5 * mm))
 
     document.build(story)
     return str(target)
@@ -215,17 +378,25 @@ def write_pdf(path: str | Path, payload: dict[str, Any], template: ReportTemplat
 def write_docx(path: str | Path, payload: dict[str, Any], template: ReportTemplate | None = None) -> str:
     """Render an editable DOCX deliverable."""
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Mm, Pt
 
     template = template or ReportTemplate()
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    findings = prepare_findings(payload.get("findings", []), template)
+    all_findings = list(payload.get("findings", []) or [])
+    findings = prepare_findings(all_findings, template)
     document = Document()
     document.core_properties.title = template.title
     document.core_properties.author = template.author or template.organization or "OpenDroneKit"
 
+    def picture(image_path: str, max_w_mm: float, max_h_mm: float) -> None:
+        width, height = _image_size(image_path, max_w_mm, max_h_mm)
+        document.add_picture(image_path, width=Mm(width), height=Mm(height))
+
+    logo = _usable_image(template.logo_path)
+    if logo:
+        picture(logo, 50, 20)
     document.add_heading(template.title, level=0)
 
     meta = document.add_table(rows=0, cols=2)
@@ -236,6 +407,10 @@ def write_docx(path: str | Path, payload: dict[str, Any], template: ReportTempla
         ("Project", str(payload.get("project_name", "-"))),
         ("Generated", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
     ]
+    if template.author:
+        entries.append(("Prepared by", template.author))
+    if payload.get("report_type"):
+        entries.append(("Report type", str(payload["report_type"])))
     if payload.get("crs_epsg"):
         entries.append(("Coordinate system", f"EPSG:{payload['crs_epsg']}"))
     for label, value in entries:
@@ -243,60 +418,92 @@ def write_docx(path: str | Path, payload: dict[str, Any], template: ReportTempla
         row[0].text = label
         row[1].text = value
 
-    for caveat in (_unreviewed_caveat(findings), _measurement_caveat(findings)):
-        if caveat:
-            paragraph = document.add_paragraph()
-            run = paragraph.add_run(caveat)
-            run.bold = True
-            run.font.size = Pt(9)
+    for caveat in _caveats(all_findings, findings, payload, template.sections):
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run(caveat)
+        run.bold = True
+        run.font.size = Pt(9)
 
-    if "summary" in template.sections and payload.get("summary"):
-        document.add_heading("Executive summary", level=1)
-        document.add_paragraph(str(payload["summary"]))
-
-    if "methodology" in template.sections and payload.get("methodology"):
-        document.add_heading("Methodology", level=1)
-        document.add_paragraph(str(payload["methodology"]))
-
-    if "findings" in template.sections:
-        document.add_heading(f"Findings ({len(findings)})", level=1)
-        if findings:
-            table = document.add_table(rows=1, cols=7)
-            table.style = "Table Grid"
-            header = table.rows[0].cells
-            for index, label in enumerate(
-                ["#", "Category", "Severity", "Area m2", "Length m", "Source", "Review"]
-            ):
-                header[index].text = label
-            for finding in findings:
-                cells = table.add_row().cells
-                cells[0].text = str(finding["number"])
-                cells[1].text = str(finding.get("category", "-"))
-                cells[2].text = str(finding.get("severity", "-"))
-                cells[3].text = (f"{finding['area_m2']:.3f}" if finding.get("area_m2")
-                                 else "not measured")
-                cells[4].text = (f"{finding['length_m']:.2f}" if finding.get("length_m")
-                                 else "not measured")
-                cells[5].text = str(finding.get("source", "-"))
-                cells[6].text = str(finding.get("review_state", "-"))
-        else:
-            document.add_paragraph("No findings were recorded for this inspection.")
-
-    if "measurements" in template.sections and payload.get("measurements"):
-        document.add_heading("Measurements", level=1)
-        table = document.add_table(rows=1, cols=2)
-        table.style = "Table Grid"
-        table.rows[0].cells[0].text = "Quantity"
-        table.rows[0].cells[1].text = "Value"
-        for key, value in payload["measurements"].items():
-            cells = table.add_row().cells
-            cells[0].text = str(key).replace("_", " ")
-            cells[1].text = str(value)
-
-    if "recommendations" in template.sections and payload.get("recommendations"):
-        document.add_heading("Recommendations", level=1)
-        for item in payload["recommendations"]:
-            document.add_paragraph(str(item), style="List Bullet")
+    blocks = payload.get("blocks", {}) or {}
+    for section in template.sections:
+        if section == "summary" and payload.get("summary"):
+            document.add_heading("Executive summary", level=1)
+            document.add_paragraph(str(payload["summary"]))
+        elif section == "methodology" and payload.get("methodology"):
+            document.add_heading("Methodology", level=1)
+            for line in str(payload["methodology"]).split("\n"):
+                if line.strip():
+                    document.add_paragraph(line)
+        elif section == "findings":
+            document.add_heading(f"Findings ({len(findings)})", level=1)
+            if findings:
+                table = document.add_table(rows=1, cols=7)
+                table.style = "Table Grid"
+                header = table.rows[0].cells
+                for index, label in enumerate(
+                    ["#", "Category", "Severity", "Where", "Extent", "Source", "Review"]
+                ):
+                    header[index].text = label
+                for finding in findings:
+                    cells = table.add_row().cells
+                    cells[0].text = str(finding["number"])
+                    cells[1].text = str(finding.get("category", "-"))
+                    cells[2].text = str(finding.get("severity", "-"))
+                    cells[3].text = _where(finding)
+                    cells[4].text = _extent(finding)
+                    cells[5].text = str(finding.get("source", "-"))
+                    cells[6].text = str(finding.get("review_state", "-"))
+                for finding in findings:
+                    note = str(finding.get("note") or "").strip()
+                    crop = _usable_image(finding.get("image_path"))
+                    if not note and not crop:
+                        continue
+                    document.add_heading(
+                        f"Finding {finding['number']}: {finding.get('category', '-')} "
+                        f"({finding.get('severity', '-')})", level=3)
+                    if note:
+                        document.add_paragraph(note)
+                    if crop:
+                        picture(crop, 90, 60)
+                        document.add_paragraph(f"Source image: {finding.get('image', '-')}")
+            else:
+                document.add_paragraph("No findings were recorded for this inspection.")
+        elif section == "measurements" and payload.get("measurements"):
+            rows = _measurement_rows(payload["measurements"])
+            if rows:
+                document.add_heading("Measurements", level=1)
+                table = document.add_table(rows=1, cols=2)
+                table.style = "Table Grid"
+                table.rows[0].cells[0].text = "Quantity"
+                table.rows[0].cells[1].text = "Value"
+                for key, value in rows:
+                    cells = table.add_row().cells
+                    cells[0].text = key
+                    cells[1].text = value
+        elif section == "recommendations" and payload.get("recommendations"):
+            document.add_heading("Recommendations", level=1)
+            for item in payload["recommendations"]:
+                document.add_paragraph(str(item), style="List Bullet")
+        elif section in blocks:
+            block = blocks[section] or {}
+            document.add_heading(block.get("title") or section.replace("_", " ").title(), level=1)
+            for line in block.get("paragraphs", []) or []:
+                document.add_paragraph(str(line))
+            table_data = block.get("table")
+            if table_data and table_data.get("rows"):
+                header = [str(h) for h in table_data.get("header", [])]
+                columns = max(len(header), max(len(r) for r in table_data["rows"]))
+                table = document.add_table(rows=0, cols=columns)
+                table.style = "Table Grid"
+                for row in ([header] if header else []) + table_data["rows"]:
+                    cells = table.add_row().cells
+                    for index, value in enumerate(list(row)[:columns]):
+                        cells[index].text = str(value)
+            for image in block.get("images", []) or []:
+                usable = _usable_image(image.get("path"))
+                if usable:
+                    picture(usable, 160, 95)
+                    document.add_paragraph(str(image.get("caption", "")))
 
     document.save(str(target))
     return str(target)
