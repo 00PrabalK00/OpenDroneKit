@@ -31,6 +31,13 @@ def fail(error: str, **payload: Any) -> dict[str, Any]:
     return {"ok": False, "error": str(error), **payload}
 
 
+def _optional_float(value: Any) -> float | None:
+    """A number from the UI, where an empty field means "not supplied"."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return float(value)
+
+
 def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Convert exceptions into structured failures the UI can display."""
 
@@ -907,7 +914,6 @@ class Api:
 
         return ok(measurement=measurement.to_dict())
 
-    @guard
     @guard
     def import_cad_overlay(self, path: str, source_epsg: int,
                            name: str = "") -> dict[str, Any]:
@@ -2319,7 +2325,8 @@ class Api:
     def compare_surveys(self, earlier_path: str, later_path: str,
                         earlier_accuracy_m: float | None = None,
                         later_accuracy_m: float | None = None,
-                        registration_residual_m: float | None = None) -> dict[str, Any]:
+                        registration_residual_m: float | None = None,
+                        align: bool = True) -> dict[str, Any]:
         """Vertical movement between two surveys of the same ground.
 
         All three uncertainties are required. Two surveys of unchanged ground never
@@ -2327,21 +2334,392 @@ class Api:
         error -- and a subsidence figure nobody can check is worse than none.
         """
         from core.deformation import DeformationRefused, compare_surfaces
-        from core.dsm_analysis import NotGeoreferenced, load_surface
+        from core.dsm_analysis import (
+            NotGeoreferenced, align_to_grid, load_surface, same_grid,
+        )
         from core.slope import NotProjected
 
         try:
+            earlier = load_surface(earlier_path)
+            later = load_surface(later_path)
+            # Two real surveys are never on one grid. The later one is resampled onto
+            # the earlier one and the result says so; the uncertainty inputs still
+            # decide what counts as movement.
+            resampled = False
+            if align and not same_grid(earlier, later):
+                later = align_to_grid(later, earlier)
+                resampled = True
             report = compare_surfaces(
-                load_surface(earlier_path), load_surface(later_path),
-                earlier_accuracy_m=earlier_accuracy_m,
-                later_accuracy_m=later_accuracy_m,
-                registration_residual_m=registration_residual_m,
+                earlier, later,
+                earlier_accuracy_m=_optional_float(earlier_accuracy_m),
+                later_accuracy_m=_optional_float(later_accuracy_m),
+                registration_residual_m=_optional_float(registration_residual_m),
             )
         except (NotGeoreferenced, NotProjected, DeformationRefused) as exc:
             return fail(str(exc))
         except (FileNotFoundError, ValueError) as exc:
             return fail(str(exc))
-        return ok(**report.to_dict())
+        payload = report.to_dict()
+        payload["resampled"] = resampled
+        if resampled:
+            payload["note"] = (
+                "The later survey was resampled (bilinear) onto the earlier survey's grid "
+                "before differencing. " + payload.get("note", "")
+            ).strip()
+        return ok(**payload)
+
+    # -- measurement on the project's own surfaces -------------------------
+    #
+    # Every analysis below existed and was correct, and none could be reached: the
+    # cockpit buttons passed null where a raster path and a drawn geometry belonged. The
+    # map gives WGS84 lon/lat, the rasters are in a projected CRS, and nothing converted
+    # between them. These methods take what the map gives, find the project's own
+    # DSM/DTM/orthomosaic, and do the conversion in one place.
+
+    _PRODUCT_FILES = {"dsm": "dsm.tif", "dtm": "dtm.tif", "orthomosaic": "orthomosaic.tif"}
+
+    def _product_path(self, product: str) -> str:
+        """This project's DSM, DTM or orthomosaic on disk, or '' when it has none."""
+        wanted = product.lower()
+        filename = self._PRODUCT_FILES.get(wanted, "")
+
+        def search() -> str:
+            for layer in self._session.layers.values():
+                if layer.kind != "raster" or not layer.path:
+                    continue
+                if layer.name.lower() == wanted or Path(layer.path).name.lower() == filename:
+                    if Path(layer.path).is_file():
+                        return str(layer.path)
+            return ""
+
+        found = search()
+        if not found:
+            # Layers are in memory and cleared on project switch; the files are not.
+            self._session.restore_layers()
+            found = search()
+        return found
+
+    @staticmethod
+    def _raster_epsg(path: str) -> int | None:
+        import rasterio
+
+        with rasterio.open(path) as raster:
+            return raster.crs.to_epsg() if raster.crs else None
+
+    def _lonlat_to_raster_xy(self, path: str,
+                             lonlat: list[list[float]] | None) -> list[list[float]]:
+        """Project map clicks into the raster's CRS, refusing anything non-finite."""
+        import numpy as np
+
+        from core import geo
+        from core.dsm_analysis import require_projected_epsg
+
+        points = [[float(p[0]), float(p[1])] for p in (lonlat or []) if len(p) >= 2]
+        if not points:
+            return []
+        if not Path(path).is_file():
+            raise FileNotFoundError(f"Raster not found: {path}")
+        epsg = self._raster_epsg(path)
+        require_projected_epsg(epsg, path)
+        east, north = geo.wgs84_to_projected(
+            [p[0] for p in points], [p[1] for p in points], int(epsg))
+        if not (np.isfinite(east).all() and np.isfinite(north).all()):
+            raise ValueError(
+                f"The drawn geometry cannot be expressed in EPSG:{epsg}; it is not a "
+                "location that raster covers."
+            )
+        return [[float(x), float(y)] for x, y in zip(east, north)]
+
+    def _record_measurement(self, kind: str, value: float, unit: str,
+                            coordinates: list[list[float]] | None, source: str,
+                            details: dict[str, Any], label: str = "") -> str:
+        """Keep a measurement in the project's history, which the report reads."""
+        from core.measurements import create_measurement
+
+        points = [[float(p[0]), float(p[1])] for p in (coordinates or []) if len(p) >= 2]
+        geometry: dict[str, Any] = {"crs": "EPSG:4326"}
+        polygonal = {"area", "perimeter", "volume", "cut_fill", "stockpile", "slope",
+                     "surface_change"}
+        if kind in polygonal and len(points) >= 3:
+            geometry.update(type="Polygon", coordinates=[points + [points[0]]])
+        elif points:
+            geometry.update(type="LineString", coordinates=points)
+        else:
+            geometry.update(type="Extent", coordinates=[])
+        measurement = create_measurement(
+            project_root=self._session.project_root(),
+            project_id=str(self._session.project_id()),
+            source_type="map",
+            source_id=str(source),
+            measurement_type=kind,
+            geometry=geometry,
+            value=float(value),
+            unit=unit,
+            label=label or f"{kind.replace('_', ' ').title()} {value:,.3f} {unit}",
+            details=details,
+        )
+        return measurement.id
+
+    @guard
+    def project_surfaces(self) -> dict[str, Any]:
+        """The DSM, DTM and orthomosaic this project's measurements will run on."""
+        found = {name: self._product_path(name) for name in self._PRODUCT_FILES}
+        return ok(**found, missing=[name for name, path in found.items() if not path])
+
+    @guard
+    def measure_volume(self, polygon_lonlat: list[list[float]] | None = None,
+                       base_elevation_m: float | None = None,
+                       dsm_path: str = "", dtm_path: str = "",
+                       label: str = "") -> dict[str, Any]:
+        """Volume (or cut and fill) inside a drawn polygon, against a stated reference.
+
+        With no base elevation the reference is the project's DTM when it has one; with
+        one it is that horizontal plane -- the design level a cut-and-fill is asked
+        against. Every reference used is reported, never just the convenient one.
+        """
+        from core.dsm_analysis import (
+            IncompatibleReferenceSurface, NotGeoreferenced, estimate_volume,
+        )
+
+        dsm = dsm_path or self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM. Run Process (reconstruction) first, "
+                        "or choose a DSM GeoTIFF.")
+        base = None if base_elevation_m in (None, "") else float(base_elevation_m)
+        # A stated design level IS the reference for cut and fill; passing the DTM too
+        # would make it the preferred figure and answer a different question.
+        dtm = None if base is not None else (dtm_path or self._product_path("dtm") or None)
+        try:
+            polygon = self._lonlat_to_raster_xy(dsm, polygon_lonlat)
+            if polygon_lonlat and len(polygon) < 3:
+                return fail("A volume needs a polygon of at least three points.")
+            result = estimate_volume(dsm, dtm_path=dtm, polygon_xy=polygon or None,
+                                     base_elevation_m=base)
+        except (NotGeoreferenced, IncompatibleReferenceSurface, FileNotFoundError,
+                ValueError) as exc:
+            return fail(str(exc))
+        if not result.get("ok"):
+            return fail(result.get("reason") or "No volume could be measured.")
+
+        preferred = result["preferred"] or {}
+        kind = "cut_fill" if base is not None else "volume"
+        if not polygon:
+            result["warning"] = (
+                "No polygon was drawn, so this is the volume over the WHOLE DSM. Draw an "
+                "area on the map to measure one pile or pit."
+            )
+        result["measurement_id"] = self._record_measurement(
+            kind, float(preferred.get("net_volume_m3", 0.0)), "m3", polygon_lonlat, dsm,
+            {k: result[k] for k in ("references", "preferred", "crs_epsg",
+                                    "region_area_m2", "note") if k in result},
+            label=label,
+        )
+        self._session.audit("volume_measured",
+                            {"dsm": dsm, "reference": preferred.get("reference")})
+        return ok(**{k: v for k, v in result.items() if k != "ok"}, kind=kind)
+
+    @guard
+    def measure_stockpile(self, polygon_lonlat: list[list[float]],
+                          base_elevation_m: float | None = None,
+                          label: str = "") -> dict[str, Any]:
+        """One selected stockpile, measured and written out as a report package.
+
+        Needs either the project's DTM or an operator-stated base level: the lowest point
+        of the selection is an over-estimate, not a base, and is not offered.
+        """
+        from datetime import datetime, timezone
+
+        from core.dsm_analysis import IncompatibleReferenceSurface, NotGeoreferenced
+        from core.survey_intelligence import create_stockpile_package
+
+        dsm = self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM. Run Process (reconstruction) first.")
+        base = None if base_elevation_m in (None, "") else float(base_elevation_m)
+        dtm = None if base is not None else (self._product_path("dtm") or None)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        out = self._session.project_root() / "analysis" / "stockpiles" / stamp
+        try:
+            polygon = self._lonlat_to_raster_xy(dsm, polygon_lonlat)
+            package = create_stockpile_package(dsm, out, polygon_xy=polygon,
+                                               dtm_path=dtm, base_elevation_m=base)
+        except (NotGeoreferenced, IncompatibleReferenceSurface, FileNotFoundError,
+                ValueError) as exc:
+            return fail(str(exc))
+        measured = package.measurement
+        preferred = measured.get("preferred") or {}
+        measurement_id = self._record_measurement(
+            "stockpile", float(preferred.get("cut_volume_m3", 0.0)), "m3",
+            polygon_lonlat, dsm,
+            {"references": measured.get("references"), "preferred": preferred,
+             "report": package.report_path}, label=label,
+        )
+        return ok(measurement=measured, preferred=preferred,
+                  report_path=package.report_path, summary_path=package.summary_path,
+                  selection_path=package.selection_geojson_path,
+                  measurement_id=measurement_id)
+
+    @guard
+    def elevation_profile(self, line_lonlat: list[list[float]], dsm_path: str = "",
+                          spacing_m: float | None = None) -> dict[str, Any]:
+        """Elevation along a drawn line, sampled from the project's DSM."""
+        from core.dsm_analysis import NotGeoreferenced, elevation_profile
+
+        dsm = dsm_path or self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM to take a profile from. Run Process first.")
+        try:
+            line = self._lonlat_to_raster_xy(dsm, line_lonlat)
+            result = elevation_profile(dsm, line, spacing_m=spacing_m)
+        except (NotGeoreferenced, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        if not result.get("ok"):
+            return fail(result.get("reason", "No profile could be taken."),
+                        sample_count=result.get("sample_count"))
+        result["measurement_id"] = self._record_measurement(
+            "profile", float(result["surface_length_m"]), "m", line_lonlat, dsm,
+            {k: v for k, v in result.items() if k != "samples"},
+        )
+        return ok(**{k: v for k, v in result.items() if k != "ok"})
+
+    @guard
+    def measure_drawn(self, kind: str, coordinates_lonlat: list[list[float]],
+                      raster_path: str = "",
+                      options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Measure what was drawn on the map, on the project's own rasters.
+
+        ``kind`` is distance, area or perimeter (planar, in the raster's CRS, through
+        measure_on_raster), or slope, profile, volume or cut_fill (on the DSM). The map
+        gives lon/lat; converting to the raster's pixels or projected coordinates happens
+        here, so the browser never computes a number it then presents as measured.
+        """
+        opts = dict(options or {})
+        points = [[float(p[0]), float(p[1])] for p in (coordinates_lonlat or []) if len(p) >= 2]
+        kind = str(kind or "").lower()
+        if kind in {"volume", "cut_fill"}:
+            base = opts.get("base_elevation_m") if kind == "cut_fill" else None
+            if kind == "cut_fill" and base in (None, ""):
+                return fail("Cut and fill needs the design (base) elevation to cut and "
+                            "fill against.")
+            return self.measure_volume(points, base, raster_path)
+        if kind == "stockpile":
+            return self.measure_stockpile(points, opts.get("base_elevation_m"))
+        if kind == "profile":
+            return self.elevation_profile(points, raster_path, opts.get("spacing_m"))
+        if kind == "slope":
+            dsm = raster_path or self._product_path("dsm")
+            if not dsm:
+                return fail("This project has no DSM to measure slope on. Run Process first.")
+            try:
+                polygon = self._lonlat_to_raster_xy(dsm, points)
+            except (FileNotFoundError, ValueError) as exc:
+                return fail(str(exc))
+            result = self.measure_slope(dsm, polygon or None)
+            if result.get("ok"):
+                result["measurement_id"] = self._record_measurement(
+                    "slope", float((result.get("slope") or {}).get("mean_deg") or 0.0), "deg",
+                    points, dsm,
+                    {k: v for k, v in result.items() if k != "ok"})
+            return result
+        if kind not in {"distance", "area", "perimeter"}:
+            return fail(f"Unknown measurement kind {kind!r}. Use distance, area, perimeter, "
+                        "profile, slope, volume, cut_fill or stockpile.")
+
+        from core.dsm_analysis import elevation_profile as sample_profile
+        from core.raster_measurement import NotGeoreferenced, NotProjected, lonlat_to_pixels
+
+        raster = raster_path or self._product_path("orthomosaic") or self._product_path("dsm")
+        if not raster:
+            return fail("This project has no georeferenced raster to measure on. Run "
+                        "Process first, or add a GeoTIFF layer.")
+        try:
+            pixels, caveats = lonlat_to_pixels(raster, points)
+        except (NotGeoreferenced, NotProjected, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        result = self.measure_on_raster(raster, [list(p) for p in pixels], kind)
+        if not result.get("ok"):
+            return result
+        measurement = result["measurement"]
+        measurement["caveats"] = list(measurement.get("caveats") or []) + caveats
+        payload: dict[str, Any] = {"measurement": measurement, "raster_path": raster}
+        dsm = self._product_path("dsm")
+        if kind == "distance" and dsm:
+            # The planar figure is the map distance; over sloping ground the walked
+            # distance is longer, and the DSM knows by how much.
+            try:
+                along = sample_profile(dsm, self._lonlat_to_raster_xy(dsm, points))
+            except (FileNotFoundError, ValueError):
+                along = {}
+            if along.get("ok"):
+                payload["surface_length_m"] = along["surface_length_m"]
+                if along.get("note"):
+                    payload["surface_note"] = along["note"]
+        unit = "m2" if kind == "area" else "m"
+        payload["measurement_id"] = self._record_measurement(
+            kind, float(measurement["value"]), unit, points, raster,
+            {"measurement": measurement,
+             **{k: v for k, v in payload.items() if k.startswith("surface")}},
+        )
+        return ok(**payload)
+
+    @guard
+    def list_measurements(self) -> dict[str, Any]:
+        """Every measurement taken in this project, newest first."""
+        from core.measurements import list_measurements
+
+        items = list_measurements(self._session.project_root(),
+                                  str(self._session.project_id()))
+        rows = sorted((m.to_dict() for m in items), key=lambda m: m["created_at"],
+                      reverse=True)
+        return ok(measurements=rows, count=len(rows))
+
+    @guard
+    def delete_measurement(self, measurement_id: str) -> dict[str, Any]:
+        from core.measurements import delete_measurement
+
+        removed = delete_measurement(self._session.project_root(), str(measurement_id))
+        return ok(removed=True) if removed else fail(f"No measurement {measurement_id}.")
+
+    @guard
+    def compare_survey_volumes(self, earlier_path: str, later_path: str,
+                               polygon_lonlat: list[list[float]] | None = None,
+                               change_threshold_m: float = 0.05) -> dict[str, Any]:
+        """Material added and removed between two surveys' DSMs.
+
+        Two independent reconstructions are never on the same grid, so the later one is
+        resampled onto the earlier one -- and the result says so, along with any
+        systematic vertical offset between them, which a volume difference silently
+        includes unless the surveys were co-registered.
+        """
+        from datetime import datetime, timezone
+
+        from core.change_detection import IncomparableSurveys, compare_surfaces
+        from core.dsm_analysis import NotGeoreferenced
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        output = (self._session.project_root() / "analysis" / "change"
+                  / f"difference_{stamp}.tif")
+        try:
+            roi = self._lonlat_to_raster_xy(earlier_path, polygon_lonlat) or None
+            change = compare_surfaces(
+                earlier_path, later_path, output_path=output,
+                change_threshold_m=float(change_threshold_m), roi_polygon_xy=roi,
+                resample=True,
+            )
+        except (NotGeoreferenced, IncomparableSurveys, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        payload = change.to_dict()
+        if payload.get("difference_path"):
+            try:
+                payload["layer"] = self._session.register_raster_layer(
+                    payload["difference_path"], name="Elevation change")
+            except Exception:  # noqa: BLE001 - the numbers stand without the layer
+                pass
+        payload["measurement_id"] = self._record_measurement(
+            "surface_change", float(payload["net_volume_m3"]), "m3", polygon_lonlat,
+            later_path, {k: v for k, v in payload.items() if k != "layer"},
+        )
+        return ok(**payload)
 
     @guard
     def plan_irregular_facade(self, polygon_xy: list[list[float]],

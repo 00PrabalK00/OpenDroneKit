@@ -13,6 +13,10 @@ grown, because claiming continuity that was not established would fabricate a hi
 
 *What cannot be compared.* Two surveys in different coordinate systems, or at
 different resolutions, are not silently resampled into agreement. That is reported.
+A caller that WANTS two independent reconstructions compared asks for it explicitly
+(``resample=True``): the later survey is then reprojected onto the earlier grid, the
+result says so, and the systematic offset between the epochs is measured and reported
+beside the volumes rather than assumed to be zero.
 """
 
 from __future__ import annotations
@@ -26,7 +30,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from . import geo
-from .dsm_analysis import RasterSurface, _polygon_mask, load_surface
+from .dsm_analysis import RasterSurface, _polygon_mask, align_to_grid, load_surface, same_grid
 
 # Beyond this, two findings are treated as different defects rather than one that
 # moved. Chosen to exceed typical georeferencing error (~1 m on the verified
@@ -51,9 +55,18 @@ class SurfaceChange:
     crs_epsg: int | None
     pixel_size_m: float
     difference_path: str = ""
+    resampled: bool = False
+    median_difference_m: float | None = None
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "resampled": self.resampled,
+            "median_difference_m": (
+                None if self.median_difference_m is None
+                else round(self.median_difference_m, 3)
+            ),
+            "warnings": list(self.warnings),
             "added_volume_m3": round(self.added_volume_m3, 3),
             "removed_volume_m3": round(self.removed_volume_m3, 3),
             "net_volume_m3": round(self.net_volume_m3, 3),
@@ -133,15 +146,24 @@ def compare_surfaces(
     output_path: str | Path | None = None,
     change_threshold_m: float = 0.05,
     roi_polygon_xy: Sequence[Sequence[float]] | None = None,
+    resample: bool = False,
 ) -> SurfaceChange:
     """Difference two DSMs, reporting volume added and removed.
 
     `change_threshold_m` suppresses reconstruction noise from the changed-area figure;
     volumes are computed over every finite cell, so a genuine broad shallow change is
     not discarded.
+
+    With ``resample=True`` two surveys on different grids (or in different projected
+    CRSs) are compared by reprojecting the later one onto the earlier grid. Without
+    it they are refused, as before.
     """
     earlier = load_surface(earlier_dsm)
     later = load_surface(later_dsm)
+    resampled = False
+    if resample and not same_grid(earlier, later):
+        later = align_to_grid(later, earlier)
+        resampled = True
     _require_comparable(earlier, later)
 
     difference = later.elevation - earlier.elevation
@@ -155,6 +177,23 @@ def compare_surfaces(
             )
         raise IncomparableSurveys("The two surveys share no cell with valid elevation data.")
 
+    warnings: list[str] = []
+    median_difference = float(np.median(difference[valid]))
+    if resampled:
+        warnings.append(
+            "The later survey was resampled (bilinear) onto the earlier survey's grid "
+            f"at {earlier.pixel_size_m:.3f} m cells. Features narrower than about two "
+            "cells are smoothed by that step."
+        )
+    if abs(median_difference) >= max(change_threshold_m, 0.05) * 2:
+        warnings.append(
+            f"The median elevation difference over the compared area is "
+            f"{median_difference:+.2f} m. Real change rarely moves most of a site by the "
+            "same amount, so this is most likely a vertical offset between the two "
+            "surveys' georeferencing (GNSS or datum), and it is INCLUDED in the volumes "
+            "above. Co-register the surveys with ground control before relying on them."
+        )
+
     cell_area = later.pixel_area_m2
     rise = np.where(valid & (difference > 0), difference, 0.0)
     fall = np.where(valid & (difference < 0), -difference, 0.0)
@@ -165,7 +204,9 @@ def compare_surfaces(
         # NaN where a cell could not be compared, so the raster never implies
         # "no change" where the truth is "no data".
         raster = np.where(valid, difference, np.nan).astype(np.float32)
-        written = _write_difference_raster(later.path, output_path, raster)
+        # After resampling the difference lives on the EARLIER grid.
+        grid_source = earlier.path if resampled else later.path
+        written = _write_difference_raster(grid_source, output_path, raster)
 
     return SurfaceChange(
         added_volume_m3=float(rise.sum() * cell_area),
@@ -178,6 +219,9 @@ def compare_surfaces(
         crs_epsg=later.epsg,
         pixel_size_m=later.pixel_size_m,
         difference_path=written,
+        resampled=resampled,
+        median_difference_m=median_difference,
+        warnings=warnings,
     )
 
 

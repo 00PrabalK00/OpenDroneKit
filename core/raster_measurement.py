@@ -120,6 +120,48 @@ def pixel_to_world(path: str | Path,
         raster.close()
 
 
+def lonlat_to_pixels(path: str | Path,
+                     lonlat: Sequence[Sequence[float]]) -> tuple[list[tuple[float, float]], list[str]]:
+    """Map WGS84 lon/lat (what a map click gives) to this raster's pixel coordinates.
+
+    Returns ``(col, row)`` pairs chosen so that :func:`pixel_to_world` maps them back to
+    the exact projected point clicked -- ``raster.xy`` reports cell centres, so the
+    half-cell offset is removed here rather than rounding the click to a cell. Also
+    returns a caveat when a vertex falls outside the raster, since a length drawn off the
+    edge of the survey is still a length but not one the survey observed.
+    """
+    raster = _open(path)
+    try:
+        epsg = _require_projected(raster, Path(path))
+        from pyproj import Transformer
+
+        to_raster = Transformer.from_crs("EPSG:4326", raster.crs, always_xy=True)
+        inverse = ~raster.transform
+        width, height = raster.width, raster.height
+        pixels: list[tuple[float, float]] = []
+        outside = 0
+        for point in lonlat:
+            x, y = to_raster.transform(float(point[0]), float(point[1]))
+            if not (math.isfinite(x) and math.isfinite(y)):
+                raise ValueError(
+                    f"({point[0]}, {point[1]}) cannot be expressed in EPSG:{epsg}."
+                )
+            col, row = inverse * (x, y)
+            if not (0.0 <= col <= width and 0.0 <= row <= height):
+                outside += 1
+            pixels.append((col - 0.5, row - 0.5))
+    finally:
+        raster.close()
+    caveats: list[str] = []
+    if outside:
+        caveats.append(
+            f"{outside} of {len(pixels)} drawn point(s) lie outside {Path(path).name}; "
+            "the geometry was measured in its CRS, but the survey did not cover that "
+            "ground."
+        )
+    return pixels, caveats
+
+
 def measure_distance(path: str | Path,
                      pixels: Sequence[tuple[float, float]]) -> RasterMeasurement:
     """Length of a polyline drawn on the raster, in the raster's units."""

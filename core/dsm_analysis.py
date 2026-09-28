@@ -59,6 +59,42 @@ class NotGeoreferenced(ValueError):
     """Raised when a raster carries no CRS, so nothing on it can be measured."""
 
 
+class NotProjected(NotGeoreferenced):
+    """The raster's horizontal units are not metres, so nothing on it is metric.
+
+    A geographic CRS (EPSG:4326 and friends) passes the "has a CRS" test, but its
+    cell sizes are fractions of a degree. Multiplying them together gives "areas"
+    of ~1e-10 and volumes that round to zero -- a silent "no change / no material"
+    that reads as a real measurement. It is refused instead.
+    """
+
+
+def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
+    """Refuse a CRS whose horizontal units are not linear (metres or feet)."""
+    label = str(path) or "The raster"
+    if not epsg:
+        raise NotGeoreferenced(
+            f"{label} has no coordinate reference system, so distances and volumes "
+            "measured on it would not be in metres."
+        )
+    try:
+        from rasterio.crs import CRS
+
+        crs = CRS.from_epsg(int(epsg))
+    except Exception as exc:  # noqa: BLE001 - an unresolvable CRS is a refusal
+        raise NotProjected(
+            f"EPSG:{epsg} could not be resolved, so the horizontal units of {label} "
+            "are unknown and nothing measured on it would be in metres."
+        ) from exc
+    if not crs.is_projected:
+        raise NotProjected(
+            f"{label} is in EPSG:{epsg}, a geographic CRS: its cells are measured in "
+            "degrees, so areas, volumes and distances computed on it would be "
+            "meaningless (they round to zero). Reproject it to a metric CRS -- a UTM "
+            "zone -- first."
+        )
+
+
 class IncompatibleReferenceSurface(ValueError):
     """Raised when a DSM and its claimed reference surface do not share a grid."""
 
@@ -78,6 +114,7 @@ def load_surface(path: str | Path) -> RasterSurface:
             "measured on it would not be in metres. Reconstruct with the COLMAP "
             "engine to obtain georeferenced rasters."
         )
+    require_projected_epsg(meta.get("epsg"), path)
     elevation = np.asarray(data[0], dtype=np.float64)
 
     nodata = meta.get("nodata")
@@ -91,6 +128,61 @@ def load_surface(path: str | Path) -> RasterSurface:
         transform=tuple(meta["transform"]),
         epsg=meta.get("epsg"),
         path=str(path),
+    )
+
+
+def same_grid(first: RasterSurface, second: RasterSurface) -> bool:
+    """Whether identical pixel indices on the two rasters refer to the same ground."""
+    return (
+        first.epsg == second.epsg
+        and first.elevation.shape == second.elevation.shape
+        and np.allclose(
+            np.asarray(first.transform[:6], dtype=float),
+            np.asarray(second.transform[:6], dtype=float),
+            rtol=0.0,
+            atol=1e-9,
+        )
+    )
+
+
+def align_to_grid(surface: RasterSurface, reference: RasterSurface) -> RasterSurface:
+    """Resample ``surface`` onto ``reference``'s grid (CRS, origin, cell size, shape).
+
+    Two independent reconstructions never come out on the same grid: each chooses its
+    own extent and ground sample distance. Differencing them needs one grid, and this
+    reprojects the second onto the first with bilinear interpolation. Cells the second
+    survey does not cover stay NaN, so "no data" is never read as "no change".
+
+    This aligns GRIDS, not SURVEYS. Any absolute georeferencing offset between the
+    two epochs (GNSS error, a different datum) survives resampling untouched; callers
+    report it rather than assume it away.
+    """
+    require_projected_epsg(surface.epsg, surface.path)
+    require_projected_epsg(reference.epsg, reference.path)
+    if same_grid(surface, reference):
+        return surface
+    geo.require("rasterio")
+    from affine import Affine
+    from rasterio.crs import CRS
+    from rasterio.warp import Resampling, reproject
+
+    destination = np.full(reference.elevation.shape, np.nan, dtype=np.float64)
+    reproject(
+        source=np.asarray(surface.elevation, dtype=np.float64),
+        destination=destination,
+        src_transform=Affine(*[float(v) for v in surface.transform[:6]]),
+        src_crs=CRS.from_epsg(int(surface.epsg)),
+        src_nodata=np.nan,
+        dst_transform=Affine(*[float(v) for v in reference.transform[:6]]),
+        dst_crs=CRS.from_epsg(int(reference.epsg)),
+        dst_nodata=np.nan,
+        resampling=Resampling.bilinear,
+    )
+    return RasterSurface(
+        elevation=destination,
+        transform=tuple(reference.transform[:6]),
+        epsg=reference.epsg,
+        path=surface.path,
     )
 
 
@@ -268,6 +360,103 @@ def estimate_volume(
             "over-estimate on a slope."
         ),
     }
+
+
+# --------------------------------------------------------------------------
+# profile
+# --------------------------------------------------------------------------
+
+
+def elevation_profile(
+    dsm_path: str | Path,
+    line_xy: Sequence[Sequence[float]],
+    *,
+    spacing_m: float | None = None,
+) -> dict[str, Any]:
+    """Elevation sampled along a polyline, in the raster's own projected CRS.
+
+    Samples are taken every ``spacing_m`` (default: one cell) and read from the cell
+    that contains them -- no interpolation, so every elevation in the profile is a value
+    the DSM actually holds. A sample over a hole in the DSM is reported as ``None``
+    rather than bridged, and the surface length only accumulates across consecutive
+    samples that both have data, so a gap never shortens or lengthens the answer
+    silently: it is counted and stated.
+    """
+    surface = load_surface(dsm_path)
+    vertices = [(float(v[0]), float(v[1])) for v in line_xy if len(v) >= 2]
+    if len(vertices) < 2:
+        raise ValueError("A profile needs a line of at least two points.")
+    step = float(spacing_m) if spacing_m and spacing_m > 0 else surface.pixel_size_m
+    if not np.isfinite(step) or step <= 0:
+        raise NotProjected("The raster transform has no ground spacing to sample along.")
+
+    a, b, c, d, e, f = (float(v) for v in surface.transform[:6])
+    determinant = a * e - b * d
+    rows, cols = surface.elevation.shape
+
+    def elevation_at(x: float, y: float) -> float | None:
+        col = ((x - c) * e - (y - f) * b) / determinant
+        row = ((y - f) * a - (x - c) * d) / determinant
+        ci, ri = int(np.floor(col)), int(np.floor(row))
+        if ri < 0 or ci < 0 or ri >= rows or ci >= cols:
+            return None
+        value = float(surface.elevation[ri, ci])
+        return value if np.isfinite(value) else None
+
+    samples: list[dict[str, Any]] = []
+    travelled = 0.0
+    for (x1, y1), (x2, y2) in zip(vertices, vertices[1:]):
+        length = float(np.hypot(x2 - x1, y2 - y1))
+        count = max(1, int(np.ceil(length / step)))
+        start = 1 if samples else 0
+        for i in range(start, count + 1):
+            t = i / count
+            x, y = x1 + (x2 - x1) * t, y1 + (y2 - y1) * t
+            samples.append({
+                "distance_m": round(travelled + length * t, 3),
+                "x": round(x, 3),
+                "y": round(y, 3),
+                "z": None if (z := elevation_at(x, y)) is None else round(z, 3),
+            })
+        travelled += length
+
+    known = [s for s in samples if s["z"] is not None]
+    surface_length = 0.0
+    for first, second in zip(samples, samples[1:]):
+        if first["z"] is None or second["z"] is None:
+            continue
+        run = second["distance_m"] - first["distance_m"]
+        surface_length += float(np.hypot(run, second["z"] - first["z"]))
+    gaps = len(samples) - len(known)
+
+    result: dict[str, Any] = {
+        "ok": bool(known),
+        "dsm_path": str(dsm_path),
+        "crs_epsg": surface.epsg,
+        "spacing_m": round(step, 4),
+        "planar_length_m": round(travelled, 3),
+        "surface_length_m": round(surface_length, 3),
+        "sample_count": len(samples),
+        "samples_without_data": gaps,
+        "samples": samples,
+    }
+    if not known:
+        result["reason"] = "The line does not cross any DSM cell with elevation data."
+        return result
+    heights = [s["z"] for s in known]
+    result.update({
+        "elevation_min_m": round(min(heights), 3),
+        "elevation_max_m": round(max(heights), 3),
+        "elevation_start_m": known[0]["z"],
+        "elevation_end_m": known[-1]["z"],
+    })
+    if gaps:
+        result["note"] = (
+            f"{gaps} of {len(samples)} samples fall on cells with no elevation (outside "
+            "the DSM or in a reconstruction hole). They are left empty, and the surface "
+            "length only counts spans with data at both ends."
+        )
+    return result
 
 
 # --------------------------------------------------------------------------
