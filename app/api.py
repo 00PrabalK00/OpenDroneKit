@@ -2296,7 +2296,7 @@ class Api:
         )
 
     @guard
-    def find_ponding(self, surface_path: str,
+    def find_ponding(self, surface_path: str = "",
                      vertical_accuracy_m: float | None = None) -> dict[str, Any]:
         """Where water can collect on a surface, from the DSM.
 
@@ -2312,9 +2312,13 @@ class Api:
         from core.ponding import PondingRefused, find_ponding as run_ponding
         from core.slope import NotProjected
 
+        surface_path = surface_path or self._product_path("dsm")
+        if not surface_path:
+            return fail("This project has no DSM to look for ponding on. Run Process first.")
         try:
             surface = load_surface(surface_path)
-            report = run_ponding(surface, vertical_accuracy_m=vertical_accuracy_m)
+            report = run_ponding(surface,
+                                 vertical_accuracy_m=_optional_float(vertical_accuracy_m))
         except (NotGeoreferenced, NotProjected, PondingRefused) as exc:
             return fail(str(exc))
         except (FileNotFoundError, ValueError) as exc:
@@ -2460,6 +2464,45 @@ class Api:
         )
         return measurement.id
 
+    def _crs_setting_key(self) -> str:
+        return f"project:{self._session.project_id()}:target_epsg"
+
+    @guard
+    def get_project_crs(self) -> dict[str, Any]:
+        """The projected CRS this project's reconstructions are written in, if chosen."""
+        epsg = self._session.store.get_setting(self._crs_setting_key())
+        if not epsg:
+            return ok(epsg=None, name="automatic UTM zone from the imagery")
+        from pyproj import CRS
+
+        return ok(epsg=int(epsg), name=CRS.from_epsg(int(epsg)).name)
+
+    @guard
+    def set_project_crs(self, epsg: int | None = None) -> dict[str, Any]:
+        """Choose the projected CRS reconstructions are written in; None = automatic.
+
+        A geographic CRS is refused: every product here is measured in metres, and a DSM
+        written in degrees would make every later volume and distance meaningless.
+        """
+        if epsg in (None, "", 0):
+            self._session.store.set_setting(self._crs_setting_key(), None)
+            self._session.audit("project_crs_set", {"epsg": None})
+            return ok(epsg=None, name="automatic UTM zone from the imagery")
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+
+        try:
+            crs = CRS.from_epsg(int(epsg))
+        except (CRSError, ValueError, TypeError) as exc:
+            return fail(f"EPSG:{epsg} is not a coordinate reference system PROJ knows ({exc}).")
+        if not crs.is_projected:
+            return fail(f"EPSG:{epsg} ({crs.name}) is not projected: its units are degrees, "
+                        "and every product is measured in metres. Choose a projected CRS "
+                        "such as a UTM zone.")
+        self._session.store.set_setting(self._crs_setting_key(), int(epsg))
+        self._session.audit("project_crs_set", {"epsg": int(epsg)})
+        return ok(epsg=int(epsg), name=crs.name)
+
     @guard
     def project_surfaces(self) -> dict[str, Any]:
         """The DSM, DTM and orthomosaic this project's measurements will run on."""
@@ -2576,9 +2619,14 @@ class Api:
         if not result.get("ok"):
             return fail(result.get("reason", "No profile could be taken."),
                         sample_count=result.get("sample_count"))
+        samples = result["samples"]
+        stride = max(1, -(-len(samples) // 500))
+        details = {k: v for k, v in result.items() if k != "samples"}
+        # Every stride-th sample, for drawing the chart; the figures above use them all.
+        details["chart_samples"] = [[s["distance_m"], s["z"]] for s in samples[::stride]]
+        details["chart_stride"] = stride
         result["measurement_id"] = self._record_measurement(
-            "profile", float(result["surface_length_m"]), "m", line_lonlat, dsm,
-            {k: v for k, v in result.items() if k != "samples"},
+            "profile", float(result["surface_length_m"]), "m", line_lonlat, dsm, details,
         )
         return ok(**{k: v for k, v in result.items() if k != "ok"})
 
@@ -2711,8 +2759,11 @@ class Api:
         payload = change.to_dict()
         if payload.get("difference_path"):
             try:
-                payload["layer"] = self._session.register_raster_layer(
+                layer = self._session.register_raster_layer(
                     payload["difference_path"], name="Elevation change")
+                # Only the handle: the layer's metadata carries a NaN nodata value,
+                # which is not JSON.
+                payload["layer"] = {"id": layer["id"], "name": layer["name"]}
             except Exception:  # noqa: BLE001 - the numbers stand without the layer
                 pass
         payload["measurement_id"] = self._record_measurement(
@@ -3285,6 +3336,8 @@ class Api:
 
         output = Path(opts.get("output_dir") or (self._session.project_root() / "reconstruction"))
         session = self._session
+        # Set CRS stores the operator's choice; it used to be read by nothing.
+        chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.reconstruction_colmap import build_reconstructor
@@ -3293,7 +3346,7 @@ class Api:
                 opts.get("engine", "auto"),
                 profile=opts.get("profile", "standard"),
                 dense=opts.get("dense"),
-                target_epsg=opts.get("epsg"),
+                target_epsg=opts.get("epsg") or chosen_epsg,
             )
             result = reconstructor.reconstruct(
                 image_dir=images, output_dir=str(output), progress_callback=progress
@@ -3327,6 +3380,7 @@ class Api:
         if not images:
             return fail("Select a dataset before running the pipeline.")
         output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
+        chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
@@ -3334,6 +3388,7 @@ class Api:
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
+            config.reconstruction_target_epsg = opts.get("epsg") or chosen_epsg
             pipeline = StructuralFaultPipeline(config)
             result = pipeline.run(image_dir=images, output_root=output, progress_callback=progress)
             return result.to_dict() if hasattr(result, "to_dict") else dict(result)

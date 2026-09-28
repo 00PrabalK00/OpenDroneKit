@@ -12,6 +12,7 @@
  */
 
 import { el } from "./primitives.js";
+import { attachDrawing } from "./draw.js";
 
 /* Style built here rather than imported from js/map.js: that module belongs to the hub
  * and carries its own draw tooling and event wiring. Borrowing it would couple two UIs
@@ -79,6 +80,9 @@ export function mountMap(container, {
     ]));
     return null;
   }
+
+  // Clicks become vertices while a measurement tool is armed; otherwise they are ignored.
+  attachDrawing(map);
 
   map.addControl(new window.maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
   map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");

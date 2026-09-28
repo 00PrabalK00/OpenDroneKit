@@ -257,3 +257,23 @@ class TestDegreesAreRefusedNotZeroed:
         surface = RasterSurface(np.full((10, 10), 1.0), (1e-5, 0, -81.7, 0, -1e-5, 41.3), 4326)
         with pytest.raises(NotProjected):
             find_ponding(surface, vertical_accuracy_m=0.05)
+
+
+class TestTheProjectCrsCanBeSet:
+    """"Set CRS" called check_spatial_reference with no image list and failed."""
+
+    def test_a_projected_crs_is_kept(self, api):
+        result = api.set_project_crs(32617)
+        assert result["ok"], result
+        assert "UTM zone 17N" in result["name"]
+        assert api.get_project_crs()["epsg"] == 32617
+
+    def test_degrees_are_refused(self, api):
+        result = api.set_project_crs(4326)
+        assert result["ok"] is False
+        assert "degrees" in result["error"]
+
+    def test_blank_returns_to_automatic(self, api):
+        api.set_project_crs(32617)
+        assert api.set_project_crs(None)["epsg"] is None
+        assert api.get_project_crs()["epsg"] is None

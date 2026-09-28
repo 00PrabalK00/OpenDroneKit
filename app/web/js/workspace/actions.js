@@ -22,7 +22,8 @@ import { call, tryCall, lastError, connected } from "./api.js";
 const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
   "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
-  "Change", "Volume", "Cut & Fill", "Stockpile", "Generate Report", "Export Report",
+  "Change", "Volume", "Cut & Fill", "Stockpile", "Slope", "Ponding", "Generate Report",
+  "Export Report",
   "Export PDF", "New Report", "Share", "Archive",
 ]);
 
@@ -198,35 +199,80 @@ export const ACTIONS = {
     },
   },
 
-  /* -- measurement -------------------------------------------------------- */
+  /* -- measurement --------------------------------------------------------
+     Every one of these used to call the Api with null: selectionGeometry was never
+     assigned, and Volume asked measure_on_raster for a kind it does not have. They now
+     take the area or line drawn on the map (drawing one first when there is none) and
+     the project's own DSM/DTM, which the Api finds and reprojects into. */
   Volume: {
-    describe: "Volume between DSM and DTM over the selection.",
+    describe: "Volume above the DTM inside the drawn area.",
     async run(ctx) {
-      const result = await call("measure_on_raster", ctx.selectionGeometry(), "volume");
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Volume");
+      if (!polygon) return { skipped: "Draw the area to measure, then double-click." };
+      const result = await call("measure_drawn", "volume", polygon);
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   "Cut & Fill": {
-    describe: "Cut and fill against a reference surface.",
+    describe: "Cut and fill against a design level, inside the drawn area.",
     async run(ctx) {
-      const result = await call("measure_on_raster", ctx.selectionGeometry(), "cut_fill");
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Cut & Fill");
+      if (!polygon) return { skipped: "Draw the area to cut and fill, then double-click." };
+      const level = await ctx.prompt("Design (base) elevation, metres", "");
+      if (level === null || level === "" || !Number.isFinite(Number(level))) {
+        return { skipped: "Cut and fill needs the design elevation to measure against." };
+      }
+      const result = await call("measure_drawn", "cut_fill", polygon, "",
+                                { base_elevation_m: Number(level) });
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   Slope: {
-    describe: "Slope over the selection.",
+    describe: "Slope over the drawn area.",
     async run(ctx) {
-      const result = await call("measure_slope", ctx.selectionGeometry());
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Slope");
+      if (!polygon) return { skipped: "Draw the area to measure slope over, then double-click." };
+      const result = await call("measure_drawn", "slope", polygon);
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   Stockpile: {
-    describe: "Inventory the assets in this project.",
-    async run() {
-      const result = await call("build_asset_inventory");
-      return { message: `${(result.assets || []).length} asset(s).` };
+    describe: "Measure one stockpile and write its report package.",
+    async run(ctx) {
+      const polygon = ctx.requireSelection("polygon", "Stockpile");
+      if (!polygon) return { skipped: "Draw around the pile's toe, then double-click." };
+      /* Blank means the project's DTM. The selection's lowest point is not offered as a
+         base: it always over-states a pile on sloping ground. */
+      const base = await ctx.prompt("Base elevation in metres (blank = use the DTM)", "");
+      if (base === null) return { skipped: "Cancelled." };
+      const options = base !== "" && Number.isFinite(Number(base))
+        ? { base_elevation_m: Number(base) } : {};
+      const result = await call("measure_drawn", "stockpile", polygon, "", options);
+      return { message: `${describeMeasurement(result)} Report: ${result.report_path}`,
+               refresh: true };
     },
   },
+  Ponding: {
+    describe: "Where water can collect on the DSM.",
+    async run(ctx) {
+      /* No default: without the survey's vertical accuracy a basin cannot be told from
+         reconstruction noise, and find_ponding refuses rather than guess. */
+      const accuracy = await ctx.prompt("Vertical accuracy of this DSM, metres", "");
+      if (!accuracy || !Number.isFinite(Number(accuracy))) {
+        return { skipped: "Ponding needs the survey's vertical accuracy." };
+      }
+      const result = await call("find_ponding", "", Number(accuracy));
+      return {
+        message: result.count
+          ? `${result.count} depression(s) deeper than ${result.detection_floor_m} m, `
+            + `${Number(result.total_volume_m3).toFixed(2)} m³ of capacity.`
+          : `No depression deeper than ${result.detection_floor_m} m (the detection floor).`,
+      };
+    },
+  },
+  "Select Area": { tool: "select-polygon", draw: "polygon",
+                   describe: "Draw the area Volume, Slope and Stockpile act on." },
+  "Select Line": { tool: "select-line", draw: "line", describe: "Draw a line to act on." },
 
   /* -- flight ------------------------------------------------------------- */
   Preflight: {
@@ -280,12 +326,42 @@ export const ACTIONS = {
     },
   },
 
-  /* -- survey comparison -------------------------------------------------- */
+  /* -- survey comparison --------------------------------------------------
+     compare_surveys was called with no arguments. Two real surveys also could never be
+     compared, because no two reconstructions share a grid; the later one is now
+     resampled onto the earlier one and the result says so. */
   Compare: {
-    describe: "Compare this survey against a previous one.",
-    async run() {
-      const result = await call("compare_surveys");
-      return { message: result.summary || "Surveys compared." };
+    describe: "Compare this survey's DSM against an earlier one.",
+    async run(ctx) {
+      const surfaces = await call("project_surfaces");
+      const earlier = await tryCall("pick_file", ["tif", "tiff"]);
+      if (!(earlier && earlier.path)) return { skipped: "No earlier DSM chosen." };
+      let later = surfaces.dsm;
+      if (!later) {
+        const picked = await tryCall("pick_file", ["tif", "tiff"]);
+        later = picked && picked.path;
+      }
+      if (!later) return { skipped: "This project has no DSM to compare against." };
+      const polygon = ctx.selectionVertices();
+      const change = await call("compare_survey_volumes", earlier.path, later,
+                                polygon.length >= 3 ? polygon : null);
+      let message = `Added ${change.added_volume_m3} m³, removed `
+        + `${change.removed_volume_m3} m³ (net ${change.net_volume_m3}).`;
+      const warnings = change.warnings || [];
+      if (warnings.length) message += ` ${warnings[warnings.length - 1]}`;
+
+      /* Movement needs error bounds; without them it is not asked for. */
+      const bounds = await ctx.prompt(
+        "For movement: vertical accuracy of earlier, later survey and registration "
+        + "residual in metres, comma separated (blank to skip)", "");
+      const numbers = String(bounds || "").split(/[,\s]+/).filter(Boolean).map(Number);
+      if (numbers.length === 3 && numbers.every(Number.isFinite)) {
+        const moved = await call("compare_surveys", earlier.path, later, ...numbers);
+        message += moved.moved
+          ? ` ${moved.count} region(s) moved beyond the ${moved.detection_floor_m} m floor.`
+          : ` No movement resolvable above ${moved.detection_floor_m} m.`;
+      }
+      return { message, refresh: true };
     },
   },
   "Compare Dates": { alias: "Compare" },
@@ -302,10 +378,18 @@ export const ACTIONS = {
     },
   },
   "Set CRS": {
-    describe: "Report the coordinate reference system in use.",
-    async run() {
-      const result = await call("check_spatial_reference");
-      return { message: result.epsg ? `CRS ${result.epsg}` : "No CRS resolved." };
+    describe: "Choose the projected CRS reconstructions are written in.",
+    async run(ctx) {
+      const current = await call("get_project_crs");
+      const answer = await ctx.prompt(
+        "EPSG code of a projected CRS (blank = automatic UTM zone)",
+        current.epsg ? String(current.epsg) : "");
+      if (answer === null) return { skipped: "Cancelled." };
+      const trimmed = String(answer).trim();
+      const result = await call("set_project_crs", trimmed === "" ? null : Number(trimmed));
+      return { message: result.epsg ? `Reconstructions will be written in EPSG:${result.epsg} `
+                                       + `(${result.name}).`
+                                     : "Reconstructions will use the UTM zone of the imagery." };
     },
   },
 
@@ -322,15 +406,21 @@ export const ACTIONS = {
   Semantic: { view: "semantic", describe: "Semantic classes." },
   "Point Cloud": { view: "pointcloud", describe: "Show the point cloud." },
   "Textured Mesh": { view: "mesh", describe: "Show the textured mesh." },
-  Profile: { view: "profile", describe: "Elevation profile along a line." },
+  // A line drawn on the map, sampled from the DSM. It used to be a view toggle with
+  // nothing behind it: no code anywhere computed a profile.
+  Profile: { tool: "profile", draw: "line", measure: "profile",
+             describe: "Elevation profile along a drawn line." },
 
   /* -- canvas tools ------------------------------------------------------
      Arming a tool is also local. The measurement itself goes to the Api once there is
      geometry to measure, which is why Distance and Area report through the same path as
      Volume rather than inventing a number in the browser. */
-  Measure: { tool: "measure", describe: "Arm the measure tool." },
-  Distance: { tool: "distance", describe: "Measure a distance on the canvas." },
-  Area: { tool: "area", describe: "Measure an area on the canvas." },
+  Measure: { tool: "measure", draw: "line", measure: "distance",
+             describe: "Measure a distance on the map." },
+  Distance: { tool: "distance", draw: "line", measure: "distance",
+              describe: "Measure a distance on the map." },
+  Area: { tool: "area", draw: "polygon", measure: "area",
+          describe: "Measure an area on the map; it also becomes the selection." },
   Annotate: { tool: "annotate", describe: "Draw an annotation." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
@@ -1069,14 +1159,39 @@ export const ACTIONS = {
  */
 export const UNWIRED = {};
 
-function describeMeasurement(result) {
+/** One line an operator can read, from any of the measurement results. */
+export function describeMeasurement(result) {
   if (!result) return "No measurement returned.";
   if (result.refused) return `Refused: ${result.refused}`;
+  const round = (v, d = 2) => Number(v).toLocaleString(undefined, { maximumFractionDigits: d });
   const parts = [];
-  for (const key of ["volume_m3", "cut_m3", "fill_m3", "area_m2", "slope_deg", "mean", "value"]) {
-    if (result[key] !== undefined) parts.push(`${key.replace(/_/g, " ")} ${result[key]}`);
+  const m = result.measurement;
+  if (m && m.value !== undefined && m.unit) {
+    const unit = String(m.unit).replace("square metre", "m²").replace("metre", "m");
+    parts.push(`${m.kind} ${round(m.value)} ${unit}`);
+    if (result.surface_length_m !== undefined) {
+      parts.push(`over the ground ${round(result.surface_length_m)} m`);
+    }
   }
-  return parts.length ? parts.join(", ") : "Measured.";
+  const preferred = result.preferred;
+  if (preferred && preferred.cut_volume_m3 !== undefined) {
+    const against = preferred.reference === "plane"
+      ? `a ${round(preferred.reference_elevation_m)} m plane` : `the ${preferred.reference}`;
+    parts.push(`${round(preferred.cut_volume_m3)} m³ above and `
+      + `${round(preferred.fill_volume_m3)} m³ below ${against}, over `
+      + `${round(preferred.area_m2)} m²`);
+  }
+  if (result.slope) {
+    parts.push(`slope mean ${round(result.slope.mean_deg, 1)}° `
+      + `(${round(result.slope.mean_percent, 1)}%), plane dip `
+      + `${round(result.slope.plane_dip_deg, 1)}°`);
+  }
+  if (result.planar_length_m !== undefined && result.elevation_min_m !== undefined) {
+    parts.push(`profile ${round(result.planar_length_m)} m long, elevation `
+      + `${round(result.elevation_min_m)}–${round(result.elevation_max_m)} m`);
+  }
+  if (result.warning) parts.push(result.warning);
+  return parts.length ? parts.join("; ") + "." : "Measured.";
 }
 
 /** Resolve an alias chain to the entry that does the work. */

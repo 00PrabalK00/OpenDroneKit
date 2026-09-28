@@ -11,7 +11,8 @@ import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
-import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
+import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
+import { armDrawing, bindDrawingKeys, vertices } from "./draw.js";
 import { setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 
@@ -325,6 +326,14 @@ export class Shell {
         // track. Naming it back at the operator was the clearest case of the panel
         // printing text: the application is holding the picture and describing it.
         this.showLayer(value.id || value.layer_id || value.key || name, name);
+        return;
+      }
+      case "tool": {
+        // The Measurements workspace lists its tools in a tree. Picking one used to
+        // print its name; it now does what the toolbar button of the same name does.
+        const tool = String(value.label || name).replace(/ line$/, "");
+        if (resolve(tool)) this.runAction(tool);
+        else this.toast(`${tool}: no such tool.`, "warn");
         return;
       }
       case "setting": {
@@ -691,6 +700,14 @@ export class Shell {
     if (entry.tool) {
       this.activeTool = entry.tool;
       this.workspaceEl.dataset.tool = entry.tool;
+      if (entry.draw) {
+        // The tool is only armed if something is listening for the drawing. It used to
+        // set activeTool, which nothing read, and report "Draw on the canvas".
+        armDrawing(entry.draw, (geometry) => this.onGeometryDrawn(entry, action, geometry));
+        this.toast(`${action}: click points on the map; double-click or Enter to finish, `
+          + "Esc to cancel.", "ok");
+        return;
+      }
       this.toast(`Tool armed: ${action}. Draw on the canvas.`, "ok");
       return;
     }
@@ -731,6 +748,57 @@ export class Shell {
       // application produces and it used to vanish into a rejected promise.
       this.toast(`${action}: ${error.message || error}`, "error");
     }
+  }
+
+  /**
+   * A line or polygon was finished on the map.
+   *
+   * It becomes the selection that Volume, Cut & Fill, Slope, Stockpile and Compare act
+   * on. For the measuring tools it is also measured straight away, on the project's own
+   * rasters -- the browser never works out a length itself.
+   */
+  async onGeometryDrawn(entry, action, geometry) {
+    this.selectionGeometry = geometry;
+    const points = vertices(geometry);
+    const pending = this.pendingSelectionAction;
+    this.pendingSelectionAction = null;
+    if (pending) {
+      await this.runAction(pending);
+      return;
+    }
+    if (!entry.measure) {
+      this.toast(`${geometry.type === "Polygon" ? "Area" : "Line"} selected `
+        + `(${points.length} points). Volume, Cut & Fill, Slope and Stockpile use it.`, "ok");
+      return;
+    }
+    if (!connected()) {
+      this.toast(`${action}: connect to the application to measure.`, "warn");
+      return;
+    }
+    try {
+      const result = await call("measure_drawn", entry.measure, points);
+      this.lastMeasurement = result;
+      this.toast(`${action}: ${describeMeasurement(result)}`, "ok");
+      this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+    } catch (error) {
+      this.toast(`${action}: ${error.message || error}`, "error");
+    }
+  }
+
+  /**
+   * The drawn selection, or -- when there is none of the right shape -- start drawing
+   * one and run `action` again once it is finished. Returns the vertices or null.
+   */
+  requireSelection(shape, action, prompt) {
+    const geometry = this.selectionGeometry;
+    const wanted = shape === "polygon" ? "Polygon" : "LineString";
+    if (geometry && geometry.type === wanted) return vertices(geometry);
+    this.pendingSelectionAction = action;
+    this.activeTool = `select-${shape}`;
+    armDrawing(shape, (drawn) => this.onGeometryDrawn({}, action, drawn));
+    this.toast(prompt || `${action}: draw the ${shape === "polygon" ? "area" : "line"} on `
+      + "the map, then double-click or press Enter.", "ok");
+    return null;
   }
 
   async runVehicle(command, action) {
@@ -830,6 +898,10 @@ export class Shell {
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
       selectionGeometry: () => this.selectionGeometry || null,
+      selectionVertices: () => vertices(this.selectionGeometry),
+      // The drawn area or line, or null after starting a drawing that will re-run the
+      // action once it is finished.
+      requireSelection: (shape, action, prompt) => this.requireSelection(shape, action, prompt),
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather
       // than refusing keeps a single-tenant desktop install usable; a multi-tenant
@@ -977,6 +1049,15 @@ export class Shell {
   /* ------------------------------------------------------------- keyboard */
 
   bindKeys() {
+    // Enter finishes a drawing, Esc cancels it, Backspace removes the last vertex.
+    bindDrawingKeys(document);
+    // The canvas's own tool icons (draw polygon, draw line, measure) run the toolbar
+    // action of the same meaning.
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("odk:action", (event) => {
+        if (event && event.detail) this.runAction(String(event.detail));
+      });
+    }
     document.addEventListener("keydown", (event) => {
       const meta = event.ctrlKey || event.metaKey;
       if (meta && event.key.toLowerCase() === "k") { event.preventDefault(); this.openPalette(); return; }
