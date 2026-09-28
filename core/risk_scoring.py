@@ -129,6 +129,16 @@ def _iter_defects(
             if geometry.get("type") == "Point" and isinstance(coordinates, list):
                 properties["longitude"] = coordinates[0]
                 properties["latitude"] = coordinates[1]
+            elif (properties.get("longitude") is None
+                  and geometry.get("type") == "Polygon" and coordinates):
+                # The projected layer is polygons. Their position was read only from
+                # Point geometry, so every ranked defect came out at null, null.
+                ring = [p for p in coordinates[0] if isinstance(p, (list, tuple)) and len(p) >= 2]
+                if len(ring) > 1 and ring[0][:2] == ring[-1][:2]:
+                    ring = ring[:-1]
+                if ring:
+                    properties["longitude"] = sum(float(p[0]) for p in ring) / len(ring)
+                    properties["latitude"] = sum(float(p[1]) for p in ring) / len(ring)
             records.append(properties)
         if records:
             return records, "georeferenced_defect_layer"
@@ -177,9 +187,10 @@ def score_run_risk(
             "source": source,
             "defect_count": 0,
             "risk_index": 0.0,
-            "integrity_score": 100.0,
-            "grade": 1,
-            "grade_label": "Excellent",
+            # Not "Excellent": with no defects scored there is nothing to grade.
+            "defect_condition_score": None,
+            "defect_condition_grade": None,
+            "defect_condition_label": "not assessed",
             "defects": [],
             "by_action": {},
             "note": (
@@ -241,8 +252,11 @@ def score_run_risk(
     # critical spall and fifty stains is not in average condition.
     worst = scores[: max(1, len(scores) // 10)]
     risk_index = sum(worst) / len(worst)
-    integrity_score = round(max(0.0, 100.0 * (1.0 - risk_index)), 2)
-    grade, grade_label = _grade_from_integrity(integrity_score)
+    # Named apart from health_scoring's integrity_score. The two are computed from
+    # different inputs (ranked georeferenced defects here, per-image ratios there) and
+    # used to be printed under the same name in one report with different values.
+    condition_score = round(max(0.0, 100.0 * (1.0 - risk_index)), 2)
+    grade, grade_label = _grade_from_integrity(condition_score)
 
     by_action: dict[str, int] = {}
     for item in scored:
@@ -254,9 +268,9 @@ def score_run_risk(
         "source": source,
         "defect_count": len(scored),
         "risk_index": round(risk_index, 4),
-        "integrity_score": integrity_score,
-        "grade": grade,
-        "grade_label": grade_label,
+        "defect_condition_score": condition_score,
+        "defect_condition_grade": grade,
+        "defect_condition_label": grade_label,
         "highest_risk": scored[0] if scored else None,
         "by_action": by_action,
         "by_type": _counts_by_type(scored),

@@ -300,8 +300,10 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     if isinstance(risk, dict) and risk.get("defect_count"):
         lines.append(f"- Risk index: `{risk.get('risk_index')}`")
         lines.append(
-            f"- Integrity score: `{risk.get('integrity_score')}` "
-            f"(grade `{risk.get('grade')}` - {risk.get('grade_label')})"
+            f"- Defect condition score: `{risk.get('defect_condition_score')}` "
+            f"(grade `{risk.get('defect_condition_grade')}` - "
+            f"{risk.get('defect_condition_label')}); from the ranked defects above, not "
+            "the image-based integrity score in Structural Health Scoring"
         )
         lines.append(f"- Basis: {risk.get('measurement_note', '')}")
         lines.append("")
