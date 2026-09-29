@@ -774,7 +774,7 @@
           ? `, ${Number(result.surface_length_m).toFixed(2)} m over the ground`
           : (result.surface_note ? ` (${result.surface_note})` : '');
         status(`${kind === 'area' ? 'Area' : 'Distance'} on the survey: `
-          + `${Number(m.value).toFixed(2)} ${unit}${ground} (EPSG:${m.epsg}). Saved to measurements.`);
+          + `${Number(result.value_m ?? m.value).toFixed(2)} ${unit}${ground} (EPSG:${m.epsg}). Saved to measurements.`);
       },
       onGeometryChange: async (geometry) => {
         if (geometry.aoi) {

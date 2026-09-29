@@ -69,8 +69,25 @@ class NotProjected(NotGeoreferenced):
     """
 
 
+def linear_unit_factor(crs) -> tuple[str, float]:
+    """(unit name, metres per unit) of a projected CRS's horizontal axes."""
+    try:
+        name, factor = crs.linear_units_factor
+        return str(name), float(factor)
+    except Exception:  # noqa: BLE001 - an unknown unit is reported, not assumed
+        return str(getattr(crs, "linear_units", "") or "unknown"), float("nan")
+
+
 def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
-    """Refuse a CRS whose horizontal units are not linear (metres or feet)."""
+    """Refuse a CRS whose horizontal units are not metres.
+
+    A projected CRS in feet (EPSG:3734, Ohio North in US survey feet, say) passes the
+    "projected" test, but every surface analysis here pairs horizontal spacing with
+    elevations in metres: a volume came out as square feet times metres (49,315 "m3"
+    for a true 4,628 m3) and a 10.1 deg slope as 2.6 deg. The vertical unit of such a
+    raster is not recorded either -- US surveys often give heights in feet too -- so
+    no conversion can be made safely. It is refused, in words.
+    """
     label = str(path) or "The raster"
     if not epsg:
         raise NotGeoreferenced(
@@ -91,6 +108,15 @@ def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
             f"{label} is in EPSG:{epsg}, a geographic CRS: its cells are measured in "
             "degrees, so areas, volumes and distances computed on it would be "
             "meaningless (they round to zero). Reproject it to a metric CRS -- a UTM "
+            "zone -- first."
+        )
+    unit, factor = linear_unit_factor(crs)
+    if not (factor == 1.0):
+        raise NotProjected(
+            f"{label} is in EPSG:{epsg} ({unit} horizontal "
+            "units). Surface analyses pair horizontal spacing with elevations in metres, "
+            "and this raster's vertical unit is not recorded, so its volumes, slopes and "
+            "depths would mix units. Reproject it to a CRS in metres -- the survey's UTM "
             "zone -- first."
         )
 

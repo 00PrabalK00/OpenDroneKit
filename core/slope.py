@@ -113,6 +113,10 @@ def _require_projected(surface: RasterSurface) -> None:
             "while elevations are in metres, so their ratio is not a slope. Reproject "
             "the surface to a metric CRS -- a UTM zone -- before measuring gradient."
         )
+    from .dsm_analysis import require_projected_epsg
+
+    # Feet horizontally against metres vertically turned a 10.1 deg slope into 2.6 deg.
+    require_projected_epsg(surface.epsg, surface.path or "The surface")
 
 
 def _fit_plane(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple[float, float, float]:

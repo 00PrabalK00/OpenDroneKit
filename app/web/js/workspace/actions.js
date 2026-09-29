@@ -1466,6 +1466,10 @@ export function describeMeasurement(result) {
   if (m && m.value !== undefined && m.unit) {
     const unit = String(m.unit).replace("square metre", "m²").replace("metre", "m");
     parts.push(`${m.kind} ${round(m.value)} ${unit}`);
+    if (m.native_unit && result.value_m !== undefined) {
+      // A raster in feet: the figure above is in its own unit, this is the metric one.
+      parts.push(`= ${round(result.value_m)} ${m.kind === "area" ? "m²" : "m"}`);
+    }
     if (result.surface_length_m !== undefined) {
       parts.push(`over the ground ${round(result.surface_length_m)} m`);
     } else if (result.surface_note) {

@@ -2691,6 +2691,14 @@ class Api:
             return fail(f"EPSG:{epsg} ({crs.name}) is not projected: its units are degrees, "
                         "and every product is measured in metres. Choose a projected CRS "
                         "such as a UTM zone.")
+        unit = crs.axis_info[0].unit_name if crs.axis_info else "unknown"
+        factor = crs.axis_info[0].unit_conversion_factor if crs.axis_info else None
+        if factor != 1.0:
+            return fail(f"EPSG:{epsg} ({crs.name}) measures in {unit}, and every product "
+                        "is written with elevations in metres: its DSM would pair "
+                        "horizontal feet with vertical metres, and the volume, slope and "
+                        "ponding tools refuse such a surface. Choose a projected CRS in "
+                        "metres, such as the survey's UTM zone.")
         self._session.store.set_setting(self._crs_setting_key(), int(epsg))
         self._session.audit("project_crs_set", {"epsg": int(epsg)})
         return ok(epsg=int(epsg), name=crs.name)
@@ -2884,7 +2892,13 @@ class Api:
             return result
         measurement = result["measurement"]
         measurement["caveats"] = list(measurement.get("caveats") or []) + caveats
-        payload: dict[str, Any] = {"measurement": measurement, "raster_path": raster}
+        value_m = self._planar_value_in_metres(raster, kind, measurement)
+        if value_m is None:
+            return fail(f"{Path(raster).name} is in {measurement.get('unit')}, a unit with "
+                        "no known length in metres, so the measurement cannot be given "
+                        "in metres. Reproject the raster to a CRS in metres first.")
+        payload: dict[str, Any] = {"measurement": measurement, "raster_path": raster,
+                                   "value_m": value_m}
         dsm = self._product_path("dsm")
         if kind == "distance" and dsm:
             # The planar figure is the map distance; over sloping ground the walked
@@ -2906,11 +2920,36 @@ class Api:
                     f"that has data it is {along['surface_length_m']} m.")
         unit = "m2" if kind == "area" else "m"
         payload["measurement_id"] = self._record_measurement(
-            kind, float(measurement["value"]), unit, points, raster,
+            kind, value_m, unit, points, raster,
             {"measurement": measurement,
              **{k: v for k, v in payload.items() if k.startswith("surface")}},
         )
         return ok(**payload)
+
+    def _planar_value_in_metres(self, raster: str, kind: str,
+                                measurement: dict[str, Any]) -> float | None:
+        """The planar measurement in metres (m2 for an area), whatever the raster's unit.
+
+        A raster in US survey feet measured a 100 m line as 328.18 and the history
+        stored it as "328.18 m". A horizontal length converts exactly by the CRS's own
+        unit factor; the native value and unit stay in the measurement for reference.
+        """
+        import rasterio
+
+        from core.dsm_analysis import linear_unit_factor
+
+        with rasterio.open(raster) as src:
+            name, factor = linear_unit_factor(src.crs)
+        if not (factor > 0):
+            return None
+        value = float(measurement["value"])
+        if factor != 1.0:
+            measurement["native_unit"] = name
+            measurement["native_value"] = value
+            measurement.setdefault("caveats", []).append(
+                f"The raster is in {name}; converted to metres with its CRS factor "
+                f"({factor} m per unit).")
+        return value * (factor ** 2 if kind == "area" else factor)
 
     @guard
     def list_measurements(self) -> dict[str, Any]:
