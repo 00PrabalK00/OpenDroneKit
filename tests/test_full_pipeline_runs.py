@@ -25,13 +25,13 @@ from conftest import REPO_ROOT, survey_imagery_dir
 
 pytest.importorskip("pycolmap", reason="COLMAP engine not installed")
 
-FRAME_COUNT = 6
+FRAME_COUNT = 8
 FRAME_WIDTH = 1200
 
 
 @pytest.fixture(scope="module")
 def small_survey(tmp_path_factory) -> Path:
-    """Six consecutive Aukerman frames at 1200 px, with their EXIF (GPS, camera) kept."""
+    """Eight consecutive Aukerman frames at 1200 px, with their EXIF (GPS, camera) kept."""
     Image = pytest.importorskip("PIL.Image")
     source = survey_imagery_dir()
     frames = sorted(source.glob("*.JPG"))[:FRAME_COUNT] if source.is_dir() else []
