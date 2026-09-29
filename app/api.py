@@ -2997,13 +2997,18 @@ class Api:
         result always carries what the range excluded, and a warning when the hottest
         pixels in the frame are saturated.
         """
-        from core.thermal import NotRadiometric, load_radiometric_file
+        from core.thermal import NotRadiometric, load_radiometric_file, load_temperature_geotiff
         from core.thermal_scaling import (
             ScalingRefused, anomaly_scale, auto_scale, legend, manual_scale,
         )
 
         try:
-            frame = load_radiometric_file(path)
+            # A temperature map the thermal run wrote is as much a measurement as the
+            # sidecar it came from; Temperature Range refused the toolkit's own product.
+            if Path(path).suffix.lower() in {".tif", ".tiff"}:
+                frame = load_temperature_geotiff(path)
+            else:
+                frame = load_radiometric_file(path)
         except (NotRadiometric, FileNotFoundError, OSError) as exc:
             return fail(str(exc))
 

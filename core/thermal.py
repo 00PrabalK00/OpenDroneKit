@@ -168,7 +168,9 @@ class ThermalImage:
     """A temperature field, not a picture."""
 
     celsius: np.ndarray
-    calibration: Calibration
+    # None for a temperature map read back from disk: its counts were converted when it
+    # was written, and the constants are not carried in the raster.
+    calibration: Calibration | None
     source: str = ""
 
     @property
@@ -261,6 +263,36 @@ def load_radiometric_file(path: str | Path) -> ThermalImage:
         "`exiftool -b -RawThermalImage`, and supply the counts with the camera's "
         "Planck constants. The rendered pixels are a palette, not temperatures."
     )
+
+
+# The tags write_radiometric_thermal_map stamps on the temperature GeoTIFF it writes.
+# A float raster without them may be a DSM or an index; reading one as degrees would
+# invent temperatures, so these are required rather than assumed.
+TEMPERATURE_TAGS = {"ODK_VALUE_KIND": "measured_surface_temperature", "ODK_VALUE_UNIT": "celsius"}
+
+
+def load_temperature_geotiff(path: str | Path) -> ThermalImage:
+    """Read back a temperature map this toolkit wrote (band 1, degrees Celsius).
+
+    Only a raster that says it holds measured surface temperature in Celsius is read;
+    any other GeoTIFF is refused with the reason, whatever its values look like.
+    """
+    import rasterio
+
+    target = Path(path)
+    with rasterio.open(target) as raster:
+        tags = raster.tags()
+        missing = [f"{key}={value}" for key, value in TEMPERATURE_TAGS.items()
+                   if str(tags.get(key, "")).strip().lower() != value]
+        if missing:
+            raise NotRadiometric(
+                f"{target.name} does not say it holds measured temperatures (it lacks "
+                f"{', '.join(missing)}). A DSM or index raster read as degrees would "
+                "invent temperatures. Choose the thermal_temperature.tif a thermal map "
+                "run wrote, or a radiometric sidecar JSON.")
+        band = raster.read(1, masked=True).astype(np.float64)
+    celsius = band.filled(np.nan)
+    return ThermalImage(celsius=celsius, calibration=None, source=str(target))
 
 
 def write_thermal_geotiff(

@@ -1512,7 +1512,8 @@ export const ACTIONS = {
   "Temperature Range": {
     describe: "Choose the temperature range a radiometric frame is drawn in.",
     async run(ctx) {
-      const picked = await call("pick_file", ["json"]);
+      // A radiometric sidecar, or the temperature GeoTIFF a thermal map run wrote.
+      const picked = await call("pick_file", ["json", "tif", "tiff"]);
       if (!picked.path) return { skipped: "No radiometric frame chosen." };
       const modes = {
         "Automatic (1st to 99th percentile)": "auto",

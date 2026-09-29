@@ -197,12 +197,13 @@ class TestTheApiPathActuallyWorks:
         # Real Planck constants are required and cannot be defaulted, so the fixture
         # supplies plausible ones; nothing here converts counts, it only scales celsius.
         calibration = Calibration(r1=17096.0, r2=0.0406, b=1428.0, f=1.0, o=-56.0)
-        frame = ThermalImage(celsius=roof, calibration=calibration, source="test.tif")
+        frame = ThermalImage(celsius=roof, calibration=calibration, source="test.json")
+        # A .json path: scale_thermal reads .tif paths as temperature GeoTIFFs instead.
         monkeypatch.setattr("core.thermal.load_radiometric_file", lambda _p: frame)
         return Api(AppSession())
 
     def test_auto_mode_returns_a_scale_and_a_legend(self, api) -> None:
-        result = api.scale_thermal("any.tif", mode="auto")
+        result = api.scale_thermal("any.json", mode="auto")
         assert result["ok"], result.get("error")
         assert result["scale"]["span_c"] > 0
         assert len(result["legend"]) >= 2
@@ -210,24 +211,24 @@ class TestTheApiPathActuallyWorks:
     def test_a_clipping_range_warns_through_the_api(self, api) -> None:
         """The warning is the feature. If it does not survive the wrapper, the operator
         never sees that the hottest area was saturated."""
-        result = api.scale_thermal("any.tif", mode="manual", min_c=18.0, max_c=25.0)
+        result = api.scale_thermal("any.json", mode="manual", min_c=18.0, max_c=25.0)
         assert result["ok"]
         assert result["scale"]["hides_the_hottest"] is True
         assert "80.0 C" in result["warning"]
 
     def test_manual_mode_needs_both_bounds(self, api) -> None:
-        assert not api.scale_thermal("any.tif", mode="manual", min_c=10.0)["ok"]
+        assert not api.scale_thermal("any.json", mode="manual", min_c=10.0)["ok"]
 
     def test_an_unknown_mode_names_the_real_ones(self, api) -> None:
-        error = api.scale_thermal("any.tif", mode="rainbow")["error"]
+        error = api.scale_thermal("any.json", mode="rainbow")["error"]
         assert "auto" in error and "manual" in error and "anomaly" in error
 
     def test_an_inverted_range_is_refused_through_the_api(self, api) -> None:
-        result = api.scale_thermal("any.tif", mode="manual", min_c=30.0, max_c=10.0)
+        result = api.scale_thermal("any.json", mode="manual", min_c=30.0, max_c=10.0)
         assert not result["ok"]
         assert "above the bottom" in result["error"]
 
     def test_anomaly_mode_reaches_the_scaler(self, api) -> None:
-        result = api.scale_thermal("any.tif", mode="anomaly", sigma=2.0)
+        result = api.scale_thermal("any.json", mode="anomaly", sigma=2.0)
         assert result["ok"]
         assert "sigma" in result["scale"]["method"]
