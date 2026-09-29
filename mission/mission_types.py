@@ -43,6 +43,62 @@ class MissionTypeRefused(ValueError):
     """The mission cannot be planned honestly with what was supplied."""
 
 
+# Mission types planned here rather than by a single MissionPlanner template. Listed so
+# the application can offer them beside the planner's own templates.
+SPECIAL_MISSION_TYPES = ("pylon_inspection", "thermal", "multispectral")
+
+
+def combine_plans(plans: Sequence[MissionPlan], template: str) -> MissionPlan:
+    """Several compiled plans flown back to back, as one plan that can be exported.
+
+    Used by the pylon inspection, which compiles one orbit per element. Every pose keeps
+    its own yaw, gimbal pitch and dwell; the path, time and fence are recomputed for the
+    whole sequence rather than copied from the first part.
+    """
+    from dataclasses import replace
+
+    from .planner import _distance_m, _extract_world_poses_from_geojson, _geojson_from_plan
+
+    if not plans:
+        raise MissionTypeRefused("There is nothing to combine: no part of the mission was planned.")
+    poses: list[dict[str, Any]] = []
+    for plan in plans:
+        poses.extend(_extract_world_poses_from_geojson(plan.geojson))
+    waypoints = [[float(p["lon"]), float(p["lat"]), float(p["alt_m"])] for p in poses]
+
+    def fence_span(plan: MissionPlan) -> float:
+        ring = plan.polygon or []
+        if len(ring) < 3:
+            return 0.0
+        return (max(p[0] for p in ring) - min(p[0] for p in ring)) * (
+            max(p[1] for p in ring) - min(p[1] for p in ring))
+
+    widest = max(plans, key=fence_span)
+    constraints = dict(widest.safety_constraints or {})
+    constraints["rth_altitude_m"] = max(
+        float((p.safety_constraints or {}).get("rth_altitude_m", 0.0) or 0.0) for p in plans)
+    no_fly = constraints.get("no_fly_polygons") or []
+    first = plans[0]
+    speed = float(first.cruise_speed_m_s or 0.0) or 3.0
+    distance = _distance_m(waypoints)
+    captures = sum(1 for p in poses if p.get("trigger", True))
+    dwell = sum(float(p.get("dwell_s", 0.0)) for p in poses)
+    return replace(
+        first,
+        polygon=widest.polygon,
+        waypoints=waypoints,
+        geojson=_geojson_from_plan(widest.polygon, waypoints, poses, no_fly),
+        path_distance_m=distance,
+        estimated_time_min=distance / speed / 60.0 + (captures * 0.5 + dwell) / 60.0,
+        template=template,
+        mode=template,
+        flight_recipe={"template": template, "segments": [p.flight_recipe for p in plans]},
+        autopilot_commands=[],
+        safety_constraints=constraints,
+        altitude_m=max(float(p.altitude_m) for p in plans),
+    )
+
+
 # Elements of a transmission tower a utility asks for by name. The gimbal angle is the
 # one that puts the element in frame from a level orbit at its own height: a crossarm is
 # looked at horizontally, an insulator string hangs below its attachment so it is looked
@@ -133,6 +189,10 @@ def plan_pylon_inspection(
             orbit_center_lonlat=[float(center_lonlat[0]), float(center_lonlat[1])],
             orbit_radius_m=radius,
             altitude_m=element.height_m,
+            # One ring at the element's own height. Left to the orbit default, overlap
+            # stacked two rings several metres above and below it, so neither was at
+            # the height the fitting sits at.
+            orbit_level_count=1,
             gimbal_tilt_deg=element.gimbal_tilt_deg,
             camera=camera,
             speed_m_s=speed_m_s,
@@ -266,6 +326,7 @@ def plan_multispectral_mission(
     front_overlap_pct: float = 80.0,
     side_overlap_pct: float = 75.0,
     speed_m_s: float = 6.0,
+    accept_relative_values: bool = False,
     **planner_kwargs: Any,
 ) -> dict[str, Any]:
     """A grid with synchronised band capture and a calibration shot at each end.
@@ -290,12 +351,14 @@ def plan_multispectral_mission(
             f"{payload.name} states no band centres, so nothing downstream can know "
             "which band is which."
         )
-    if payload.requires_calibration and calibration_panel_lonlat is None:
+    relative_only = payload.requires_calibration and calibration_panel_lonlat is None
+    if relative_only and not accept_relative_values:
         raise MissionTypeRefused(
             f"{payload.name} needs a reflectance panel capture before and after the "
             "flight. Without the panel position this mission cannot include them, and "
             "indices from it will not be comparable with any other survey. Supply the "
-            "panel location, or accept single-flight relative values explicitly."
+            "panel location, or accept single-flight relative values explicitly "
+            "(accept_relative_values)."
         )
 
     plan = planner.generate(
@@ -333,9 +396,14 @@ def plan_multispectral_mission(
             "synchronised_bands": True,
             "band_count": len(payload.bands_nm),
             "calibrated": bool(calibration_captures),
+            "relative_values_only": bool(relative_only),
             "trigger": payload.capture_command(),
         },
-        "limits": [
+        "limits": ([
+            "No reflectance panel is captured: the operator accepted relative values. "
+            "Indices from this flight describe differences WITHIN this flight only and "
+            "must not be compared with any other survey or read as reflectance."
+        ] if relative_only else []) + [
             "All bands are captured at one trigger, so band-to-band alignment depends "
             "on the instrument, not on the flight plan.",
             "Indices are comparable between surveys only where both flights carry "

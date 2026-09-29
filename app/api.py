@@ -426,9 +426,22 @@ class Api:
         plannable and invisible. A mission type nobody can see is a mission type nobody
         uses, which is indistinguishable from one that was never built.
         """
-        from mission.planner import MissionPlanner, available_templates
+        from mission.mission_types import SPECIAL_MISSION_TYPES
+        from mission.planner import (
+            MissionPlanner, TEMPLATE_LABELS, available_templates, default_gimbal_for_template,
+        )
 
-        return ok(templates=available_templates(), planner=MissionPlanner.__name__)
+        templates = available_templates()
+        return ok(
+            templates=templates,
+            # Planned by mission/mission_types.py rather than one planner template, and
+            # reached through plan_mission with the same template field.
+            special_templates=list(SPECIAL_MISSION_TYPES),
+            labels={t: TEMPLATE_LABELS.get(t, t.replace("_", " ").title())
+                    for t in [*templates, *SPECIAL_MISSION_TYPES]},
+            default_gimbal_deg={t: default_gimbal_for_template(t) for t in templates},
+            planner=MissionPlanner.__name__,
+        )
 
     @guard
     def cache_terrain(self, path: str, name: str = "") -> dict[str, Any]:
@@ -1361,14 +1374,21 @@ class Api:
             )
         except MissionTypeRefused as exc:
             return fail(str(exc))
+        from mission.mission_types import combine_plans
+
+        combined = combine_plans(plan["plans"], "pylon_inspection")
+        adopted = self._adopt_plan(combined, "pylon_inspection", list(plan.get("limits") or []),
+                                   extra={"pylon_levels": plan["levels"]})
         self._session.audit("pylon_planned", {"elements": len(elements)})
-        return ok(plan=plan)
+        summary_plan = {k: v for k, v in plan.items() if k != "plans"}
+        return ok(plan=summary_plan, **adopted)
 
     @guard
     def plan_thermal_survey(self, thermal_camera: str, target_gsd_cm: float,
                             rgb_camera: str = "",
                             front_overlap_pct: float = 80.0,
-                            side_overlap_pct: float = 70.0) -> dict[str, Any]:
+                            side_overlap_pct: float = 70.0,
+                            options: dict[str, Any] | None = None) -> dict[str, Any]:
         """A grid flown at the altitude the THERMAL sensor needs, with paired RGB.
 
         Thermal imagers have far coarser pixels than the visual camera beside them, so a
@@ -1391,11 +1411,16 @@ class Api:
                 rgb_camera=str(rgb_camera),
                 front_overlap_pct=float(front_overlap_pct),
                 side_overlap_pct=float(side_overlap_pct),
+                constraints=self._mission_constraints(options or {}),
+                **self._terrain_kwargs(options or {}),
             )
         except MissionTypeRefused as exc:
             return fail(str(exc))
+        extra = {k: v for k, v in plan.items() if k != "plan"}
+        adopted = self._adopt_plan(plan["plan"], "thermal", list(plan.get("limits") or []),
+                                   extra={"thermal": extra}, options=options)
         self._session.audit("thermal_planned", {"camera": thermal_camera})
-        return ok(plan=plan)
+        return ok(plan=extra, **adopted)
 
     @guard
     def plan_multispectral_survey(self, payload_key: str,
@@ -1403,7 +1428,9 @@ class Api:
                                   altitude_m: float = 60.0,
                                   calibration_panel_lonlat: list[float] | None = None,
                                   front_overlap_pct: float = 80.0,
-                                  side_overlap_pct: float = 75.0) -> dict[str, Any]:
+                                  side_overlap_pct: float = 75.0,
+                                  options: dict[str, Any] | None = None,
+                                  accept_relative_values: bool = False) -> dict[str, Any]:
         """A grid for a multispectral array, with the calibration panel in the plan.
 
         The payload is the subject here, not the camera: a multispectral array has its
@@ -1428,11 +1455,18 @@ class Api:
                 ),
                 front_overlap_pct=float(front_overlap_pct),
                 side_overlap_pct=float(side_overlap_pct),
+                accept_relative_values=bool(accept_relative_values),
+                constraints=self._mission_constraints(options or {}),
+                **self._terrain_kwargs(options or {}),
             )
         except MissionTypeRefused as exc:
             return fail(str(exc))
+        extra = {k: v for k, v in plan.items() if k != "plan"}
+        adopted = self._adopt_plan(plan["plan"], "multispectral", list(plan.get("limits") or []),
+                                   extra={"multispectral": extra, "payload": plan.get("payload")},
+                                   options=options)
         self._session.audit("multispectral_planned", {"payload": payload_key})
-        return ok(plan=plan)
+        return ok(plan=extra, **adopted)
 
     def plan_complex_facade(self, polygon_xy: list[list[float]],
                             courtyards: list[list[list[float]]] | None = None,
@@ -2540,27 +2574,249 @@ class Api:
             image_format=str(opts.get("image_format", "jpeg")),
         ))
 
-    @guard
-    def plan_mission(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Plan a mission over the drawn AOI with the operator's real constraints."""
-        from mission.planner import MissionConstraints, MissionPlanner
+    def _mission_constraints(self, opts: dict[str, Any]) -> Any:
+        """The operator's constraints for a plan over the drawn AOI."""
+        from mission.planner import MissionConstraints
 
-        opts = dict(options or {})
         polygon = self._session.aoi_polygon
-        if len(polygon) < 3:
-            return fail("Draw an area of interest on the map before planning a mission.")
-
-        constraints = MissionConstraints(
+        return MissionConstraints(
             geofence=[list(p) for p in polygon],
             min_altitude_m=float(opts.get("min_altitude_m", 20.0)),
             max_altitude_m=float(opts.get("max_altitude_m", 120.0)),
-            standoff_m=float(opts.get("standoff_m", 0.0)),
+            # 0 means "not given": structure templates then use their own stand-off.
+            standoff_m=float(opts.get("standoff_m", 0.0) or 0.0),
             rth_altitude_m=float(opts.get("rth_altitude_m", 80.0)),
             no_fly_polygons=[list(map(list, ring)) for ring in self._session.no_fly_polygons],
             rth_action=str(opts.get("rth_action", "return_home")),
             obstacle_avoidance_profile=str(opts.get("obstacle_profile", "standard")),
         )
 
+    def _terrain_kwargs(self, opts: dict[str, Any]) -> dict[str, Any]:
+        if not self._session.terrain_source_path:
+            return {}
+        return {
+            "terrain_follow_enabled": True,
+            "terrain_source_path": self._session.terrain_source_path,
+            "terrain_follow_mode": str(opts.get("terrain_follow_mode", "agl")),
+            "terrain_normal_camera_enabled": bool(opts.get("terrain_normal_camera", False)),
+        }
+
+    @staticmethod
+    def _given(opts: dict[str, Any], key: str) -> bool:
+        """Whether the operator actually supplied a value, rather than leaving it blank."""
+        value = opts.get(key)
+        if value is None:
+            return False
+        if isinstance(value, str) and not value.strip():
+            return False
+        if isinstance(value, float) and value != value:  # NaN from an empty number box
+            return False
+        return True
+
+    def _adopt_plan(self, plan: Any, template: str, warnings: list[str],
+                    extra: dict[str, Any] | None = None,
+                    options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Make `plan` the session's mission and describe it the way plan_mission does.
+
+        Every planner route ends here, so a plan from the pylon, thermal or
+        multispectral planners can be exported, uploaded and saved exactly like one from
+        plan_mission -- before this, those three returned a plan nothing could use.
+        """
+        self._session.mission_plan = plan
+        self._session.mission_plan_dict = _plan_to_dict(plan)
+        if extra:
+            self._session.mission_plan_dict.update(extra)
+        # Whatever was uploaded before is not this plan, and nothing about it has been
+        # confirmed by the operator yet.
+        self._session.mission_uploaded = False
+        self._session.preflight_acknowledged = set()
+        self._session.audit("mission_planned", {"template": template, "waypoints": len(plan.waypoints)})
+        # Extended in place: plan_mission keeps appending to this same list afterwards.
+        warnings.extend(self._endurance_warnings(plan, options or {}))
+        return {
+            "summary": {
+                "template": template,
+                "waypoints": len(plan.waypoints),
+                "distance_m": round(float(plan.path_distance_m), 1),
+                "duration_min": round(float(plan.estimated_time_min), 1),
+                "gsd_cm": round(float(plan.estimated_gsd_cm), 2),
+                "altitude_m": float(plan.altitude_m),
+                "speed_m_s": round(float(getattr(plan, "cruise_speed_m_s", 0.0) or 0.0), 2),
+                "altitude_frame": str(getattr(plan, "altitude_frame", "relative_to_home")),
+                "adjustments": plan.safety_adjustments,
+            },
+            "geojson": plan.geojson,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _endurance_warnings(plan: Any, opts: dict[str, Any]) -> list[str]:
+        """Say so when the plan is longer than one battery, on every planner route.
+
+        A 55 minute facade mapping used to plan with no word about batteries; the
+        estimate existed only behind a separate call. The endurance is the operator's
+        (endurance_min / reserve_pct) or a stated generic default, and the warning
+        names which, so an assumption is not presented as the aircraft's figure.
+        """
+        from mission.estimates import AircraftProfile, estimate_batteries
+
+        minutes = float(getattr(plan, "estimated_time_min", 0.0) or 0.0)
+        given = opts.get("endurance_min") not in (None, "")
+        try:
+            aircraft = AircraftProfile(
+                endurance_min=float(opts.get("endurance_min") or 25.0),
+                reserve_pct=float(opts.get("reserve_pct") or 25.0),
+            )
+            estimate = estimate_batteries(minutes, aircraft)
+        except (TypeError, ValueError):
+            return []
+        if estimate.fits_in_one_flight:
+            return []
+        basis = ("the endurance you gave" if given else
+                 "an assumed 25 min endurance (set endurance_min for your aircraft)")
+        return [
+            f"This plan needs about {minutes:.0f} min of flying; with {basis} and a "
+            f"{aircraft.reserve_pct:.0f}% reserve one battery gives "
+            f"{estimate.usable_endurance_min:.0f} min, so it takes "
+            f"{estimate.batteries_required} batteries. Split it into sorties "
+            "(plan_battery_segments) before flying."
+        ]
+
+    def _plan_special(self, template: str, opts: dict[str, Any]) -> dict[str, Any]:
+        """pylon_inspection / thermal / multispectral, reached with the same form."""
+        if template == "pylon_inspection":
+            center = opts.get("pylon_center_lonlat") or opts.get("center_lonlat")
+            if not center:
+                if len(self._session.aoi_polygon) < 3:
+                    return fail("Draw an area around the pylon, or give its centre, before "
+                                "planning a pylon inspection.")
+                center = _centroid(self._session.aoi_polygon)
+            elements = opts.get("pylon_elements") or []
+            if isinstance(elements, str):
+                elements = _parse_pylon_elements(elements)
+            return self.plan_pylon_mission(
+                list(center), list(elements),
+                standoff_m=float(opts.get("standoff_m") or 12.0),
+                structure_radius_m=float(opts.get("structure_radius_m") or 3.0),
+                camera=str(opts.get("camera") or "mavic2pro"),
+            )
+        if template == "thermal":
+            if not self._given(opts, "thermal_camera"):
+                return fail("A thermal survey needs the thermal camera it will be flown with.")
+            if not self._given(opts, "target_gsd_cm"):
+                return fail("A thermal survey needs the thermal ground sample distance to fly "
+                            "for (target_gsd_cm); the altitude is solved from it.")
+            return self.plan_thermal_survey(
+                str(opts.get("thermal_camera")), float(opts.get("target_gsd_cm")),
+                rgb_camera=str(opts.get("rgb_camera") or ""),
+                front_overlap_pct=float(opts.get("front_overlap_pct", 80.0)),
+                side_overlap_pct=float(opts.get("side_overlap_pct", 70.0)),
+                options=opts,
+            )
+        if not self._given(opts, "payload_key") and not self._given(opts, "payload"):
+            return fail("A multispectral survey needs the multispectral payload it will carry.")
+        panel = opts.get("calibration_panel_lonlat")
+        if isinstance(panel, str):
+            panel = [float(v) for v in panel.replace(";", ",").split(",") if v.strip()] or None
+        return self.plan_multispectral_survey(
+            str(opts.get("payload_key") or opts.get("payload")),
+            camera=str(opts.get("camera") or "mavic3e"),
+            altitude_m=float(opts.get("altitude_m", 60.0)),
+            calibration_panel_lonlat=panel,
+            front_overlap_pct=float(opts.get("front_overlap_pct", 80.0)),
+            side_overlap_pct=float(opts.get("side_overlap_pct", 75.0)),
+            options=opts,
+            # The cockpit form sends strings; "no" must not read as True.
+            accept_relative_values=str(opts.get("accept_relative_values") or "").strip().lower()
+            in {"1", "true", "yes", "on"},
+        )
+
+    @guard
+    def plan_linked_mission(self, version_ids: list[int], speed_m_s: float = 5.0,
+                            optimize_order: bool = True) -> dict[str, Any]:
+        """Join saved missions into one sortie, with transitions planned between them.
+
+        A linked mission is made of missions, so its input is two or more saved mission
+        versions (by id). The transition dry run checks each connecting leg against the
+        no-fly zones and altitude band; a failed dry run is returned as a warning on the
+        plan, not buried in a field nobody reads.
+        """
+        from mission.planner import MissionPlanner
+
+        wanted = [int(v) for v in version_ids or []]
+        if len(wanted) < 2:
+            return fail("A linked mission joins two or more saved missions. Save each mission "
+                        "(Mission > Save Mission Version), then link them by version.")
+        versions = {int(v.get("id", 0)): v for v in
+                    self._session.store.list_mission_versions(self._session.project_id())}
+        missing = [v for v in wanted if v not in versions]
+        if missing:
+            return fail(f"No saved mission version with id {missing}.")
+        recipes = [json.loads(versions[v].get("flight_recipe_json") or "{}") for v in wanted]
+        constraints = None
+        if self._session.no_fly_polygons:
+            # The zones drawn now, on top of the saved missions' own altitude band. A
+            # partial override resets the band to defaults and clamps every pose.
+            bands = [r.get("constraints") or {} for r in recipes]
+            constraints = {
+                "no_fly_polygons": [list(map(list, r)) for r in self._session.no_fly_polygons],
+                "min_altitude_m": min(float(b.get("min_altitude_m", 20.0)) for b in bands),
+                "max_altitude_m": max(float(b.get("max_altitude_m", 120.0)) for b in bands),
+                "rth_altitude_m": max(float(b.get("rth_altitude_m", 80.0)) for b in bands),
+            }
+        try:
+            plan = MissionPlanner().generate_linked_mission(
+                recipes,
+                speed_m_s=float(speed_m_s),
+                optimize_order=bool(optimize_order),
+                constraints=constraints,
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+        metadata = (plan.flight_recipe or {}).get("metadata") or {}
+        warnings: list[str] = []
+        if not plan.linked_dry_run_ok:
+            warnings.append(
+                "The transition dry run failed: "
+                f"{int(metadata.get('linked_dry_run_obstacle_hits', 0))} connecting leg(s) cross a "
+                f"no-fly zone and {int(metadata.get('linked_dry_run_altitude_violations', 0))} "
+                "leave the altitude band. Review the transitions before flying this sortie."
+            )
+        adopted = self._adopt_plan(plan, "linked_mission", warnings)
+        return ok(linked_segment_count=int(plan.linked_segment_count),
+                  linked_dry_run_ok=bool(plan.linked_dry_run_ok), **adopted)
+
+    @guard
+    def plan_mission(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Plan a mission over the drawn AOI with the operator's real constraints."""
+        from mission.mission_types import SPECIAL_MISSION_TYPES
+        from mission.planner import MissionPlanner, _normalize_template
+
+        opts = dict(options or {})
+        requested = str(opts.get("template", "grid")).strip().lower()
+        if requested in SPECIAL_MISSION_TYPES:
+            return self._plan_special(requested, opts)
+        template = _normalize_template(requested)
+        if template == "linked_mission":
+            ids = opts.get("linked_version_ids")
+            if isinstance(ids, str):
+                ids = [v for v in ids.replace(";", ",").replace(" ", ",").split(",") if v.strip()]
+            elif isinstance(ids, (int, float)):
+                ids = [ids]
+            if ids:
+                return self.plan_linked_mission([int(float(v)) for v in ids],
+                                                speed_m_s=float(opts.get("speed_m_s", 5.0)))
+            # Planning a "linked mission" from one drawn area used to compile a mix of
+            # facade, orbit and grid passes and report success with zero linked segments.
+            return fail("A linked mission joins two or more saved missions, so it cannot be "
+                        "planned from an area alone. Save each mission (Mission > Save "
+                        "Mission Version), then link them by version.")
+
+        polygon = self._session.aoi_polygon
+        if len(polygon) < 3:
+            return fail("Draw an area of interest on the map before planning a mission.")
+
+        constraints = self._mission_constraints(opts)
         kwargs: dict[str, Any] = {
             "polygon_lonlat": polygon,
             "altitude_m": float(opts.get("altitude_m", 55.0)),
@@ -2568,42 +2824,88 @@ class Api:
             "side_overlap_pct": float(opts.get("side_overlap_pct", 65.0)),
             "speed_m_s": float(opts.get("speed_m_s", 8.0)),
             "mode": str(opts.get("template", "grid")),
-            "gimbal_tilt_deg": float(opts.get("gimbal_tilt_deg", -90.0)),
-            "inspection_dwell_s": float(opts.get("dwell_s", 0.0)),
             "wind_speed_m_s": float(opts.get("wind_speed_m_s", 0.0)),
             "wind_direction_deg": float(opts.get("wind_direction_deg", 0.0)),
             "wind_gust_m_s": float(opts.get("wind_gust_m_s", 0.0)),
             "constraints": constraints,
         }
+        # Left blank, the gimbal and dwell come from the template: an orbit looks at its
+        # subject and a roof inspection stops at each point. Sending -90 and 0 for every
+        # template made every structure mission a set of nadir photographs.
+        if self._given(opts, "gimbal_tilt_deg"):
+            kwargs["gimbal_tilt_deg"] = float(opts["gimbal_tilt_deg"])
+        if self._given(opts, "dwell_s"):
+            kwargs["inspection_dwell_s"] = float(opts["dwell_s"])
         if opts.get("camera"):
             kwargs["camera"] = str(opts["camera"])
-        if self._session.terrain_source_path:
-            kwargs["terrain_follow_enabled"] = True
-            kwargs["terrain_source_path"] = self._session.terrain_source_path
-            kwargs["terrain_follow_mode"] = str(opts.get("terrain_follow_mode", "agl"))
-            kwargs["terrain_normal_camera_enabled"] = bool(opts.get("terrain_normal_camera", False))
+        kwargs.update(self._terrain_kwargs(opts))
         if opts.get("orbit_radius_m"):
             kwargs["orbit_radius_m"] = float(opts["orbit_radius_m"])
             kwargs["orbit_center_lonlat"] = opts.get("orbit_center_lonlat") or _centroid(polygon)
+        if self._given(opts, "dome_radius_m"):
+            kwargs["dome_radius_m"] = float(opts.get("dome_radius_m"))
+        if self._given(opts, "dome_base_altitude_m"):
+            kwargs["dome_base_altitude_m"] = float(opts.get("dome_base_altitude_m"))
+        if opts.get("box_altitude_levels_m"):
+            levels = opts["box_altitude_levels_m"]
+            if isinstance(levels, str):
+                levels = [v for v in levels.replace(";", ",").split(",") if v.strip()]
+            kwargs["box_altitude_levels_m"] = [float(v) for v in levels]
+
+        warnings: list[str] = []
+        # A line the operator drew: the route for linear / lateral / waypoint missions,
+        # the row for solar, the wall line for a curved facade.
+        path = [list(map(float, p[:2])) for p in (opts.get("path_lonlat") or []) if len(p) >= 2]
+        if len(path) >= 2:
+            if template == "linear_inspection":
+                kwargs["linear_path_lonlat"] = path
+            elif template == "lateral_capture":
+                kwargs["lateral_target_path_lonlat"] = path
+            elif template == "waypoints":
+                kwargs["waypoint_path_lonlat"] = path
+            elif template == "solar_inspection":
+                kwargs["solar_rows_lonlat"] = [path]
+            elif template in {"facade", "facade_mapping"}:
+                kwargs["facade_curve_path_lonlat"] = path
+                kwargs["facade_curvature_alignment"] = True
+        elif template in {"linear_inspection", "lateral_capture", "waypoints"}:
+            warnings.append(
+                "No route line was drawn, so this plan follows the area's outline or long "
+                "axis. Draw the route with the Route tool to fly the actual line."
+            )
+        regions = [r for r in (opts.get("interest_regions") or []) if len(r) >= 3]
+        defects = [p for p in (opts.get("prior_defects_lonlat") or []) if len(p) >= 2]
+        if template == "smart_adaptive":
+            if regions:
+                kwargs["adaptive_interest_regions_lonlat"] = regions
+            if defects:
+                kwargs["adaptive_prior_defects_lonlat"] = defects
+            if not regions and not defects:
+                warnings.append(
+                    "No interest regions or prior defects were given, so there is nothing "
+                    "to adapt to: this plan is a uniform grid and is labelled as one. Draw "
+                    "interest regions with the Interest tool to add the detail passes."
+                )
 
         plan = MissionPlanner().generate(**kwargs)
-        self._session.mission_plan = plan
-        self._session.mission_plan_dict = _plan_to_dict(plan)
-        # Whatever was uploaded before is not this plan, and nothing about it has been
-        # confirmed by the operator yet.
-        self._session.mission_uploaded = False
-        self._session.preflight_acknowledged = set()
-        self._session.audit("mission_planned", {"template": kwargs["mode"], "waypoints": len(plan.waypoints)})
+        adopted = self._adopt_plan(plan, kwargs["mode"], warnings, options=opts)
+        adopted["summary"]["template"] = kwargs["mode"]
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
         # from the recipe root silently yielded None, so no terrain warning ever fired.
         recipe = self._session.mission_plan_dict.get("flight_recipe") or {}
         terrain = (recipe.get("metadata") or {}).get("terrain_model") or recipe.get("terrain_model") or {}
-        warnings: list[str] = []
         if self._session.terrain_source_path and terrain.get("source") == "missing_terrain_source":
+            detail = ""
+            if self._session.terrain_source_path.lower().endswith((".csv", ".tsv")):
+                from mission.planner import TERRAIN_CSV_ELEVATION_COLUMNS, terrain_csv_columns
+
+                columns = terrain_csv_columns(self._session.terrain_source_path)
+                detail = (f" Its columns are {columns}; a terrain CSV needs lon/lat (or x/y) and "
+                          f"an elevation column named one of {TERRAIN_CSV_ELEVATION_COLUMNS}.")
             warnings.append(
                 "Terrain following was requested but the source could not be read; "
-                "the plan assumes flat ground."
+                "the plan assumes flat ground." + detail
             )
         elif not self._session.terrain_source_path and terrain.get("type") == "flat":
             # Flat-earth planning is only safe over genuinely flat ground. Saying so
@@ -2617,6 +2919,11 @@ class Api:
             warnings.append(
                 "Terrain was approximated by a single fitted plane, so local relief "
                 "inside the area is not represented."
+            )
+        if str(opts.get("terrain_follow_mode", "agl")).lower() == "amsl" and plan.altitude_frame != "amsl":
+            warnings.append(
+                "AMSL altitudes need a terrain model to know the ground elevation at home; "
+                "without one the mission is exported relative to home instead."
             )
 
         # What is actually fitted decides what the aircraft is told at a capture point.
@@ -2645,23 +2952,11 @@ class Api:
             extent = source_covers_area(self._session.terrain_source_path, polygon)
             if not extent["covered"]:
                 warnings.append(
+                    extent["detail"] if extent.get("reason") == "local_coordinates" else
                     f"Terrain source does not cover the planned area: {extent['detail']}"
                 )
 
-        return ok(
-            summary={
-                "template": kwargs["mode"],
-                "waypoints": len(plan.waypoints),
-                "distance_m": round(float(plan.path_distance_m), 1),
-                "duration_min": round(float(plan.estimated_time_min), 1),
-                "gsd_cm": round(float(plan.estimated_gsd_cm), 2),
-                "altitude_m": float(plan.altitude_m),
-                "adjustments": plan.safety_adjustments,
-            },
-            geojson=plan.geojson,
-            warnings=warnings,
-            payload=payload_block,
-        )
+        return ok(payload=payload_block, **adopted)
 
     @guard
     def list_payloads(self) -> dict[str, Any]:
@@ -2737,9 +3032,12 @@ class Api:
                 continue
             writer, suffix = entry
             try:
-                written[name] = writer(target / f"{stem}{suffix}", self._session.mission_plan_dict)
+                # A format with a waypoint limit (Litchi) writes several parts; each is
+                # listed so none of them is silently left behind in the folder.
+                exporters.record_written(
+                    written, name, writer(target / f"{stem}{suffix}", self._session.mission_plan_dict))
             except Exception as exc:  # noqa: BLE001
-                written[name] = f"failed: {exc}"
+                written[name] = f"failed: {type(exc).__name__}: {exc}"
         self._session.audit("mission_exported", {"formats": selected, "directory": str(target)})
         return ok(written=written, directory=str(target))
 
@@ -3279,6 +3577,22 @@ def _file_type_filters(extensions: list[str] | None) -> tuple[str, ...]:
         filters.insert(0, f"Supported files ({combined})")
     filters.append("All files (*.*)")
     return tuple(filters)
+
+
+def _parse_pylon_elements(text: str) -> list[dict[str, Any]]:
+    """"crossarm@32, insulator@28:4" -> [{name, height_m[, radius_m]}, ...]."""
+    elements: list[dict[str, Any]] = []
+    for chunk in text.replace(";", ",").split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        name, _, rest = chunk.partition("@")
+        height, _, radius = rest.partition(":")
+        entry: dict[str, Any] = {"name": name.strip(), "height_m": float(height) if height.strip() else 0.0}
+        if radius.strip():
+            entry["radius_m"] = float(radius)
+        elements.append(entry)
+    return elements
 
 
 def _centroid(ring: list[list[float]]) -> list[float]:

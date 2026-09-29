@@ -94,11 +94,13 @@ class TestMultiFacade:
             "top_altitude_m": 12.0, "bottom_altitude_m": 6.0,
         })
         # The south wall (y = 0) is approached from y < 0, so the camera must look
-        # north, which is yaw 0.
+        # along +y. Primitive yaw is a local math angle (0 along +x, counter-clockwise),
+        # so that is 90; the plan converts it to a compass heading on the way out, and
+        # tests/test_exported_headings_face_the_subject.py checks the exported value.
         south = [p for p in poses if p.y_m < 0]
         assert south
         for pose in south:
-            assert pose.yaw_deg == pytest.approx(0.0, abs=1.0)
+            assert pose.yaw_deg == pytest.approx(90.0, abs=1.0)
             assert pose.camera_yaw_locked
 
     def test_a_degenerate_polygon_yields_nothing_rather_than_garbage(self):
@@ -123,8 +125,8 @@ class TestClosedLoop:
             "altitude_levels_m": [30.0], "points_per_loop": 16,
         })
         for pose in poses:
-            # Bearing from the aircraft to the centre.
-            expected = math.degrees(math.atan2(-pose.x_m, -pose.y_m))
+            # Direction from the aircraft to the centre, as a local math angle.
+            expected = math.degrees(math.atan2(-pose.y_m, -pose.x_m))
             # Compare circularly: 0 and 360 are the same bearing.
             difference = abs((pose.yaw_deg - expected + 180.0) % 360.0 - 180.0)
             assert difference < 1.0, f"yaw {pose.yaw_deg} does not face the centre"

@@ -85,7 +85,14 @@ export const ACTIONS = {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
       const result = await call("plan_mission", ctx.missionOptions());
-      return { message: `Planned ${result.waypoint_count ?? result.waypoints?.length ?? "?"} waypoints.`, refresh: true };
+      // plan_mission answers {summary: {waypoints, ...}, warnings}; reading
+      // result.waypoint_count printed "Planned ? waypoints." after every plan.
+      const summary = result.summary || {};
+      const warnings = (result.warnings || []).length ? ` ${result.warnings.join(" ")}` : "";
+      return {
+        message: `Planned ${summary.waypoints ?? "?"} waypoints, ${summary.duration_min ?? "?"} min.${warnings}`,
+        refresh: true,
+      };
     },
   },
   "New Mission": { alias: "Plan" },
@@ -106,9 +113,13 @@ export const ACTIONS = {
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
       const result = await tryCall("export_mission");
-      const files = (result && (result.files || result.exported)) || [];
-      if (files.length) {
-        return { message: `Exported ${files.length} mission file(s).`, files };
+      // export_mission answers {written: {format: path | "failed: ..."}, directory}.
+      const written = (result && result.written) || {};
+      const files = Object.values(written).filter((v) => !String(v).startsWith("failed"));
+      const failed = Object.entries(written).filter(([, v]) => String(v).startsWith("failed"));
+      if (files.length || failed.length) {
+        const note = failed.length ? ` ${failed.map(([k, v]) => `${k}: ${v}`).join("; ")}` : "";
+        return { message: `Exported ${files.length} mission file(s) to ${result.directory}.${note}`, files };
       }
 
       // Export sits on Projects, Digital Twin, Thermal, Fleet and Settings as well as

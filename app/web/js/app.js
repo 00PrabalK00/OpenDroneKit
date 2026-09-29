@@ -278,20 +278,79 @@
 
   /* ---------- mission ---------- */
 
-  function missionOptions() {
-    return {
+  /* A blank number box is "not given" (null), never 0: a stand-off of 0 or a gimbal of
+     NaN is a value the planner would act on. */
+  function numberOrNull(selector) {
+    const raw = ($(selector) && $(selector).value || '').trim();
+    if (raw === '') return null;
+    const value = parseFloat(raw);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function missionOptions(geometry) {
+    const g = geometry || (state.map ? state.map.getGeometry() : {});
+    const options = {
       template: $('#mission-template').value,
       altitude_m: parseFloat($('#mission-altitude').value),
       speed_m_s: parseFloat($('#mission-speed').value),
       front_overlap_pct: parseFloat($('#mission-front').value),
       side_overlap_pct: parseFloat($('#mission-side').value),
-      gimbal_tilt_deg: parseFloat($('#mission-gimbal').value),
-      dwell_s: parseFloat($('#mission-dwell').value),
+      gimbal_tilt_deg: numberOrNull('#mission-gimbal'),
+      dwell_s: numberOrNull('#mission-dwell'),
+      standoff_m: numberOrNull('#mission-standoff'),
       min_altitude_m: parseFloat($('#mission-minalt').value),
       max_altitude_m: parseFloat($('#mission-maxalt').value),
       rth_altitude_m: parseFloat($('#mission-rthalt').value),
-      wind_speed_m_s: parseFloat($('#mission-wind').value)
+      wind_speed_m_s: parseFloat($('#mission-wind').value),
+      terrain_follow_mode: $('#mission-terrain-mode').value,
+      path_lonlat: g.route || null,
+      interest_regions: g.interest || [],
+      // Mission-type inputs; each is read only by the type that needs it.
+      thermal_camera: $('#mission-thermal-camera').value || null,
+      target_gsd_cm: numberOrNull('#mission-thermal-gsd'),
+      rgb_camera: $('#mission-rgb-camera').value || '',
+      payload_key: $('#mission-ms-payload').value || null,
+      calibration_panel_lonlat: $('#mission-ms-panel').value.trim() || null,
+      accept_relative_values: $('#mission-ms-relative').checked,
+      pylon_elements: $('#mission-pylon-elements').value.trim(),
+      dome_radius_m: numberOrNull('#mission-dome-radius'),
+      dome_base_altitude_m: numberOrNull('#mission-dome-base'),
+      box_altitude_levels_m: $('#mission-box-levels').value.trim() || null,
+      linked_version_ids: $('#mission-linked-ids').value.trim() || null
     };
+    return options;
+  }
+
+  /* The template list comes from the planner, so every mission type it can plan is
+     offered -- the static list here showed twelve of twenty-five. */
+  async function loadMissionTemplates() {
+    const result = await tryCall('mission_templates');
+    if (!result) return;
+    const select = $('#mission-template');
+    const current = select.value || 'grid';
+    const labels = result.labels || {};
+    const all = [...(result.templates || []), ...(result.special_templates || [])];
+    all.sort((a, b) => (a === 'grid' ? -1 : b === 'grid' ? 1 : String(labels[a] || a).localeCompare(labels[b] || b)));
+    select.innerHTML = all.map((t) => `<option value="${t}">${labels[t] || t}</option>`).join('');
+    select.value = all.includes(current) ? current : 'grid';
+    showTemplateOptions();
+
+    const cameras = await tryCall('list_cameras');
+    const list = (cameras && (cameras.cameras || [])) || [];
+    const thermal = list.filter((c) => c.thermal);
+    $('#mission-thermal-camera').innerHTML = thermal.map((c) => `<option value="${c.key}">${c.name || c.key}</option>`).join('');
+    $('#mission-rgb-camera').innerHTML = '<option value="">none</option>' +
+      list.filter((c) => !c.thermal).map((c) => `<option value="${c.key}">${c.name || c.key}</option>`).join('');
+    const payloads = await tryCall('list_payloads');
+    const ms = ((payloads && payloads.payloads) || []).filter((p) => p.kind === 'multispectral');
+    $('#mission-ms-payload').innerHTML = ms.map((p) => `<option value="${p.key}">${p.name || p.key}</option>`).join('');
+  }
+
+  function showTemplateOptions() {
+    const template = $('#mission-template').value;
+    $$('#mission-template-options [data-for]').forEach((node) => {
+      node.style.display = node.dataset.for.split(/\s+/).includes(template) ? '' : 'none';
+    });
   }
 
   async function planMission() {
@@ -305,7 +364,7 @@
 
     $('#btn-plan').disabled = true;
     status('Planning mission...');
-    const result = await tryCall('plan_mission', missionOptions());
+    const result = await tryCall('plan_mission', missionOptions(geometry));
     $('#btn-plan').disabled = false;
     if (!result) return;
 
@@ -318,7 +377,9 @@
         ['Distance', (s.distance_m / 1000).toFixed(2) + ' km'],
         ['Duration', s.duration_min.toFixed(1) + ' min'],
         ['GSD', s.gsd_cm.toFixed(2) + ' cm/px'],
-        ['Altitude', s.altitude_m.toFixed(0) + ' m']
+        ['Altitude', s.altitude_m.toFixed(0) + ' m'],
+        ['Speed', (s.speed_m_s || 0).toFixed(1) + ' m/s'],
+        ['Altitudes', s.altitude_frame === 'amsl' ? 'absolute (AMSL)' : 'relative to home']
       ]) +
       kv([
         ['Geofence clamps', adjustments.geofence_projections || 0],
@@ -782,7 +843,7 @@
     const result = await tryCall('export_mission', formats, '');
     if (!result) return;
     const rows = Object.entries(result.written)
-      .map(([k, v]) => `<div><span>${k}</span><b>${v.startsWith('failed') ? v : 'written'}</b></div>`).join('');
+      .map(([k, v]) => `<div><span>${k}</span><b>${v.startsWith('failed') ? v : v.split(/[\\/]/).pop()}</b></div>`).join('');
     modal('Mission Exported', `<div class="info">${rows}<div><span>Folder</span><b>${result.directory}</b></div></div>`,
       [{ label: 'Open Folder', onClick: () => tryCall('open_path', result.directory) }, { label: 'Close', primary: true }]);
   }
@@ -829,6 +890,7 @@
     $('#btn-zoom-aoi').onclick = menuHandlers['view.zoom_aoi'];
     $('#btn-zoom-mission').onclick = menuHandlers['view.zoom_mission'];
     $('#btn-plan').onclick = planMission;
+    $('#mission-template').onchange = showTemplateOptions;
     $('#btn-connect').onclick = connectDialog;
     $('#btn-upload').onclick = menuHandlers['fly.upload'];
     $('#btn-preflight').onclick = () => switchTab('preflight');
@@ -882,6 +944,7 @@
     wireEvents();
     setTool('pan');
     await refreshProject();
+    await loadMissionTemplates();
     await showCapabilities(false);
     await refreshLayers();
     await renderJobs();

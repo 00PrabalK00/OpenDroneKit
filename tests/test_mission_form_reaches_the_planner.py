@@ -54,6 +54,11 @@ class TestTheFormKeysAreTranslated:
         mapping = _map(shell_js, "MISSION_OPTION_KEYS")
         api_source = (REPO_ROOT / "app" / "api.py").read_text(encoding="utf-8")
         plan_body = api_source.split("def plan_mission")[1].split("plan = MissionPlanner")[0]
+        # The constraint fields (stand-off, altitude band, RTH) are read by the helper
+        # plan_mission and the special mission types share.
+        plan_body += api_source.split("def _mission_constraints")[1].split("\n    def ")[0]
+        # ...and the mission-type inputs by the router plan_mission hands them to.
+        plan_body += api_source.split("def _plan_special")[1].split("\n    def ")[0]
         read = set(re.findall(r'opts\.get\("([a-z_0-9]+)"', plan_body))
 
         unread = {form: api for form, api in mapping.items() if api not in read}
@@ -90,9 +95,12 @@ class TestTheMissionTypeLabelsResolve:
         assert not labels - mapped, f"labels with no template: {sorted(labels - mapped)}"
 
     def test_every_template_it_maps_to_is_one_the_planner_accepts(self, shell_js) -> None:
+        from mission.mission_types import SPECIAL_MISSION_TYPES
         from mission.planner import available_templates
 
-        known = set(available_templates())
+        # plan_mission also routes the special mission types (pylon, thermal,
+        # multispectral) to their own planners by these names.
+        known = set(available_templates()) | set(SPECIAL_MISSION_TYPES)
         targets = set(_map(shell_js, "MISSION_TEMPLATES").values())
         assert not targets - known, f"unknown templates: {sorted(targets - known)}"
 

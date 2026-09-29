@@ -71,7 +71,9 @@ class MissionPlanRequest:
     asset_type: str = "custom"
     inspection_type: str = "visual_survey"
     emergency_landing_zone: str = ""
-    weather_safe: bool = True
+    # None means nobody has looked at the weather. It is reported as unchecked rather
+    # than defaulting to "accepted", which presented an assumption as a check.
+    weather_safe: bool | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_generate_kwargs(self) -> dict[str, Any]:
@@ -219,7 +221,7 @@ class MissionManager:
         self,
         plan: MissionPlan | None = None,
         *,
-        weather_safe: bool = True,
+        weather_safe: bool | None = None,
         emergency_landing_zone: str = "",
         no_fly_conflict_count: int | None = None,
     ) -> list[MissionValidationCheck]:
@@ -254,7 +256,7 @@ class MissionManager:
             MissionValidationCheck("camera_profile", "Camera profile selected", bool(plan.camera), message=str(plan.camera)),
             MissionValidationCheck("return_path", "Return path available", bool(plan.safety_constraints), message="RTH constraints available."),
             MissionValidationCheck("emergency_lz", "Emergency landing zone assigned", bool(emergency_landing_zone), "ok" if emergency_landing_zone else "warning", emergency_landing_zone or "No emergency landing zone selected."),
-            MissionValidationCheck("weather", "Weather safe", bool(weather_safe), "ok" if weather_safe else "warning", "Weather accepted." if weather_safe else "Weather requires operator review."),
+            self._weather_check(weather_safe),
             MissionValidationCheck(
                 "coverage",
                 "Coverage target",
@@ -265,6 +267,20 @@ class MissionManager:
         ]
         publish_event(MISSION_VALIDATED, {"project_id": self.project_id, "checks": [c.to_dict() for c in checks]})
         return checks
+
+    @staticmethod
+    def _weather_check(weather_safe: bool | None) -> MissionValidationCheck:
+        if weather_safe is None:
+            return MissionValidationCheck(
+                "weather", "Weather safe", False, "warning",
+                "Weather not checked: no weather assessment was supplied. Review conditions "
+                "before flight.",
+            )
+        if weather_safe:
+            return MissionValidationCheck("weather", "Weather safe", True, "ok",
+                                          "Operator accepted the weather.")
+        return MissionValidationCheck("weather", "Weather safe", False, "warning",
+                                      "Weather requires operator review.")
 
     @staticmethod
     def summarize_plan(plan: MissionPlan) -> dict[str, Any]:
@@ -353,21 +369,11 @@ class MissionManager:
         items = [dict(item) for item in (plan.autopilot_commands or []) if isinstance(item, dict)]
         if items:
             return items
-        out: list[dict[str, Any]] = []
-        for idx, row in enumerate(plan.waypoints):
-            if len(row) < 2:
-                continue
-            out.append(
-                {
-                    "seq": idx,
-                    "command": 16,
-                    "frame": 3,
-                    "lon": float(row[0]),
-                    "lat": float(row[1]),
-                    "alt": float(row[2]) if len(row) >= 3 else float(plan.altitude_m),
-                }
-            )
-        return out
+        # The full command stream (takeoff, speed, gimbal, yaw, dwell, capture, RTL), not
+        # bare positions: a bare-waypoint upload flies the route and captures nothing.
+        from mission.exporters import build_mission_items
+
+        return [item.to_dict() for item in build_mission_items(plan)]
 
     def upload_mission(self, plan: MissionPlan | None = None) -> CommandResult:
         if not self.drone.is_connected():
@@ -399,7 +405,7 @@ class MissionManager:
             validation = self.validate_plan(
                 plan,
                 emergency_landing_zone=emergency_landing_zone,
-                weather_safe=weather_acknowledged,
+                weather_safe=True if weather_acknowledged else None,
             )
             mission_summary = self.summarize_plan(plan)
             mission_summary["issues"] = [

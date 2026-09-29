@@ -65,9 +65,26 @@ class TestTheBandsAreOblique:
     def test_the_camera_faces_the_site_from_every_point(self, poses) -> None:
         """A ring that photographs outwards is a perimeter flight, not a survey."""
         for pose in poses:
-            bearing_to_centre = np.degrees(np.arctan2(-pose.x_m, -pose.y_m))
-            delta = abs((pose.yaw_deg - bearing_to_centre + 180.0) % 360.0 - 180.0)
+            # Primitive yaw is a local math angle (0 along +x, counter-clockwise).
+            to_centre = np.degrees(np.arctan2(-pose.y_m, -pose.x_m))
+            delta = abs((pose.yaw_deg - to_centre + 180.0) % 360.0 - 180.0)
             assert delta < 1.0, "a capture point is not aimed at the site"
+
+    def test_the_planned_heading_faces_the_site_as_a_compass_bearing(self) -> None:
+        """What leaves the planner is a compass heading, which every exporter writes as-is."""
+        mission = plan("mapping_3d")
+        lon0 = sum(p[0] for p in SITE) / 4
+        lat0 = sum(p[1] for p in SITE) / 4
+        banded = [f for f in mission.geojson["features"]
+                  if str(f["properties"].get("primitive", "")).startswith("oblique_band")]
+        assert banded
+        for feature in banded:
+            lon, lat = feature["geometry"]["coordinates"][:2]
+            east = (lon0 - lon) * np.cos(np.radians(lat0))
+            north = lat0 - lat
+            bearing = np.degrees(np.arctan2(east, north)) % 360.0
+            delta = abs((feature["properties"]["yaw_deg"] - bearing + 180.0) % 360.0 - 180.0)
+            assert delta < 1.0, "an oblique band heading points away from the site"
 
     def test_the_rings_stand_off_outside_the_area(self, poses) -> None:
         radii = [float(np.hypot(pose.x_m, pose.y_m)) for pose in poses]

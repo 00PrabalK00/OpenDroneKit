@@ -239,6 +239,14 @@ class MissionPlan:
     wind_adjusted_speed_m_s: float = 0.0
     wind_penalty_pct: float = 0.0
     facade_curvature_alignment: bool = False
+    # The ground speed the plan was estimated at (after any wind or profile cap), which
+    # is what the exporters command. Zero only on plans built before it was recorded.
+    cruise_speed_m_s: float = 0.0
+    # Waypoint altitudes are always stored relative to the ground at home (the first
+    # waypoint). "amsl" plans also know that ground's elevation from their terrain
+    # model, and exporters that can carry absolute altitude add it back.
+    altitude_frame: str = "relative_to_home"
+    home_elevation_amsl_m: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -266,6 +274,10 @@ class _CapturePose:
     trigger: bool = True
     dwell_s: float = 0.0
     camera_yaw_locked: bool = False
+    # The point the camera is aimed at, when the pose aims at one (an orbit centre, a
+    # structure). A pose the geofence or a no-fly zone moves is re-aimed at it, instead
+    # of keeping a heading computed for a position it no longer occupies.
+    look_at_xy: tuple[float, float] | None = None
 
 
 def _normalize_template(mode: str) -> str:
@@ -377,6 +389,67 @@ TEMPLATE_ALIASES: dict[str, str] = {
         "turbine": "wind_turbine",
         "turbine_inspection": "wind_turbine",
 }
+
+
+# Camera pitch each template is designed around, used when the caller does not choose
+# one. A single -90 default for every template meant an orbit, a panorama or a box
+# circuit photographed the ground under the aircraft instead of the structure.
+TEMPLATE_DEFAULT_GIMBAL_DEG: dict[str, float] = {
+    "corridor": -80.0,
+    "orbit": -35.0,
+    "panorama": 0.0,
+    "facade": 0.0,
+    "facade_mapping": 0.0,
+    "multi_facade": 0.0,
+    "closed_loop": -20.0,
+    "box_inspection": -30.0,
+    "wind_turbine": 0.0,
+    "lateral_capture": 0.0,
+}
+
+# Stand-off used by the structure templates when neither the template argument nor the
+# constraints give one. 0.5 m (what a zero stand-off clamped to) put the aircraft
+# against the wall and shrank each frame to a couple of metres, which is where the
+# 4,879-waypoint facade came from.
+DEFAULT_STRUCTURE_STANDOFF_M = 8.0
+# A turbine blade flexes and the rotor may yaw in gusts; 12 m is the clearance the
+# turbine primitive has always assumed when nobody set one.
+DEFAULT_TURBINE_STANDOFF_M = 12.0
+DEFAULT_BOX_STANDOFF_M = 15.0
+
+
+# What each template is called in a menu.
+TEMPLATE_LABELS: dict[str, str] = {
+    "grid": "Grid survey (2D mapping)",
+    "double_grid": "Double grid (3D mapping)",
+    "corridor": "Corridor mapping",
+    "facade": "Facade inspection",
+    "facade_mapping": "Facade mapping",
+    "multi_facade": "Multi-facade",
+    "closed_loop": "Closed loop",
+    "tower_mapping": "Tower",
+    "orbit": "Orbit",
+    "panorama": "Panorama",
+    "bubble_360": "360 bubble",
+    "roof_inspection": "Roof inspection (stop and shoot)",
+    "linear_inspection": "Linear inspection",
+    "lateral_capture": "Lateral capture",
+    "waypoints": "Waypoints",
+    "solar_inspection": "Solar inspection",
+    "magnetic_mapping": "Magnetic mapping",
+    "wind_turbine": "Wind turbine",
+    "dome_inspection": "Dome inspection",
+    "box_inspection": "Box inspection",
+    "smart_adaptive": "Smart adaptive",
+    "linked_mission": "Linked mission (saved missions)",
+    "pylon_inspection": "Utility pylon",
+    "thermal": "Thermal survey",
+    "multispectral": "Multispectral survey",
+}
+
+
+def default_gimbal_for_template(mode: str) -> float:
+    return float(TEMPLATE_DEFAULT_GIMBAL_DEG.get(_normalize_template(mode), -90.0))
 
 
 # Templates that inspect a structure from outside it. For these the drawn polygon is
@@ -600,6 +673,10 @@ def _project_inside_polygon(point_xy: np.ndarray, polygon_xy: np.ndarray) -> np.
 def _point_on_segment(point_xy: np.ndarray, a_xy: np.ndarray, b_xy: np.ndarray, tol: float = 1e-9) -> bool:
     ap = point_xy - a_xy
     ab = b_xy - a_xy
+    if float(np.dot(ab, ab)) <= tol:
+        # A zero-length segment is a point. Treating it as a line through every
+        # direction made each vertical climb "cross" every no-fly zone on the site.
+        return float(np.dot(ap, ap)) <= tol
     cross = float(ab[0] * ap[1] - ab[1] * ap[0])
     if abs(cross) > tol:
         return False
@@ -641,6 +718,8 @@ def _segment_intersects_polygon(start_xy: np.ndarray, end_xy: np.ndarray, polygo
         return False
     if _point_in_polygon(start_xy, polygon_xy) or _point_in_polygon(end_xy, polygon_xy):
         return True
+    if float(np.linalg.norm(np.asarray(end_xy) - np.asarray(start_xy))) < 1e-9:
+        return False
     for i in range(len(polygon_xy) - 1):
         a = np.asarray(polygon_xy[i], dtype=np.float64)
         b = np.asarray(polygon_xy[i + 1], dtype=np.float64)
@@ -808,6 +887,25 @@ def _wrap_deg(value: float) -> float:
     return wrapped
 
 
+# Two yaw conventions meet in this module, and mixing them is how a camera ends up
+# pointing along a wall instead of at it. Inside the planner, in the asset's local
+# frame, a pose yaw is a math angle: 0 along +x, counter-clockwise positive, the same
+# convention as _bearing_deg and the frame rotation. Everything that leaves the planner
+# (the plan GeoJSON, autopilot commands, every export format) carries a compass
+# heading: 0 north, clockwise positive, which is what an autopilot's CONDITION_YAW, a
+# Litchi heading and a DJI waypointHeadingAngle all mean. These two functions are the
+# only crossing between them.
+def _heading_from_math_deg(math_deg: float) -> float:
+    """World math angle (0 = east, counter-clockwise) to compass heading [0, 360)."""
+    heading = (90.0 - float(math_deg)) % 360.0
+    return 0.0 if heading >= 360.0 - 1e-9 else heading
+
+
+def _math_from_heading_deg(heading_deg: float) -> float:
+    """Compass heading (0 = north, clockwise) to world math angle."""
+    return _wrap_deg(90.0 - float(heading_deg))
+
+
 def _camera_profile(camera: str):
     """Resolve a camera through the profile database.
 
@@ -957,6 +1055,13 @@ def _terrain_elevation_m(point_xy: np.ndarray, terrain_model: dict[str, Any] | N
 
     samples = terrain_model.get("samples_local")
     if isinstance(samples, list) and len(samples) >= 3:
+        # Piecewise-linear over the samples' triangulation, nearest sample outside it.
+        # The global 1/d weighting this replaces averaged every sample in the DEM into
+        # every point, flattening a real 18.7 m slope to about half its height -- the
+        # aircraft then flew 12 m low at the top of the hill.
+        interpolated = _interpolate_samples(samples, x, y)
+        if interpolated is not None:
+            return interpolated
         weighted = 0.0
         weight_sum = 0.0
         for sample in samples:
@@ -973,6 +1078,39 @@ def _terrain_elevation_m(point_xy: np.ndarray, terrain_model: dict[str, Any] | N
             return float(weighted / weight_sum)
 
     return None
+
+
+# Interpolators keyed by the identity of the samples list they were built from. The list
+# is kept alongside so a recycled id() can never return another model's surface.
+_SAMPLE_INTERPOLATORS: dict[int, tuple[list, Any, Any]] = {}
+
+
+def _interpolate_samples(samples: list, x: float, y: float) -> float | None:
+    cached = _SAMPLE_INTERPOLATORS.get(id(samples))
+    if cached is None or cached[0] is not samples:
+        try:
+            from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+
+            arr = np.asarray(
+                [[float(v[0]), float(v[1]), float(v[2])] for v in samples
+                 if isinstance(v, (list, tuple)) and len(v) >= 3],
+                dtype=np.float64,
+            )
+            arr = arr[np.all(np.isfinite(arr), axis=1)]
+            if len(arr) < 3:
+                return None
+            linear = LinearNDInterpolator(arr[:, :2], arr[:, 2])
+            nearest = NearestNDInterpolator(arr[:, :2], arr[:, 2])
+        except Exception:  # noqa: BLE001 - collinear samples, or scipy unavailable
+            return None
+        if len(_SAMPLE_INTERPOLATORS) >= 8:
+            _SAMPLE_INTERPOLATORS.clear()
+        cached = (samples, linear, nearest)
+        _SAMPLE_INTERPOLATORS[id(samples)] = cached
+    value = float(np.asarray(cached[1](x, y)).reshape(-1)[0])
+    if not np.isfinite(value):
+        value = float(np.asarray(cached[2](x, y)).reshape(-1)[0])
+    return value if np.isfinite(value) else None
 
 
 def _terrain_gradient(point_xy: np.ndarray, terrain_model: dict[str, Any] | None) -> tuple[float, float]:
@@ -1032,9 +1170,13 @@ def _terrain_gradient(point_xy: np.ndarray, terrain_model: dict[str, Any] | None
 
 
 def _terrain_delta_m(point_xy: np.ndarray, terrain_model: dict[str, Any] | None) -> float:
+    """Terrain height here relative to the model's reference elevation.
+
+    Applied in both follow modes. AMSL differs from AGL only in how the result is
+    exported (absolute altitude instead of relative to home); returning 0 for it made
+    "AMSL" plans identical to flat ones while the label implied the opposite.
+    """
     if not isinstance(terrain_model, dict):
-        return 0.0
-    if str(terrain_model.get("follow_mode", "agl")).strip().lower() == "amsl":
         return 0.0
 
     z_here = _terrain_elevation_m(point_xy, terrain_model)
@@ -1092,7 +1234,31 @@ def _terrain_model_from_samples_local(
     }
 
 
-def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
+# Column names accepted for the elevation of a terrain CSV sample, after lower-casing and
+# turning spaces and hyphens into underscores.
+TERRAIN_CSV_ELEVATION_COLUMNS = [
+    "elevation_m", "elevation", "elev_m", "elev", "z_m", "z", "height_m", "height",
+    "altitude_m", "altitude", "alt_m", "alt", "dem", "dtm", "ground_m", "ground",
+]
+
+
+def terrain_csv_columns(path: str) -> list[str]:
+    """The header of a terrain CSV, for telling the operator why it was not usable."""
+    src = Path(path)
+    delim = "\t" if src.suffix.lower() == ".tsv" else ","
+    try:
+        with src.open("r", encoding="utf-8", newline="") as fh:
+            return [c.strip() for c in next(csv.reader(fh, delimiter=delim), [])]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def read_terrain_csv_points(path: str) -> tuple[list[list[float]], list[list[float]]] | None:
+    """The samples of a terrain CSV: ([lon, lat, z] rows, [x_m, y_m, z] local rows).
+
+    None when the file cannot be read at all. Shared by the planner and the coverage
+    check, so the file the planner follows is the file whose extent is checked.
+    """
     src = Path(path)
     if not src.exists():
         return None
@@ -1131,7 +1297,7 @@ def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dic
     for row in rows:
         lon = _pick(row, ["lon", "longitude"])
         lat = _pick(row, ["lat", "latitude"])
-        z = _pick(row, ["elevation_m", "elevation", "z_m", "z", "height_m", "height"])
+        z = _pick(row, TERRAIN_CSV_ELEVATION_COLUMNS)
         if lon is not None and lat is not None and z is not None:
             world_pts.append([float(lon), float(lat), float(z)])
             continue
@@ -1152,6 +1318,15 @@ def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dic
             world_pts.append([float(c0), float(c1), float(c2)])
         else:
             local_samples.append([float(c0), float(c1), float(c2)])
+    return world_pts, local_samples
+
+
+def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
+    src = Path(path)
+    points = read_terrain_csv_points(path)
+    if points is None:
+        return None
+    world_pts, local_samples = points
 
     if len(world_pts) >= 3:
         world_xy = [[p[0], p[1]] for p in world_pts]
@@ -1607,7 +1782,13 @@ def _distance_m(waypoints_lonlat: list[list[float]]) -> float:
     dlon = np.diff(lon)
     a = np.sin(dlat / 2.0) ** 2 + np.cos(lat[:-1]) * np.cos(lat[1:]) * np.sin(dlon / 2.0) ** 2
     c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(np.maximum(1.0 - a, 0.0)))
-    return float((EARTH_RADIUS_M * c).sum())
+    horizontal = EARTH_RADIUS_M * c
+    if arr.shape[1] >= 3:
+        # The aircraft flies the climbs too. A facade scan is mostly vertical, and its
+        # horizontal-only length (117 m) understated the real path (9.5 km) 80-fold.
+        vertical = np.diff(arr[:, 2])
+        return float(np.sqrt(horizontal ** 2 + vertical ** 2).sum())
+    return float(horizontal.sum())
 
 
 def _distance_xy(points_xy: Iterable[Iterable[float]]) -> float:
@@ -1639,6 +1820,21 @@ def _line_buffer_polygon(line_lonlat: list[list[float]], buffer_m: float = 25.0)
     )
     rect_ll = _xy_to_lonlat(rect_xy, lon0=lon0, lat0=lat0)
     return [[float(p[0]), float(p[1])] for p in rect_ll.tolist()]
+
+
+def _polygon_centroid_lonlat(ring: list[list[float]]) -> list[float]:
+    pts = ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring
+    return [sum(float(p[0]) for p in pts) / len(pts), sum(float(p[1]) for p in pts) / len(pts)]
+
+
+def _equal_area_radius_m(ring: list[list[float]]) -> float:
+    """Radius of the circle with the same area as a lon/lat ring: a drawn dome outline."""
+    pts = ring[:-1] if len(ring) > 1 and ring[0] == ring[-1] else ring
+    lon0, lat0 = _polygon_centroid_lonlat(pts)
+    xy = _lonlat_to_xy(np.asarray([[float(p[0]), float(p[1])] for p in pts], dtype=np.float64), lon0, lat0)
+    x, y = xy[:, 0], xy[:, 1]
+    area = 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    return max(1.0, sqrt(area / pi))
 
 
 def _tower_buffer_polygon(center_lonlat: Iterable[float], radius_m: float = 35.0, points: int = 24) -> list[list[float]]:
@@ -1953,8 +2149,8 @@ class MissionPlanner:
         camera: str = "mavic2pro",
         flight_direction_deg: float = 0.0,
         camera_direction_deg: float | None = None,
-        gimbal_tilt_deg: float = -90.0,
-        inspection_dwell_s: float = 1.5,
+        gimbal_tilt_deg: float | None = None,
+        inspection_dwell_s: float | None = None,
         facade_top_altitude_m: float | None = None,
         facade_bottom_altitude_m: float | None = None,
         facade_standoff_m: float | None = None,
@@ -2034,6 +2230,9 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        dome_radius_m: float | None = None,
+        dome_base_altitude_m: float = 0.0,
+        box_altitude_levels_m: list[float] | None = None,
     ) -> FlightRecipe:
         raw_vertices = [list(p) for p in (polygon_lonlat or [])]
         linear_path_world: list[list[float]] | None = None
@@ -2053,8 +2252,16 @@ class MissionPlanner:
         flight_direction_deg = _wrap_deg(float(flight_direction_deg))
         camera_direction_locked = camera_direction_deg is not None
         camera_direction_value = _wrap_deg(float(camera_direction_deg)) if camera_direction_deg is not None else flight_direction_deg
+        if gimbal_tilt_deg is None:
+            gimbal_tilt_deg = default_gimbal_for_template(mode)
         gimbal_tilt_deg = float(np.clip(gimbal_tilt_deg, -120.0, 30.0))
-        inspection_dwell_s = float(np.clip(inspection_dwell_s, 0.0, 30.0))
+        # None means the operator did not ask for a dwell: the templates that stop at
+        # each point (roof, panorama, bubble, turbine) use their own 1.5 s. An explicit
+        # value is applied to every capture point of every template -- see
+        # compile_recipe -- because a dwell asked for and silently dropped is a mission
+        # that does not do what the operator set up.
+        inspection_dwell_requested = inspection_dwell_s is not None
+        inspection_dwell_s = float(np.clip(1.5 if inspection_dwell_s is None else inspection_dwell_s, 0.0, 30.0))
         ground_offset_m = float(np.clip(ground_offset_m, -100.0, 300.0))
         terrain_follow_enabled = bool(terrain_follow_enabled)
         terrain_source_path = str(terrain_source_path or "").strip()
@@ -2356,13 +2563,26 @@ class MissionPlanner:
             fence = [list(map(float, pt)) for pt in constraints_obj.geofence]
             drawn = [list(map(float, pt)) for pt in _ensure_closed(polygon)]
             if fence == drawn:
+                default_standoff = DEFAULT_BOX_STANDOFF_M if template == "box_inspection" else DEFAULT_STRUCTURE_STANDOFF_M
                 standoff_for_fence = float(
                     facade_standoff_m if facade_standoff_m is not None
-                    else max(constraints_obj.standoff_m, 8.0)
+                    else (constraints_obj.standoff_m if constraints_obj.standoff_m > 0.0 else default_standoff)
                 )
                 lat_ref = sum(p[1] for p in drawn) / max(1, len(drawn))
+                if template == "dome_inspection":
+                    # The rings are circles about the dome's centre, so the fence is the
+                    # circle that contains the widest ring rather than the drawn outline
+                    # pushed outward, which clipped every ring that crossed a corner.
+                    if not dome_radius_m:
+                        dome_radius_m = _equal_area_radius_m(drawn)
+                    centre = _polygon_centroid_lonlat(drawn)
+                    new_fence = _tower_buffer_polygon(
+                        centre, radius_m=float(dome_radius_m) + standoff_for_fence + GEOFENCE_EXPANSION_MARGIN_M,
+                        points=48)
+                else:
+                    new_fence = _expand_geofence_for_structure(fence, standoff_for_fence, lat_ref)
                 constraints_obj = MissionConstraints(
-                    geofence=_expand_geofence_for_structure(fence, standoff_for_fence, lat_ref),
+                    geofence=new_fence,
                     min_altitude_m=constraints_obj.min_altitude_m,
                     max_altitude_m=constraints_obj.max_altitude_m,
                     standoff_m=constraints_obj.standoff_m,
@@ -2386,7 +2606,9 @@ class MissionPlanner:
             if top_altitude_m < bottom_altitude_m + 0.5:
                 bottom_altitude_m = max(constraints_obj.min_altitude_m, top_altitude_m - 0.5)
         if facade_standoff_m is None:
-            facade_standoff = float(max(0.5, constraints_obj.standoff_m))
+            facade_standoff = float(
+                constraints_obj.standoff_m if constraints_obj.standoff_m > 0.0 else DEFAULT_STRUCTURE_STANDOFF_M
+            )
         else:
             facade_standoff = float(max(0.5, facade_standoff_m))
 
@@ -2510,6 +2732,12 @@ class MissionPlanner:
                 spacing = 3.0
             line_spacing_m = spacing
             capture_spacing_m = spacing
+        elif template in {"dome_inspection", "box_inspection"}:
+            default_range = DEFAULT_BOX_STANDOFF_M if template == "box_inspection" else DEFAULT_STRUCTURE_STANDOFF_M
+            capture_range_m = constraints_obj.standoff_m if constraints_obj.standoff_m > 0.0 else default_range
+            fp_w, fp_h = _estimate_footprint_m(max(2.0, capture_range_m), camera)
+            line_spacing_m = max(0.75, fp_h * (1.0 - side_overlap_pct / 100.0))
+            capture_spacing_m = max(0.75, fp_w * (1.0 - front_overlap_pct / 100.0))
         elif template == "tower_mapping":
             tower_capture_range_m = max(2.0, tower_flight_radius - tower_object_radius_m)
             fp_w, fp_h = _estimate_footprint_m(tower_capture_range_m, camera)
@@ -2638,6 +2866,9 @@ class MissionPlanner:
             turbine_blade_angles_deg=turbine_blade_angles_deg,
             turbine_tower_levels=turbine_tower_levels,
             turbine_blade_stations=turbine_blade_stations,
+            dome_radius_m=dome_radius_m,
+            dome_base_altitude_m=dome_base_altitude_m,
+            box_altitude_levels_m=box_altitude_levels_m,
         )
 
         coverage = CoverageExpectation(
@@ -2760,6 +2991,7 @@ class MissionPlanner:
             "camera_direction_locked": bool(camera_direction_locked),
             "gimbal_tilt_deg": gimbal_tilt_deg,
             "inspection_dwell_s": inspection_dwell_s,
+            "inspection_dwell_requested": bool(inspection_dwell_requested),
             "facade_top_altitude_m": top_altitude_m,
             "facade_bottom_altitude_m": bottom_altitude_m,
             "facade_standoff_m": facade_standoff,
@@ -2920,6 +3152,13 @@ class MissionPlanner:
         for primitive in recipe_obj.primitives:
             local_poses.extend(self._compile_primitive(primitive))
 
+        requested_dwell = float(recipe_obj.metadata.get("inspection_dwell_s", 0.0) or 0.0)
+        if bool(recipe_obj.metadata.get("inspection_dwell_requested", False)) and requested_dwell > 0.0:
+            local_poses = [
+                replace(p, dwell_s=requested_dwell) if p.trigger and float(p.dwell_s) <= 0.0 else p
+                for p in local_poses
+            ]
+
         if not local_poses:
             geofence_local = _world_to_local(recipe_obj.constraints.geofence, recipe_obj.asset_frame)
             geofence_local = geofence_local[:-1] if len(geofence_local) > 1 else geofence_local
@@ -2937,8 +3176,25 @@ class MissionPlanner:
                     )
                 )
 
+        home_elevation_m = self._reference_terrain_to_home(local_poses, recipe_obj)
+        if home_elevation_m is not None and bool(recipe_obj.metadata.get("terrain_reference_changed")):
+            # Recompile against the home reference. Shifting afterwards is not enough:
+            # primitives floor altitude at 1 m, so ground far below the old reference
+            # had already been clamped before any shift could correct it.
+            local_poses = []
+            for primitive in recipe_obj.primitives:
+                local_poses.extend(self._compile_primitive(primitive))
+            if bool(recipe_obj.metadata.get("inspection_dwell_requested", False)) and requested_dwell > 0.0:
+                local_poses = [
+                    replace(p, dwell_s=requested_dwell) if p.trigger and float(p.dwell_s) <= 0.0 else p
+                    for p in local_poses
+                ]
         constrained_poses, safety_adjustments = self._apply_constraints(local_poses, recipe_obj)
         world_poses = self._local_to_world_poses(constrained_poses, recipe_obj.asset_frame)
+        follow_mode = str(recipe_obj.metadata.get("terrain_follow_mode", "agl")).lower()
+        altitude_frame = (
+            "amsl" if follow_mode == "amsl" and home_elevation_m is not None else "relative_to_home"
+        )
 
         waypoints = [[float(p["lon"]), float(p["lat"]), float(p["alt_m"])] for p in world_poses]
         distance = _distance_m(waypoints)
@@ -3157,7 +3413,47 @@ class MissionPlanner:
             wind_adjusted_speed_m_s=float(mapping_config.get("wind_adjusted_speed_m_s", speed)),
             wind_penalty_pct=float(mapping_config.get("wind_penalty_pct", 0.0)),
             facade_curvature_alignment=bool(mapping_config.get("facade_curvature_alignment", False)),
+            cruise_speed_m_s=float(speed),
+            altitude_frame=altitude_frame,
+            home_elevation_amsl_m=None if home_elevation_m is None else float(home_elevation_m),
         )
+
+    def _reference_terrain_to_home(
+        self, poses: list[_CapturePose], recipe_obj: FlightRecipe
+    ) -> float | None:
+        """Make the terrain model's reference elevation the ground at home.
+
+        Primitives add (terrain here - model reference elevation), and the reference
+        was the mean of the whole DEM. Exported altitudes are relative to home, so a
+        mean-referenced plan flew too low wherever home sat below the mean and too high
+        wherever it sat above. Home is the first waypoint: every exporter writes it as
+        the takeoff point and the planned home position.
+
+        Rewrites z_ref_m on the recipe's terrain model (metadata and every primitive),
+        flags `terrain_reference_changed` when the caller must recompile, and returns the
+        ground elevation at home -- or None when there is no terrain model to read.
+        """
+        metadata = recipe_obj.metadata if recipe_obj.metadata is not None else {}
+        metadata["terrain_reference_changed"] = False
+        model = metadata.get("terrain_model")
+        if not poses or not bool(metadata.get("terrain_follow_enabled", False)) or not isinstance(model, dict):
+            return None
+        if str(model.get("type", "flat")).lower() == "flat":
+            return None
+        home = np.asarray([poses[0].x_m, poses[0].y_m], dtype=np.float64)
+        z_home = _terrain_elevation_m(home, model)
+        if z_home is None or not np.isfinite(z_home):
+            return None
+        if abs(float(model.get("z_ref_m", z_home)) - float(z_home)) > 1e-6:
+            model["z_ref_m"] = float(z_home)
+            for primitive in recipe_obj.primitives:
+                nested = primitive.params.get("terrain_model") if isinstance(primitive.params, dict) else None
+                if isinstance(nested, dict) and nested:
+                    nested["z_ref_m"] = float(z_home)
+            metadata["terrain_reference_changed"] = True
+        metadata["terrain_reference"] = "home_ground"
+        metadata["home_elevation_m"] = float(z_home)
+        return float(z_home)
 
     def generate(
         self,
@@ -3170,8 +3466,8 @@ class MissionPlanner:
         camera: str = "mavic2pro",
         flight_direction_deg: float = 0.0,
         camera_direction_deg: float | None = None,
-        gimbal_tilt_deg: float = -90.0,
-        inspection_dwell_s: float = 1.5,
+        gimbal_tilt_deg: float | None = None,
+        inspection_dwell_s: float | None = None,
         facade_top_altitude_m: float | None = None,
         facade_bottom_altitude_m: float | None = None,
         facade_standoff_m: float | None = None,
@@ -3249,6 +3545,9 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        dome_radius_m: float | None = None,
+        dome_base_altitude_m: float = 0.0,
+        box_altitude_levels_m: list[float] | None = None,
     ) -> MissionPlan:
         if repeat_recipe is not None:
             recipe_obj = self._coerce_recipe(repeat_recipe)
@@ -3279,6 +3578,9 @@ class MissionPlanner:
             turbine_blade_angles_deg=turbine_blade_angles_deg,
             turbine_tower_levels=turbine_tower_levels,
             turbine_blade_stations=turbine_blade_stations,
+            dome_radius_m=dome_radius_m,
+            dome_base_altitude_m=dome_base_altitude_m,
+            box_altitude_levels_m=box_altitude_levels_m,
             adaptive_interest_regions_lonlat=adaptive_interest_regions_lonlat,
             adaptive_prior_defects_lonlat=adaptive_prior_defects_lonlat,
             adaptive_density_factor=adaptive_density_factor,
@@ -3528,7 +3830,9 @@ class MissionPlanner:
                         x_m=float(xy[0]),
                         y_m=float(xy[1]),
                         alt_m=float(max(1.0, item.get("alt_m", 60.0))),
-                        yaw_deg=_wrap_deg(float(item.get("yaw_deg", 0.0)) - float(frame.yaw_deg)),
+                        yaw_deg=_wrap_deg(
+                            _math_from_heading_deg(float(item.get("yaw_deg", 0.0))) - float(frame.yaw_deg)
+                        ),
                         gimbal_pitch_deg=float(item.get("gimbal_pitch_deg", -90.0)),
                         primitive=str(item.get("primitive", "linked_segment")),
                         trigger=bool(item.get("trigger", True)),
@@ -4212,6 +4516,9 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        dome_radius_m: float | None = None,
+        dome_base_altitude_m: float = 0.0,
+        box_altitude_levels_m: list[float] | None = None,
     ) -> list[MissionPrimitive]:
         template = _normalize_template(template)
         polygon_arr = np.asarray(local_polygon[:-1], dtype=np.float64)
@@ -4431,6 +4738,11 @@ class MissionPlanner:
                         "lane_spacing_m": lane_spacing,
                         "capture_spacing_m": point_step_m,
                         "altitude_m": altitude_m,
+                        "gimbal_pitch_deg": float(gimbal_pitch_deg),
+                        "ground_offset_m": float(ground_offset_m),
+                        "terrain_follow_enabled": bool(terrain_follow_enabled),
+                        "terrain_model": dict(terrain_model or {}),
+                        "terrain_follow_mode": str(terrain_follow_mode),
                     },
                 )
             ]
@@ -4716,7 +5028,8 @@ class MissionPlanner:
                         "polygon_local": local_polygon,
                         "standoff_m": float(
                             facade_standoff_m if facade_standoff_m is not None
-                            else constraints.standoff_m
+                            else constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_STRUCTURE_STANDOFF_M
                         ),
                         "top_altitude_m": float(
                             facade_top_altitude_m if facade_top_altitude_m is not None
@@ -4742,7 +5055,10 @@ class MissionPlanner:
                     kind="closed_loop",
                     params={
                         "polygon_local": local_polygon,
-                        "standoff_m": constraints.standoff_m,
+                        "standoff_m": (
+                            constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_STRUCTURE_STANDOFF_M
+                        ),
                         "radii_m": list(closed_loop_radii_m or []),
                         "altitude_levels_m": self._altitude_levels(
                             altitude_m, constraints, min_levels=2, max_levels=4
@@ -4751,6 +5067,66 @@ class MissionPlanner:
                         "clockwise": bool(closed_loop_clockwise),
                         "gimbal_pitch_deg": float(gimbal_pitch_deg),
                         "inspection_dwell_s": float(inspection_dwell_s),
+                    },
+                )
+            ]
+
+        if template == "dome_inspection":
+            # The drawn outline is the dome's footprint: its centre is the dome's centre
+            # and its mean radius the dome's radius, unless the operator gives one.
+            if dome_radius_m:
+                radius = float(dome_radius_m)
+            elif len(polygon_arr) >= 3:
+                # Equal-area circle of the drawn outline (local metres).
+                px, py = polygon_arr[:, 0], polygon_arr[:, 1]
+                radius = sqrt(0.5 * abs(float(np.dot(px, np.roll(py, -1)) - np.dot(py, np.roll(px, -1)))) / pi)
+            else:
+                radius = 10.0
+            radius = max(1.0, radius)
+            standoff = constraints.standoff_m if constraints.standoff_m > 0.0 else DEFAULT_STRUCTURE_STANDOFF_M
+            # Rings spaced along the meridian arc by the side-overlap spacing at the
+            # stand-off range; points around each ring by the front-overlap spacing.
+            arc_m = 0.5 * pi * (radius + standoff)
+            rings = int(np.clip(np.ceil(arc_m / max(0.75, line_step_m)) + 1, 2, 24))
+            points_per_ring = int(np.clip(np.ceil(2.0 * pi * (radius + standoff) / max(0.75, point_step_m)), 8, 180))
+            return [
+                MissionPrimitive(
+                    kind="dome_inspection",
+                    params={
+                        "center_local": [float(center[0]), float(center[1])],
+                        "object_radius_m": radius,
+                        "standoff_m": float(standoff),
+                        "base_altitude_m": float(dome_base_altitude_m),
+                        "rings": rings,
+                        "points_per_orbit": points_per_ring,
+                        "ground_offset_m": float(ground_offset_m),
+                        "terrain_follow_enabled": bool(terrain_follow_enabled),
+                        "terrain_model": dict(terrain_model or {}),
+                        "terrain_follow_mode": str(terrain_follow_mode),
+                        "continuous_capture": False,
+                    },
+                )
+            ]
+
+        if template == "box_inspection":
+            standoff = constraints.standoff_m if constraints.standoff_m > 0.0 else DEFAULT_BOX_STANDOFF_M
+            if box_altitude_levels_m:
+                levels = [float(np.clip(float(v), constraints.min_altitude_m, constraints.max_altitude_m))
+                          for v in box_altitude_levels_m]
+            else:
+                levels = self._altitude_levels(
+                    altitude_m=altitude_m, constraints=constraints, min_levels=2, max_levels=4)
+            return [
+                MissionPrimitive(
+                    kind="box_inspection",
+                    params={
+                        "polygon_local": local_polygon,
+                        "standoff_m": float(standoff),
+                        "altitude_levels_m": levels,
+                        "capture_spacing_m": float(max(2.0, point_step_m)),
+                        "gimbal_pitch_deg": float(gimbal_pitch_deg),
+                        "ground_offset_m": float(ground_offset_m),
+                        "continuous_capture": False,
                     },
                 )
             ]
@@ -4766,7 +5142,12 @@ class MissionPlanner:
                             else altitude_m
                         ),
                         "blade_length_m": float(turbine_blade_length_m),
-                        "standoff_m": constraints.standoff_m,
+                        # An unset stand-off (0) used to reach the primitive's 2 m floor,
+                        # which puts the aircraft inside a blade's flex envelope.
+                        "standoff_m": (
+                            constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_TURBINE_STANDOFF_M
+                        ),
                         "blade_angles_deg": list(turbine_blade_angles_deg or []),
                         "tower_levels": int(turbine_tower_levels),
                         "blade_stations": int(turbine_blade_stations),
@@ -4900,7 +5281,10 @@ class MissionPlanner:
                 kind="facade",
                 params={
                     "polygon_local": local_polygon,
-                    "standoff_m": constraints.standoff_m,
+                    "standoff_m": (
+                        constraints.standoff_m if constraints.standoff_m > 0.0
+                        else DEFAULT_STRUCTURE_STANDOFF_M
+                    ),
                     "altitude_levels_m": levels,
                     "horizontal_spacing_m": max(2.5, point_step_m * 0.9),
                 },
@@ -5133,7 +5517,7 @@ class MissionPlanner:
                 normal = -normal
 
             # The camera looks back at the wall, opposite the stand-off direction.
-            yaw = _wrap_deg(math.degrees(math.atan2(-normal[0], -normal[1])))
+            yaw = _wrap_deg(math.degrees(math.atan2(-normal[1], -normal[0])))
 
             columns = max(2, int(math.ceil(length / h_spacing)) + 1)
             levels = max(1, int(math.ceil(abs(top - bottom) / v_spacing)) + 1)
@@ -5206,12 +5590,13 @@ class MissionPlanner:
                 angle = 2.0 * math.pi * (-fraction if clockwise else fraction)
                 x = centre_xy[0] + radius * math.cos(angle)
                 y = centre_xy[1] + radius * math.sin(angle)
-                yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[1] - y, centre_xy[0] - x)))
                 poses.append(_CapturePose(
                     x_m=float(x), y_m=float(y), alt_m=altitude,
                     yaw_deg=yaw, gimbal_pitch_deg=float(tilt),
                     primitive="oblique_band_%d" % band_index, dwell_s=dwell_s,
                     camera_yaw_locked=True,
+                    look_at_xy=(float(centre_xy[0]), float(centre_xy[1])),
                 ))
         return poses
 
@@ -5258,12 +5643,13 @@ class MissionPlanner:
                     y = centre_xy[1] + radius * math.sin(angle)
                     # The camera always faces the structure, which is what makes a loop
                     # usable for reconstruction rather than just a perimeter flight.
-                    yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                    yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[1] - y, centre_xy[0] - x)))
                     poses.append(_CapturePose(
                         x_m=float(x), y_m=float(y), alt_m=float(altitude),
                         yaw_deg=yaw, gimbal_pitch_deg=gimbal_pitch,
                         primitive="closed_loop_r%d" % ring_index, dwell_s=dwell_s,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(centre_xy[0]), float(centre_xy[1])),
                     ))
         return poses
 
@@ -5295,7 +5681,7 @@ class MissionPlanner:
             altitude = hub_height * (level + 1) / tower_levels
             poses.append(_CapturePose(
                 x_m=float(centre_xy[0]), y_m=float(centre_xy[1] - standoff),
-                alt_m=float(altitude), yaw_deg=0.0, gimbal_pitch_deg=0.0,
+                alt_m=float(altitude), yaw_deg=90.0, gimbal_pitch_deg=0.0,
                 primitive="turbine_tower", dwell_s=dwell_s, camera_yaw_locked=True,
             ))
 
@@ -5305,7 +5691,9 @@ class MissionPlanner:
             point = centre_xy + np.array([math.sin(radians), math.cos(radians)]) * standoff
             poses.append(_CapturePose(
                 x_m=float(point[0]), y_m=float(point[1]), alt_m=float(hub_height),
-                yaw_deg=_wrap_deg(bearing + 180.0), gimbal_pitch_deg=0.0,
+                # The point sits at compass `bearing` from the hub; the camera looks
+                # back along it, expressed as a local math angle like every other pose.
+                yaw_deg=_wrap_deg(90.0 - (bearing + 180.0)), gimbal_pitch_deg=0.0,
                 primitive="turbine_nacelle", dwell_s=dwell_s, camera_yaw_locked=True,
             ))
 
@@ -5325,7 +5713,9 @@ class MissionPlanner:
                     poses.append(_CapturePose(
                         x_m=float(x), y_m=float(centre_xy[1] + face_sign * standoff),
                         alt_m=float(altitude),
-                        yaw_deg=0.0 if face_sign > 0 else 180.0,
+                        # Face a stands on +y and looks back along -y at the blade;
+                        # face b the reverse.
+                        yaw_deg=-90.0 if face_sign > 0 else 90.0,
                         gimbal_pitch_deg=0.0,
                         primitive="turbine_blade_%d%s" % (blade_index, face_label),
                         dwell_s=dwell_s, camera_yaw_locked=True,
@@ -5856,6 +6246,7 @@ class MissionPlanner:
                         trigger=True,
                         dwell_s=0.0,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(center[0]), float(center[1])),
                     )
                 )
 
@@ -5924,6 +6315,7 @@ class MissionPlanner:
                         trigger=True,
                         dwell_s=0.0,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(center[0]), float(center[1])) if count > 1 else None,
                     )
                 )
         return poses
@@ -5990,6 +6382,7 @@ class MissionPlanner:
                             trigger=True,
                             dwell_s=0.0,
                             camera_yaw_locked=True,
+                            look_at_xy=(float(centre[0]), float(centre[1])),
                         )
                     )
         return poses
@@ -6426,7 +6819,11 @@ class MissionPlanner:
         lane_count = max(1, int(params.get("lane_count", 1)))
         lane_spacing = max(1.0, float(params.get("lane_spacing_m", 4.0)))
         capture_spacing = max(1.0, float(params.get("capture_spacing_m", 4.0)))
-        altitude = float(params.get("altitude_m", 60.0))
+        altitude = float(params.get("altitude_m", 60.0)) + float(params.get("ground_offset_m", 0.0))
+        gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -80.0)), -120.0, 30.0))
+        terrain_follow_enabled = bool(params.get("terrain_follow_enabled", False))
+        terrain_model = params.get("terrain_model")
+        terrain_model = terrain_model if isinstance(terrain_model, dict) else None
 
         axis = end - start
         length = float(np.linalg.norm(axis))
@@ -6447,13 +6844,16 @@ class MissionPlanner:
                 continue
             yaw = _bearing_deg(sampled[0], sampled[-1])
             for pt in sampled:
+                # Terrain following was ignored here: a corridor over 18 m of relief
+                # flew one flat altitude while the plan claimed to follow the ground.
+                terrain_delta = _terrain_delta_m(pt, terrain_model) if terrain_follow_enabled else 0.0
                 poses.append(
                     _CapturePose(
                         x_m=float(pt[0]),
                         y_m=float(pt[1]),
-                        alt_m=altitude,
+                        alt_m=max(1.0, float(altitude + terrain_delta)),
                         yaw_deg=yaw,
-                        gimbal_pitch_deg=-80.0,
+                        gimbal_pitch_deg=gimbal_pitch,
                         primitive="corridor",
                         trigger=True,
                     )
@@ -6514,6 +6914,7 @@ class MissionPlanner:
                         primitive="orbit",
                         trigger=True,
                         camera_yaw_locked=bool(yaw_lock_to_poi),
+                        look_at_xy=(float(poi[0]), float(poi[1])) if yaw_lock_to_poi else None,
                     )
                 )
         return poses
@@ -6697,10 +7098,13 @@ class MissionPlanner:
             target_alt_center = 0.5 * (top + bottom)
 
             poses: list[_CapturePose] = []
-            for flight_point, facade_point in column_pairs:
+            for column_index, (flight_point, facade_point) in enumerate(column_pairs):
                 yaw = _bearing_deg(flight_point, facade_point)
 
-                for alt in altitudes:
+                # Serpentine: down one column, up the next. Returning to the top before
+                # every column added a full-height climb per column for no capture.
+                column_altitudes = altitudes if column_index % 2 == 0 else altitudes[::-1]
+                for alt in column_altitudes:
                     terrain_delta = (
                         _terrain_delta_m(flight_point, terrain_model if isinstance(terrain_model, dict) else None)
                         if terrain_follow_enabled
@@ -6730,6 +7134,9 @@ class MissionPlanner:
                             gimbal_pitch_deg=float(np.clip(pitch_out, -85.0, 10.0)),
                             primitive=primitive_name,
                             trigger=True,
+                            # The heading is what points the camera at the wall; an
+                            # unlocked heading lets the autopilot turn along the pass.
+                            camera_yaw_locked=True,
                         )
                     )
             return poses
@@ -6817,6 +7224,8 @@ class MissionPlanner:
         terrain_normal_enabled = bool(recipe.metadata.get("terrain_normal_camera_enabled", False))
         terrain_normal_gain = float(np.clip(float(recipe.metadata.get("terrain_normal_gain", 1.0)), 0.0, 3.0))
         terrain_normal_yaw_align = bool(recipe.metadata.get("terrain_normal_yaw_align", False))
+        terrain_follow = bool(recipe.metadata.get("terrain_follow_enabled", False)) and bool(terrain_model) and (
+            str(terrain_model.get("type", "flat")).lower() != "flat")
 
         output: list[_CapturePose] = []
         for pose in poses:
@@ -6863,6 +7272,20 @@ class MissionPlanner:
                         y = float(projected[1])
                         pt = projected
                         adjustments["no_fly_projections"] += 1
+
+            moved_xy = abs(x - float(pose.x_m)) > 1e-6 or abs(y - float(pose.y_m)) > 1e-6
+            if moved_xy and pose.look_at_xy is not None:
+                # Keep the camera on what it was aimed at from the position it now has.
+                target = np.asarray(pose.look_at_xy, dtype=np.float64)
+                if float(np.hypot(target[0] - x, target[1] - y)) > 1e-6:
+                    yaw = _bearing_deg(np.asarray([x, y], dtype=np.float64), target)
+
+            if terrain_follow and moved_xy:
+                # A pose moved by the fence or a no-fly zone now sits over different
+                # ground; carry its terrain offset with it rather than keep the old one.
+                moved = _terrain_delta_m(np.asarray([x, y], dtype=np.float64), terrain_model)
+                before = _terrain_delta_m(np.asarray([float(pose.x_m), float(pose.y_m)], dtype=np.float64), terrain_model)
+                alt = float(np.clip(alt + moved - before, constraints.min_altitude_m, constraints.max_altitude_m))
 
             yaw_adj, gimbal_adj = _apply_terrain_normal_attitude(
                 x_m=x,
@@ -6973,7 +7396,7 @@ class MissionPlanner:
                     "lon": float(ll[0]),
                     "lat": float(ll[1]),
                     "alt_m": float(pose.alt_m),
-                    "yaw_deg": _wrap_deg(float(pose.yaw_deg) + float(frame.yaw_deg)),
+                    "yaw_deg": _heading_from_math_deg(float(pose.yaw_deg) + float(frame.yaw_deg)),
                     "gimbal_pitch_deg": float(pose.gimbal_pitch_deg),
                     "primitive": pose.primitive,
                     "trigger": bool(pose.trigger),
@@ -7230,32 +7653,18 @@ def export_geojson(path: str | Path, mission: MissionPlan) -> str:
 
 
 def export_qgc_wpl(path: str | Path, mission: MissionPlan) -> str:
-    """Export mission as QGroundControl text mission file (WPL 110)."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    """Export mission as QGroundControl text mission file (WPL 110).
 
-    lines = ["QGC WPL 110"]
+    Delegates to mission.exporters, which writes the home slot, takeoff, speed, gimbal,
+    yaw, dwell and capture commands. This used to write bare NAV_WAYPOINT rows with no
+    takeoff and no camera trigger -- a file that flew the route and captured nothing --
+    and, for a plan with no waypoints, invented one at the polygon's first corner.
+    """
+    from .exporters import export_qgc_wpl as write_full_wpl
+
     if not mission.waypoints:
-        lon, lat = mission.polygon[0][0], mission.polygon[0][1]
-        waypoints = [[lon, lat, mission.altitude_m]]
-    else:
-        waypoints = mission.waypoints
-
-    for idx, row in enumerate(waypoints):
-        lon = float(row[0])
-        lat = float(row[1])
-        alt = float(row[2]) if len(row) >= 3 else float(mission.altitude_m)
-        current = 1 if idx == 0 else 0
-        frame = 3
-        command = 16
-        autocontinue = 1
-        lines.append(
-            f"{idx}\t{current}\t{frame}\t{command}\t0\t0\t0\t0\t{lat:.8f}\t{lon:.8f}\t{alt:.2f}\t{autocontinue}"
-        )
-
-    with target.open("w", encoding="utf-8") as handle:
-        handle.write("\n".join(lines))
-    return str(target)
+        raise ValueError("Mission plan contains no waypoints to export.")
+    return write_full_wpl(path, mission)
 
 
 def export_flight_recipe(path: str | Path, payload: FlightRecipe | MissionPlan | dict) -> str:

@@ -45,6 +45,17 @@ const MISSION_OPTION_KEYS = {
   speed: "speed_m_s",
   standoff: "standoff_m",
   rth: "rth_altitude_m",
+  // Mission-type inputs, already named as plan_mission reads them.
+  thermal_camera: "thermal_camera",
+  target_gsd_cm: "target_gsd_cm",
+  rgb_camera: "rgb_camera",
+  payload_key: "payload_key",
+  calibration_panel_lonlat: "calibration_panel_lonlat",
+  accept_relative_values: "accept_relative_values",
+  pylon_elements: "pylon_elements",
+  dome_radius_m: "dome_radius_m",
+  box_altitude_levels_m: "box_altitude_levels_m",
+  linked_version_ids: "linked_version_ids",
 };
 
 /* Fields the form shows that plan_mission has no option for.
@@ -100,9 +111,18 @@ const MISSION_TEMPLATES = {
   "Magnetic mapping": "magnetic_mapping",
   "Complex facade": "multi_facade",
   "L-shaped": "grid",
-  "Utility pylon": "tower_mapping",
-  "Thermal": "grid",
-  "Multispectral": "grid",
+  // The three below are planned by mission/mission_types.py, which plan_mission routes
+  // to by these names. They used to map to tower_mapping and grid, so choosing
+  // "Thermal" planned an ordinary RGB grid at the RGB camera's altitude.
+  "Utility pylon": "pylon_inspection",
+  "Thermal": "thermal",
+  "Multispectral": "multispectral",
+  "Dome inspection": "dome_inspection",
+  "Box inspection": "box_inspection",
+  "360 bubble": "bubble_360",
+  "Lateral capture": "lateral_capture",
+  "Smart adaptive": "smart_adaptive",
+  "Linked mission": "linked_mission",
 };
 
 export class Shell {

@@ -81,8 +81,19 @@ MISSION_PLANNING = [
       "Every generated mission yields waypoints, altitude, speed, heading, yaw, gimbal pitch, "
       "trigger timing, estimated time, distance, image count and a return path.",
       "implemented", ["tests/test_exporters.py::test_capture_commands_survive_export",
-                      "tests/test_estimates.py::TestWholeMission"],
-      "Storage and battery now emitted by MissionPlan.estimates()."),
+                      "tests/test_estimates.py::TestWholeMission",
+                      "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile",
+                      "tests/test_mission_exports_carry_the_plan.py::TestSpeedAndDwellReachTheFile",
+                      "tests/test_exported_headings_face_the_subject.py"],
+      "Storage and battery now emitted by MissionPlan.estimates(). The exporters read "
+      "yaw, gimbal pitch, dwell and trigger from the plan's per-waypoint GeoJSON; they "
+      "used to read flight_recipe.world_poses, which no plan carries, so every export "
+      "was nadir with no yaw. Planned speed and a requested dwell now reach every file. "
+      "The plan's yaw is a compass heading (0 north, clockwise); the planner's local "
+      "math angles are converted at one boundary. Before that, orbit, tower, dome, box, "
+      "pylon, facade, lateral and turbine-blade headings were exported in the wrong "
+      "convention and pointed the camera up to 180 deg off its subject; the tests "
+      "check each exported heading against the bearing to the subject."),
     F("mp.type.mapping_2d", "2D mapping mission", "core", "Mission types",
       "Single and double grid over a drawn polygon with configurable direction, overlap and GSD.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -109,7 +120,10 @@ MISSION_PLANNING = [
       "falling through the alias default, which is how it used to arrive."),
     F("mp.type.roof_inspection", "Roof inspection", "core", "Mission types",
       "Stop-and-capture at computed picture points with stand-off and gimbal control.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_mission_exports_carry_the_plan.py::TestSpeedAndDwellReachTheFile::test_roof_inspection_stops_at_each_point_by_default"],
+      "Same picture points as a grid by design; what makes it an inspection is the hold "
+      "at each point, which the exporters used to drop."),
     F("mp.type.facade_mapping", "Facade mapping", "core", "Mission types",
       "Vertical capture paths along an elevation with stand-off and vertical overlap.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -118,7 +132,8 @@ MISSION_PLANNING = [
       "facade primitive rather than a nadir grid, and keeping the stand-off it declares.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates",
                       "tests/test_standoff.py::TestAgainstARealPlan::test_every_named_mission_type_compiles_to_its_own_template",
-                      "tests/test_standoff.py::TestAgainstARealPlan::test_facade_inspection_is_not_silently_a_nadir_grid"],
+                      "tests/test_standoff.py::TestAgainstARealPlan::test_facade_inspection_is_not_silently_a_nadir_grid",
+                      "tests/test_mission_exports_carry_the_plan.py::TestFacadeGeometry"],
       "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
@@ -161,31 +176,39 @@ MISSION_PLANNING = [
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.tower_mapping", "Tower mapping", "core", "Mission types",
       "Circular and spiral paths, stacked orbits at multiple radii and heights.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_exported_headings_face_the_subject.py::TestRingsFaceTheirCentre"]),
     F("mp.type.pylon_inspection", "Utility pylon inspection", "core", "Mission types",
       "Body, crossarm, insulator and conductor capture at multiple elevations, each "
       "flown at the height that element sits at with a gimbal angle framing it rather "
       "than a nadir pass, and a structure whose element heights were not supplied "
       "refused rather than approximated near energised conductors.",
-      "implemented", ["tests/test_special_mission_types.py::TestPylonInspection"],
+      "implemented", ["tests/test_special_mission_types.py::TestPylonInspection",
+                      "tests/test_mission_exports_carry_the_plan.py::TestSpecialMissionTypesBecomeTheMission",
+                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine::test_a_pylon_orbit_faces_the_pylon"],
       "mission/mission_types.py; plan_pylon_inspection compiles one real orbit per "
       "named element through the mission engine."),
     F("mp.type.orbit", "Orbit missions", "core", "Mission types",
       "Radius, altitude, rotations, direction and gimbal pitch with target lock.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_exported_headings_face_the_subject.py::TestRingsFaceTheirCentre"]),
     F("mp.type.waypoints", "Waypoint missions", "core", "Mission types",
       "Per-waypoint altitude, speed, heading, gimbal, hover, capture and payload commands.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.panorama", "Panorama missions", "core", "Mission types",
       "360, 180, horizontal, vertical and spherical capture patterns.",
-      "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
+      "implemented", ["tests/test_mission_constraints.py::TestTemplates",
+                      "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile::test_panorama_looks_at_the_horizon_by_default"]),
     F("mp.type.solar", "Solar inspection", "core", "Mission types",
       "Row-aligned capture over panels with RGB and thermal support.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
     F("mp.type.wind_turbine", "Wind turbine inspection", "core", "Mission types",
       "Tower stack, four nacelle aspects, and per-blade stations captured from both "
       "faces at the parked rotor angles, skipping points below a safe altitude.",
-      "implemented", ["tests/test_mission_types.py::TestWindTurbine"]),
+      "implemented", ["tests/test_mission_types.py::TestWindTurbine",
+                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine"],
+      "Each blade face looks across the blade at the opposite face; an unset stand-off "
+      "uses 12 m instead of the 2 m floor it used to reach."),
     F("mp.type.magnetic", "Magnetic mapping", "core", "Mission types",
       "Constant ground clearance survey grid with payload trigger and time sync.",
       "implemented", ["tests/test_mission_constraints.py::TestTemplates"]),
@@ -194,16 +217,22 @@ MISSION_PLANNING = [
       "the thermal sensor needs for the requested GSD rather than the RGB one, with a "
       "non-radiometric camera refused instead of producing ordinary photographs "
       "labelled as a thermal survey.",
-      "implemented", ["tests/test_special_mission_types.py::TestThermalMission"],
+      "implemented", ["tests/test_special_mission_types.py::TestThermalMission",
+                      "tests/test_mission_exports_carry_the_plan.py::TestSpecialMissionTypesBecomeTheMission"],
       "mission/mission_types.py; plan_thermal_mission."),
     F("mp.type.multispectral", "Multispectral missions", "core", "Mission types",
       "Synchronised band capture for agricultural and vegetation survey, with the band "
       "centres carried into the mission and reflectance-panel captures planned before "
       "and after the flight, since indices from a flight without them cannot be "
       "compared with any other survey.",
-      "implemented", ["tests/test_special_mission_types.py::TestMultispectralMission"],
+      "implemented", ["tests/test_special_mission_types.py::TestMultispectralMission",
+                      "tests/test_mission_exports_carry_the_plan.py::TestSpecialMissionTypesBecomeTheMission",
+                      "tests/test_plan_warnings_say_what_happened.py::TestMultispectralWithoutAPanel"],
       "mission/mission_types.py; plan_multispectral_mission, reading the band set from "
-      "the payload database."),
+      "the payload database. Without a panel it is refused unless the operator sets "
+      "accept_relative_values, and then the plan carries no panel captures, marks the "
+      "contract relative_values_only and warns that its indices compare within the "
+      "flight only."),
     F("mp.linking", "Mission linking", "core", "Mission engine",
       "Several mission types execute as one sequence with per-segment completion "
       "tracking: each capture point is attributed to the survey that produced it from "
@@ -215,7 +244,8 @@ MISSION_PLANNING = [
       "implemented", ["tests/test_linking.py::TestAttribution",
                       "tests/test_linking.py::TestProgress",
                       "tests/test_linking.py::TestResumingASortie",
-                      "tests/test_linking.py::TestRefusals"],
+                      "tests/test_linking.py::TestRefusals",
+                      "tests/test_mission_exports_carry_the_plan.py::TestLinkedMissions"],
       "mission/linking.py; Api.linked_mission_progress. Completion comes from the same "
       "image matcher the single-mission resume uses, so an ambiguous point is re-flown "
       "rather than assumed done."),
@@ -271,10 +301,17 @@ MISSION_PLANNING = [
       "whenever the plan degrades to flat earth.",
       "verified", ["tests/test_terrain_follow_warnings.py::TestNoTerrainLoaded",
                    "tests/test_terrain_follow_warnings.py::TestUnreadableTerrainSource",
-                   "tests/test_terrain_follow_warnings.py::TestTerrainActuallyFollowed"],
+                   "tests/test_terrain_follow_warnings.py::TestTerrainActuallyFollowed",
+                   "tests/test_terrain_following_is_exact.py::TestAboveGroundLevel",
+                   "tests/test_terrain_following_is_exact.py::TestAbsoluteAltitude",
+                   "tests/test_terrain_following_is_exact.py::TestTerrainCsv"],
       "Tests plan real missions through the Api and assert on the returned warnings, "
       "because the warning had already failed silently once: the resolved terrain model "
-      "lives under the recipe's metadata and reading it from the root returned None."),
+      "lives under the recipe's metadata and reading it from the root returned None. "
+      "Height above a sloping GeoTIFF is now checked at every exported waypoint: DEM "
+      "samples are interpolated linearly over their triangulation (global 1/d weighting "
+      "followed about half the slope) and referenced to the ground at home. AMSL follows "
+      "terrain and exports absolute altitudes (MAV_FRAME_GLOBAL); it was flat planning."),
     F("mp.terrain_offline", "Offline terrain cache", "core", "Mission engine",
       "Terrain cached per project so terrain following works with no connectivity, with "
       "the extent recorded so an area the cache does not fully contain is reported as "
@@ -288,7 +325,10 @@ MISSION_PLANNING = [
                       "tests/test_terrain_cache.py::TestSourceCoversTheArea",
                       "tests/test_terrain_cache.py::TestBounds",
                       "tests/test_terrain_source_coverage.py::TestTerrainSourceIsCheckedAgainstTheArea",
-                      "tests/test_terrain_source_coverage.py::TestChoosingTheSourceAnswersImmediately"],
+                      "tests/test_terrain_source_coverage.py::TestChoosingTheSourceAnswersImmediately",
+                      "tests/test_plan_warnings_say_what_happened.py::TestTerrainCsvCoverage"],
+      "A terrain CSV's extent is taken from its own lon/lat samples, so a CSV that "
+      "spans the area is no longer reported as uncovered for lacking a CRS. "
       "core/terrain_cache.py; Api.cache_terrain, terrain_coverage, "
       "describe_terrain_cache. Planning consults the chosen source: a DEM that stops "
       "short of the area, or belongs to another site, is named at plan time instead of "
@@ -296,7 +336,10 @@ MISSION_PLANNING = [
       "than an empty cache."),
     F("mp.obstacles", "Obstacle planning", "core", "Mission engine",
       "Point, circular, polygon and 3D obstacles with route intersection detection and detours.",
-      "implemented", ["tests/test_mission_constraints.py::TestNoFlyZones"]),
+      "implemented", ["tests/test_mission_constraints.py::TestNoFlyZones",
+                      "tests/test_mission_exports_carry_the_plan.py::TestNoFlyZonesInTheExportedPath"],
+      "Checked on the exported .plan: no NAV point inside a zone and no leg between two "
+      "of them crossing one, including double_grid's hop between its passes."),
     F("mp.geofence", "Geofence containment", "core", "Mission engine",
       "No waypoint outside the inclusion fence or inside an exclusion zone.",
       "verified", ["tests/test_mission_constraints.py::TestNoFlyZones",
@@ -308,8 +351,11 @@ MISSION_PLANNING = [
       "implemented", ["tests/test_mission_constraints.py::TestPhotogrammetry::test_duration_estimate_is_positive_and_finite",
                       "tests/test_estimates.py::TestStorage",
                       "tests/test_estimates.py::TestBatteries",
-                      "tests/test_estimates.py::TestWholeMission"],
-      "mission/estimates.py; MissionPlan.estimates() and Api.mission_estimates."),
+                      "tests/test_estimates.py::TestWholeMission",
+                      "tests/test_plan_warnings_say_what_happened.py::TestEnduranceIsWarnedAtPlanTime"],
+      "mission/estimates.py; MissionPlan.estimates() and Api.mission_estimates. Every "
+      "plan now warns at plan time when it exceeds one battery, using the operator's "
+      "endurance_min or a named 25 min assumption."),
     F("mp.simulation", "3D mission simulation", "hub", "Mission engine",
       "Timeline playback of trajectory, gimbal, capture points, terrain and battery.",
       "implemented", ["tests/test_mission_hub.py::TestCompiledMissionSimulation",
@@ -1421,9 +1467,17 @@ PLATFORM = [
       "Cloud-Optimized GeoTIFF readable by QGIS with correct CRS.",
       "verified", ["tests/test_geo.py::TestGeoTiffRoundTrip"]),
     F("ex.mission_formats", "Mission export formats", "core", "Export",
-      "QGC .plan, QGC WPL, DJI WPML KMZ, Litchi CSV and KML.",
+      "QGC .plan, QGC WPL, DJI WPML KMZ, Litchi CSV, KML and GeoJSON, each carrying the "
+      "planned yaw, gimbal pitch, dwell and speed; WPL leaving sequence 0 for home; one "
+      "exclusion polygon per no-fly zone; Litchi split at its 99-waypoint limit.",
       "verified", ["tests/test_exporters.py::test_every_registered_format_writes_a_file",
-                   "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members"]),
+                   "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members",
+                   "tests/test_mission_exports_carry_the_plan.py::TestFileStructure",
+                   "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile"],
+      "Verified by parsing the written files after planning through the Api. Loading "
+      "into QGroundControl, Mission Planner, DJI Pilot 2 and Litchi themselves has not "
+      "been done here; the DJI drone enum (77/0, payload 66, Mavic 3 Enterprise) and "
+      "Litchi altitudemode 0 follow the published format descriptions."),
     F("ex.model_formats", "3D export formats", "core", "Export",
       "OBJ, PLY, LAS/LAZ, GLB and GLTF.",
       "implemented", ["tests/test_model_formats.py::TestMeshFormats",
