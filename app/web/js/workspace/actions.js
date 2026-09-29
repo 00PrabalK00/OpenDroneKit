@@ -295,6 +295,17 @@ export const ACTIONS = {
   Export: {
     describe: "Export the mission, or the products when there is no mission.",
     async run(ctx) {
+      // On the Fleet screen the thing on screen is the fleet register, not a mission.
+      if (ctx.workspaceId && ctx.workspaceId() === "fleet") {
+        const fleet = await call("export_fleet", ctx.organizationId());
+        const c = fleet.counts;
+        return {
+          message: `Exported the fleet register (${c.aircraft} aircraft, ${c.batteries} `
+            + `batteries, ${c.pilots} pilots, ${c.maintenance} maintenance records) to `
+            + `${fleet.directory}.`,
+          files: fleet.files,
+        };
+      }
       // tryCall, not call: call() THROWS when the API refuses, so a fallback written
       // after it can never run. The first version of this used call() and the mission
       // refusal propagated straight past the products branch, which is why the button

@@ -2578,6 +2578,46 @@ class Api:
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
+    @guard
+    def export_fleet(self, organization_id: int = 1) -> dict[str, Any]:
+        """Write the fleet register -- aircraft, batteries, pilots, recent maintenance --
+        as one JSON file and one CSV per table, into the open project's exports folder.
+
+        The Fleet screen's Export used to fall through to the mission export and answer
+        "No mission has been planned yet", about something that screen does not show.
+        """
+        import csv
+        from datetime import datetime, timezone
+
+        from app import desktop_ops
+        from core.paths import data_root
+
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            fleet = desktop_ops.list_fleet(org)
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+        root = self._session.project_root()
+        base = Path(root) / "exports" if root else data_root() / "exports"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        folder = base / f"fleet_{stamp}"
+        folder.mkdir(parents=True, exist_ok=True)
+        files = [str(folder / "fleet_register.json")]
+        Path(files[0]).write_text(json.dumps(fleet, indent=2, default=str), encoding="utf-8")
+        for table in ("aircraft", "batteries", "pilots", "maintenance"):
+            rows = fleet.get(table) or []
+            if not rows:
+                continue
+            target = folder / f"{table}.csv"
+            with target.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            files.append(str(target))
+        counts = {table: len(fleet.get(table) or []) for table in
+                  ("aircraft", "batteries", "pilots", "maintenance")}
+        return ok(directory=str(folder), files=files, counts=counts)
+
     # -------------------------------------------------------------- sharing
 
     def _service_ids(self, desktop_project_id: int | None = None,

@@ -87,3 +87,32 @@ def test_an_unknown_organisation_is_refused_not_guessed(service_db, tmp_path) ->
     assert api.add_aircraft(1, "First")["ok"]
     refused = api.add_aircraft(99, "Elsewhere")
     assert refused["ok"] is False and "No organisation with id 99" in refused["error"]
+
+
+def test_fleet_export_writes_the_fleet_register_not_a_mission(service_db, tmp_path) -> None:
+    """Fleet > Export fell through to the mission export: "No mission has been planned yet"."""
+    import csv
+    import json
+    from pathlib import Path
+
+    api = make_api(tmp_path)
+    assert api.add_aircraft(1, "Survey One", "M300", "SN-1")["ok"]
+    assert api.add_battery(1, "BAT-7", 5000, 300)["ok"]
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        result = cockpit.run("""
+            await ODK.nav("Fleet");
+            await ODK.press("Export");
+            return { toast: await ODK.waitFor(() => ODK.toasts().find((t) =>
+              t.startsWith("Exported") || t.includes("mission")), 10000) };
+        """)
+    assert not cockpit.called("export_mission"), cockpit.called("export_mission")
+    [call] = cockpit.called("export_fleet")
+    assert call["ok"], call
+    assert result["toast"].startswith(
+        "Exported the fleet register (1 aircraft, 1 batteries, 0 pilots, 0 maintenance records)"), result
+    folder = Path(result["toast"].split(" to ", 1)[1].rstrip("."))
+    register = json.loads((folder / "fleet_register.json").read_text(encoding="utf-8"))
+    assert [a["serial_number"] for a in register["aircraft"]] == ["SN-1"]
+    with (folder / "batteries.csv").open(encoding="utf-8") as handle:
+        assert [row["serial_number"] for row in csv.DictReader(handle)] == ["BAT-7"]
+    assert folder.parent == Path(api._session.project_root()) / "exports"
