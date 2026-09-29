@@ -126,3 +126,36 @@ class TestAPrelabelIsReviewedOnScreen:
                         " 30000, 'the review history')")
         assert any(p.startswith("Review history (1)") for p in details)
         assert any(p.startswith("Modelstructural_multiclass_detector") for p in details)
+
+
+@pytest.mark.skipif(not _installed("structural_multiclass_detector"),
+                    reason="structural_multiclass_detector weights not on this machine")
+class TestRunAISendsWhatTheAssetIs:
+    def test_a_solar_asset_declared_on_screen_runs_the_solar_pass(self, session):
+        """Run AI sent only engine, profile and dense, so no screen could declare a solar
+        or steel asset and the solar and metal passes were unreachable. The Run AI
+        Settings panel declares it, and the finished-job message says those passes ran
+        as heuristics and were not scored."""
+        api, ui = session
+        ui.js("""(() => {
+            const field = (label) => [...document.querySelectorAll('.field')]
+              .find((f) => f.querySelector('label').textContent === label).querySelector('select');
+            for (const [label, value] of [['Structure', 'solar'], ['Metal detection', 'on']]) {
+              const pick = field(label); pick.value = value;
+              pick.dispatchEvent(new Event('change'));
+            }
+            return true; })()""")
+        ui.js("T.tool('Run AI')")
+        ui.js("T.ok('Confirm')")
+        message = ui.js("T.toast('finished|failed', 1800000)")
+        assert "finished" in message, message
+        if not _installed("solar_defect_detector"):
+            assert "solar ran as a heuristic on 1 image(s), not scored" in message
+        assert "metal ran as a heuristic on 1 image(s), not scored" in message
+
+        runs = sorted((Path(api._session.project_root()) / "analysis").glob("run_*/summary.json"))
+        summary = json.loads(runs[-1].read_text(encoding="utf-8"))
+        assert summary["health_scoring"]["structure_type"] == "solar"
+        row = summary["images"][0]
+        assert row["solar_model_used"] != "not_run"
+        assert row["metal_model_used"] == "heuristic"

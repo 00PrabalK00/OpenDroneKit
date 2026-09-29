@@ -184,7 +184,10 @@ export const ACTIONS = {
     confirm: "Run the full pipeline? Reconstruction plus analysis.",
     describe: "Reconstruction followed by defect analysis.",
     async run(ctx) {
-      const result = await call("run_pipeline", ctx.reconstructionOptions());
+      // The asset declaration from Run AI Settings travels with the run; without it
+      // the solar and metal passes could not be reached from any screen.
+      const options = ctx.inspectionOptions ? ctx.inspectionOptions() : ctx.reconstructionOptions();
+      const result = await call("run_pipeline", options);
       return { message: "Pipeline started.", job: result.job_id, refresh: true };
     },
   },

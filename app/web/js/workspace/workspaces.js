@@ -1344,6 +1344,23 @@ const inspection = {
        provenance being real is what made it dangerous -- it read as a measurement with a
        audit trail. Selection is what fills this panel. */
     { id: "ai.finding", title: "Finding Details", refresh: true, render: () => findingDetails() },
+    /* What Run AI is inspecting. Solar and metal detection run on the asset they belong
+       to, and nothing on any screen could say what the asset was, so both passes were
+       unreachable from the app. Declared here, sent with Run AI. On this machine both are
+       classical heuristics (the Detectors panel says so); their regions are never
+       findings and never move the health score. */
+    { id: "ai.runsettings", title: "Run AI Settings", render: () => fields([
+      { key: "structure_type", label: "Structure", value: "generic",
+        options: ["generic", "bridge", "building", "tower", "pipeline", "solar"] },
+      { key: "material_type", label: "Material", value: "concrete",
+        options: ["concrete", "steel", "reinforced_steel", "masonry", "composite", "mixed"] },
+      { key: "run_solar_detection", label: "Solar detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: solar assets" },
+      { key: "run_metal_detection", label: "Metal detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: steel / towers" },
+      { key: "crack_presence_gate", label: "Crack presence gate", value: "off",
+        options: ["off", "on"], unit: "on: skip segmenter when no tile flagged" },
+    ], settingChanged) },
   ],
   bottom: [
     /* Four invented findings used to sit here -- F-118 through F-112, on a "Roof --

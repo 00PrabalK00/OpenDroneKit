@@ -28,6 +28,9 @@ function jobOutcome(result) {
   if (result.heuristic_regions_not_recorded) {
     parts.push(`${result.heuristic_regions_not_recorded} heuristic region(s) not recorded as findings`);
   }
+  for (const [name, count] of Object.entries(result.heuristic_images_not_scored || {})) {
+    if (count) parts.push(`${name} ran as a heuristic on ${count} image(s), not scored`);
+  }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   if (result.metrics && typeof result.metrics.map50 === "number") {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
@@ -838,6 +841,22 @@ export class Shell {
         // turned dense ON when the operator asked for it off.
         if (raw.dense !== undefined && raw.dense !== "") {
           options.dense = String(raw.dense).toLowerCase() === "yes";
+        }
+        return options;
+      },
+      /* Run AI: the reconstruction settings plus what the Run AI Settings panel says
+       * the asset is and which optional detectors to run. "auto" sends nothing, so
+       * the pipeline decides from the declared structure and material. */
+      inspectionOptions: () => {
+        const raw = this.settings || {};
+        const options = this.actionContext().reconstructionOptions();
+        for (const key of ["structure_type", "material_type"]) {
+          if (raw[key]) options[key] = String(raw[key]);
+        }
+        for (const key of ["run_solar_detection", "run_metal_detection", "crack_presence_gate"]) {
+          const value = String(raw[key] ?? "").toLowerCase();
+          if (value === "on") options[key] = true;
+          else if (value === "off") options[key] = false;
         }
         return options;
       },
