@@ -64,16 +64,23 @@ def _weights_on_disk() -> bool:
         registry = json.loads((root / "model_registry.json").read_text(encoding="utf-8"))
     except OSError:
         return False
+    import os
+
+    # Beside the registry, or under ODK_MODEL_WEIGHTS_DIR: where the application looks.
+    roots = [root] + ([_Path(os.environ["ODK_MODEL_WEIGHTS_DIR"])]
+                      if os.environ.get("ODK_MODEL_WEIGHTS_DIR", "").strip() else [])
     return any(
-        (root / entry["path"]).is_file()
+        (base / entry["path"]).is_file()
         for entry in registry.get("models", {}).values()
         if entry.get("status") == "installed" and entry.get("path")
+        for base in roots
     )
 
 
 needs_weights = pytest.mark.skipif(
     not _weights_on_disk(),
-    reason="model weights are gitignored and absent here; see models/README.md",
+    reason="model weights are gitignored and absent here (checked models/ and "
+           "ODK_MODEL_WEIGHTS_DIR); see models/README.md",
 )
 
 
