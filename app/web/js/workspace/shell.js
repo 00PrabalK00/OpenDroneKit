@@ -39,7 +39,11 @@ function jobOutcome(result) {
     if (count) parts.push(`${name} ran as a heuristic on ${count} image(s), not scored`);
   }
   for (const [name, info] of Object.entries(result.detectors_refused || {})) {
-    if (info && info.images) parts.push(`${name} refused on ${info.images} image(s): ${info.reason}`);
+    if (!info || !info.images) continue;
+    // One entry per distinct reason: a mixed folder refuses for different reasons.
+    const reasons = Array.isArray(info.reasons) && info.reasons.length ? info.reasons
+      : [{ images: info.images, reason: info.reason }];
+    for (const r of reasons) parts.push(`${name} refused on ${r.images} image(s): ${r.reason}`);
   }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   if (result.metrics && typeof result.metrics.map50 === "number") {

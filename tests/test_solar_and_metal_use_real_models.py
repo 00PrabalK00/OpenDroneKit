@@ -122,6 +122,16 @@ class TestSolarRefusesWhatNoModelReads:
         result = detect_solar_defects(frame, imagery="thermal_module")
         assert result.refused and "ONE module" in result.refused_reason
 
+    def test_an_ir_module_crop_declared_as_el_is_refused(self):
+        """A 24x40 IR crop is grey, so the colour check passes; the EL detector used to
+        run on it and its 'no detections' read like a clean cell."""
+        from core.detection import detect_solar_defects
+
+        result = detect_solar_defects(_load(IR_HOT_SPOT), imagery="el_cell")
+        assert result.refused and result.detections == []
+        assert "declare those as thermal_module" in result.refused_reason
+        assert int(result.mask.sum()) == 0
+
     def test_a_missing_model_is_a_refusal_not_a_fallback(self, monkeypatch):
         import core.detection as detection
 
@@ -285,6 +295,17 @@ class TestRunAI:
         assert row["solar_imagery"] == "el_cell" and row["solar_detection_count"] >= 1
         assert result["detectors_run"]["solar"] == ["onnx:solar_cell_defect_detector.onnx"]
         assert "solar" not in result["detectors_refused"]
+        # The report's model section names the model that read the images; it used to
+        # print the empty configured key and 'available: False' beside these rows.
+        report = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "Solar model key: ``" not in report
+        assert "Solar model available: `False`" not in report
+        assert ("Solar model used: `onnx:solar_cell_defect_detector.onnx` (key "
+                "`solar_cell_defect_detector`") in report
+        assert "imagery `el_cell`) on 1 image(s)" in report
+        used = summary["defect_models"]["solar_models_used"]
+        assert [u["key"] for u in used] == ["solar_cell_defect_detector"]
+        assert used[0]["sha256"] == row["solar_model_sha256"]
         # Model detections become findings for review, with the model named.
         found = api.find_annotations()["annotations"]
         assert any("solar_cell_defect_detector" in json.dumps(f) for f in found)
@@ -307,6 +328,31 @@ class TestRunAI:
         assert result["heuristic_images_not_scored"] == {"metal": 0, "solar": 0}
         report = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
         assert "Solar detection refused on 1 image(s)" in report
+
+
+    def test_a_mixed_folder_names_every_refusal_reason(self, api, tmp_path):
+        """An RGB photo and an undeclared grey IR crop refuse for different reasons; the
+        report and the job message used to give the photo's reason for both."""
+        if _installed("solar_defect_detector") or _installed("solar_pv_multidefect_detector"):
+            pytest.skip("an RGB solar model is installed here")
+        folder = tmp_path / "mixed"
+        folder.mkdir()
+        shutil.copy(PHOTO, folder / "a.jpg")
+        shutil.copy(IR_HOT_SPOT, folder / "b.jpg")
+        result, summary = _run(api, folder, structure_type="solar")
+        refused = result["detectors_refused"]["solar"]
+        assert refused["images"] == 2
+        reasons = {r["reason"][:40]: r["images"] for r in refused["reasons"]}
+        assert len(reasons) == 2 and set(reasons.values()) == {1}
+        assert "No solar model for RGB photographs" in refused["reason"]
+        assert "Declare the solar imagery" in refused["reason"]
+        report = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
+        lines = [l for l in report.splitlines() if l.startswith("- Solar detection refused on 1 image(s)")]
+        assert len(lines) == 2
+        assert any("No solar model for RGB photographs" in l for l in lines)
+        assert any("Declare the solar imagery" in l for l in lines)
+        assert "every solar pass was refused" in report
+        assert len(summary["defect_models"]["solar_refusals"]) == 2
 
 
 
@@ -418,3 +464,28 @@ class TestARefusedDetectorDoesNotPropUpTheScore:
                                        image_rows=rows, forecast_payload={},
                                        reconstruction_payload={}, coverage_payload={})
         assert health["components"]["solar_component"] == 1.0
+
+
+class TestDefectEngineSolarBranchTakesTheImagery:
+    """core.defect_engine.detect_defects_ai's solar branch had no way to say what the
+    imagery is, so every grey EL or IR image was refused there."""
+
+    @needs("solar_thermal_anomaly_classifier")
+    def test_declared_thermal_module_is_classified(self):
+        from core.defect_engine import DefectDetectionConfig, detect_defects_ai
+
+        config = DefectDetectionConfig(mode="ai", threshold=0.25)
+        defects = detect_defects_ai(IR_HOT_SPOT, config, structural=False,
+                                    solar_imagery="thermal_module")
+        assert [d.defect_type for d in defects] == ["Hot-Spot"]
+        assert defects[0].confidence > 0.9
+        config.solar_imagery = "thermal_module"
+        assert detect_defects_ai(IR_NO_ANOMALY, config, structural=False) == []
+
+    def test_undeclared_grey_imagery_still_refuses(self):
+        from core.defect_engine import DefectDetectionConfig, detect_defects_ai
+        from core.errors import AppError
+
+        with pytest.raises(AppError) as caught:
+            detect_defects_ai(IR_HOT_SPOT, DefectDetectionConfig(mode="ai"), structural=False)
+        assert "Declare the solar imagery" in caught.value.user_message

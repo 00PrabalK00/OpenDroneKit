@@ -31,7 +31,7 @@ from .propagation import (
 )
 from .reconstruction import CustomDroneReconstructor
 from .reconstruction_remote import check_cloud_request
-from .reporting import write_json, write_markdown_report
+from .reporting import refusal_reasons, solar_models_used, write_json, write_markdown_report
 
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -858,6 +858,8 @@ class StructuralFaultPipeline:
                 "migration": model_migration,
                 "structural_model": structural_model_info,
                 "solar_model": solar_model_info,
+                "solar_models_used": solar_models_used(image_rows),
+                "solar_refusals": refusal_reasons(image_rows, "solar"),
                 "run_structural_models": bool(self.config.run_structural_models),
                 "run_solar_models": bool(self.config.run_solar_models),
                 "structural_class_ratio_avg": structural_class_avg,

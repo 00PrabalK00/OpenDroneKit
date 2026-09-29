@@ -5523,13 +5523,21 @@ class Api:
                 for name in ("crack", "structural", "solar", "metal")}
             # Solar and metal refuse rather than guess when no model reads this imagery;
             # the finished-job message names the refusal and its reason.
+            # Every distinct reason, each with its own count: a mixed folder refuses for
+            # different reasons, and one reason for all of them would be wrong.
+            from core.reporting import refusal_reasons
+
             refused: dict[str, dict[str, Any]] = {}
             for name in ("solar", "metal"):
-                rows = [r for r in summary.get("images", []) if isinstance(r, dict)
-                        and r.get(f"{name}_model_used") == "refused"]
-                if rows:
-                    refused[name] = {"images": len(rows),
-                                     "reason": str(rows[0].get(f"{name}_refused_reason", ""))}
+                reasons = refusal_reasons(summary.get("images", []), name)
+                if reasons:
+                    refused[name] = {
+                        "images": sum(r["images"] for r in reasons),
+                        "reasons": reasons,
+                        "reason": " | ".join(f"{r['images']} image(s): {r['reason']}"
+                                             if len(reasons) > 1 else r["reason"]
+                                             for r in reasons),
+                    }
             payload["detectors_refused"] = refused
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,

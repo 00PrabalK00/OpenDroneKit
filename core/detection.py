@@ -1084,6 +1084,11 @@ SOLAR_MODELS_BY_IMAGERY: dict[str, tuple[str, ...]] = {
 #: The thermal classifier was trained on 24x40 px crops of single modules. A frame this
 #: much larger holds many modules, which the classifier cannot separate.
 THERMAL_MODULE_MAX_SIDE_PX = 256
+#: The EL detector was trained on 1024x1024 PVEL-AD cell images; EL cell images from
+#: any camera are hundreds of pixels a side. A picture this small is not one -- the
+#: 24x40 px infrared module crops are the usual mix-up -- and the detector's
+#: "no defects" on it would read exactly like a real clean cell.
+EL_CELL_MIN_SIDE_PX = 128
 
 
 def _is_grayscale(image_bgr: np.ndarray) -> bool:
@@ -1197,6 +1202,14 @@ def detect_solar_defects(
             "cell images and the infrared module crops the thermal classifier was trained "
             "on are greyscale; a colour-palette thermal image or an RGB photo is not what "
             "either model reads.", kind)
+
+    if kind == "el_cell" and max(h, w) < EL_CELL_MIN_SIDE_PX:
+        return _solar_refusal(
+            image_bgr,
+            f"Declared as an EL cell image, but it is only {w}x{h} px. The EL detector was "
+            "trained on 1024x1024 px cell images; an image this small is not one (single "
+            "infrared module crops are 24x40 px -- declare those as thermal_module).",
+            kind, key or SOLAR_MODELS_BY_IMAGERY["el_cell"][0])
 
     candidates = (key,) if key else SOLAR_MODELS_BY_IMAGERY[kind]
     chosen = next((c for c in candidates if model_status(c).get("exists")), "")

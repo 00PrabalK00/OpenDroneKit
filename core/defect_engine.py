@@ -55,6 +55,9 @@ class DefectDetectionConfig:
     structure_type: str = "generic"
     material_type: str = "concrete"
     solar_model_key: str | None = None
+    # What the solar pictures are (el_cell | thermal_module | rgb_photo | auto). Grey
+    # EL and IR images need different models, so 'auto' refuses a grey picture.
+    solar_imagery: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -306,6 +309,7 @@ def detect_defects_ai(
     image_path: Path | str,
     config: DefectDetectionConfig,
     structural: bool = True,
+    solar_imagery: str | None = None,
 ) -> list[DetectedDefect]:
     image = load_image(image_path)
     h, w = image.shape[:2]
@@ -341,6 +345,7 @@ def detect_defects_ai(
             min_area_px=config.min_area_px,
             model_key=(config.solar_model_key or None),
             use_model=True,
+            imagery=str(solar_imagery or config.solar_imagery or "auto"),
         )
         if result_s.refused:
             raise AppError(
