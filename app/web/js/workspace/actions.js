@@ -370,11 +370,66 @@ export const ACTIONS = {
   /* -- ground control ----------------------------------------------------- */
   "Add GCPs": {
     describe: "Import ground control points.",
-    async run() {
+    async run(ctx) {
       const file = await call("pick_file", ["csv", "txt"]);
       if (!file || !file.path) return { skipped: "No file chosen." };
-      const result = await call("import_gcps", file.path);
-      return { message: `Imported ${result.count ?? "?"} control points.`, refresh: true };
+      let result = await tryCall("import_gcps", file.path);
+      if (!result) {
+        /* A file with no CRS column is refused rather than guessed. Ask for the code
+           and try again; the refusal text says why it matters. */
+        const why = lastError.get("import_gcps") || "";
+        if (!/CRS/i.test(why)) throw new Error(why || "The control file could not be read.");
+        const epsg = await ctx.prompt("EPSG code the control coordinates are in", "");
+        if (!epsg) return { skipped: "Control points need the CRS they were surveyed in." };
+        result = await call("import_gcps", file.path, Number(epsg));
+      }
+      return { message: `Imported ${result.count ?? "?"} control points; mark each in at `
+                 + "least three photographs with Mark GCP.", refresh: true };
+    },
+  },
+  "Mark GCP": {
+    describe: "Click where a control point is in a photograph.",
+    async run(ctx) {
+      const listed = await call("list_gcps");
+      const points = listed.points || [];
+      if (!points.length) return { skipped: "Import ground control points first (Add GCPs)." };
+      const labels = points.map((p) => `${p.name} (${p.mark_count} mark${p.mark_count === 1 ? "" : "s"})`);
+      const chosenPoint = await ctx.choose("Control point", labels);
+      if (!chosenPoint) return { skipped: "No control point chosen." };
+      const point = points[labels.indexOf(chosenPoint)];
+      const images = ((await call("list_dataset_images")).images || [])
+        .map((i) => (typeof i === "string" ? i : i.name));
+      if (!images.length) return { skipped: "Select a dataset first." };
+      const image = await ctx.choose(`Photograph showing ${point.name}`, images);
+      if (!image) return { skipped: "No photograph chosen." };
+      await ctx.showImage(image);
+      const rough = await ctx.pickImagePixel(`Click ${point.name} on ${image} (Esc to cancel).`);
+      if (!rough) return { skipped: "No point clicked on the photograph." };
+      /* On the whole frame one screen pixel is several pixels of the photograph, which
+         is metres on the ground at the far edge. The second click is on a close-up. */
+      const side = Math.max(64, Math.round(Math.min(rough.width, rough.height) / 8));
+      await ctx.showImage(image, [rough.x - side / 2, rough.y - side / 2, side, side]);
+      const at = await ctx.pickImagePixel(`Click ${point.name} again on the close-up (Esc to cancel).`);
+      if (!at) return { skipped: "No point clicked on the close-up." };
+      const marked = await call("mark_gcp", point.name, image, at.x, at.y, at.width, at.height);
+      const count = marked.point.mark_count;
+      return { message: `${point.name} marked on ${image} at (${Math.round(at.x)}, ${Math.round(at.y)}); `
+                 + `${count} mark${count === 1 ? "" : "s"}`
+                 + (marked.point.usable ? "." : ` -- needs ${3 - count} more to be used.`),
+               refresh: true };
+    },
+  },
+  "GCP Report": {
+    describe: "How far each control point lands from where it was surveyed.",
+    async run() {
+      const { report } = await call("gcp_accuracy_report");
+      if (report.rmse_m === null || report.rmse_m === undefined) {
+        return { message: `No measured accuracy: ${(report.warnings || []).join(" ")}` };
+      }
+      const kind = report.role === "check" ? "independent check" : "fit to the control";
+      return { message: `GCP RMSE ${Number(report.rmse_m).toFixed(3)} m over ${report.used} of `
+                 + `${report.point_count} points (${kind}; georeferenced by ${report.georeferenced_by}). `
+                 + (report.warnings || []).join(" ") };
     },
   },
   "Set CRS": {

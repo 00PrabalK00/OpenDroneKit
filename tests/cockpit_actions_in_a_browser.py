@@ -36,6 +36,7 @@ PAGE = r"""<!doctype html><html><head><meta charset="utf-8">
 <script type="module">
 import { Shell } from "./js/workspace/shell.js";
 import { addVertex, canDraw, finishDrawing } from "./js/workspace/draw.js";
+import { currentImage } from "./js/workspace/viewstate.js";
 
 const PLAN = __PLAN__;
 const WORKSPACE = __WORKSPACE__;
@@ -44,11 +45,14 @@ const shell = new Shell(document.getElementById("app"));
 const toast = shell.toast.bind(shell);
 shell.toast = (text, kind) => { log.push({ text: String(text), kind: kind || "" }); toast(text, kind); };
 let answers = [];
-let chosen = "";
+let chosen = [];
 const context = shell.actionContext.bind(shell);
 shell.actionContext = () => ({ ...context(),
   prompt: async () => answers.shift() ?? "",
-  choose: async (_title, options) => options.find((o) => String(o).startsWith(chosen)) ?? null });
+  choose: async (_title, options) => {
+    const prefix = chosen.length > 1 ? chosen.shift() : (chosen[0] ?? "");
+    return options.find((o) => String(o).startsWith(prefix)) ?? null;
+  } });
 shell.confirmAll = true;
 const settle = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (test, n = 400) => { for (let i = 0; i < n && !test(); i++) await settle(25); };
@@ -62,8 +66,25 @@ try {
   for (const step of PLAN) {
     const before = log.length;
     answers = [...(step.answers || [])];
-    chosen = step.choose || "";
+    chosen = [].concat(step.choose ?? "");
     const running = shell.runAction(step.action);
+    // Real click events on the photograph, at the screen point that shows this pixel of
+    // the source frame -- on the whole-frame preview, or on a close-up of a window of it.
+    const clicks = step.imageClick ? [].concat(step.imageClicks || [step.imageClick, step.imageClick]) : [];
+    for (let k = 0; k < clicks.length; k += 1) {
+      await until(() => log.slice(before).filter((t) => /^Click /.test(t.text)).length > k);
+      await settle(50);
+      const shown = currentImage();
+      const image = document.querySelector("img.canvas-product");
+      const box = image.getBoundingClientRect();
+      const nw = image.naturalWidth, nh = image.naturalHeight;
+      const fit = Math.min(box.width / nw, box.height / nh);
+      const [sx, sy] = clicks[k];
+      const [cx, cy, cw, ch] = shown.crop || [0, 0, shown.source_width, shown.source_height];
+      const clientX = box.left + (box.width - nw * fit) / 2 + ((sx - cx) * nw / cw) * fit;
+      const clientY = box.top + (box.height - nh * fit) / 2 + ((sy - cy) * nh / ch) * fit;
+      image.dispatchEvent(new MouseEvent("click", { clientX, clientY, bubbles: true }));
+    }
     if (step.click) {
       await until(() => canDraw());
       await until(() => log.slice(before).some((t) => /^Click /.test(t.text)));

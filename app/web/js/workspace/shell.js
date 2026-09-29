@@ -14,7 +14,7 @@ import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
 import { armDrawing, bindDrawingKeys, canDraw, vertices } from "./draw.js";
 import { refreshProjectOverlays, showVector } from "./mapview.js";
-import { setImage, setView } from "./viewstate.js";
+import { currentImage, setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
@@ -420,14 +420,61 @@ export class Shell {
     this.toast(`${name}: ${why || "this layer cannot be displayed."}`, "warn");
   }
 
+  /**
+   * Wait for one click on the photograph shown on the canvas.
+   *
+   * The canvas draws a downscaled preview with object-fit: contain, so the click is
+   * mapped through the letterboxing to the preview's pixels and then scaled to the
+   * source frame's size -- a ground control mark is a pixel on the photograph, not on
+   * the screen.
+   */
+  async pickImagePixel(message) {
+    let image = null;
+    for (let i = 0; i < 200 && !image; i += 1) {
+      image = this.root.querySelector("img.canvas-product");
+      if (!image || !image.naturalWidth) {
+        image = null;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    if (!image) return null;
+    const picked = currentImage() || {};
+    this.toast(message || "Click the point on the photograph (Esc to cancel).", "ok");
+    return new Promise((resolve) => {
+      const done = (value) => {
+        image.removeEventListener("click", onClick);
+        document.removeEventListener("keydown", onKey);
+        resolve(value);
+      };
+      const onKey = (event) => { if (event.key === "Escape") done(null); };
+      const onClick = (event) => {
+        const box = image.getBoundingClientRect();
+        const nw = image.naturalWidth;
+        const nh = image.naturalHeight;
+        const fit = Math.min(box.width / nw, box.height / nh);
+        const x = (event.clientX - box.left - (box.width - nw * fit) / 2) / fit;
+        const y = (event.clientY - box.top - (box.height - nh * fit) / 2) / fit;
+        if (x < 0 || y < 0 || x > nw || y > nh) { done(null); return; }
+        const width = Number(picked.source_width) || nw;
+        const height = Number(picked.source_height) || nh;
+        // A close-up covers a window of the frame, not all of it.
+        const [cx, cy, cw, ch] = picked.crop || [0, 0, width, height];
+        done({ x: cx + (x * cw) / nw, y: cy + (y * ch) / nh, width, height });
+      };
+      image.addEventListener("click", onClick);
+      document.addEventListener("keydown", onKey);
+    });
+  }
+
   /** Draw one image from the active dataset on the canvas. */
-  async showImage(name) {
+  async showImage(name, crop = null) {
     if (!connected()) {
       this.toast(`${name}: connect a project to preview the image.`, "warn");
       return;
     }
     this.toast(`Loading ${name}…`);
-    const preview = await tryCall("image_preview", name);
+    const preview = crop ? await tryCall("image_preview", name, 1400, crop)
+      : await tryCall("image_preview", name);
     if (!preview || preview.ok === false) {
       this.toast(`${name}: ${(preview && preview.error) || "no preview available."}`, "warn");
       return;
@@ -922,6 +969,11 @@ export class Shell {
           armDrawing("point", (geometry) => resolve(geometry.coordinates), () => resolve(null));
         });
       },
+      // Put one dataset photograph on the canvas.
+      showImage: (name, crop) => this.showImage(name, crop),
+      // One click on the photograph on the canvas, in the photograph's own full-
+      // resolution pixels: {x, y, width, height}. null on Esc or a click off the picture.
+      pickImagePixel: (message) => this.pickImagePixel(message),
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather
       // than refusing keeps a single-tenant desktop install usable; a multi-tenant

@@ -630,9 +630,19 @@ PROCESSING = [
                       "tests/test_gcp.py::TestMarking",
                       "tests/test_gcp.py::TestResiduals",
                       "tests/test_gcp.py::TestAccuracyReport",
-                      "tests/test_gcp.py::TestReportOutput"],
-      "core/gcp.py; Api.import_gcps, mark_gcp, gcp_accuracy_report. Fitting the "
-      "transform itself belongs to the reconstruction engine."),
+                      "tests/test_gcp.py::TestReportOutput",
+                      "tests/test_gcp_georeferencing.py"],
+      "core/gcp.py; Api.import_gcps, list_gcps, mark_gcp, gcp_accuracy_report; cockpit "
+      "Add GCPs, Mark GCP (a click on the photograph, then on a close-up), GCP Report. "
+      "Points and marks are kept in the project's gcps.json. Each point is located in the "
+      "model by intersecting the rays through its marks with the run's camera poses; "
+      "three or more marked in three registered images georeference the COLMAP "
+      "reconstruction (every product is written with that fit, with leave-one-out "
+      "residuals from four points), fewer are reported as an independent check on the "
+      "geotag fit. The real-imagery test (COLMAP on eight Aukerman frames, marks taken "
+      "from COLMAP's own tie-point observations, survey coordinates offset from the GPS "
+      "fit by a known amount) skips without the gitignored imagery; the custom engine "
+      "ignores control and says so."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
       "RTK/PPK metadata and RINEX base station data with timestamp alignment: camera "
       "events read from the aircraft's own event file with corrections in the units "

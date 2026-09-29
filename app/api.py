@@ -518,47 +518,132 @@ class Api:
         return ok(comparison=compare_specifications(by_num[first_version],
                                                     by_num[second_version]))
 
+    def _control_points(self) -> list:
+        """This project's control points, read from its folder (the only copy that lasts)."""
+        from core.gcp import load_control
+
+        points = load_control(self._session.project_root())
+        self._session.ground_control = points
+        return points
+
     @guard
     def import_gcps(self, path: str, epsg: int | None = None) -> dict[str, Any]:
-        """Load surveyed ground control points for this project."""
-        from core.gcp import GcpError, read_gcp_file
+        """Load surveyed ground control points for this project.
+
+        Written into the project folder with every mark made on them. They used to live
+        only in memory, so an afternoon of marking targets was lost on restart.
+        """
+        from core.gcp import GcpError, read_gcp_file, save_control
 
         try:
             points = read_gcp_file(path, default_epsg=epsg)
         except GcpError as exc:
             return fail(str(exc))
 
+        # Re-importing the same file keeps the marks already made on points it still has.
+        previous = {p.name: p for p in self._control_points()}
+        for point in points:
+            if point.name in previous:
+                point.marks = previous[point.name].marks
         self._session.ground_control = points
+        saved = save_control(self._session.project_root(), points)
         self._session.audit("gcps_imported", {"path": str(path), "count": len(points)})
-        return ok(points=[p.to_dict() for p in points], count=len(points))
+        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved))
 
     @guard
-    def mark_gcp(self, name: str, image: str, pixel_x: float, pixel_y: float) -> dict[str, Any]:
-        """Record where a control point appears in one image."""
-        from core.gcp import add_mark
+    def list_gcps(self) -> dict[str, Any]:
+        """The project's control points with their marks."""
+        points = self._control_points()
+        return ok(points=[{**p.to_dict(), "marks": [m.to_dict() for m in p.marks]}
+                          for p in points], count=len(points))
 
-        points = getattr(self._session, "ground_control", None) or []
+    @guard
+    def mark_gcp(self, name: str, image: str, pixel_x: float, pixel_y: float,
+                 image_width: int = 0, image_height: int = 0) -> dict[str, Any]:
+        """Record where a control point appears in one image.
+
+        Pixels are full-resolution unless ``image_width`` x ``image_height`` says which
+        picture they were read on (a downscaled preview, say); they are rescaled then.
+        """
+        from core.gcp import add_mark, save_control
+
+        points = self._control_points()
         point = next((p for p in points if p.name == name), None)
         if point is None:
             known = ", ".join(p.name for p in points) or "none imported"
             return fail(f"No control point named {name!r}. Imported: {known}.")
+        if image_width and image_height and not (
+                0 <= float(pixel_x) <= float(image_width)
+                and 0 <= float(pixel_y) <= float(image_height)):
+            return fail(f"({float(pixel_x):.0f}, {float(pixel_y):.0f}) is outside the "
+                        f"{int(image_width)}x{int(image_height)} image.")
 
-        add_mark(point, image, float(pixel_x), float(pixel_y))
+        add_mark(point, Path(str(image)).name, float(pixel_x), float(pixel_y),
+                 int(image_width or 0), int(image_height or 0))
+        save_control(self._session.project_root(), points)
+        self._session.audit("gcp_marked", {"name": name, "image": Path(str(image)).name})
         return ok(point=point.to_dict())
 
     @guard
-    def gcp_accuracy_report(self, computed: dict[str, list[float]] | None = None) -> dict[str, Any]:
-        """How far each control point landed from where it was surveyed."""
-        from core.gcp import accuracy_report, residuals_from_positions, write_report
+    def gcp_accuracy_report(self, computed: dict[str, list[float]] | None = None,
+                            reconstruction_dir: str = "") -> dict[str, Any]:
+        """How far each control point landed from where it was surveyed.
 
-        points = getattr(self._session, "ground_control", None) or []
+        Without ``computed`` the positions come from the model: each point is located by
+        intersecting the rays through its image marks with the reconstruction's own
+        camera poses, and placed with the georeferencing that run actually used. When
+        that georeferencing was fitted to these points the residuals are fit residuals
+        (with the leave-one-out check the run wrote); when it came from camera geotags
+        they are an independent check.
+        """
+        import json as _json
+
+        from core import geo
+        from core.gcp import (GcpError, accuracy_report, check_against_anchor,
+                              poses_from_records, residuals_from_positions, write_report)
+
+        points = self._control_points()
         if not points:
             return fail("No ground control points have been imported.")
 
-        placed = {k: tuple(v) for k, v in (computed or {}).items() if len(v) >= 3}
-        report = accuracy_report(points, residuals_from_positions(points, placed))
+        root = self._session.project_root()
+        if computed:
+            placed = {k: tuple(v) for k, v in computed.items() if len(v) >= 3}
+            report = accuracy_report(points, residuals_from_positions(points, placed))
+        else:
+            run = Path(reconstruction_dir) if reconstruction_dir else root / "reconstruction"
+            poses_path = run / "camera_poses.json"
+            anchor_path = run / "geo_anchor.json"
+            if not poses_path.is_file():
+                return fail(f"No reconstruction at {run}: run Process first, then the "
+                            "control points can be located in it.")
+            if not anchor_path.is_file():
+                return fail("That reconstruction is not georeferenced, so there is no "
+                            "position to compare the control with.")
+            anchor = geo.GeoAnchor(**_json.loads(anchor_path.read_text(encoding="utf-8")))
+            poses = poses_from_records(
+                _json.loads(poses_path.read_text(encoding="utf-8")).get("cameras", []))
+            fitted = anchor.method == "ground_control"
+            try:
+                report = check_against_anchor(points, poses, anchor,
+                                              role="fit" if fitted else "check")
+            except GcpError as exc:
+                return fail(str(exc))
+            report["georeferenced_by"] = anchor.method
+            report["reconstruction"] = str(run)
+            usable = sum(1 for p in points if p.is_usable)
+            if not fitted and usable >= 3:
+                report["warnings"].append(
+                    f"{usable} control points are now marked well enough to georeference "
+                    "the model; run Process again to fit it to them."
+                )
+            previous = run / "gcp_report.json"
+            if fitted and previous.is_file():
+                fit_report = _json.loads(previous.read_text(encoding="utf-8"))
+                if "leave_one_out" in fit_report:
+                    report["leave_one_out"] = fit_report["leave_one_out"]
 
-        target = self._session.project_root() / "gcp_report.json"
+        target = root / "gcp_report.json"
         write_report(report, target)
         return ok(report=report, path=str(target))
 
@@ -1720,7 +1805,8 @@ class Api:
         return ok(folder=str(root), images=names, count=len(names))
 
     @guard
-    def image_preview(self, name: str, max_size: int = 1400) -> dict[str, Any]:
+    def image_preview(self, name: str, max_size: int = 1400,
+                      crop: list[float] | None = None) -> dict[str, Any]:
         """One image from the active dataset, as a data URI the canvas can draw.
 
         The desktop UI is served over loopback from app/web, so it cannot read a file
@@ -1731,6 +1817,11 @@ class Api:
 
         Downscaled because these are 24-megapixel frames: a full-size data URI is tens
         of megabytes of base64 across the bridge for a preview nobody zooms into.
+
+        ``crop`` ([x, y, width, height] in the frame's pixels) returns a close-up of that
+        window instead, clamped to the frame; the answer carries the window actually
+        used. Marking a ground control target needs this: on a whole-frame preview one
+        screen pixel is several pixels of the photograph.
         """
         import base64
 
@@ -1752,10 +1843,19 @@ class Api:
         if image is None:
             return fail(f"Could not read {name}. It may not be an image this build understands.")
         height, width = image.shape[:2]
+        window = None
+        if crop:
+            x0, y0, cw, ch = (float(v) for v in list(crop)[:4])
+            cw, ch = max(8.0, min(cw, width)), max(8.0, min(ch, height))
+            x0 = int(round(min(max(0.0, x0), width - cw)))
+            y0 = int(round(min(max(0.0, y0), height - ch)))
+            window = [x0, y0, int(cw), int(ch)]
+            image = image[y0:y0 + int(ch), x0:x0 + int(cw)]
         limit = max(64, int(max_size))
-        if max(height, width) > limit:
-            scale = limit / float(max(height, width))
-            image = cv2.resize(image, (int(width * scale), int(height * scale)),
+        if max(image.shape[:2]) > limit:
+            height_now, width_now = image.shape[:2]
+            scale = limit / float(max(height_now, width_now))
+            image = cv2.resize(image, (int(width_now * scale), int(height_now * scale)),
                                interpolation=cv2.INTER_AREA)
         okay, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
         if not okay:
@@ -1766,6 +1866,7 @@ class Api:
             height=int(image.shape[0]),
             source_width=int(width),
             source_height=int(height),
+            crop=window,
             data_uri="data:image/jpeg;base64," + base64.b64encode(buffer.tobytes()).decode("ascii"),
         )
 
@@ -3429,6 +3530,9 @@ class Api:
         session = self._session
         # Set CRS stores the operator's choice; it used to be read by nothing.
         chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
+        # Marked control points georeference the model (three or more marked in three
+        # images each) or are reported as a check on the geotag fit.
+        control = self._control_points()
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.reconstruction_colmap import build_reconstructor
@@ -3437,12 +3541,20 @@ class Api:
                 opts.get("engine", "auto"),
                 profile=opts.get("profile", "standard"),
                 dense=opts.get("dense"),
+                use_gpu=bool(opts.get("use_gpu", True)),
+                max_image_size=opts.get("max_image_size"),
                 target_epsg=opts.get("epsg") or chosen_epsg,
+                ground_control=control,
             )
             result = reconstructor.reconstruct(
                 image_dir=images, output_dir=str(output), progress_callback=progress
             )
             payload = result.to_dict()
+            if control and payload.get("engine") != "colmap":
+                payload.setdefault("warnings", []).append(
+                    "Ground control points were not used: only the COLMAP engine fits the "
+                    "model to them.")
+            payload["ground_control"] = getattr(reconstructor, "control_report", None)
             # Reconstruction products become map layers immediately, which is the whole
             # point of doing this inside a GIS tool.
             for key, kind, label in (

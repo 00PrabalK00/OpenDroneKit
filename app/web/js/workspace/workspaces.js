@@ -905,7 +905,7 @@ const verification = {
          to say whether the survey met its tolerance, so a fixed answer defeats it. */
       { at: "tr", node: readout({
         calls: ["gcp_accuracy_report"],
-        empty: "Import ground control points to check the survey against them.",
+        empty: "Import and mark ground control points, then Process, to check the survey against them.",
         isEmpty: ([g]) => !(g && g.report),
         render: ([g]) => {
           const r = g.report;
@@ -917,7 +917,7 @@ const verification = {
             return [chip(`${r.point_count ?? 0} control points \u00b7 no measured accuracy`, "warn")];
           }
           return [
-            chip(`${r.used} of ${r.point_count} used`, "ok"),
+            chip(`${r.used} of ${r.point_count} ${r.role === "check" ? "checked" : "fitted"}`, "ok"),
             chip(`RMSE ${Number(r.rmse_m).toFixed(3)} m`, r.meets_survey_grade ? "ok" : "warn"),
             ...(r.outlier_count
               ? [chip(`${r.outlier_count} outlier${r.outlier_count === 1 ? "" : "s"}`, "error")]
@@ -986,7 +986,7 @@ const processing = {
      reconstruction was running. There is no pause_job in the Api either -- a job can be
      cancelled and nothing else -- so the button had nothing behind it in both directions. */
   toolbar: ["New Job", "Size Job", "|", "Process", "Cancel", "|",
-            "Add GCPs", "Set CRS", "Check PPK", "Export Products"],
+            "Add GCPs", "Mark GCP", "GCP Report", "Set CRS", "Check PPK", "Export Products"],
   left: [
     { id: "proc.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets", "list_dataset_images"],

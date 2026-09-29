@@ -366,6 +366,7 @@ class ColmapReconstructor:
         max_image_size: int | None = None,
         raster_px_per_m: float | None = None,
         target_epsg: int | None = None,
+        ground_control: Sequence[Any] | None = None,
     ):
         self.profile = _normalize_profile(profile)
         settings = COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"])
@@ -380,6 +381,11 @@ class ColmapReconstructor:
         # Whether GPU SIFT actually ran, as opposed to whether it was asked for.
         self._used_gpu_sift = False
         self.target_epsg = target_epsg
+        # Surveyed control points (core.gcp.GroundControlPoint) with their image marks.
+        # Three or more, each marked in three registered images, georeference the model
+        # instead of the camera geotags.
+        self.ground_control = list(ground_control or [])
+        self.control_report: dict[str, Any] | None = None
         self.warnings: list[str] = []
 
     # -- helpers ---------------------------------------------------------
@@ -1185,6 +1191,9 @@ class ColmapReconstructor:
                     f"{anchor.inlier_count}/{anchor.sample_count} cameras). Treat absolute positions with caution."
                 )
 
+        if self.ground_control:
+            anchor = self._apply_ground_control(sparse, registered, anchor, out_dir)
+
         sparse_xyz, sparse_rgb = _points_and_colors(sparse)
         dense_xyz, dense_rgb = self._run_dense(images_root, work_dir, sparse, progress)
         if dense_xyz.shape[0] > sparse_xyz.shape[0]:
@@ -1243,6 +1252,8 @@ class ColmapReconstructor:
             "dense": bool(dense_xyz.shape[0] > 0),
             "mean_reprojection_error_px": reprojection_error,
             "geo_rmse_m": anchor.rmse_m if anchor else None,
+            "georeferenced_by": (anchor.method if anchor else None),
+            "ground_control": self.control_report,
             "ground_sample_distance_m": artifacts.get("gsd_m"),
             "artifacts": {key: value for key, value in artifacts.items() if isinstance(value, str)},
             "warnings": list(self.warnings),
@@ -1292,6 +1303,41 @@ class ColmapReconstructor:
             camera_track_geojson_path=artifacts.get("camera_track", ""),
             ground_sample_distance_m=artifacts.get("gsd_m"),
         )
+
+    def _apply_ground_control(self, sparse: Any, registered: Sequence[Any],
+                              camera_anchor: geo.GeoAnchor | None,
+                              out_dir: Path) -> geo.GeoAnchor | None:
+        """Fit the model to the surveyed control, or check the GPS fit against it.
+
+        Every product written after this -- point cloud rasters, orthophoto, camera
+        track -- uses whichever anchor this returns, so control that is used changes
+        where the deliverables are, not only what a report says about them.
+        """
+        from core import gcp
+
+        camera_map = _map_items(getattr(sparse, "cameras", None))
+        records = [_camera_record(image, camera_map.get(int(getattr(image, "camera_id", -1))))
+                   for image in registered]
+        poses = gcp.poses_from_records(records)
+        epsg = (camera_anchor.epsg if camera_anchor is not None
+                else int(self.target_epsg or self.ground_control[0].epsg))
+        try:
+            solution = gcp.solve_with_control(self.ground_control, poses, int(epsg), camera_anchor)
+        except (gcp.GcpError, ValueError, np.linalg.LinAlgError) as exc:
+            self._warn(f"Ground control was not used: {exc}")
+            return camera_anchor
+        self.control_report = solution.report
+        gcp.write_report(solution.report, out_dir / "gcp_report.json")
+        if solution.anchor is None:
+            self._warn(
+                "Ground control points were supplied but fewer than three are marked in "
+                f"{gcp.MIN_IMAGE_MARKS} registered images, so the model is "
+                + ("georeferenced from the camera geotags and the control is reported as "
+                   "a check (gcp_report.json)." if camera_anchor is not None else
+                   "not georeferenced.")
+            )
+            return camera_anchor
+        return solution.anchor
 
     def _write_products(
         self,
@@ -1477,6 +1523,9 @@ def _camera_record(image: Any, camera: Any) -> dict[str, Any]:
         record["width"] = int(getattr(camera, "width", 0) or 0)
         record["height"] = int(getattr(camera, "height", 0) or 0)
         record["model"] = str(getattr(camera, "model_name", getattr(camera, "model", "")) or "")
+        # The lens distortion, so a pixel picked on the photograph can be turned back into
+        # the ray COLMAP itself would use (ground control marks, measurement).
+        record["params"] = [float(v) for v in np.asarray(getattr(camera, "params", []), dtype=float)]
     return record
 
 
@@ -1623,6 +1672,7 @@ def build_reconstructor(engine: str, **kwargs: Any):
             max_image_size=kwargs.get("max_image_size"),
             raster_px_per_m=kwargs.get("raster_px_per_m"),
             target_epsg=kwargs.get("target_epsg"),
+            ground_control=kwargs.get("ground_control"),
         )
     if name == "custom":
         return CustomDroneReconstructor(
