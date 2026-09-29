@@ -206,6 +206,17 @@ def check_terrain_file(path: str | Path) -> None:
     """
     source = Path(path)
     if source.suffix.lower() in TERRAIN_SAMPLE_TABLE_SUFFIXES:
+        if source.suffix.lower() == ".json":
+            return
+        from mission.planner import local_terrain_samples_problem, read_terrain_csv_points
+
+        points = read_terrain_csv_points(str(source))
+        if points is not None:
+            world, local = points
+            problem = (local_terrain_samples_problem(local, source.name)
+                       if len(world) < 3 else None)
+            if problem:
+                raise TerrainCacheError(problem)
         return
     import rasterio
 
