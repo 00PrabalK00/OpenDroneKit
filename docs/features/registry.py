@@ -317,7 +317,10 @@ MISSION_PLANNING = [
       "than an empty cache."),
     F("mp.obstacles", "Obstacle planning", "core", "Mission engine",
       "Point, circular, polygon and 3D obstacles with route intersection detection and detours.",
-      "implemented", ["tests/test_mission_constraints.py::TestNoFlyZones"]),
+      "implemented", ["tests/test_mission_constraints.py::TestNoFlyZones",
+                      "tests/test_mission_exports_carry_the_plan.py::TestNoFlyZonesInTheExportedPath"],
+      "Checked on the exported .plan: no NAV point inside a zone and no leg between two "
+      "of them crossing one, including double_grid's hop between its passes."),
     F("mp.geofence", "Geofence containment", "core", "Mission engine",
       "No waypoint outside the inclusion fence or inside an exclusion zone.",
       "verified", ["tests/test_mission_constraints.py::TestNoFlyZones",

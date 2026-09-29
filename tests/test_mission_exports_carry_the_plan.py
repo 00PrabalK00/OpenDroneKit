@@ -73,7 +73,9 @@ class TestTheCameraPoseReachesTheFile:
     """The headline defect: structure missions exported as nadir photographs."""
 
     @pytest.mark.parametrize("template", ["tower_mapping", "orbit", "panorama", "facade",
-                                          "box_inspection", "wind_turbine"])
+                                          "box_inspection", "wind_turbine", "bubble_360",
+                                          "closed_loop", "multi_facade", "dome_inspection",
+                                          "facade_mapping"])
     def test_every_yaw_locked_pose_gets_its_yaw_and_pitch(self, api, tmp_path, template):
         planned, written = plan_and_export(api, tmp_path, {"template": template, "altitude_m": 50})
         props = waypoint_props(planned)
@@ -155,6 +157,49 @@ class TestSpeedAndDwellReachTheFile:
         planned, written = plan_and_export(api, tmp_path, {"template": "roof_inspection"})
         loiters = [i for i in plan_items(written) if i["command"] == NAV_LOITER_TIME]
         assert loiters and {i["params"][0] for i in loiters} == {1.5}
+
+
+def _local(lat: float, lon: float) -> tuple[float, float]:
+    return (lon + 81.7528) * 111_320.0 * math.cos(math.radians(41.304)), (lat - 41.304) * 110_540.0
+
+
+def _inside(p, ring) -> bool:
+    x, y = p
+    hit = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            hit = not hit
+    return hit
+
+
+def _cross(a, b, c, d) -> bool:
+    def orient(p, q, r):
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    return (orient(a, b, c) * orient(a, b, d) < 0) and (orient(c, d, a) * orient(c, d, b) < 0)
+
+
+class TestNoFlyZonesInTheExportedPath:
+    """The audit found double_grid's hop between its two passes cut through a zone.
+
+    Checked on the file the aircraft would fly, not the planner's own geometry: every
+    exported NAV point outside every zone, and no leg between two of them crossing one.
+    """
+
+    @pytest.mark.parametrize("template", ["grid", "double_grid", "corridor", "magnetic_mapping",
+                                          "solar_inspection", "orbit", "waypoints"])
+    def test_no_exported_leg_enters_a_no_fly_zone(self, api, tmp_path, template):
+        assert api.set_no_fly_zones(NO_FLY)["ok"]
+        _, written = plan_and_export(api, tmp_path, {"template": template, "altitude_m": 50})
+        nav = [_local(i["params"][4], i["params"][5]) for i in plan_items(written)
+               if i["command"] in (NAV_WAYPOINT, NAV_LOITER_TIME)]
+        assert len(nav) >= 4
+        zones = [[_local(lat, lon) for lon, lat in zone] for zone in NO_FLY]
+        for zone in zones:
+            assert not [p for p in nav if _inside(p, zone)], f"{template}: waypoint inside a zone"
+            edges = list(zip(zone, zone[1:] + zone[:1]))
+            crossing = [(a, b) for a, b in zip(nav, nav[1:])
+                        if any(_cross(a, b, c, d) for c, d in edges)]
+            assert not crossing, f"{template}: {len(crossing)} legs cross a no-fly zone"
 
 
 class TestFileStructure:
