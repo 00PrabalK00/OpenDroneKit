@@ -925,8 +925,9 @@ class Api:
         placement error, and sends somebody to measure a wall that is exactly where it
         should be.
 
-        The alignment against the project's own rasters is checked and reported for the
-        same reason.
+        The alignment against the project's own rasters is checked in their CRS; the
+        overlay is written in WGS84 (as GeoJSON requires) and added to the layer tree,
+        so both the map and the layer list draw it.
         """
         from core.cad_overlay import OverlayRefused, alignment_report, read_dxf, reproject
 
@@ -934,7 +935,15 @@ class Api:
         if root is None:
             return fail("Open a project first.")
 
-        layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
+        def georeferenced() -> list:
+            return [l for l in self._session.layers.values()
+                    if l.kind == "raster" and getattr(l, "crs_epsg", None)]
+
+        layers = georeferenced()
+        if not layers:
+            # The layer tree is in memory; the products are on disk.
+            self._session.restore_layers()
+            layers = georeferenced()
         if not layers:
             return fail(
                 "This project has no georeferenced products yet, so there is nothing to "
@@ -944,11 +953,13 @@ class Api:
 
         try:
             drawing = reproject(read_dxf(path), int(source_epsg), target_epsg)
+            lonlat = reproject(read_dxf(path), int(source_epsg), 4326)
         except OverlayRefused as exc:
             return fail(str(exc))
 
         # Bounds of the products, in their own CRS, to check the drawing landed on them.
-        boxes = [l.metadata.get("bounds") for l in layers if (l.metadata or {}).get("bounds")]
+        boxes = [l.metadata.get("bounds") for l in layers
+                 if (l.metadata or {}).get("bounds") and int(l.crs_epsg) == target_epsg]
         report = {}
         if boxes:
             target = [
@@ -963,7 +974,11 @@ class Api:
         target_path = overlay_dir / f"{label}.geojson"
         import json as _json
 
-        target_path.write_text(_json.dumps(drawing.to_geojson()), encoding="utf-8")
+        collection = lonlat.to_geojson()
+        collection["properties"] = {"source": str(path), "source_epsg": int(source_epsg),
+                                    "kind": "cad_overlay"}
+        target_path.write_text(_json.dumps(collection), encoding="utf-8")
+        layer = self._session.register_vector_layer(target_path, name=f"CAD: {label}")
 
         self._session.audit("cad_overlay_imported",
                             {"name": label, "source_epsg": int(source_epsg)})
@@ -971,6 +986,7 @@ class Api:
             name=label,
             path=str(target_path),
             epsg=target_epsg,
+            layer_id=layer["id"],
             entities=drawing.entity_counts,
             skipped=drawing.skipped_entities,
             alignment=report,
@@ -989,7 +1005,12 @@ class Api:
     def place_image_overlay(self, path: str, west: float, south: float,
                             east: float, north: float, epsg: int = 4326,
                             name: str = "") -> dict[str, Any]:
-        """Georeference a plain scan or screenshot by its bounding box."""
+        """Georeference a plain scan or screenshot by its bounding box.
+
+        The picture is written out as a GeoTIFF in the stated CRS, so it becomes an
+        ordinary raster layer that every map and the layer tree can already show. A
+        GeoTIFF that is already georeferenced needs none of this: add it as a layer.
+        """
         from core.cad_overlay import OverlayRefused, place_raster
 
         root = self._session.project_root()
@@ -1000,20 +1021,60 @@ class Api:
                                   float(east), float(north), int(epsg))
         except OverlayRefused as exc:
             return fail(str(exc))
-        self._session.audit("image_overlay_placed", {"name": name or Path(path).stem})
-        return ok(overlay=placed.to_dict(), name=name or Path(path).stem)
+
+        import cv2
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        picture = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if picture is None:
+            return fail(f"{Path(path).name} is not an image this can read.")
+        if picture.ndim == 2:
+            picture = cv2.cvtColor(picture, cv2.COLOR_GRAY2RGB)
+        elif picture.shape[2] == 4:
+            picture = cv2.cvtColor(picture, cv2.COLOR_BGRA2RGB)
+        else:
+            picture = cv2.cvtColor(picture, cv2.COLOR_BGR2RGB)
+        height, width = picture.shape[:2]
+        label = name or Path(path).stem
+        overlay_dir = Path(root) / "overlays"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        target = overlay_dir / f"{label}.tif"
+        with rasterio.open(
+            target, "w", driver="GTiff", width=width, height=height, count=3,
+            dtype="uint8", crs=f"EPSG:{int(epsg)}",
+            transform=from_bounds(placed.west, placed.south, placed.east, placed.north,
+                                  width, height),
+        ) as dst:
+            dst.write(np.transpose(picture, (2, 0, 1)).astype(np.uint8))
+        layer = self._session.register_raster_layer(target, name=f"Overlay: {label}")
+        self._session.audit("image_overlay_placed", {"name": label})
+        return ok(overlay=placed.to_dict(), name=label, path=str(target),
+                  layer_id=layer["id"])
 
     @guard
     def list_cad_overlays(self) -> dict[str, Any]:
+        """Every overlay in this project, with its geometry for drawing."""
         root = self._session.project_root()
         if root is None:
             return fail("Open a project first.")
         overlay_dir = Path(root) / "overlays"
         if not overlay_dir.is_dir():
             return ok(overlays=[])
-        return ok(overlays=[
-            {"name": p.stem, "path": str(p)} for p in sorted(overlay_dir.glob("*.geojson"))
-        ])
+        import json as _json
+
+        overlays = []
+        for p in sorted(overlay_dir.glob("*.geojson")):
+            try:
+                geojson = _json.loads(p.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            overlays.append({"name": p.stem, "path": str(p), "kind": "vector",
+                             "geojson": geojson})
+        for p in sorted(overlay_dir.glob("*.tif")):
+            overlays.append({"name": p.stem, "path": str(p), "kind": "image"})
+        return ok(overlays=overlays)
 
     @guard
     def tag_annotations(self, annotation_ids: list[str], tags: list[str]) -> dict[str, Any]:
@@ -2011,7 +2072,37 @@ class Api:
         except (MarkerRefused, TypeError, ValueError) as exc:
             return fail(str(exc))
         self._session.audit("site_marker_added", {"name": name, "kind": kind})
-        return ok(markers=[m.to_dict() for m in markers])
+        result = ok(markers=[m.to_dict() for m in markers])
+        far = self._distance_from_site_m(points)
+        if far is not None and far > 2000.0:
+            # Recorded -- the operator may know better -- but a marker kilometres from
+            # the site is far more often a typo (a swapped digit, lat/lon reversed).
+            result["warning"] = (
+                f"This marker is {far / 1000.0:.1f} km from the area of interest. Check "
+                "the coordinates; a swapped digit or reversed lat/lon lands here."
+            )
+        return result
+
+    def _distance_from_site_m(self, points: list[list[float]]) -> float | None:
+        """Metres from the nearest marker point to the AOI (or mission), None if neither."""
+        from core import geo
+
+        area = list(self._session.aoi_polygon or [])
+        if not area and self._session.mission_plan_dict:
+            area = [[w.get("lon"), w.get("lat")]
+                    for w in self._session.mission_plan_dict.get("waypoints", [])
+                    if w.get("lon") is not None and w.get("lat") is not None]
+        if not area or not points:
+            return None
+        lons = [float(p[0]) for p in area]
+        lats = [float(p[1]) for p in area]
+        best = None
+        for point in points:
+            lon = min(max(float(point[0]), min(lons)), max(lons))
+            lat = min(max(float(point[1]), min(lats)), max(lats))
+            distance = geo.haversine_m(float(point[1]), float(point[0]), lat, lon)
+            best = distance if best is None else min(best, distance)
+        return best
 
     @guard
     def remove_site_marker(self, marker_id: str) -> dict[str, Any]:

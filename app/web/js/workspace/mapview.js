@@ -13,6 +13,72 @@
 
 import { el } from "./primitives.js";
 import { attachDrawing } from "./draw.js";
+import { tryCall } from "./api.js";
+
+/* Vector layers every canvas map draws: the project's CAD overlays and site markers,
+   plus any vector layer the operator picked. The overlays used to be written to disk
+   and listed by nobody, and the markers were never drawn -- a hazard recorded on the
+   site did not appear on the map the pilot planned over. */
+const mounted = new Set();
+const pinned = new Map();
+
+const PALETTE = {
+  cad: "#22d3ee",
+  markers: "#ef4444",
+  layer: "#a78bfa",
+};
+
+function drawPinned(map) {
+  if (!map.isStyleLoaded || !map.isStyleLoaded()) return;
+  for (const [id, entry] of pinned) {
+    const source = `odk-v-${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const existing = map.getSource(source);
+    if (existing) { existing.setData(entry.geojson); continue; }
+    map.addSource(source, { type: "geojson", data: entry.geojson });
+    const colour = PALETTE[entry.kind] || PALETTE.layer;
+    map.addLayer({ id: `${source}-fill`, type: "fill", source,
+      filter: ["==", ["geometry-type"], "Polygon"],
+      paint: { "fill-color": colour, "fill-opacity": 0.15 } });
+    map.addLayer({ id: `${source}-line`, type: "line", source,
+      filter: ["!=", ["geometry-type"], "Point"],
+      paint: { "line-color": colour, "line-width": 1.5 } });
+    map.addLayer({ id: `${source}-point`, type: "circle", source,
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: { "circle-radius": 5, "circle-color": colour,
+        "circle-stroke-color": "#0d1015", "circle-stroke-width": 1 } });
+  }
+}
+
+/** Draw a vector layer on every canvas map, now and on any map mounted later. */
+export function showVector(id, geojson, kind = "layer") {
+  if (!geojson) return;
+  pinned.set(id, { geojson, kind });
+  mounted.forEach((map) => drawPinned(map));
+}
+
+/** What is currently drawn, by id -- for the evidence tests and the layer panel. */
+export function shownVectors() {
+  return [...pinned.keys()];
+}
+
+async function loadProjectOverlays(map) {
+  const overlays = await tryCall("list_cad_overlays");
+  for (const overlay of (overlays && overlays.overlays) || []) {
+    if (overlay.kind === "vector" && overlay.geojson) {
+      pinned.set(`cad:${overlay.name}`, { geojson: overlay.geojson, kind: "cad" });
+    }
+  }
+  const markers = await tryCall("list_site_markers");
+  if (markers && markers.geojson) {
+    pinned.set("site-markers", { geojson: markers.geojson, kind: "markers" });
+  }
+  drawPinned(map);
+}
+
+/** Re-read overlays and markers into every mounted map (after an import or a marker). */
+export function refreshProjectOverlays() {
+  mounted.forEach((map) => loadProjectOverlays(map));
+}
 
 /* Style built here rather than imported from js/map.js: that module belongs to the hub
  * and carries its own draw tooling and event wiring. Borrowing it would couple two UIs
@@ -100,9 +166,11 @@ export function mountMap(container, {
     ]));
   });
 
+  mounted.add(map);
   map.on("load", () => {
     const placeholder = container.querySelector(".placeholder");
     if (placeholder) placeholder.remove();
+    loadProjectOverlays(map);
     if (onReady) onReady(map);
   });
 

@@ -21,6 +21,7 @@ const state = {
   mode: null,          // "line" | "polygon" | null
   points: [],
   onFinish: null,
+  onCancel: null,
   finished: null,      // the last finished geometry, kept on screen
   maps: new Set(),
   listeners: new Set(),
@@ -43,11 +44,26 @@ export function onDrawingChange(fn) {
   return () => state.listeners.delete(fn);
 }
 
-/** Start collecting vertices. `onFinish(geometry)` receives a GeoJSON geometry. */
-export function armDrawing(mode, onFinish) {
-  state.mode = mode === "polygon" ? "polygon" : "line";
+/** Whether any map is mounted to draw on. */
+export function canDraw() {
+  return state.maps.size > 0;
+}
+
+/**
+ * Start collecting vertices. `onFinish(geometry)` receives a GeoJSON geometry;
+ * `onCancel()` runs if the operator presses Esc instead. A "point" finishes on the first
+ * click.
+ */
+export function armDrawing(mode, onFinish, onCancel) {
+  if (state.onCancel) {
+    const previous = state.onCancel;
+    state.onCancel = null;
+    previous();
+  }
+  state.mode = mode === "polygon" ? "polygon" : mode === "point" ? "point" : "line";
   state.points = [];
   state.onFinish = onFinish || null;
+  state.onCancel = onCancel || null;
   state.maps.forEach((map) => {
     // A double-click finishes the shape; letting it also zoom moves the map under the
     // operator at the moment they are checking what they drew.
@@ -59,12 +75,15 @@ export function armDrawing(mode, onFinish) {
 }
 
 export function cancelDrawing() {
+  const cancelled = state.onCancel;
   state.mode = null;
   state.points = [];
   state.onFinish = null;
+  state.onCancel = null;
   restoreMaps();
   render();
   notify();
+  if (cancelled) cancelled();
 }
 
 export function clearSelection() {
@@ -84,6 +103,7 @@ export function addVertex(lngLat) {
   state.points.push([lng, lat]);
   render();
   notify();
+  if (state.mode === "point") finishDrawing();
   return true;
 }
 
@@ -98,20 +118,22 @@ export function removeLastVertex() {
 /** Complete the shape. Returns the geometry, or a string saying why it cannot. */
 export function finishDrawing() {
   if (!state.mode) return "Nothing is being drawn.";
-  const needed = state.mode === "polygon" ? 3 : 2;
+  const needed = state.mode === "polygon" ? 3 : state.mode === "point" ? 1 : 2;
   if (state.points.length < needed) {
-    return `A ${state.mode === "polygon" ? "polygon" : "line"} needs at least ${needed} points; `
-      + `${state.points.length} placed.`;
+    return `A ${state.mode} needs at least ${needed} point(s); ${state.points.length} placed.`;
   }
   const coordinates = state.points.map((p) => [...p]);
   const geometry = state.mode === "polygon"
     ? { type: "Polygon", coordinates: [[...coordinates, coordinates[0]]] }
-    : { type: "LineString", coordinates };
+    : state.mode === "point"
+      ? { type: "Point", coordinates: coordinates[0] }
+      : { type: "LineString", coordinates };
   const done = state.onFinish;
   state.finished = geometry;
   state.mode = null;
   state.points = [];
   state.onFinish = null;
+  state.onCancel = null;
   restoreMaps();
   render();
   notify();
@@ -122,6 +144,7 @@ export function finishDrawing() {
 /** The vertices of a geometry as a flat list, without the polygon's closing repeat. */
 export function vertices(geometry) {
   if (!geometry) return [];
+  if (geometry.type === "Point") return [geometry.coordinates];
   if (geometry.type === "Polygon") {
     const ring = geometry.coordinates[0] || [];
     return ring.slice(0, ring.length > 1 ? -1 : ring.length);

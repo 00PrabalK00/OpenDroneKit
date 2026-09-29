@@ -723,16 +723,20 @@ export const ACTIONS = {
 
       const name = await ctx.prompt("Marker name", "");
       if (!name) return { skipped: "A marker needs a name to be found again." };
-      /* Typed rather than clicked. The canvas does not report a map coordinate, and a
-         button that waits for a click the UI cannot deliver is a dead control. An
-         operator placing a hazard usually has the coordinate written down anyway. */
-      const lon = await ctx.prompt("Longitude", "");
-      const lat = await ctx.prompt("Latitude", "");
-      if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
-      const result = await call("add_site_marker", name, kind, [[Number(lon), Number(lat)]]);
+      /* Clicked on the map when there is one; typed when there is not, or when the
+         operator presses Esc because the coordinate is written down. */
+      let point = await ctx.pickPoint(`Click where "${name}" is (Esc to type it).`);
+      if (!point) {
+        const lon = await ctx.prompt("Longitude", "");
+        const lat = await ctx.prompt("Latitude", "");
+        if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
+        point = [Number(lon), Number(lat)];
+      }
+      const result = await call("add_site_marker", name, kind, [point]);
       /* It answers with the whole marker list, not the one just added. */
       const total = (result.markers || []).length;
-      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`,
+      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`
+                 + (result.warning ? ` ${result.warning}` : ""),
                refresh: true };
     },
   },
@@ -760,14 +764,38 @@ export const ACTIONS = {
     },
   },
   "Import CAD": {
-    describe: "Place a DXF or a georeferenced image over the survey.",
+    describe: "Place a DXF, a GeoTIFF or a plain scanned image over the survey.",
     async run(ctx) {
       /* pick_file takes an EXTENSION LIST, not a title. Passing a title made pywebview
          raise "is not a valid file filter" and the exception arrived at the toolbar as
          the result of pressing the button. */
-      const picked = await tryCall("pick_file", ["dxf", "tif", "tiff", "png", "jpg"]);
+      const picked = await tryCall("pick_file", ["dxf", "tif", "tiff", "png", "jpg", "jpeg"]);
       const path = picked && picked.path;
       if (!path) return { skipped: "No file chosen." };
+      const extension = path.split(".").pop().toLowerCase();
+
+      if (extension === "tif" || extension === "tiff") {
+        /* A GeoTIFF carries its own CRS: it is a layer, not something to place. Images
+           used to be sent to the DXF reader, which answered "No usable geometry". */
+        const added = await tryCall("add_layer_from_file", path);
+        if (added && added.layer && added.layer.crs_epsg) {
+          return { message: `Added ${added.layer.name} (EPSG:${added.layer.crs_epsg}).`,
+                   refresh: true };
+        }
+      }
+      if (extension !== "dxf") {
+        /* A plain picture has no georeferencing: its corners are asked for, never guessed. */
+        const box = await ctx.prompt("Image corners: west, south, east, north", "");
+        const numbers = String(box || "").split(/[,\s]+/).filter(Boolean).map(Number);
+        if (numbers.length !== 4 || !numbers.every(Number.isFinite)) {
+          return { skipped: "A plain image needs its four bounds to be placed." };
+        }
+        const epsg = await ctx.prompt("EPSG code of those bounds", "4326");
+        if (!epsg) return { skipped: "The bounds need their EPSG code." };
+        const placed = await call("place_image_overlay", path, ...numbers, Number(epsg));
+        return { message: `Placed ${placed.name} as a map layer.`, refresh: true };
+      }
+
       /* Required, never guessed. An overlay placed in the wrong coordinate system lands
          somewhere plausible and wrong, and import_cad_overlay refuses without it. */
       const epsg = await ctx.prompt("Source EPSG code", "");
@@ -777,8 +805,10 @@ export const ACTIONS = {
          flattened. Reporting the placed count alone would present a partial import as
          a complete one. */
       const placed = Object.values(result.entities || {}).reduce((a, b) => a + b, 0);
+      const offset = result.alignment && Number.isFinite(result.alignment.centre_offset_m)
+        ? ` Centre ${Math.round(result.alignment.centre_offset_m)} m from the survey's.` : "";
       return {
-        message: `Placed ${placed} entities from ${result.name}.`
+        message: `Placed ${placed} entities from ${result.name}.${offset}`
           + (result.warning ? ` ${result.warning}` : ""),
         refresh: true,
       };

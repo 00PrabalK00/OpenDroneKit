@@ -12,7 +12,8 @@ import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
-import { armDrawing, bindDrawingKeys, vertices } from "./draw.js";
+import { armDrawing, bindDrawingKeys, canDraw, vertices } from "./draw.js";
+import { refreshProjectOverlays, showVector } from "./mapview.js";
 import { setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 
@@ -399,6 +400,8 @@ export class Shell {
     if (vector && vector.geojson) {
       const features = vector.geojson.features || [];
       const kinds = [...new Set(features.map((f) => (f.geometry || {}).type).filter(Boolean))];
+      // Drawn, not just counted: CAD overlays, boundaries and camera tracks go on the map.
+      showVector(String(layerId), vector.geojson, String(name).startsWith("CAD:") ? "cad" : "layer");
       // Leaving the previously drawn raster up would caption someone else's picture with
       // this layer's name. Go back to the map, which is where geometry belongs.
       setImage(null);
@@ -742,7 +745,11 @@ export class Shell {
       const message = (result && result.message) || `${action} done.`;
       this.toast(message, "ok");
       if (result && result.job) this.watchJob(result.job);
-      if (result && result.refresh) await this.refreshState();
+      if (result && result.refresh) {
+        await this.refreshState();
+        // A new overlay or marker belongs on the map the operator is looking at.
+        refreshProjectOverlays();
+      }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
       // application produces and it used to vanish into a rejected promise.
@@ -906,6 +913,15 @@ export class Shell {
       // The drawn area or line, or null after starting a drawing that will re-run the
       // action once it is finished.
       requireSelection: (shape, action, prompt) => this.requireSelection(shape, action, prompt),
+      // One click on the map, as [lon, lat]; null when there is no map to click (the
+      // caller then asks for typed coordinates) or when the operator presses Esc.
+      pickPoint: (message) => {
+        if (!canDraw()) return Promise.resolve(null);
+        this.toast(message || "Click the position on the map (Esc to type it instead).", "ok");
+        return new Promise((resolve) => {
+          armDrawing("point", (geometry) => resolve(geometry.coordinates), () => resolve(null));
+        });
+      },
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather
       // than refusing keeps a single-tenant desktop install usable; a multi-tenant

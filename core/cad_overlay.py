@@ -212,17 +212,31 @@ def reproject(drawing: CadDrawing, src_epsg: int, dst_epsg: int) -> CadDrawing:
 
     from core import geo
 
-    transform = geo.transformer(int(src_epsg), int(dst_epsg))
+    try:
+        transform = geo.transformer(int(src_epsg), int(dst_epsg))
+    except Exception as exc:  # noqa: BLE001 - an unknown EPSG code is the operator's to fix
+        raise OverlayRefused(f"EPSG:{src_epsg} or EPSG:{dst_epsg} is not a CRS PROJ knows: {exc}")
     moved = CadDrawing(
         source_epsg=int(src_epsg),
         entity_counts=dict(drawing.entity_counts),
         skipped_entities=dict(drawing.skipped_entities),
     )
+    unplaceable = 0
     for line in drawing.polylines:
         xs = [p[0] for p in line]
         ys = [p[1] for p in line]
         tx, ty = transform.transform(xs, ys)
-        moved.polylines.append([[float(a), float(b)] for a, b in zip(tx, ty)])
+        points = [[float(a), float(b)] for a, b in zip(tx, ty)]
+        unplaceable += sum(1 for a, b in points if not (math.isfinite(a) and math.isfinite(b)))
+        moved.polylines.append(points)
+    if unplaceable:
+        # UTM eastings read as degrees, for instance, give Infinity: the old code wrote
+        # an overlay full of Infinity (not even valid JSON) and reported success.
+        raise OverlayRefused(
+            f"{unplaceable} vertex/vertices of this drawing cannot be expressed in "
+            f"EPSG:{dst_epsg} when read as EPSG:{src_epsg}. The drawing is almost "
+            "certainly not in EPSG:" + str(src_epsg) + "; check the CRS it was exported in."
+        )
     return moved
 
 
