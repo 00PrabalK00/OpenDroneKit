@@ -22,6 +22,10 @@ from typing import Any, Callable
 from .jobs import JobManager
 from .session import AppSession, MapLayer
 
+#: The largest area of interest one mission is planned over. Beyond this the planner runs
+#: for minutes to hours; see set_aoi.
+MAX_AOI_AREA_M2 = 50_000_000.0
+
 
 def ok(**payload: Any) -> dict[str, Any]:
     return {"ok": True, **payload}
@@ -90,6 +94,91 @@ class Api:
         return ok(capabilities=caps)
 
     @guard
+    def rest_endpoints(self) -> dict[str, Any]:
+        """The REST service's routes, read from its source rather than written down.
+
+        The Developers screen listed nine endpoints by hand -- GET /projects, GET
+        /findings, GET /processing/jobs -- and most of them did not exist; the real routes
+        are /organizations/{id}/projects, /projects/{id}/defects and /projects/{id}/jobs.
+        Reading the decorators means the list is the service's own, and cannot drift.
+        The service is a separate process (uvicorn services.api.main:app); nothing here
+        claims it is running.
+        """
+        import ast
+
+        root = Path(__file__).resolve().parents[1] / "services" / "api"
+        main = root / "main.py"
+        if not main.exists():
+            return fail("The REST service (services/api) is not part of this installation.")
+
+        def routes_in(path: Path, owner: str) -> tuple[str, list[dict[str, Any]]]:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            prefix = ""
+            found: list[dict[str, Any]] = []
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                        and getattr(node.value.func, "id", "") == "APIRouter"):
+                    for kw in node.value.keywords:
+                        if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                            prefix = str(kw.value.value)
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for deco in node.decorator_list:
+                    if not (isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute)):
+                        continue
+                    verb = deco.func.attr.upper()
+                    target = getattr(deco.func.value, "id", "")
+                    if target != owner or verb not in {"GET", "POST", "PUT", "PATCH", "DELETE", "WEBSOCKET"}:
+                        continue
+                    if not deco.args or not isinstance(deco.args[0], ast.Constant):
+                        continue
+                    doc = (ast.get_docstring(node) or "").strip().splitlines()
+                    found.append({"method": verb, "path": str(deco.args[0].value),
+                                  "summary": doc[0] if doc else "", "handler": node.name})
+            return prefix, found
+
+        endpoints: list[dict[str, Any]] = []
+        _, app_routes = routes_in(main, "app")
+        for route in app_routes:
+            endpoints.append({**route, "router": "main"})
+        for path in sorted((root / "routers").glob("*.py")):
+            prefix, found = routes_in(path, "router")
+            for route in found:
+                endpoints.append({**route, "path": prefix + route["path"], "router": path.stem})
+        return ok(endpoints=endpoints, count=len(endpoints),
+                  started_with="uvicorn services.api.main:app",
+                  note="Routes of the separate REST service. This desktop app does not start it.")
+
+    @guard
+    def rest_request(self, path: str, base_url: str = "http://127.0.0.1:8000") -> dict[str, Any]:
+        """Send one GET to the REST service on this machine and report what came back.
+
+        Loopback only, and GET only: this is the Developers screen's "does the service
+        answer, and with what", not a general HTTP client -- nothing leaves the machine.
+        A refused connection is reported as the service not running, which is the usual
+        and truthful answer on a desktop install.
+        """
+        from urllib import error, parse, request
+
+        base = parse.urlparse(str(base_url))
+        if base.scheme != "http" or base.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return fail("Send Request only talks to a service on this machine (127.0.0.1).")
+        if not str(path).startswith("/"):
+            return fail(f"Not a route path: {path!r}")
+        url = f"{base.scheme}://{base.netloc}{path}"
+        try:
+            with request.urlopen(request.Request(url, method="GET"), timeout=5) as response:
+                body = response.read(4000).decode("utf-8", "replace")
+                return ok(url=url, status=response.status, body=body)
+        except error.HTTPError as exc:
+            body = exc.read(4000).decode("utf-8", "replace") if exc.fp else ""
+            return ok(url=url, status=exc.code, body=body)
+        except (error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            return fail(f"The REST service is not answering at {base.netloc} ({reason}). "
+                        "Start it with: uvicorn services.api.main:app")
+
+    @guard
     def model_status(self) -> dict[str, Any]:
         """Which detection models are present on disk, so the UI never implies AI it lacks."""
         from core.models import model_status as status_for
@@ -144,7 +233,13 @@ class Api:
     def create_project(self, name: str, root_dir: str = "", description: str = "") -> dict[str, Any]:
         if not str(name).strip():
             return fail("Project name cannot be empty.")
-        return ok(project=self._session.create_project(name.strip(), root_dir, description))
+        # Names are unique in the store. Checked here so the operator reads which name is
+        # taken, rather than "IntegrityError: UNIQUE constraint failed: projects.name".
+        wanted = name.strip()
+        if any(str(p.get("name", "")).casefold() == wanted.casefold()
+               for p in self._session.store.list_projects()):
+            return fail(f"A project named {wanted!r} already exists. Open it, or choose another name.")
+        return ok(project=self._session.create_project(wanted, root_dir, description))
 
     @guard
     def set_active_project(self, project_id: int) -> dict[str, Any]:
@@ -163,13 +258,29 @@ class Api:
         This replaces the hardcoded survey polygon the previous UI used for every
         mission: planning now uses whatever the operator actually drew.
         """
+        from core import geo
+
+        # Clearing is a real request (Mission > Clear AOI sends null), and iterating None
+        # raised a TypeError at the operator instead of clearing anything.
+        if not polygon_lonlat:
+            self._session.aoi_polygon = []
+            return ok(vertices=0, area_m2=0.0, cleared=True)
         ring = [[float(p[0]), float(p[1])] for p in polygon_lonlat if len(p) >= 2]
         if len(ring) < 3:
             return fail("An area of interest needs at least 3 vertices.")
         if ring[0] == ring[-1]:
             ring = ring[:-1]
+        # An area drawn with the map zoomed out to the world was 2.7 billion hectares,
+        # and plan_mission then ran until the process had taken 6.4 GB and never came
+        # back. Planning time grows faster than the area (33 km2 takes ~14 s here), so the
+        # refusal comes now, while the operator is still drawing, not after a hang.
+        area_m2 = geo.polygon_area_m2(ring)
+        if area_m2 > MAX_AOI_AREA_M2:
+            return fail(
+                f"That area is {area_m2 / 1e6:,.1f} km2, larger than one mission can cover "
+                f"(limit {MAX_AOI_AREA_M2 / 1e6:,.0f} km2). Zoom in and draw the site, or "
+                "split it into several areas.")
         self._session.aoi_polygon = ring
-        from core import geo
 
         return ok(
             vertices=len(ring),
@@ -186,6 +297,48 @@ class Api:
                 cleaned.append(ring[:-1] if ring[0] == ring[-1] else ring)
         self._session.no_fly_polygons = cleaned
         return ok(count=len(cleaned))
+
+    @guard
+    def measure_geometry(self, coordinates_lonlat: list[list[float]],
+                         kind: str = "distance") -> dict[str, Any]:
+        """Length or area of a shape drawn on the map, in metres on the ground.
+
+        The cockpit's Distance, Area and Measure tools armed themselves and then nothing
+        read the clicks, so no measurement was ever taken. The drawn vertices come here
+        rather than being summed in the browser so the map shares one geodesy with the
+        rest of the toolkit (core.geo).
+
+        These are horizontal distances between the clicked positions. A drawn shape has no
+        heights, so a slope length or a surface area needs the DSM, and `method` says
+        which this is.
+        """
+        from core import geo
+
+        points = [[float(p[0]), float(p[1])] for p in coordinates_lonlat or [] if len(p) >= 2]
+        for lon, lat in points:
+            if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+                return fail(f"Not a longitude/latitude pair: {lon}, {lat}.")
+
+        def path_length(path: list[list[float]]) -> float:
+            return sum(geo.haversine_m(a[1], a[0], b[1], b[0]) for a, b in zip(path, path[1:]))
+
+        if kind == "distance":
+            if len(points) < 2:
+                return fail("A distance needs at least two points.")
+            segments = [round(geo.haversine_m(a[1], a[0], b[1], b[0]), 3)
+                        for a, b in zip(points, points[1:])]
+            return ok(kind="distance", length_m=round(path_length(points), 3),
+                      segments_m=segments, vertices=len(points),
+                      method="horizontal great-circle distance between the drawn positions")
+        if kind == "area":
+            ring = points[:-1] if len(points) > 3 and points[0] == points[-1] else points
+            if len(ring) < 3:
+                return fail("An area needs at least three points.")
+            return ok(kind="area", area_m2=round(geo.polygon_area_m2(ring), 3),
+                      perimeter_m=round(path_length(ring + [ring[0]]), 3),
+                      vertices=len(ring),
+                      method="planimetric area of the drawn polygon")
+        return fail(f"Unknown measurement kind {kind!r}. Use distance or area.")
 
     @guard
     def set_terrain_source(self, path: str) -> dict[str, Any]:
@@ -605,6 +758,79 @@ class Api:
         self._session.audit("camera_command", {"action": action, "ok": result.ok})
         payload = result.to_dict()
         return ok(**payload) if result.ok else fail(result.message, **payload)
+
+    # -- capture verification ---------------------------------------------
+
+    @guard
+    def match_captures(self, match_radius_m: float = 15.0, image_folder: str = "") -> dict[str, Any]:
+        """Match the flown images to the planned capture points.
+
+        The Verification screen's Match Captures button counted saved mission versions;
+        core.capture_matching, which does the actual comparison, had no route from the
+        interface. This runs it on the planned mission and the selected dataset and keeps
+        the report, so the screen and Request Reflight can read the same answer.
+        """
+        from core.capture_matching import verify_capture
+
+        plan = self._session.mission_plan_dict
+        if not plan:
+            return fail("No mission is planned in this session. Plan it, or restore the "
+                        "version that was flown from History, then match again.")
+        folder = image_folder or self._session.active_dataset_dir
+        if not folder:
+            return fail("Select the flight's images first: Load Flight, or Import.")
+        if not Path(folder).is_dir():
+            return fail(f"Image folder not found: {folder}")
+        target = self._session.project_root() / "verification" / "capture_report.json"
+        report = verify_capture(plan, folder, match_radius_m=float(match_radius_m),
+                                output_path=target)
+        if not report.get("ok"):
+            return fail(report.get("error", "Capture matching failed."))
+        report["image_folder"] = str(folder)
+        self._session.capture_report = report
+        self._session.audit("captures_matched", {
+            "planned": report["planned_total"], "matched": report["matched"],
+            "missed": len(report["missed"]), "folder": str(folder)})
+        return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def capture_report(self) -> dict[str, Any]:
+        """The last capture match in this session, or a refusal saying none was run."""
+        report = getattr(self._session, "capture_report", None)
+        if not report:
+            return fail("No capture match has been run. Use Match Captures.")
+        return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def request_reflight(self, reason: str = "") -> dict[str, Any]:
+        """Turn the missed capture points into a reflight layer on the map.
+
+        This used to log a maintenance record against aircraft 1, which is not a
+        reflight and fails on any install without that aircraft. A reflight is the set of
+        planned points that produced no image: they are written as GeoJSON in the project,
+        added as a layer, and recorded in the audit log with the reason.
+        """
+        from core import geo
+
+        report = getattr(self._session, "capture_report", None)
+        if not report:
+            return fail("Run Match Captures first: a reflight is the planned points that "
+                        "produced no image, and none have been found yet.")
+        missed = report.get("missed") or []
+        if not missed:
+            return fail("Every planned capture point was matched to an image. "
+                        "Nothing needs reflying.")
+        features = [
+            geo.point_feature(float(m["lon"]), float(m["lat"]),
+                              {"planned_index": m["index"], "reason": reason or ""},
+                              alt=m.get("alt_m"))
+            for m in missed
+        ]
+        target = self._session.project_root() / "verification" / "reflight_points.geojson"
+        geo.write_geojson(target, features)
+        layer = self._session.register_vector_layer(target, name="Reflight points")
+        self._session.audit("reflight_requested", {"points": len(missed), "reason": reason})
+        return ok(points=len(missed), path=str(target), layer=layer)
 
     @guard
     def check_interrupted_flight(self) -> dict[str, Any]:
