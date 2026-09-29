@@ -222,6 +222,20 @@
             <option value="inspection_high_accuracy">High accuracy</option>
           </select>
         </label>
+        <label>Run on
+          <select id="recon-run-on">
+            <option value="local" selected>This computer</option>
+            <option value="cloud">OpenDroneKit server</option>
+          </select>
+        </label>
+        <div id="recon-cloud-fields" hidden>
+          <label>Server project URL
+            <input id="recon-cloud-endpoint" type="url" placeholder="https://server/projects/1">
+          </label>
+          <label>API token
+            <input id="recon-cloud-token" type="password" autocomplete="off">
+          </label>
+        </div>
         <button class="primary" id="btn-recon">Run Reconstruction</button>
         <button id="btn-pipeline">Run Full Pipeline</button>
       </div>

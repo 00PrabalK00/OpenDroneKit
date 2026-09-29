@@ -5361,8 +5361,20 @@ class Api:
             return mode, endpoint, token, (
                 f"Unknown execution_mode {mode!r}: use 'local' or 'cloud'.")
         if mode == "cloud":
-            from core.reconstruction_remote import check_cloud_request
+            import os
 
+            from core.reconstruction_remote import TOKEN_ENV, check_cloud_request
+
+            # Worded for the Run on control, not the CLI flags check_cloud_request names.
+            if not endpoint:
+                return mode, endpoint, token, (
+                    "Running on an OpenDroneKit server needs the server project URL "
+                    "(http(s)://<server>/projects/<id>). Imagery is uploaded only to a "
+                    "server you name, never to a default one.")
+            if not (token or os.environ.get(TOKEN_ENV, "").strip()):
+                return mode, endpoint, token, (
+                    f"Running on an OpenDroneKit server needs an API token for {endpoint} "
+                    f"(the API token field, or {TOKEN_ENV}).")
             try:
                 check_cloud_request(mode, endpoint, token)
             except ValueError as exc:

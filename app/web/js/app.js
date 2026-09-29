@@ -917,7 +917,7 @@
     },
 
     'analysis.pipeline': async () => {
-      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value });
+      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value, ...runOnOptions() });
       if (result) {
         status('Pipeline started.');
         pollJob(result.job_id, (job) => {
@@ -1062,10 +1062,24 @@
     status(`Dataset imported: ${meta.image_count} images, ${meta.geotagged_count} geotagged.`);
   }
 
+  /* Where the reconstruction runs. "OpenDroneKit server" sends the imagery to the named
+     server project (core/reconstruction_remote.py); the Api refuses it, with the reason,
+     when the URL or token is missing -- it never quietly runs locally instead. The token
+     stays in this form and is not saved. */
+  function runOnOptions() {
+    if ($('#recon-run-on').value !== 'cloud') return { execution_mode: 'local' };
+    return {
+      execution_mode: 'cloud',
+      cloud_endpoint: $('#recon-cloud-endpoint').value.trim(),
+      cloud_token: $('#recon-cloud-token').value.trim()
+    };
+  }
+
   async function runReconstruction(engine) {
     const result = await tryCall('run_reconstruction', {
       engine: engine || $('#recon-engine').value,
-      profile: $('#recon-profile').value
+      profile: $('#recon-profile').value,
+      ...runOnOptions()
     });
     if (!result) return;
     status('Reconstruction started. Progress is in the Jobs tab.');
@@ -1078,6 +1092,7 @@
       const warnings = (payload.warnings || []).map((w) => `<div><span>warning</span><b>${w}</b></div>`).join('');
       modal('Reconstruction Complete', `<div class="info">${kv([
         ['Engine', payload.engine],
+        ['Ran on', payload.execution_mode_used === 'cloud' ? 'OpenDroneKit server' : 'this computer'],
         ['Registered', `${payload.registered_images} / ${payload.frame_count}`],
         ['Points', (payload.total_points || 0).toLocaleString()],
         ['Reprojection error', payload.reprojection_error_px ? payload.reprojection_error_px.toFixed(2) + ' px' : 'n/a'],
@@ -1265,6 +1280,9 @@
     $('#btn-terrain').onclick = menuHandlers['data.import_terrain'];
     $('#btn-add-layer').onclick = () => importLayer(['Geodata (*.tif;*.tiff;*.geojson;*.json)']);
     $('#btn-recon').onclick = () => runReconstruction($('#recon-engine').value);
+    $('#recon-run-on').onchange = () => {
+      $('#recon-cloud-fields').hidden = $('#recon-run-on').value !== 'cloud';
+    };
     $('#btn-pipeline').onclick = menuHandlers['analysis.pipeline'];
     $('#btn-report').onclick = menuHandlers['report.generate'];
     $('#btn-finding').onclick = menuHandlers['report.finding'];

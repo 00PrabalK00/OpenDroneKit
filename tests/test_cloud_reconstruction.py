@@ -218,7 +218,7 @@ def test_the_desktop_api_no_longer_ignores_a_cloud_request(tmp_path, monkeypatch
     images.mkdir()
     for call in (api.run_reconstruction, api.run_pipeline):
         refused = call({"image_dir": str(images), "execution_mode": "cloud"})
-        assert refused["ok"] is False and "needs --recon-cloud-endpoint" in refused["error"]
+        assert refused["ok"] is False and "needs the server project URL" in refused["error"]
         refused = call({"image_dir": str(images), "execution_mode": "cloud",
                         "cloud_endpoint": "http://127.0.0.1:9/projects/1"})
         assert refused["ok"] is False and "API token" in refused["error"]

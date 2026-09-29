@@ -514,7 +514,8 @@ export class Shell {
         // because the screen agreed with the user and the output did not.
         this.settings = this.settings || {};
         this.settings[value.key] = value.value;
-        this.toast(`${value.key} = ${value.value}`, "ok");
+        // The label, not the raw value: the API token field must not be echoed.
+        this.toast(value.label || `${value.key} = ${value.value}`, "ok");
         return;
       }
       default:
@@ -1310,6 +1311,12 @@ export class Shell {
         }
         // Chosen with Set CRS. Empty means the reconstruction picks the UTM zone itself.
         if (raw.epsg) options.epsg = Number(raw.epsg);
+        // Run on: the Api sends a cloud request to the named server or refuses it.
+        if (raw.run_on === "OpenDroneKit server") {
+          options.execution_mode = "cloud";
+          options.cloud_endpoint = String(raw.cloud_endpoint || "").trim();
+          options.cloud_token = String(raw.cloud_token || "").trim();
+        }
         return options;
       },
       // The pipeline also runs coverage QA, which sizes each photograph's footprint from
