@@ -11,6 +11,11 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
+# The statuses the API actually reports for a job that will not change again. "done"
+# is the server's word for success; waiting on anything else never returns.
+TERMINAL_STATUSES = frozenset({"done", "failed", "cancelled"})
+
+
 class ApiError(RuntimeError):
     def __init__(self, status: int | None, message: str, payload: Any = None) -> None:
         super().__init__(message)
@@ -32,7 +37,7 @@ class JobResult:
 
     @property
     def terminal(self) -> bool:
-        return self.status in {"completed", "failed", "cancelled"}
+        return self.status in TERMINAL_STATUSES
 
 
 class OpenDroneKitClient:
@@ -147,6 +152,44 @@ class OpenDroneKitClient:
     def job_log(self, job_id: int) -> dict[str, Any]:
         return dict(self.request("GET", f"/jobs/{job_id}/log"))
 
+    def download_artifact(self, job_id: int, ref: str) -> bytes:
+        """Bytes of one file a job listed in its ``artifacts``."""
+        request = Request(
+            f"{self.base_url}/jobs/{int(job_id)}/artifacts/{ref}",
+            headers={"User-Agent": "OpenDroneKit-SDK/1",
+                     **({"Authorization": f"Bearer {self.token}"} if self.token else {})},
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_s) as response:
+                return response.read()
+        except HTTPError as exc:
+            raise ApiError(exc.code, str(exc.reason)) from exc
+        except URLError as exc:
+            raise ApiError(None, f"OpenDroneKit API is unavailable: {exc.reason}") from exc
+
+    def submit_ai_job(
+        self,
+        project_id: int,
+        *,
+        task: str,
+        model_key: str,
+        input_ref: str,
+        dataset_id: int | None = None,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> JobResult:
+        return JobResult(dict(self.request(
+            "POST", f"/projects/{project_id}/ai-jobs",
+            payload={"task": task, "model_key": model_key, "input_ref": input_ref,
+                     "dataset_id": dataset_id, "parameters": dict(parameters or {})},
+        )))
+
+    def get_ai_job(self, job_id: int) -> JobResult:
+        return JobResult(dict(self.request("GET", f"/ai-jobs/{job_id}")))
+
+    def wait_for_ai_job(self, job_id: int, *, timeout_s: float = 3600.0,
+                        poll_interval_s: float = 1.0) -> JobResult:
+        return self._wait(self.get_ai_job, job_id, timeout_s, poll_interval_s)
+
     def wait_for_job(
         self,
         job_id: int,
@@ -154,11 +197,15 @@ class OpenDroneKitClient:
         timeout_s: float = 3600.0,
         poll_interval_s: float = 1.0,
     ) -> JobResult:
+        return self._wait(self.get_job, job_id, timeout_s, poll_interval_s)
+
+    def _wait(self, fetch: Any, job_id: int, timeout_s: float,
+              poll_interval_s: float) -> JobResult:
         if timeout_s <= 0 or poll_interval_s <= 0:
             raise ValueError("timeout_s and poll_interval_s must be positive.")
         deadline = time.monotonic() + timeout_s
         while True:
-            job = self.get_job(job_id)
+            job = fetch(job_id)
             if job.terminal:
                 return job
             if time.monotonic() >= deadline:

@@ -93,10 +93,10 @@ class _ApiHandler(BaseHTTPRequestHandler):
             self._json(200, [{"id": 2, "name": "Pile A", "asset_type": "stockpile"}])
         elif self.path == "/jobs/9":
             type(self).polls += 1
-            status = "completed" if type(self).polls >= 2 else "running"
-            self._json(200, {"id": 9, "status": status, "percent": 100 if status == "completed" else 50})
+            status = "done" if type(self).polls >= 2 else "running"
+            self._json(200, {"id": 9, "status": status, "percent": 100 if status == "done" else 50})
         elif self.path == "/jobs/9/log":
-            self._json(200, {"job_id": 9, "status": "completed", "log": "real local response"})
+            self._json(200, {"job_id": 9, "status": "done", "log": "real local response"})
         else:
             self._json(404, {"detail": "not found"})
 
@@ -149,7 +149,7 @@ class TestDeveloperLibraries:
             submitted = client.submit_job(7, kind="reconstruction", dataset_id=12)
             assert submitted.id == 9
             finished = client.wait_for_job(9, timeout_s=2, poll_interval_s=0.01)
-            assert finished.status == "completed"
+            assert finished.status == "done"
             assert client.job_log(9)["log"] == "real local response"
         finally:
             server.shutdown()
