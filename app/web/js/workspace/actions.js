@@ -626,17 +626,22 @@ export const ACTIONS = {
     async run(ctx) {
       const events = await tryCall("pick_file", ["csv", "txt", "mrk"]);
       if (!(events && events.path)) return { skipped: "No camera-event file chosen." };
-      const rinex = await tryCall("pick_file", ["obs", "rnx", "zip", "o"]);
+      /* RINEX 2 observation files are named by year: base.26o, base.25o. A filter of
+         "o" matched none of them. */
+      const year = new Date().getFullYear();
+      const yearly = Array.from({ length: 12 }, (_, i) => `${String((year - i) % 100).padStart(2, "0")}o`);
+      const rinex = await tryCall("pick_file", ["obs", "rnx", "o", ...yearly]);
       if (!(rinex && rinex.path)) return { skipped: "No base observation file chosen." };
       const result = await call("check_ppk_inputs", events.path, rinex.path);
-      /* It answers with what is wrong, not merely whether. An overlap that is short by
-         four minutes and one that is short by four hours need different responses. */
-      const problems = result.problems || result.warnings || [];
-      return {
-        message: problems.length
-          ? `PPK inputs are not usable: ${problems.join(" ")}`
-          : `PPK inputs check out${result.overlap_s ? `; ${Math.round(result.overlap_s)} s of overlap.` : "."}`,
-      };
+      /* It answers with what is wrong, not merely whether. This read `problems` and
+         `overlap_s`, which the check never returns, so a flight half outside the base
+         window was announced as "PPK inputs check out". */
+      const blocking = result.blocking || [];
+      const covered = `${(result.alignment || {}).covered_count ?? "?"} of ${result.events ?? "?"} events inside the base window`;
+      if (!result.usable_for_ppk) {
+        return { message: `PPK inputs are not usable (${covered}): ${blocking.join(" ")}` };
+      }
+      return { message: `PPK inputs check out: ${covered}. ${result.accuracy_statement || ""}`.trim() };
     },
   },
   "Size Job": {

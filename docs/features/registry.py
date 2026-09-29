@@ -646,9 +646,14 @@ PROCESSING = [
                       "tests/test_rtk.py::TestBaseStation",
                       "tests/test_rtk.py::TestAlignment",
                       "tests/test_rtk.py::TestPositioningReport",
-                      "tests/test_rtk.py::TestThroughTheApi"],
-      "core/rtk.py; Api.check_ppk_inputs. Checks and describes the inputs; it does not "
-      "compute the PPK solution or rewrite a coordinate, and says so in every report."),
+                      "tests/test_rtk.py::TestThroughTheApi",
+                      "tests/test_rtk_dji_layout.py"],
+      "core/rtk.py; Api.check_ppk_inputs, cockpit Check PPK. Checks and describes the "
+      "inputs; it does not compute the PPK solution or rewrite a coordinate, and says so "
+      "in every report. Reads the DJI layout (bracketed week, untagged standard "
+      "deviations) and DJI's Q flags (50 fixed, 34 float, 16 single); 16 and 34 were "
+      "read as fixed until the audit. No real aircraft MRK is in the repository: the "
+      "layout is the published Phantom 4 RTK example."),
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Jobs submitted, polled and cancelled across workers, with cooperative "
       "cancellation and honest failure reporting.",

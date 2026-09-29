@@ -112,9 +112,16 @@ class TestCameraEvents:
 
     def test_the_solution_flag_is_carried_through(self, tmp_path):
         fixed = read_camera_events(write_mrk(tmp_path / "fixed.MRK", flag=50))[0]
-        floating = read_camera_events(write_mrk(tmp_path / "float.MRK", flag=1))[0]
+        floating = read_camera_events(write_mrk(tmp_path / "float.MRK", flag=34))[0]
 
         assert fixed.solution == "fixed"
+        assert floating.solution == "float"
+
+    def test_single_and_float_flags_are_never_called_fixed(self, tmp_path):
+        """DJI writes 50 fixed, 34 float, 16 single. 16 and 34 used to read as fixed."""
+        single = read_camera_events(write_mrk(tmp_path / "single.MRK", flag=16))[0]
+        floating = read_camera_events(write_mrk(tmp_path / "float.MRK", flag=34))[0]
+        assert single.solution == "single"
         assert floating.solution == "float"
 
     def test_an_unrecognised_flag_is_reported_not_assumed_good(self, tmp_path):
@@ -225,7 +232,7 @@ class TestPositioningReport:
 
     def test_a_float_flight_is_not_described_as_rtk(self, tmp_path):
         """The client asked for RTK; the aircraft recorded float. Say float."""
-        report = positioning_report(write_mrk(tmp_path / "flight.MRK", flag=1),
+        report = positioning_report(write_mrk(tmp_path / "flight.MRK", flag=34),
                                     write_rinex(tmp_path / "base.26o"))
 
         assert report["fixed_fraction"] == 0.0
@@ -235,7 +242,7 @@ class TestPositioningReport:
         path = tmp_path / "mixed.MRK"
         path.write_text("\n".join([
             mrk_line(1, NOON, flag=50), mrk_line(2, NOON + 2, flag=50),
-            mrk_line(3, NOON + 4, flag=1), mrk_line(4, NOON + 6, flag=1),
+            mrk_line(3, NOON + 4, flag=34), mrk_line(4, NOON + 6, flag=34),
         ]) + "\n", encoding="utf-8")
         report = positioning_report(path, write_rinex(tmp_path / "base.26o"))
 

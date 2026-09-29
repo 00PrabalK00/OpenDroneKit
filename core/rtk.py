@@ -46,8 +46,19 @@ DEFAULT_LEAP_SECONDS = 18
 # DJI writes corrections in millimetres and standard deviations in metres.
 MM_TO_M = 0.001
 
-# Solution flags, as written in the MRK line. Only "fixed" supports a centimetre claim.
-SOLUTION_FLAGS = {0: "single", 1: "float", 16: "fixed", 34: "fixed", 50: "fixed"}
+# Solution flags, as DJI writes them in the MRK ``Q`` field: 50 is an RTK fixed
+# solution, 34 float, 16 a single-point fix and 0 no position at all. Only "fixed"
+# supports a centimetre claim. This table used to call 16 and 34 "fixed", so a flight
+# flown on a float or a plain GNSS fix was described as centimetre RTK. Any other value
+# is reported as unknown, never promoted.
+SOLUTION_FLAGS = {0: "none", 16: "single", 34: "float", 50: "fixed"}
+
+# A value followed by its tag: "26,E", "22.64574539,Lat", "16,Q".
+_TAGGED = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)\s*,\s*([A-Za-z]+)")
+# The three standard deviations DJI writes untagged after the height:
+# "0.012595, 0.011226, 0.028003" -- north, east, vertical, in metres.
+_STD_TRIPLET = re.compile(
+    r"(?<![\w.,])(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)(?![\w.,])")
 
 
 class RtkError(ValueError):
@@ -148,9 +159,12 @@ def gps_to_utc(week: int, seconds_of_week: float,
 def read_camera_events(path: str | Path) -> list[CameraEvent]:
     """Read a DJI ``.MRK`` camera event file.
 
-    Each line is one shutter event: sequence, second-of-week, week, the north/east/
-    vertical corrections in millimetres, the recorded position, its standard deviations
-    and the solution flag.
+    Each line is one shutter event: sequence, second-of-week, GPS week (DJI writes it in
+    brackets, ``[2089]``), the north/east/vertical offsets in millimetres, the recorded
+    position, its standard deviations and the solution flag. DJI writes the three
+    standard deviations untagged (``0.012595, 0.011226, 0.028003``); tagged ``Ns``/``Es``/
+    ``Vs`` values are read too. A line with no standard deviations at all leaves them
+    unknown rather than zero -- a zero reads as a perfect fix.
     """
     source = Path(path)
     if not source.exists():
@@ -165,25 +179,34 @@ def read_camera_events(path: str | Path) -> list[CameraEvent]:
         fields = line.split()
         if len(fields) < 3:
             raise RtkError(f"{source.name} line {line_number}: not a camera event record.")
-        tagged: dict[str, float] = {}
-        for token in fields[3:]:
-            if "," in token:
-                value, _, tag = token.rpartition(",")
-                try:
-                    tagged[tag.strip()] = float(value)
-                except ValueError:
-                    continue
         try:
             sequence = int(fields[0])
             seconds = float(fields[1])
-            week = int(fields[2])
+            week = int(fields[2].strip("[]"))
         except ValueError as exc:
             raise RtkError(
                 f"{source.name} line {line_number}: sequence, second-of-week and GPS "
                 "week must be numeric."
             ) from exc
 
-        flag = int(tagged.get("Q", tagged.get("Flag", 0)))
+        rest = " ".join(fields[3:])
+        tagged: dict[str, float] = {}
+        for value, tag in _TAGGED.findall(rest):
+            tagged[tag] = float(value)
+        stds: tuple[float, float, float] | None = None
+        if {"Ns", "Es", "Vs"} <= tagged.keys():
+            stds = (tagged["Ns"], tagged["Es"], tagged["Vs"])
+        else:
+            triplet = _STD_TRIPLET.search(_TAGGED.sub(" ", rest))
+            if triplet:
+                stds = tuple(float(v) for v in triplet.groups())  # type: ignore[assignment]
+        if stds is None:
+            raise RtkError(
+                f"{source.name} line {line_number}: no standard deviations found. They "
+                "are what an accuracy statement rests on; a missing value is not zero."
+            )
+
+        flag = int(tagged.get("Q", tagged.get("Flag", -1)))
         events.append(CameraEvent(
             sequence=sequence, gps_week=week, gps_seconds=seconds,
             latitude_deg=float(tagged.get("Lat", 0.0)),
@@ -192,9 +215,9 @@ def read_camera_events(path: str | Path) -> list[CameraEvent]:
             north_correction_m=float(tagged.get("N", 0.0)) * MM_TO_M,
             east_correction_m=float(tagged.get("E", 0.0)) * MM_TO_M,
             vertical_correction_m=float(tagged.get("V", 0.0)) * MM_TO_M,
-            std_north_m=float(tagged.get("Ns", 0.0)),
-            std_east_m=float(tagged.get("Es", 0.0)),
-            std_vertical_m=float(tagged.get("Vs", 0.0)),
+            std_north_m=float(stds[0]),
+            std_east_m=float(stds[1]),
+            std_vertical_m=float(stds[2]),
             solution=SOLUTION_FLAGS.get(flag, f"unknown({flag})"),
         ))
 
