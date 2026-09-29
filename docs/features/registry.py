@@ -889,7 +889,10 @@ VISION = [
       "Trained detector for panel defects with published validation metrics.",
       "verified", ["tests/test_trained_defect_models.py::TestTheWeightsAreReallyThere",
                    "tests/test_trained_defect_models.py::TestTheNumbersArePublished",
-                   "tests/test_trained_defect_models.py::TestLabelsMatchTheModel"],
+                   "tests/test_trained_defect_models.py::TestLabelsMatchTheModel",
+                   "tests/test_solar_and_metal_use_real_models.py::TestSolarRefusesWhatNoModelReads",
+                   "tests/test_solar_and_metal_use_real_models.py::TestSolarRunsTheModelForItsImagery",
+                   "tests/test_solar_and_metal_use_real_models.py::TestTheSolarWorkflowStageRunsTheSolarModels"],
       "Two models, answering different questions. solar_cell_defect_detector reads "
       "electroluminescence imagery of individual cells at mAP50 0.884; "
       "solar_thermal_anomaly_classifier reads aerial infrared of whole modules across 12 "
@@ -899,13 +902,34 @@ VISION = [
       "reached only mAP50 0.318 with Dusty its WORST class at 0.073 -- the one class "
       "Indian sites most need -- and was deliberately NOT registered. Soiling looks like "
       "a radiometric comparison problem rather than a detection one. "
-      "IN THE PIPELINE: its solar routing key, solar_defect_detector, has no weights, so "
-      "Run AI's solar pass is the classical heuristic, reported as model_used=heuristic "
-      "with no confidence, never written as a finding and left out of the health score "
-      "(the report and the finished-job message say it was not scored). It runs when AI "
-      "Inspection > Run AI Settings declares a solar structure or switches solar "
-      "detection on, and not otherwise. Both trained models are run from AI Inspection > "
-      "Run Model with their scope note beside the answer."),
+      "IN THE PIPELINE: detect_solar_defects sends each image to the model trained on "
+      "its imagery -- el_cell to solar_cell_defect_detector, thermal_module (one module "
+      "per image) to solar_thermal_anomaly_classifier -- chosen in AI Inspection > Run AI "
+      "Settings > Solar imagery. On the PVEL-AD test split the EL detector puts a "
+      "correctly-labelled box on 23 of 24 annotated defects. There is NO model for RGB "
+      "photographs of panels, so a photo is REFUSED with that reason (row "
+      "solar_model_used=refused, no ratio, not scored), as is a model asked to read "
+      "imagery it was not trained on, a whole thermal frame, or a missing model. The "
+      "colour/edge heuristic that used to answer here is gone. The finished-job message "
+      "and the report name every refusal. The Solar Inspection workflow's "
+      "solar_defect_detection stage (worker / processing runs) runs the same models and "
+      "writes solar_defects.json with each image's detections or refusal; it used to run "
+      "the structural detector under the solar name."),
+    F("ai.metal", "Metal defect detection", "vision", "AI",
+      "Metal defects found by a trained model with published validation metrics, or an "
+      "honest refusal when it is absent -- never a texture rule presented as detection.",
+      "verified",
+      ["tests/test_solar_and_metal_use_real_models.py::TestMetalIsTheCorrosionModel",
+       "tests/test_corrosion_severity.py::TestItActuallyPredictsTheWorstGrade"],
+      "detect_metal_defects is corrosion_severity_segmentation (SegFormer-B2 on the "
+      "Corrosion Condition State corpus of steel): every pixel graded fair, poor or severe "
+      "is a defect pixel, and the grade ratios and worst grade travel with the result. "
+      "Mean IoU of that mask against the annotated corrosion is about 0.55 on ten test-"
+      "split images. It finds CORROSION ONLY -- not fatigue cracks, section loss or "
+      "missing fasteners. Without the model it refuses (model_used=refused, reason in the "
+      "row, the report and the finished-job message). Run AI runs it on steel / tower / "
+      "pipeline assets or when Metal detection is on. The old texture-discontinuity rule "
+      "survives only as metal_texture_heuristic for the classical modes, which label it."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "
       "with the survey's vertical accuracy carried through. Refuses without an accuracy "

@@ -103,9 +103,20 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("Each detector column names what produced it. `heuristic` means a classical "
                  "image rule, not a trained model, and its regions carry no confidence; "
-                 "`not_run` means the detector was not applicable to this asset. Mask "
+                 "`not_run` means the detector was not applicable to this asset; `refused` "
+                 "means no installed model reads this imagery, so it was not looked at (see "
+                 "below), which is not the same as no defects. Mask "
                  "thickness is the width of the crack MASK in pixels, not a measured crack width.")
     lines.append("")
+    for detector in ("solar", "metal"):
+        refused_rows = [item for item in images
+                        if item.get(f"{detector}_model_used") == "refused"]
+        if refused_rows:
+            reason = str(refused_rows[0].get(f"{detector}_refused_reason", "") or "")
+            lines.append(f"- {detector.capitalize()} detection refused on "
+                         f"{len(refused_rows)} image(s): {reason}")
+    if any(item.get(f"{d}_model_used") == "refused" for item in images for d in ("solar", "metal")):
+        lines.append("")
     lines.append("| Image | Crack Ratio | Crack Length (px) | Mask Thickness (px) | Crack Model | Structural Hits | Structural Model | Metal Ratio | Metal | Solar Ratio | Solar | Corrosion Grade |")
     lines.append("|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
     for item in images:

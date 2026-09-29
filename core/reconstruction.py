@@ -12,7 +12,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from .detection import detect_cracks, detect_metal_defects, detect_solar_defects, detect_structural_defects
+from .detection import detect_cracks, detect_solar_defects, metal_texture_heuristic, detect_structural_defects
 from .errors import OperationCancelled
 from . import geo
 from .incremental_sfm import IncrementalSfm, level_frame
@@ -1088,17 +1088,16 @@ class CustomDroneReconstructor:
                 return cached
 
             crack = detect_cracks(image_bgr)
-            metal = detect_metal_defects(image_bgr)
+            # The risk map's texture term: the labelled classical rule, reported as such
+            # below. The corrosion model is the metal detector; it is not run per frame here.
+            metal = metal_texture_heuristic(image_bgr)
             structural = detect_structural_defects(
                 image_bgr,
                 model_key="structural_multiclass_detector",
                 use_model=True,
             )
-            solar = detect_solar_defects(
-                image_bgr,
-                model_key="solar_defect_detector",
-                use_model=True,
-            )
+            # Refuses (empty masks, reason recorded) unless a model reads this imagery.
+            solar = detect_solar_defects(image_bgr, use_model=True)
 
             crack_bin = (crack.mask > 0).astype(np.uint8)
             metal_bin = (metal.mask > 0).astype(np.uint8)
@@ -1156,6 +1155,7 @@ class CustomDroneReconstructor:
                 "source_image": key,
                 "crack_ratio": float(crack.crack_ratio),
                 "metal_ratio": float(metal.defect_ratio),
+                "metal_model_used": str(metal.model_used),
                 "growth_potential": float(growth_potential),
                 "crack_pixels": int(crack.crack_pixels),
                 "metal_pixels": int(metal.defect_pixels),
@@ -1165,6 +1165,7 @@ class CustomDroneReconstructor:
                 "solar_model_used": str(solar.model_used),
                 "structural_model_available": bool(structural.model_available),
                 "solar_model_available": bool(solar.model_available),
+                "solar_refused_reason": str(solar.refused_reason),
             }
             payload = {
                 "crack_mask": crack_bin,

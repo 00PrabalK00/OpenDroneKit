@@ -5478,7 +5478,7 @@ class Api:
             config.coverage_aoi_lonlat = aoi or None
             if opts.get("dense") is not None:
                 config.reconstruction_dense = bool(opts["dense"])
-            for key in ("structure_type", "material_type", "asset_id"):
+            for key in ("structure_type", "material_type", "asset_id", "solar_imagery"):
                 if opts.get(key):
                     setattr(config, key, str(opts[key]))
             for key in ("run_solar_detection", "run_metal_detection",
@@ -5521,6 +5521,16 @@ class Api:
                 name: sorted({str(r.get(f"{name}_model_used", "not_run"))
                               for r in summary.get("images", []) if isinstance(r, dict)})
                 for name in ("crack", "structural", "solar", "metal")}
+            # Solar and metal refuse rather than guess when no model reads this imagery;
+            # the finished-job message names the refusal and its reason.
+            refused: dict[str, dict[str, Any]] = {}
+            for name in ("solar", "metal"):
+                rows = [r for r in summary.get("images", []) if isinstance(r, dict)
+                        and r.get(f"{name}_model_used") == "refused"]
+                if rows:
+                    refused[name] = {"images": len(rows),
+                                     "reason": str(rows[0].get(f"{name}_refused_reason", ""))}
+            payload["detectors_refused"] = refused
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,
                 "report": Path(payload.get("report_markdown_path", "")).name,

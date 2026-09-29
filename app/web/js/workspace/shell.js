@@ -38,6 +38,9 @@ function jobOutcome(result) {
   for (const [name, count] of Object.entries(result.heuristic_images_not_scored || {})) {
     if (count) parts.push(`${name} ran as a heuristic on ${count} image(s), not scored`);
   }
+  for (const [name, info] of Object.entries(result.detectors_refused || {})) {
+    if (info && info.images) parts.push(`${name} refused on ${info.images} image(s): ${info.reason}`);
+  }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   if (result.metrics && typeof result.metrics.map50 === "number") {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
@@ -1326,7 +1329,7 @@ export class Shell {
       inspectionOptions: () => {
         const raw = this.settings || {};
         const options = this.actionContext().pipelineOptions();
-        for (const key of ["structure_type", "material_type"]) {
+        for (const key of ["structure_type", "material_type", "solar_imagery"]) {
           if (raw[key]) options[key] = String(raw[key]);
         }
         for (const key of ["run_solar_detection", "run_metal_detection", "crack_presence_gate"]) {

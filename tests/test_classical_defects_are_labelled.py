@@ -45,13 +45,13 @@ class TestClassicalOutput:
             assert defect.source == "classical"
 
     def test_a_whole_frame_hit_is_not_reported_as_a_located_defect(self, tmp_path) -> None:
-        from core.detection import detect_metal_defects, load_image
+        from core.detection import load_image, metal_texture_heuristic
 
         noise = np.random.default_rng(0).integers(0, 255, (400, 600, 3), dtype=np.uint8)
         path = tmp_path / "noise.png"
         cv2.imwrite(str(path), noise)
         # Precondition: the underlying detector does fire, across the whole frame.
-        metal = detect_metal_defects(load_image(path), min_area_px=DefectDetectionConfig().min_area_px)
+        metal = metal_texture_heuristic(load_image(path), min_area_px=DefectDetectionConfig().min_area_px)
         box = _bbox_from_mask(metal.mask)
         assert metal.defect_pixels > 0 and (box[2] - box[0]) * (box[3] - box[1]) >= 0.9 * 400 * 600
         assert detect_defects_classical(path, DefectDetectionConfig()) == []
