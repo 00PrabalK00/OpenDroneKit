@@ -373,15 +373,15 @@ export function armTool(tool) {
     stopDrawing();
     return "Pan: drag to move the map.";
   }
-  if (!currentMap() && !canDraw()) {
-    stopDrawing();
-    return "There is no map on this workspace to draw on. Switch to Mission Planning, "
-      + "Measurements or Home.";
-  }
   state.tool = tool;
   armDrawing(spec.shape, (geometry) => { onToolFinished(tool, geometry); }, () => {
     if (state.tool === tool) state.tool = "pan";
   });
+  // Armed either way (a map mounted a moment later takes the clicks), but said.
+  if (!currentMap() && !canDraw()) {
+    return "There is no map on this workspace to draw on yet. Switch to Mission "
+      + "Planning, Measurements or Home.";
+  }
   return spec.hint;
 }
 

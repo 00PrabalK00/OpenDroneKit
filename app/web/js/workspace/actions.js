@@ -18,7 +18,7 @@
 
 import { call, tryCall, lastError, connected } from "./api.js";
 import { demoEnabled } from "./demo.js";
-import { currentViewer, queueModelTool } from "./viewer3d.js";
+import { armModelTool, currentViewer, queueModelTool } from "./viewer3d.js";
 import { setView } from "./viewstate.js";
 
 /* Where the REST service listens when started with its documented command. */
@@ -1815,7 +1815,19 @@ export const ACTIONS = {
   },
   /* The Annotate tool armed a cursor nothing read, so no finding could ever be made
      from this screen and no report could contain one an inspector had drawn. */
-  Annotate: { alias: "Record Finding" },
+  /* On the Digital Twin with the model on screen, a finding is pinned to a point on the
+     model (viewer3d.js, annotate_model); anywhere else it is recorded on one of the
+     project's images, as Record Finding does. */
+  Annotate: {
+    describe: "Pin a finding to the 3D model on screen, or record one on an image.",
+    async run(ctx) {
+      if (currentViewer()) {
+        const said = armModelTool("annotate");
+        return { message: `Annotate: ${said}` };
+      }
+      return ACTIONS["Record Finding"].run(ctx);
+    },
+  },
   "Record Finding": {
     describe: "Record a finding on one of the project's images.",
     async run(ctx) {

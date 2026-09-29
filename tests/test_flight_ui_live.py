@@ -204,7 +204,8 @@ class TestTheCockpitFliesTheAircraft:
         browser.open(f"{base}/workspace.html", settle_s=3)
         bar = browser.js("document.querySelector('.nav-right').innerText")
         assert "3 workers" not in bar and "PK" not in bar
-        assert "job(s) running" in bar and "no aircraft" in bar
+        # The job count ("no jobs running" / "2 jobs running") and the aircraft link.
+        assert "jobs running" in bar and "no aircraft" in bar
         status = browser.js("document.querySelector('.statusbar').innerText")
         assert "ui" in status   # the open project's name, not a demo site
 

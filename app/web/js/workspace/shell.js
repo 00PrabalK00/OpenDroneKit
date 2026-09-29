@@ -845,6 +845,52 @@ export class Shell {
         await reveal("Audit log (newest first)", lines.join("\n") || "No events recorded for this project.");
         return;
       }
+      /* The Reports menu the default window gained. Each goes where the cockpit already
+         does the same thing, or asks the Api directly. */
+      case "report.generate":
+        this.open("reports");
+        await this.runAction("Generate Report");
+        return;
+      case "report.export":
+        this.open("reports");
+        await this.runAction(String(payload.format || "pdf").toLowerCase() === "docx" ? "Export Word" : "Export PDF");
+        return;
+      case "report.list":
+        this.open("reports");
+        await this.runAction("Open Report");
+        return;
+      case "report.finding":
+        this.open("reports");
+        await this.runAction("Record Finding");
+        return;
+      case "report.review":
+        this.open("inspection");
+        this.toast("Findings and review: select a finding in AI Inspection, then Accept, Reject or Flag.", "ok");
+        return;
+      case "report.provenance": {
+        const result = await call("verify_provenance");
+        const lines = [
+          `Folder: ${result.directory || ""}`,
+          `Verified: ${(result.verified || []).length} of ${result.total || 0}`,
+          `Unattributed: ${(result.unattributed || []).length}`,
+          `Modified: ${(result.modified || []).length}`,
+          ...Object.entries(result.results || {}).map(([name, r]) => `${name}: ${r.status}`),
+        ];
+        await reveal("Provenance", lines.join("\n"));
+        return;
+      }
+      case "report.audit_export": {
+        const result = await call("export_audit_log", "csv");
+        this.toast(`Audit log: ${result.events} event(s) written to ${result.path}.`, "ok");
+        return;
+      }
+      case "report.notifications": {
+        const result = await call("list_notifications");
+        const lines = (result.notifications || []).map((n) =>
+          `${String(n.created_utc || "").slice(0, 19)}  ${n.read ? " " : "•"} ${n.title}${n.detail ? ` — ${n.detail}` : ""}`);
+        await reveal(`Notifications (${result.unread || 0} unread)`, lines.join("\n") || "No notifications.");
+        return;
+      }
       case "help.shortcuts":
         this.openPalette();
         return;
@@ -1633,14 +1679,9 @@ export class Shell {
       // Only then, though. This used to show the epoch in every mode, so a connected
       // operator saw a clock stopped at 00:00:00 over their own project: a frozen reading
       // presented as the time, the same fault pointing the other way.
-      if (this.mode === "demo") {
-        this.clock.textContent = `${DEMO.CLOCK} UTC`;
-        return;
-      }
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, "0");
-      this.clock.textContent =
-        `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`;
+      this.clock.textContent = this.mode === "connected"
+        ? `${new Date().toISOString().slice(11, 19)} UTC`
+        : `${DEMO.CLOCK} UTC`;
       // The aircraft indicator follows the link, so a lost link shows up in the frame
       // on every screen, not only on the Flight workspace.
       ticks += 1;

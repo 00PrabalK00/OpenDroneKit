@@ -139,12 +139,9 @@ class TestSolarReachesItsInstalledModel:
 
 
 class TestMixedSizeImagesDoNotCrashCoverage:
-    def test_phase_shift_between_different_sizes_is_no_measurement(self):
-        from core.coverage_validation import _phase_shift
-
-        shift, response = _phase_shift(np.zeros((40, 60), np.uint8), np.zeros((50, 60), np.uint8))
-        assert response == 0.0 and not shift.any()
-
+    # Coverage QA no longer phase-correlates neighbouring frames (overlap now comes
+    # from footprint geometry), so there is no frame-to-frame shift left to guard; a
+    # mixed-size set running to the end is the property that matters.
     def test_validation_runs_on_a_mixed_set(self, mixed_size_dataset, tmp_path):
         from core.coverage_validation import CoverageValidator
 
@@ -204,7 +201,8 @@ class TestThePipelineDoesNotRunDetectorsOnTheWrongAsset:
         # And a simulated scenario does not move the structure's health score.
         growth, meta = _forecast_growth_metric({**stated, "metrics": [
             {"crack_ratio": 0.0}, {"crack_ratio": 0.5}]})
-        assert growth == 0.0 and meta["excluded_what_if_simulation"] == 1.0
+        assert growth is None and meta["assessed"] is False
+        assert meta["excluded_what_if_simulation"] == 1.0
 
 
 @needs("structural_multiclass_detector", "crack_segmentation", "crack_presence_classifier")
@@ -293,11 +291,11 @@ class TestRunAIFromTheApi:
         report = api.generate_report(title="AI path report")
         assert report["ok"], report.get("error")
         html = Path(report["html_path"]).read_text(encoding="utf-8")
-        annotations = html.split("<h2>Annotations</h2>", 1)[1].split("</section>", 1)[0]
-        assert "No annotations" not in annotations
-        assert accepted[0]["label"] in annotations
-        # Dismissed and unreviewed findings stay out.
-        assert annotations.count("<tr") - 1 == len(accepted)
+        findings = html.split("<h2>Findings", 1)[1].split("</section>", 1)[0]
+        assert "No findings were recorded" not in findings
+        assert accepted[0]["label"] in findings
+        # Dismissed and unreviewed findings stay out: one header row, one per accepted.
+        assert findings.count("<tr") - 1 == len(accepted)
 
 
 class TestHeuristicsDoNotMoveTheHealthScore:

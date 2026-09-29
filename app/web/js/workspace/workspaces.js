@@ -103,21 +103,16 @@ const settingChanged = (key, value) => {
   }
 };
 
-/* The drawing tools ask the shell to run the same action as the toolbar button, so the
-   canvas icon and the toolbar cannot drift apart. They had no handler at all: clicking
-   one highlighted it and nothing else happened. */
-const runShellAction = (action) => () => {
-  if (typeof window !== "undefined" && window.dispatchEvent && typeof CustomEvent !== "undefined") {
-    window.dispatchEvent(new CustomEvent("odk:action", { detail: action }));
-  }
-};
-
+/* The canvas icons had no handler at all: clicking one highlighted it and nothing else
+   happened. Each is now answered by the map canvas itself (draw.js TOOL_BY_TITLE): the
+   polygon sets the area of interest, the line and box become the selection, Measure
+   measures the way the toolbar's Measure does, home and exclusion go to the Api. */
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
   { icon: "▣", title: "Box select" },
-  { icon: "⬠", title: "Draw polygon", onSelect: runShellAction("Select Area") },
-  { icon: "╱", title: "Draw line", onSelect: runShellAction("Select Line") },
-  { icon: "⤢", title: "Measure", onSelect: runShellAction("Distance") },
+  { icon: "⬠", title: "Draw polygon" },
+  { icon: "╱", title: "Draw line" },
+  { icon: "⤢", title: "Measure" },
   { icon: "⌂", title: "Place home" },
   { icon: "⛔", title: "Exclusion zone" },
   { icon: "⤡", title: "Fit view" },

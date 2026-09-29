@@ -298,7 +298,17 @@ class TestThePipelineWritesItsReport:
         assert "heuristic" in text
         html = Path(surveyed.generate_report("", "D", "defect_only")["html_path"]).read_text(
             encoding="utf-8")
-        assert "IMG_0000.jpg" in html and "screening indicators" in html
+        assert "IMG_0000.jpg" in html
+        # Heuristic ratios are called screening indicators; where the installed trained
+        # models produced every ratio, the detector column names them instead.
+        summary = json.loads(Path(status["result"]["summary_json_path"]).read_text(encoding="utf-8"))
+        used = {str(r.get("crack_model_used", "")) for r in summary["images"]}
+        used |= {str(r.get("structural_model_used", "")) for r in summary["images"]}
+        if any(not u.startswith("onnx:") for u in used) or any(
+                "metal_ratio" in r for r in summary["images"]):
+            assert "screening indicators" in html
+        else:
+            assert "onnx:" in html
 
     def test_a_reconstruction_that_cannot_run_does_not_lose_the_run(self, api, tmp_path) -> None:
         assert api.import_dataset(str(make_images(tmp_path / "one", 1)))["ok"]

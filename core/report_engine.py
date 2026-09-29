@@ -443,6 +443,7 @@ def find_pipeline_runs(root: Path) -> list[dict[str, Any]]:
                     "metal_ratio": r.get("metal_ratio"),
                     "structural_detection_count": r.get("structural_detection_count"),
                     "structural_model_used": r.get("structural_model_used"),
+                    "crack_model_used": r.get("crack_model_used"),
                     "overlay": r.get("crack_overlay_path"),
                     "quality_ok": r.get("quality_ok"),
                     "quality_flags": r.get("quality_flags") or [],
@@ -937,7 +938,11 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
     for run in context.get("pipeline_runs") or []:
         for image in run.get("images", []):
             used = image.get("structural_model_used") or "heuristic"
-            heuristic = heuristic or used in ("", "heuristic", "none")
+            # The row's crack and metal ratios are screening output unless a trained
+            # crack model produced them, whatever ran for the structural hits.
+            crack_used = str(image.get("crack_model_used") or "heuristic")
+            heuristic = (heuristic or used in ("", "heuristic", "none")
+                         or not crack_used.startswith("onnx:") or image.get("metal_ratio") is not None)
             rows.append([image.get("image", ""), "crack / metal / structural screening",
                          f"{run['name']}: {used}",
                          "n/a", f"crack ratio {_fmt(image.get('crack_ratio'), 4)}",

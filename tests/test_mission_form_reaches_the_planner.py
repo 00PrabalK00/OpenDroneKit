@@ -175,7 +175,9 @@ class TestTheProcessingPanelReachesTheJob:
 
     def test_the_options_the_job_reads_are_the_ones_sent(self, shell_js) -> None:
         api_source = (REPO_ROOT / "app" / "api.py").read_text(encoding="utf-8")
-        body = api_source.split("def run_reconstruction")[1][:1500]
+        # The whole method, not a fixed-length prefix: a longer docstring pushed the
+        # epsg read past the old 1500-character cut.
+        body = api_source.split("def run_reconstruction")[1].split("\n    @guard")[0]
         read = set(re.findall(r'opts\.get\("([a-z_0-9]+)"', body))
         sent = set(re.findall(r'options\.(\w+) =',
                               shell_js.split("reconstructionOptions: () => {")[1]

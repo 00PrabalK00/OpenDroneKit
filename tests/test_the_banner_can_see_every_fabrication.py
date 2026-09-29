@@ -127,7 +127,9 @@ class TestReferenceContentCannotHideAFigure:
     def test_every_reference_panel_is_labels_only(self) -> None:
         source = code_of("workspaces.js")
         blocks = [b for b in self.reference_blocks(source) if "export function" not in b]
-        assert len(blocks) >= 5, "the reference panels were not found"
+        # Four: the report outline is no longer a reference list -- Report Structure now
+        # reads the report types and their sections from the engine (live).
+        assert len(blocks) >= 4, "the reference panels were not found"
         for block in blocks:
             assert "meta:" not in block, f"a reference panel carries a figure: {block[:120]}"
             assert "live(" not in block and "tryCall" not in block, block[:120]

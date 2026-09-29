@@ -135,11 +135,16 @@ def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float | N
     # illustrative extrapolation (a fixed tip extension per step, no time base), and
     # scoring it made the asset look worse the more steps it was asked to extrapolate.
     if str(forecast_payload.get("basis", "")) != "measured_between_surveys":
-        return None, {
+        meta: dict[str, Any] = {
             "assessed": False,
             "note": "Crack growth was not measured between surveys; the propagation "
                     "forecast is illustrative and is not scored.",
         }
+        if forecast_payload.get("basis") == "what_if_simulation":
+            # Run on assumed load, cycles and pixel size: a configured scenario, which
+            # would pass the assumption off as a finding if it were scored.
+            meta["excluded_what_if_simulation"] = 1.0
+        return None, meta
     metrics = forecast_payload.get("metrics", [])
     if not isinstance(metrics, list) or len(metrics) < 2:
         return 0.0, {"initial_crack_ratio": 0.0, "final_crack_ratio": 0.0, "delta_crack_ratio": 0.0}
