@@ -27,6 +27,8 @@ from .api import Api
 from .session import AppSession
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
+# Window/taskbar icon. Without it Windows shows the python.exe icon.
+WINDOW_ICON = WEB_ROOT / "assets" / "brand" / "derived" / "favicon.ico"
 WINDOW_TITLE = "OpenDroneKit — Inspection & Geospatial Toolkit"
 
 
@@ -245,7 +247,8 @@ class Shell:
             text_select=True,
         )
         self.api.bind_window(self.window)
-        webview.start(menu=self.build_menu(), debug=debug)
+        webview.start(menu=self.build_menu(), debug=debug,
+                      icon=str(WINDOW_ICON) if WINDOW_ICON.is_file() else None)
 
     @staticmethod
     def _serve(root: Path, page: str, runtime: dict[str, Any] | None = None) -> str:

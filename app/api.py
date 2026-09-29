@@ -184,7 +184,11 @@ class Api:
                         continue
                     if not deco.args or not isinstance(deco.args[0], ast.Constant):
                         continue
-                    doc = (ast.get_docstring(node) or "").strip().splitlines()
+                    # Pages such as the API docs, not endpoints of the REST API.
+                    if any(kw.arg == "include_in_schema" and isinstance(kw.value, ast.Constant)
+                           and kw.value.value is False for kw in deco.keywords):
+                        continue
+                    doc =(ast.get_docstring(node) or "").strip().splitlines()
                     found.append({"method": verb, "path": str(deco.args[0].value),
                                   "summary": doc[0] if doc else "", "handler": node.name})
             return prefix, found

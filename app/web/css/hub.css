@@ -21,8 +21,8 @@ h1, h2, p { margin-top: 0; }
 h1 { font-size: 25px; margin-bottom: 5px; }
 h2 { font-size: 15px; color: #cfe3ed; }
 .hub-header { min-height: 64px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 28px; padding: 5px 18px; border-bottom: 1px solid var(--line); background: #0a151e; }
-.brand { display: inline-flex; align-items: center; gap: 6px; color: white; text-decoration: none; font-size: 18px; font-weight: 750; white-space: nowrap; }
-.brand img { display: block; width: 72px; height: 54px; object-fit: contain; flex: none; }
+.brand { display: inline-flex; align-items: center; gap: 10px; color: white; text-decoration: none; font-size: 18px; font-weight: 750; white-space: nowrap; }
+.brand img { display: block; width: auto; height: 28px; object-fit: contain; flex: none; }
 .brand span { color: var(--accent); font-weight: 550; }
 .connection-fields { flex: 1 1 600px; display: grid; grid-template-columns: minmax(210px, 1fr) minmax(160px, .8fr) 100px auto auto; align-items: end; gap: 8px; }
 .connection-fields label { gap: 2px; }

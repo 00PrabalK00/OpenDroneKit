@@ -1,6 +1,9 @@
 # OpenDroneKit
 
-<img src="logo.png" alt="OpenDroneKit" width="180" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="app/web/assets/brand/wordmark-dark.svg" />
+  <img src="logo.png" alt="OpenDroneKit" width="300" />
+</picture>
 
 Offline-first drone inspection and geospatial toolkit: plan repeatable inspection
 missions, fly them over MAVLink, then turn the imagery into georeferenced
