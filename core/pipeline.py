@@ -110,8 +110,11 @@ class PipelineResult:
 class StructuralFaultPipeline:
     """Coordinator for crack detection, propagation forecast, 3D reconstruction, and reporting."""
 
-    def __init__(self, config: PipelineConfig | None = None):
+    def __init__(self, config: PipelineConfig | None = None,
+                 ground_control: list | None = None):
         self.config = config or PipelineConfig()
+        # Marked control points; handed to the reconstruction exactly as Process does.
+        self.ground_control = list(ground_control or [])
         self.forecaster = CrackPropagationForecaster(
             growth_px_per_step=self.config.forecast_growth_px_per_step,
             lateral_growth=self.config.forecast_lateral_growth,
@@ -131,6 +134,7 @@ class StructuralFaultPipeline:
                 cloud_endpoint=self.config.reconstruction_cloud_endpoint,
                 dense=self.config.reconstruction_dense,
                 target_epsg=self.config.reconstruction_target_epsg,
+                ground_control=self.ground_control,
             )
         except RuntimeError:
             # Only reachable when COLMAP was explicitly requested but is not installed.

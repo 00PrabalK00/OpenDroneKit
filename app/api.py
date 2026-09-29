@@ -4066,6 +4066,9 @@ class Api:
         chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
         terrain = self._session.terrain_source_path
         aoi = list(self._session.aoi_polygon or [])
+        # Start / Run AI used to reconstruct without the project's marked control points,
+        # silently: only Process used them.
+        control = self._control_points()
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
@@ -4080,9 +4083,16 @@ class Api:
                 config.coverage_ground_elevation_m = float(opts["ground_elevation_m"])
             config.coverage_terrain_path = str(opts.get("terrain_path") or terrain or "")
             config.coverage_aoi_lonlat = aoi or None
-            pipeline = StructuralFaultPipeline(config)
+            pipeline = StructuralFaultPipeline(config, ground_control=control)
             result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
-            return result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            payload["ground_control"] = getattr(pipeline.reconstructor, "control_report", None)
+            if control and not hasattr(pipeline.reconstructor, "control_report"):
+                payload.setdefault("warnings", []).append(
+                    "Ground control points were not used: only the COLMAP engine fits the "
+                    "model to them, and this run used "
+                    f"{type(pipeline.reconstructor).__name__}.")
+            return payload
 
         return ok(job_id=self._jobs.submit("pipeline", work))
 

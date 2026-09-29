@@ -126,6 +126,27 @@ class TestThroughTheApi:
         assert again.import_gcps(str(csv))["ok"]
         assert all(p["mark_count"] == 5 for p in again.list_gcps()["points"])
 
+    def test_the_full_pipeline_reconstructs_with_the_marked_control(self, project):
+        """Start / Run AI built its reconstruction without the project's GCPs, silently."""
+        from core.pipeline import PipelineConfig, StructuralFaultPipeline
+        from core.reconstruction_colmap import _HAS_PYCOLMAP
+
+        api, _store, csv, _run = project
+        api.import_gcps(str(csv))
+        mark_everything(api)
+        control = api._control_points()
+        assert len(control) == 5
+        if _HAS_PYCOLMAP:
+            config = PipelineConfig()
+            config.reconstruction_engine = "colmap"
+            pipeline = StructuralFaultPipeline(config, ground_control=control)
+            assert [p.name for p in pipeline.reconstructor.ground_control] ==                 [p.name for p in control]
+        # The custom engine cannot use them, and says so rather than ignoring them.
+        config = PipelineConfig()
+        config.reconstruction_engine = "custom"
+        custom = StructuralFaultPipeline(config, ground_control=control)
+        assert not hasattr(custom.reconstructor, "control_report")
+
     def test_a_mark_on_a_preview_is_rescaled_to_the_photograph(self, project):
         api, _store, csv, run = project
         api.import_gcps(str(csv))
