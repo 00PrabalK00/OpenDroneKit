@@ -6,7 +6,7 @@ NAV_WAYPOINT rows, which is why exported missions flew the route but captured no
 useful. These exporters carry the full command stream into each target format.
 
 Formats: MAVLink mission items, QGroundControl `.plan`, QGC WPL 110, DJI WPML `.kmz`,
-Litchi CSV, and KML.
+Litchi CSV, KML, and GeoJSON.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ MAV_CMD_NAV_RETURN_TO_LAUNCH = 20
 MAV_CMD_NAV_LAND = 21
 MAV_CMD_NAV_TAKEOFF = 22
 MAV_CMD_CONDITION_YAW = 115
+MAV_CMD_DO_CHANGE_SPEED = 178
 MAV_CMD_DO_DIGICAM_CONTROL = 203
 MAV_CMD_DO_MOUNT_CONTROL = 205
 MAV_CMD_DO_SET_CAM_TRIGG_DIST = 206
@@ -34,6 +35,7 @@ MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION = 5001
 MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION = 5002
 MAV_CMD_NAV_RALLY_POINT = 5100
 
+MAV_FRAME_GLOBAL = 0
 MAV_FRAME_GLOBAL_RELATIVE_ALT = 3
 MAV_FRAME_MISSION = 2
 MAV_MOUNT_MODE_MAVLINK_TARGETING = 2
@@ -86,34 +88,75 @@ def _plan_dict(mission: Any) -> dict[str, Any]:
     return {key: getattr(mission, key) for key in dir(mission) if not key.startswith("_")}
 
 
+def _pose_from_mapping(pose: dict[str, Any], default_alt: float, default_gimbal: float) -> dict[str, Any]:
+    return {
+        "lon": float(pose.get("lon", pose.get("longitude", 0.0))),
+        "lat": float(pose.get("lat", pose.get("latitude", 0.0))),
+        "alt": float(pose.get("alt_m", pose.get("alt", pose.get("altitude_m", default_alt)))),
+        "yaw_deg": float(pose.get("yaw_deg") if pose.get("yaw_deg") is not None else 0.0),
+        "gimbal_pitch_deg": float(
+            pose.get("gimbal_pitch_deg") if pose.get("gimbal_pitch_deg") is not None else default_gimbal
+        ),
+        "dwell_s": float(pose.get("dwell_s", 0.0) or 0.0),
+        "trigger": bool(pose.get("trigger", True)),
+        "speed_mps": float(pose.get("speed_mps", 0.0) or 0.0),
+        "yaw_locked": bool(pose.get("camera_yaw_locked", False)),
+    }
+
+
+def _geojson_poses(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-waypoint poses from the plan's GeoJSON, ordered by waypoint index.
+
+    The planner writes yaw, gimbal pitch, dwell, trigger and yaw lock onto every
+    waypoint feature. The flight recipe does NOT carry the compiled world poses (it is
+    the recipe, not its compilation), so reading only the recipe meant every export
+    fell back to bare nadir waypoints: a tower orbit pointed its camera at the ground.
+    """
+    geojson = plan.get("geojson") or {}
+    features = geojson.get("features") if isinstance(geojson, dict) else None
+    rows: list[tuple[int, dict[str, Any]]] = []
+    for position, feature in enumerate(features or []):
+        if not isinstance(feature, dict):
+            continue
+        props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        geometry = feature.get("geometry") or {}
+        if props.get("role") != "waypoint" or geometry.get("type") != "Point":
+            continue
+        coords = geometry.get("coordinates") or []
+        if len(coords) < 2:
+            continue
+        pose = dict(props)
+        pose["lon"], pose["lat"] = float(coords[0]), float(coords[1])
+        if len(coords) >= 3:
+            pose["alt_m"] = float(coords[2])
+        index = props.get("index")
+        rows.append((int(index) if isinstance(index, int) else 10**9 + position, pose))
+    rows.sort(key=lambda row: row[0])
+    return [pose for _, pose in rows]
+
+
 def _viewpoints(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """Recover per-viewpoint pose detail, falling back to bare waypoints.
 
-    The flight recipe carries yaw/gimbal/dwell/trigger; `waypoints` is only geometry.
-    Preferring the recipe is what keeps the capture behaviour in the export.
+    Order of preference: explicit world poses (recipe or plan), then the pose
+    properties the planner writes onto each GeoJSON waypoint, then bare geometry.
+    Only the last loses the capture behaviour, and it is only used when the plan
+    genuinely carries nothing else.
     """
     recipe = plan.get("flight_recipe") or {}
-    poses = recipe.get("world_poses") or recipe.get("poses") or []
+    poses = (
+        plan.get("world_poses")
+        or recipe.get("world_poses")
+        or recipe.get("poses")
+        or _geojson_poses(plan)
+    )
     default_alt = float(plan.get("altitude_m", 50.0) or 50.0)
-    default_gimbal = float(plan.get("gimbal_tilt_deg", -90.0) or -90.0)
+    gimbal = plan.get("gimbal_tilt_deg", -90.0)
+    default_gimbal = float(-90.0 if gimbal is None else gimbal)
 
     viewpoints: list[dict[str, Any]] = []
     if poses:
-        for pose in poses:
-            viewpoints.append(
-                {
-                    "lon": float(pose.get("lon", pose.get("longitude", 0.0))),
-                    "lat": float(pose.get("lat", pose.get("latitude", 0.0))),
-                    "alt": float(pose.get("alt_m", pose.get("alt", pose.get("altitude_m", default_alt)))),
-                    "yaw_deg": float(pose.get("yaw_deg", 0.0)),
-                    "gimbal_pitch_deg": float(pose.get("gimbal_pitch_deg", default_gimbal)),
-                    "dwell_s": float(pose.get("dwell_s", 0.0)),
-                    "trigger": bool(pose.get("trigger", True)),
-                    "speed_mps": float(pose.get("speed_mps", 0.0) or 0.0),
-                    "yaw_locked": bool(pose.get("camera_yaw_locked", False)),
-                }
-            )
-        return viewpoints
+        return [_pose_from_mapping(pose, default_alt, default_gimbal) for pose in poses]
 
     for row in plan.get("waypoints") or []:
         viewpoints.append(
@@ -130,6 +173,41 @@ def _viewpoints(plan: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return viewpoints
+
+
+def _cruise_speed(plan: dict[str, Any], fallback: float) -> float:
+    """The speed the planner planned for, or `fallback` when the plan carries none.
+
+    `cruise_speed_m_s` is what the planner flew its estimate at (after any wind or
+    profile cap); `wind_adjusted_speed_m_s` is the same figure on plans saved before
+    that field existed.
+    """
+    for key in ("cruise_speed_m_s", "cruise_speed_mps", "wind_adjusted_speed_m_s"):
+        value = plan.get(key)
+        try:
+            speed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if speed > 0.0:
+            return speed
+    return float(fallback)
+
+
+def _altitude_frame(plan: dict[str, Any]) -> tuple[str, float]:
+    """("amsl", home ground elevation) or ("relative", 0.0).
+
+    Waypoint altitudes in a plan are always relative to the home/takeoff ground. An
+    AMSL plan additionally knows the ground elevation at home from its terrain model,
+    and exporters that can carry absolute altitude add it back and say so.
+    """
+    frame = str(plan.get("altitude_frame", "") or "").lower()
+    home = plan.get("home_elevation_amsl_m")
+    if frame == "amsl" and home is not None:
+        try:
+            return "amsl", float(home)
+        except (TypeError, ValueError):
+            pass
+    return "relative", 0.0
 
 
 def _capture_spacing(plan: dict[str, Any]) -> float:
@@ -154,11 +232,19 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
 
     constraints = plan.get("safety_constraints") or {}
     spacing = _capture_spacing(plan)
+    altitude_frame, home_elevation = _altitude_frame(plan)
+    # Positional items carry absolute altitude (frame 0) on an AMSL plan; otherwise
+    # altitude relative to home (frame 3), which is what every plan stores internally.
+    nav_frame = MAV_FRAME_GLOBAL if altitude_frame == "amsl" else MAV_FRAME_GLOBAL_RELATIVE_ALT
     items: list[MissionItem] = []
     seq = 0
 
     def add(command: int, **kwargs: Any) -> None:
         nonlocal seq
+        if kwargs.get("frame", nav_frame) != MAV_FRAME_MISSION:
+            kwargs.setdefault("frame", nav_frame)
+            if nav_frame == MAV_FRAME_GLOBAL and command != MAV_CMD_NAV_LAND:
+                kwargs["altitude"] = float(kwargs.get("altitude", 0.0)) + home_elevation
         items.append(MissionItem(seq=seq, command=command, current=1 if seq == 0 else 0, **kwargs))
         seq += 1
 
@@ -171,6 +257,19 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
         altitude=first["alt"],
         label="takeoff",
     )
+
+    speed = _cruise_speed(plan, 0.0)
+    if speed > 0.0:
+        # DO_CHANGE_SPEED is what actually reaches the autopilot; the .plan cruiseSpeed
+        # field is only QGC's own estimate and never leaves the ground station.
+        add(
+            MAV_CMD_DO_CHANGE_SPEED,
+            frame=MAV_FRAME_MISSION,
+            param1=1.0,
+            param2=speed,
+            param3=-1.0,
+            label=f"speed {speed:.1f} m/s",
+        )
 
     if spacing > 0.0:
         add(
@@ -246,6 +345,7 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
         if action in {"land", "land_in_place"}:
             add(
                 MAV_CMD_NAV_LAND,
+                frame=MAV_FRAME_GLOBAL_RELATIVE_ALT,
                 latitude=viewpoints[-1]["lat"],
                 longitude=viewpoints[-1]["lon"],
                 altitude=0.0,
@@ -257,45 +357,79 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
     return items
 
 
-def build_fence_items(mission: Any) -> list[MissionItem]:
-    """Geofence inclusion and no-fly exclusion polygons as MAVLink fence items."""
+# Distance the exported inclusion fence sits outside the drawn area. ArduPilot breaches
+# a polygon fence when the vehicle comes within FENCE_MARGIN (2 m by default) of it, and
+# a mapping grid deliberately flies its outer lines on the area's edge; a fence equal to
+# the area would therefore trip on the first outer pass.
+INCLUSION_FENCE_MARGIN_M = 5.0
+
+
+def _offset_ring_outward(vertices: Sequence[Sequence[float]], margin_m: float) -> list[list[float]]:
+    """Offset a lon/lat ring outward by `margin_m`, with mitred corners.
+
+    Worked in a local equirectangular frame, which is exact to well under a centimetre
+    at the scale of a survey site.
+    """
+    if margin_m <= 0.0 or len(vertices) < 3:
+        return [[float(v[0]), float(v[1])] for v in vertices]
+    lon0 = sum(float(v[0]) for v in vertices) / len(vertices)
+    lat0 = sum(float(v[1]) for v in vertices) / len(vertices)
+    mx = 111_320.0 * math.cos(math.radians(lat0))
+    my = 110_540.0
+    pts = [((float(v[0]) - lon0) * mx, (float(v[1]) - lat0) * my) for v in vertices]
+    n = len(pts)
+    area2 = sum(pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1] for i in range(n))
+    # Outward normal of edge (dx, dy) is (dy, -dx) for a counter-clockwise ring.
+    sign = 1.0 if area2 > 0 else -1.0
+    out: list[list[float]] = []
+    for i in range(n):
+        prev_pt, here, next_pt = pts[i - 1], pts[i], pts[(i + 1) % n]
+        normals = []
+        for start, end in ((prev_pt, here), (here, next_pt)):
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            length = math.hypot(dx, dy) or 1.0
+            normals.append((sign * dy / length, -sign * dx / length))
+        bx, by = normals[0][0] + normals[1][0], normals[0][1] + normals[1][1]
+        blen = math.hypot(bx, by)
+        if blen < 1e-9:
+            bx, by, scale = normals[1][0], normals[1][1], margin_m
+        else:
+            bx, by = bx / blen, by / blen
+            cos_half = max(0.25, bx * normals[1][0] + by * normals[1][1])  # mitre limit 4x
+            scale = margin_m / cos_half
+        out.append([lon0 + (here[0] + bx * scale) / mx, lat0 + (here[1] + by * scale) / my])
+    return out
+
+
+def fence_rings(
+    mission: Any, *, inclusion_margin_m: float = INCLUSION_FENCE_MARGIN_M
+) -> list[tuple[bool, list[list[float]]]]:
+    """Every fence polygon as (is_inclusion, [[lon, lat], ...]), one entry per ring.
+
+    Rings are kept separate because a writer that concatenates them (as the .plan
+    writer once did) turns two no-fly rectangles into one self-intersecting polygon.
+    """
     plan = _plan_dict(mission)
     constraints = plan.get("safety_constraints") or {}
-    items: list[MissionItem] = []
-    seq = 0
 
-    def add_ring(ring: Sequence[Sequence[float]], command: int) -> None:
-        nonlocal seq
-        vertices = [v for v in ring if len(v) >= 2]
+    def clean(ring: Sequence[Sequence[float]]) -> list[list[float]]:
+        vertices = [[float(v[0]), float(v[1])] for v in ring if len(v) >= 2]
         if len(vertices) >= 3 and vertices[0] == vertices[-1]:
             vertices = vertices[:-1]
-        if len(vertices) < 3:
-            return
-        for vertex in vertices:
-            items.append(
-                MissionItem(
-                    seq=seq,
-                    command=command,
-                    frame=MAV_FRAME_GLOBAL_RELATIVE_ALT,
-                    param1=float(len(vertices)),
-                    latitude=float(vertex[1]),
-                    longitude=float(vertex[0]),
-                    label="fence",
-                )
-            )
-            seq += 1
+        return vertices
 
+    rings: list[tuple[bool, list[list[float]]]] = []
     # The planner accepts several spellings on input (`parse_constraints` reads
     # no_fly_polygons, no_fly_zones, and obstacles), so the exporter accepts the
     # same ones rather than silently emitting no fence for a plan that has one.
-    geofence = (
+    geofence = clean(
         constraints.get("geofence")
         or constraints.get("geofence_polygon")
         or plan.get("polygon")
         or []
     )
-    if geofence:
-        add_ring(geofence, MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION)
+    if len(geofence) >= 3:
+        rings.append((True, _offset_ring_outward(geofence, inclusion_margin_m)))
     exclusions = (
         constraints.get("no_fly_polygons")
         or constraints.get("no_fly_zones")
@@ -303,7 +437,34 @@ def build_fence_items(mission: Any) -> list[MissionItem]:
         or []
     )
     for polygon in exclusions:
-        add_ring(polygon, MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION)
+        ring = clean(polygon)
+        if len(ring) >= 3:
+            rings.append((False, ring))
+    return rings
+
+
+def build_fence_items(mission: Any) -> list[MissionItem]:
+    """Geofence inclusion and no-fly exclusion polygons as MAVLink fence items.
+
+    param1 of every vertex is its own ring's vertex count, which is how an autopilot
+    tells where one polygon ends and the next begins.
+    """
+    items: list[MissionItem] = []
+    for inclusion, ring in fence_rings(mission):
+        command = (MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION if inclusion
+                   else MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION)
+        for vertex in ring:
+            items.append(
+                MissionItem(
+                    seq=len(items),
+                    command=command,
+                    frame=MAV_FRAME_GLOBAL_RELATIVE_ALT,
+                    param1=float(len(ring)),
+                    latitude=float(vertex[1]),
+                    longitude=float(vertex[0]),
+                    label="fence" if inclusion else "no-fly",
+                )
+            )
     return items
 
 
@@ -341,21 +502,40 @@ def build_rally_items(mission: Any) -> list[MissionItem]:
 
 
 def export_qgc_wpl(path: str | Path, mission: Any) -> str:
-    """QGC WPL 110 text mission, carrying every command rather than positions only."""
-    items = build_mission_items(mission)
+    """QGC WPL 110 text mission, carrying every command rather than positions only.
+
+    Row 0 is the home position. ArduPilot and Mission Planner reserve sequence 0 for
+    home and overwrite whatever is loaded there, so a file whose first row is the
+    takeoff loses its takeoff on load -- the same reservation the live uploader
+    allows for in core/mission_planner_bridge.py (_with_home_slot).
+    """
+    plan = _plan_dict(mission)
+    items = build_mission_items(plan)
+    _, home_elevation = _altitude_frame(plan)
+    first_positional = next((i for i in items if i.frame != MAV_FRAME_MISSION), items[0])
+    home = MissionItem(
+        seq=0,
+        command=MAV_CMD_NAV_WAYPOINT,
+        frame=MAV_FRAME_GLOBAL,
+        latitude=first_positional.latitude,
+        longitude=first_positional.longitude,
+        altitude=home_elevation,
+        current=1,
+        label="home",
+    )
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    lines = ["QGC WPL 110"]
-    for item in items:
-        def clean(value: float) -> float:
-            return 0.0 if isinstance(value, float) and math.isnan(value) else float(value)
+    def clean(value: float) -> float:
+        return 0.0 if isinstance(value, float) and math.isnan(value) else float(value)
 
+    lines = ["QGC WPL 110"]
+    for seq, item in enumerate([home, *items]):
         lines.append(
             "\t".join(
                 [
-                    str(item.seq),
-                    str(item.current),
+                    str(seq),
+                    "1" if seq == 0 else "0",
                     str(item.frame),
                     str(item.command),
                     f"{clean(item.param1):.8f}",
@@ -380,9 +560,11 @@ def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, fi
     """
     plan = _plan_dict(mission)
     items = build_mission_items(mission)
-    fence_items = build_fence_items(mission)
     rally_items = build_rally_items(mission)
     constraints = plan.get("safety_constraints") or {}
+    altitude_frame, home_elevation = _altitude_frame(plan)
+    # QGC AltitudeMode: 1 relative to home, 2 AMSL.
+    altitude_mode = 2 if altitude_frame == "amsl" else 1
 
     simple_items: list[dict[str, Any]] = []
     for index, item in enumerate(items):
@@ -395,7 +577,7 @@ def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, fi
             {
                 "AMSLAltAboveTerrain": None,
                 "Altitude": item.altitude,
-                "AltitudeMode": 1,
+                "AltitudeMode": altitude_mode,
                 "autoContinue": bool(item.autocontinue),
                 "command": item.command,
                 "doJumpId": index + 1,
@@ -406,25 +588,32 @@ def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, fi
         )
 
     first = items[0]
-    polygons: list[dict[str, Any]] = []
-    inclusion = [i for i in fence_items if i.command == MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION]
-    exclusion = [i for i in fence_items if i.command == MAV_CMD_NAV_FENCE_POLYGON_VERTEX_EXCLUSION]
-    if inclusion:
-        polygons.append({"inclusion": True, "polygon": [[i.latitude, i.longitude] for i in inclusion], "version": 1})
-    if exclusion:
-        polygons.append({"inclusion": False, "polygon": [[i.latitude, i.longitude] for i in exclusion], "version": 1})
+    # One polygon per ring: concatenating every no-fly zone into a single exclusion
+    # polygon made a self-intersecting shape that fenced off the wrong area.
+    polygons: list[dict[str, Any]] = [
+        {"inclusion": inclusion, "polygon": [[v[1], v[0]] for v in ring], "version": 1}
+        for inclusion, ring in fence_rings(plan)
+    ]
+    speed = _cruise_speed(plan, 0.0)
 
     payload = {
         "fileType": "Plan",
         "geoFence": {"circles": [], "polygons": polygons, "version": 2},
         "groundStation": "OpenDroneKit",
         "mission": {
-            "cruiseSpeed": float(plan.get("cruise_speed_mps", 12.0) or 12.0),
+            # QGC uses hoverSpeed for multirotors and cruiseSpeed for fixed wing; both
+            # carry the planned speed so the ground station's estimate matches ours.
+            "cruiseSpeed": speed if speed > 0.0 else 12.0,
             "firmwareType": int(firmware_type),
-            "globalPlanAltitudeMode": 1,
-            "hoverSpeed": float(plan.get("hover_speed_mps", 5.0) or 5.0),
+            "globalPlanAltitudeMode": altitude_mode,
+            "hoverSpeed": speed if speed > 0.0 else 5.0,
             "items": simple_items,
-            "plannedHomePosition": [first.latitude, first.longitude, float(constraints.get("home_altitude_m", 0.0) or 0.0)],
+            "plannedHomePosition": [
+                first.latitude,
+                first.longitude,
+                home_elevation if altitude_frame == "amsl"
+                else float(constraints.get("home_altitude_m", 0.0) or 0.0),
+            ],
             "vehicleType": int(vehicle_type),
             "version": 2,
         },
@@ -438,12 +627,23 @@ def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, fi
     return str(target)
 
 
-def export_litchi_csv(path: str | Path, mission: Any) -> str:
-    """Litchi Mission Hub CSV, with per-waypoint gimbal pitch, heading, and capture."""
+# Litchi refuses a mission of more than 99 waypoints.
+LITCHI_MAX_WAYPOINTS = 99
+
+
+def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
+    """Litchi Mission Hub CSV, with per-waypoint gimbal pitch, heading, and capture.
+
+    Litchi accepts at most 99 waypoints per mission, so a longer plan is written as
+    consecutive parts (`<stem>_part1of3.csv`, ...), each flyable on its own and each
+    starting where the previous one ended. A single-part plan is written to `path` and
+    its path returned; a split plan returns every part's path in flight order.
+    """
     plan = _plan_dict(mission)
     viewpoints = _viewpoints(plan)
     if not viewpoints:
         raise ValueError("Mission plan contains no waypoints to export.")
+    speed = _cruise_speed(plan, 5.0)
 
     header = [
         "latitude", "longitude", "altitude(m)", "heading(deg)", "curvesize(m)", "rotationdir",
@@ -457,7 +657,7 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str:
     ])
 
     spacing = _capture_spacing(plan)
-    rows = [",".join(header)]
+    rows: list[str] = []
     for pose in viewpoints:
         actions: list[str] = []
         # Litchi action type 1 is "stay for", 5 is "take photo".
@@ -475,16 +675,27 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str:
             "2", f"{pose['gimbal_pitch_deg']:.1f}",
         ]
         row.extend(actions)
+        # altitudemode 0: relative to the takeoff point, which is what the plan's
+        # altitudes are (terrain following is already folded into them). Mode 1 would
+        # make Litchi add its own terrain offset on top.
         row.extend([
-            "1", f"{pose['speed_mps'] or 5.0:.2f}", "0", "0", "0", "0",
+            "0", f"{min(15.0, pose['speed_mps'] or speed):.2f}", "0", "0", "0", "0",
             "0", f"{spacing:.2f}" if spacing > 0 else "0",
         ])
         rows.append(",".join(row))
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("\n".join(rows) + "\n", encoding="utf-8")
-    return str(target)
+    chunks = [rows[i:i + LITCHI_MAX_WAYPOINTS] for i in range(0, len(rows), LITCHI_MAX_WAYPOINTS)]
+    if len(chunks) == 1:
+        target.write_text("\n".join([",".join(header), *rows]) + "\n", encoding="utf-8")
+        return str(target)
+    written: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        part = target.with_name(f"{target.stem}_part{index}of{len(chunks)}{target.suffix}")
+        part.write_text("\n".join([",".join(header), *chunk]) + "\n", encoding="utf-8")
+        written.append(str(part))
+    return written
 
 
 def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission") -> str:
@@ -492,6 +703,13 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
     plan = _plan_dict(mission)
     viewpoints = _viewpoints(plan)
     constraints = plan.get("safety_constraints") or {}
+    altitude_frame, home_elevation = _altitude_frame(plan)
+    if altitude_frame == "amsl":
+        altitude_mode, offset = "absolute", home_elevation
+    else:
+        # KML has no "relative to takeoff"; relativeToGround is the nearest and matches
+        # it exactly over flat ground.
+        altitude_mode, offset = "relativeToGround", 0.0
 
     kml = ET.Element("kml", {"xmlns": "http://www.opengis.net/kml/2.2"})
     document = ET.SubElement(kml, "Document")
@@ -510,10 +728,10 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
         ET.SubElement(placemark, "name").text = "Flight path"
         ET.SubElement(placemark, "styleUrl").text = "#route"
         line = ET.SubElement(placemark, "LineString")
-        ET.SubElement(line, "altitudeMode").text = "relativeToGround"
+        ET.SubElement(line, "altitudeMode").text = altitude_mode
         ET.SubElement(line, "tessellate").text = "1"
         ET.SubElement(line, "coordinates").text = " ".join(
-            f"{p['lon']:.8f},{p['lat']:.8f},{p['alt']:.2f}" for p in viewpoints
+            f"{p['lon']:.8f},{p['lat']:.8f},{p['alt'] + offset:.2f}" for p in viewpoints
         )
 
     waypoint_folder = ET.SubElement(document, "Folder")
@@ -527,8 +745,8 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
             f"capture: {'yes' if pose['trigger'] else 'no'}"
         )
         point = ET.SubElement(placemark, "Point")
-        ET.SubElement(point, "altitudeMode").text = "relativeToGround"
-        ET.SubElement(point, "coordinates").text = f"{pose['lon']:.8f},{pose['lat']:.8f},{pose['alt']:.2f}"
+        ET.SubElement(point, "altitudeMode").text = altitude_mode
+        ET.SubElement(point, "coordinates").text = f"{pose['lon']:.8f},{pose['lat']:.8f},{pose['alt'] + offset:.2f}"
 
     def add_ring(ring: Sequence[Sequence[float]], label: str, style_id: str) -> None:
         vertices = [v for v in ring if len(v) >= 2]
@@ -546,11 +764,13 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
             f"{float(v[0]):.8f},{float(v[1]):.8f},0" for v in vertices
         )
 
-    geofence = constraints.get("geofence") or plan.get("polygon") or []
-    if geofence:
-        add_ring(geofence, "Geofence", "fence")
-    for index, polygon in enumerate(constraints.get("no_fly_polygons") or [], start=1):
-        add_ring(polygon, f"No-fly zone {index}", "nofly")
+    zone = 0
+    for inclusion, ring in fence_rings(plan):
+        if inclusion:
+            add_ring(ring, f"Geofence (area + {INCLUSION_FENCE_MARGIN_M:.0f} m margin)", "fence")
+        else:
+            zone += 1
+            add_ring(ring, f"No-fly zone {zone}", "nofly")
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -558,12 +778,21 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
     return str(target)
 
 
-def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, payload_enum: int = 66) -> str:
+def export_dji_wpml(
+    path: str | Path,
+    mission: Any,
+    *,
+    drone_enum: int = 77,
+    drone_sub_enum: int = 0,
+    payload_enum: int = 66,
+) -> str:
     """DJI WPML `.kmz` for Pilot 2 / DJI Fly waypoint missions.
 
     A WPML archive is a zip holding `wpmz/template.kml` (the human-editable plan) and
     `wpmz/waylines.wpml` (the executable route). Both carry the DJI wpml namespace.
-    Default enums describe a Mavic 3 Enterprise class airframe.
+    Default enums describe a Mavic 3 Enterprise (drone 77 / sub 0, camera payload 66,
+    per DJI's WPML droneEnumValue and payloadEnumValue tables). The previous default of
+    68 is not an assigned drone enum.
     """
     plan = _plan_dict(mission)
     viewpoints = _viewpoints(plan)
@@ -571,7 +800,12 @@ def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, pay
         raise ValueError("Mission plan contains no waypoints to export.")
     spacing = _capture_spacing(plan)
     constraints = plan.get("safety_constraints") or {}
-    speed = max(1.0, float(plan.get("cruise_speed_mps", 8.0) or 8.0))
+    speed = max(1.0, min(15.0, _cruise_speed(plan, 8.0)))
+    altitude_frame, home_elevation = _altitude_frame(plan)
+    # EGM96 is DJI's absolute-height mode. It is only used when the plan's terrain model
+    # gives the home ground elevation; the DEM's vertical datum is assumed orthometric.
+    height_mode = "EGM96" if altitude_frame == "amsl" else "relativeToStartPoint"
+    height_offset = home_elevation if altitude_frame == "amsl" else 0.0
     rth_alt = float(constraints.get("rth_altitude_m", 80.0) or 80.0)
 
     kml_ns = "http://www.opengis.net/kml/2.2"
@@ -602,7 +836,7 @@ def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, pay
         ET.SubElement(config, wpml("globalTransitionalSpeed")).text = f"{speed:.1f}"
         drone_info = ET.SubElement(config, wpml("droneInfo"))
         ET.SubElement(drone_info, wpml("droneEnumValue")).text = str(int(drone_enum))
-        ET.SubElement(drone_info, wpml("droneSubEnumValue")).text = "0"
+        ET.SubElement(drone_info, wpml("droneSubEnumValue")).text = str(int(drone_sub_enum))
         payload_info = ET.SubElement(config, wpml("payloadInfo"))
         ET.SubElement(payload_info, wpml("payloadEnumValue")).text = str(int(payload_enum))
         ET.SubElement(payload_info, wpml("payloadPositionIndex")).text = "0"
@@ -612,10 +846,9 @@ def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, pay
         ET.SubElement(folder, wpml("templateId")).text = "0"
         if not is_template:
             ET.SubElement(folder, wpml("waylineId")).text = "0"
-            ET.SubElement(folder, wpml("autoFlightSpeed")).text = f"{speed:.1f}"
         coordinate = ET.SubElement(folder, wpml("waylineCoordinateSysParam"))
         ET.SubElement(coordinate, wpml("coordinateMode")).text = "WGS84"
-        ET.SubElement(coordinate, wpml("heightMode")).text = "relativeToStartPoint"
+        ET.SubElement(coordinate, wpml("heightMode")).text = height_mode
         ET.SubElement(folder, wpml("autoFlightSpeed")).text = f"{speed:.1f}"
 
         for index, pose in enumerate(viewpoints):
@@ -623,8 +856,8 @@ def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, pay
             point = ET.SubElement(placemark, f"{{{kml_ns}}}Point")
             ET.SubElement(point, f"{{{kml_ns}}}coordinates").text = f"{pose['lon']:.8f},{pose['lat']:.8f}"
             ET.SubElement(placemark, wpml("index")).text = str(index)
-            ET.SubElement(placemark, wpml("executeHeight")).text = f"{pose['alt']:.2f}"
-            ET.SubElement(placemark, wpml("waypointSpeed")).text = f"{pose['speed_mps'] or speed:.1f}"
+            ET.SubElement(placemark, wpml("executeHeight")).text = f"{pose['alt'] + height_offset:.2f}"
+            ET.SubElement(placemark, wpml("waypointSpeed")).text = f"{min(15.0, pose['speed_mps'] or speed):.1f}"
 
             heading = ET.SubElement(placemark, wpml("waypointHeadingParam"))
             ET.SubElement(heading, wpml("waypointHeadingMode")).text = (
@@ -703,12 +936,53 @@ def export_dji_wpml(path: str | Path, mission: Any, *, drone_enum: int = 68, pay
     return str(target)
 
 
+def export_geojson(path: str | Path, mission: Any) -> str:
+    """The plan as GeoJSON: area, no-fly zones, flight path, and every waypoint with
+    its yaw, gimbal pitch, dwell and trigger as properties.
+
+    Uses the planner's own GeoJSON when the plan carries it, and otherwise builds the
+    same structure from the viewpoints so a plan loaded from elsewhere still exports.
+    """
+    plan = _plan_dict(mission)
+    geojson = plan.get("geojson")
+    if not (isinstance(geojson, dict) and geojson.get("features")):
+        viewpoints = _viewpoints(plan)
+        if not viewpoints:
+            raise ValueError("Mission plan contains no waypoints to export.")
+        features: list[dict[str, Any]] = []
+        for inclusion, ring in fence_rings(plan, inclusion_margin_m=0.0):
+            features.append({
+                "type": "Feature",
+                "properties": {"role": "survey_polygon" if inclusion else "no_fly_polygon"},
+                "geometry": {"type": "Polygon", "coordinates": [ring + [ring[0]]]},
+            })
+        path_coords = [[p["lon"], p["lat"], p["alt"]] for p in viewpoints]
+        features.append({"type": "Feature", "properties": {"role": "flight_path"},
+                         "geometry": {"type": "LineString", "coordinates": path_coords}})
+        for index, pose in enumerate(viewpoints):
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "role": "waypoint", "index": index, "yaw_deg": pose["yaw_deg"],
+                    "gimbal_pitch_deg": pose["gimbal_pitch_deg"], "dwell_s": pose["dwell_s"],
+                    "trigger": pose["trigger"], "camera_yaw_locked": pose["yaw_locked"],
+                },
+                "geometry": {"type": "Point", "coordinates": path_coords[index]},
+            })
+        geojson = {"type": "FeatureCollection", "features": features}
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(geojson, indent=2), encoding="utf-8")
+    return str(target)
+
+
 EXPORTERS = {
     "qgc_plan": (export_qgc_plan, ".plan"),
     "qgc_wpl": (export_qgc_wpl, ".waypoints"),
     "dji_wpml": (export_dji_wpml, ".kmz"),
     "litchi": (export_litchi_csv, ".csv"),
     "kml": (export_kml, ".kml"),
+    "geojson": (export_geojson, ".geojson"),
 }
 
 
@@ -719,7 +993,17 @@ def export_all(directory: str | Path, mission: Any, stem: str = "mission") -> di
     written: dict[str, str] = {}
     for name, (writer, suffix) in EXPORTERS.items():
         try:
-            written[name] = writer(root / f"{stem}{suffix}", mission)
+            record_written(written, name, writer(root / f"{stem}{suffix}", mission))
         except Exception as exc:  # noqa: BLE001
             written[name] = f"failed: {exc}"
     return written
+
+
+def record_written(written: dict[str, str], name: str, result: str | list[str]) -> None:
+    """Record a writer's output, naming each part when a format had to be split."""
+    if isinstance(result, (list, tuple)):
+        total = len(result)
+        for index, part in enumerate(result, start=1):
+            written[name if index == 1 else f"{name} (part {index} of {total})"] = str(part)
+    else:
+        written[name] = str(result)
