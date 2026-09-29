@@ -116,3 +116,40 @@ def test_stockpile_measures_the_drawn_pile_and_writes_its_report(tmp_path, proje
     assert result["toast"] and "Report:" in result["toast"], result
     volume = float(result["toast"].split(" m³")[0].split()[-1].replace(",", ""))
     assert abs(volume - BLOCK_VOLUME_M3) / BLOCK_VOLUME_M3 < 0.05, result
+
+
+def _strict_json(reply) -> None:
+    """What JSON.parse in the UI does with a reply: bare NaN/Infinity are rejected."""
+    import json
+
+    def refuse(token):
+        raise ValueError(f"not JSON: {token}")
+
+    json.loads(json.dumps(reply, default=str), parse_constant=refuse)
+
+
+def test_a_compare_leaves_the_project_readable_after_a_restart(tmp_path, project) -> None:
+    """Verifier: the difference raster's layer carried nodata NaN, so get_state and
+    list_layers sent bare NaN, JSON.parse failed, the Layers panel read "No layers yet",
+    and after reloading every project action answered "Open a project first"."""
+    api, earlier = project
+    for press in (1, 2):
+        # A fresh Cockpit is a fresh page: what an app restart reloads from get_state.
+        with Cockpit(api, tmp_path / f"profile{press}") as cockpit:
+            cockpit.picks["file"] = earlier
+            result = cockpit.run(
+                COMPARE.replace("return { toast, all: ODK.toasts() };",
+                                'await ODK.sleep(1500); '
+                                'return { toast, all: ODK.toasts(), panel: ODK.panel("Layers") };')
+                % {"workspace": "Measurements", "button": "Compare Dates"})
+        assert result["toast"] and result["toast"].startswith("Added"), (press, result)
+        assert not any("Open a project first" in t for t in result["all"]), (press, result)
+        assert "Elevation change" in result["panel"] and "DSM" in result["panel"], (press, result)
+        assert [c["ok"] for c in cockpit.called("list_layers")] and all(
+            c["ok"] for c in cockpit.called("list_layers"))
+
+    change = [layer for layer in api.list_layers()["layers"] if layer["name"] == "Elevation change"]
+    assert len(change) == 2
+    assert "nodata" in change[0]["metadata"] and change[0]["metadata"]["nodata"] is None
+    _strict_json(api.get_state())
+    _strict_json(api.list_layers())

@@ -22,7 +22,7 @@ import sys
 from typing import Any, Callable
 
 from .jobs import JobManager
-from .session import AppSession, MapLayer
+from .session import AppSession, MapLayer, json_safe
 
 #: The largest area of interest one mission is planned over. Beyond this the planner runs
 #: for minutes to hours; see set_aoi.
@@ -30,11 +30,13 @@ MAX_AOI_AREA_M2 = 50_000_000.0
 
 
 def ok(**payload: Any) -> dict[str, Any]:
-    return {"ok": True, **payload}
+    # Every reply crosses to JavaScript as JSON, where a bare NaN makes the whole reply
+    # unreadable; a non-finite number is sent as null instead.
+    return {"ok": True, **json_safe(payload)}
 
 
 def fail(error: str, **payload: Any) -> dict[str, Any]:
-    return {"ok": False, "error": str(error), **payload}
+    return {"ok": False, "error": str(error), **json_safe(payload)}
 
 
 def _optional_float(value: Any) -> float | None:
