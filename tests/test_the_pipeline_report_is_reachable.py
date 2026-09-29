@@ -293,7 +293,7 @@ def test_the_cockpit_opens_it_when_run_ai_finishes(tmp_path) -> None:
         assert "finished" in message, message
         shown = ui.js("T.until(() => { const t = document.querySelector('textarea.modal-reveal');"
                       " return t && { text: t.value, title: (document.body.innerText"
-                      ".match(/Inspection report: run_\d+_\d+/) || [''])[0] }; },"
+                      r".match(/Inspection report: run_\d+_\d+/) || [''])[0] }; },"
                       " 60000, 'the inspection report')")
     finally:
         ui.close()
@@ -301,3 +301,49 @@ def test_the_cockpit_opens_it_when_run_ai_finishes(tmp_path) -> None:
     assert len(reports) == 1
     assert shown["title"] == f"Inspection report: {reports[0].parent.name}"
     assert shown["text"].strip() == reports[0].read_text(encoding="utf-8").strip()
+
+
+class TestTheReportsAgreeWithEachOther:
+    """Found by the round-2 verifier: the HTML said no propagation analysis was run while
+    the same run's markdown carried a forecast; the markdown heading said "(heuristic)"
+    over a basis line naming a trained model; "Frames: 10" hid two unregistered frames."""
+
+    def test_the_html_names_the_pipelines_forecast(self, surveyed) -> None:
+        import json
+
+        api, result, _ = surveyed
+        summary = json.loads((Path(result["run_dir"]) / "summary.json").read_text(encoding="utf-8"))
+        forecast = summary.get("forecast") or {}
+        written = api.generate_report("", "Aukerman", "standard", formats=["html"])
+        html = Path(written["html_path"]).read_text(encoding="utf-8")
+        markdown = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
+        if forecast.get("target_image"):
+            assert f"Target image: `{forecast['target_image']}`" in markdown
+            assert "No crack propagation analysis was run." not in html
+            assert f"growth forecast of the detected crack mask on {forecast['target_image']}" in html
+            assert "not a measurement" in html
+        else:
+            assert "No crack propagation analysis was run." in html
+
+    def test_the_heading_names_the_same_evidence_as_the_basis(self, surveyed) -> None:
+        _, result, _ = surveyed
+        text = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
+        section = text.split("## Structural Health Screening", 1)[1].split("\n## ", 1)[0]
+        heading = section.splitlines()[0]
+        if "trained segmentation model" in section:
+            assert "trained model" in heading and "heuristic" not in heading
+        else:
+            assert "(heuristic)" in heading
+
+    def test_frames_say_how_many_were_registered(self, tmp_path) -> None:
+        from core.reporting import write_markdown_report
+
+        def frames(recon: dict) -> str:
+            text = Path(write_markdown_report(tmp_path / "r.md", {"reconstruction": recon})
+                        ).read_text(encoding="utf-8")
+            return next(line for line in text.splitlines() if line.startswith("- Frames:"))
+
+        assert frames({"frame_count": 10, "registered_images": 8}) == (
+            "- Frames: `10` (`8` registered, `2` not in the model)")
+        assert frames({"frame_count": 3, "registered_images": 3}) == "- Frames: `3` (all registered)"
+        assert frames({"frame_count": 4}) == "- Frames: `4`"

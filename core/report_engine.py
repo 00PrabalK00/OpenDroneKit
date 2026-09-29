@@ -499,8 +499,19 @@ def find_pipeline_runs(root: Path) -> list[dict[str, Any]]:
             "report_markdown": str(run / "inspection_report.md")
             if (run / "inspection_report.md").is_file() else "",
             "coverage": summary.get("coverage_validation") or {},
+            "forecast": _pipeline_forecast(summary.get("forecast")),
         })
     return runs
+
+
+def _pipeline_forecast(forecast: Any) -> dict[str, Any]:
+    """What the pipeline's crack-growth forecast was, if it made one: image and basis."""
+    if not isinstance(forecast, dict) or not forecast.get("target_image"):
+        return {}
+    return {"target_image": str(forecast.get("target_image")),
+            "mode": str(forecast.get("mode") or "geometric"),
+            "steps": forecast.get("steps"),
+            "what_if": forecast.get("basis") == "what_if_simulation"}
 
 
 def _engine_defect_runs(root: Path) -> list[dict[str, Any]]:
@@ -1004,14 +1015,25 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
             "No automated detector was run on this project."]}
 
     crack_runs = context.get("crack_runs") or []
-    if crack_runs:
-        blocks["crack_propagation"] = {"paragraphs": [
-            f"Run {r.get('id', '')}: {r.get('summary', '')} Illustrative risk level (from the "
-            f"assumed stresses and toughness, not measured): {r.get('risk_level', '')}. "
-            f"Assumptions: {'; '.join(str(a) for a in r.get('assumptions', []))}"
-            for r in crack_runs]}
-    else:
-        blocks["crack_propagation"] = {"paragraphs": ["No crack propagation analysis was run."]}
+    paragraphs = [
+        f"Run {r.get('id', '')}: {r.get('summary', '')} Illustrative risk level (from the "
+        f"assumed stresses and toughness, not measured): {r.get('risk_level', '')}. "
+        f"Assumptions: {'; '.join(str(a) for a in r.get('assumptions', []))}"
+        for r in crack_runs]
+    # The pipeline's own growth forecast. The HTML said "No crack propagation analysis
+    # was run" while the same run's markdown carried one.
+    for run in context.get("pipeline_runs") or []:
+        forecast = run.get("forecast") or {}
+        if forecast.get("target_image"):
+            paragraphs.append(
+                f"Pipeline run {run.get('name', '')}: a {forecast.get('mode', 'geometric')} "
+                f"growth forecast of the detected crack mask on {forecast['target_image']}"
+                + (f" over {forecast['steps']} step(s)" if forecast.get("steps") else "")
+                + ". It is a " + ("what-if simulation from assumed inputs"
+                                   if forecast.get("what_if") else "geometric extrapolation")
+                + ", not a measurement; see the run's inspection_report.md for its inputs.")
+    blocks["crack_propagation"] = {"paragraphs": paragraphs or [
+        "No crack propagation analysis was run."]}
 
     recons = context.get("reconstructions") or []
     if recons:

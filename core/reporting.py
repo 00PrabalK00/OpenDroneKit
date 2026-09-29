@@ -36,7 +36,12 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append(f"- Input image directory: `{payload.get('input_image_dir', '')}`")
     lines.append(f"- Images processed: `{len(images)}`")
     lines.append("")
-    lines.append("## Structural Health Screening (heuristic)")
+    # The heading names the evidence the section is built from: "(heuristic)" over a
+    # basis line naming a trained model contradicted itself.
+    trained = (isinstance(health, dict)
+               and (health.get("basis") or {}).get("defect_evidence") == "trained_model")
+    lines.append("## Structural Health Screening ("
+                 + ("trained model, uncalibrated" if trained else "heuristic") + ")")
     lines.append("")
     if isinstance(health, dict) and health:
         # The score is built from the crack and metal pixel ratios of classical image
@@ -313,7 +318,16 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append("- No 3D output, measurements or volumes were produced from this run.")
     else:
         # A failed run has no counts; zeros printed after "FAILED" read as a result.
-        lines.append(f"- Frames: `{recon.get('frame_count', 0)}`")
+        # "Frames: 10" read as ten frames in the model when two were never registered.
+        frames = int(recon.get("frame_count", 0) or 0)
+        registered = recon.get("registered_images")
+        if isinstance(registered, int) and 0 < registered < frames:
+            lines.append(f"- Frames: `{frames}` (`{registered}` registered, "
+                         f"`{frames - registered}` not in the model)")
+        elif isinstance(registered, int) and registered == frames and frames:
+            lines.append(f"- Frames: `{frames}` (all registered)")
+        else:
+            lines.append(f"- Frames: `{frames}`")
         lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
         lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")
         lines.append(f"- Reconstructed points: `{recon.get('total_points', 0)}`")
