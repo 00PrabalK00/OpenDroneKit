@@ -3315,6 +3315,10 @@ class MissionPlanner:
                 for p in local_poses
             ]
 
+        if not local_poses and self._coverage_notes:
+            # A template that planned nothing and said why must not be replaced by
+            # nadir shots at the fence corners that photograph none of it.
+            raise ValueError("Nothing can be planned: " + " ".join(dict.fromkeys(self._coverage_notes)))
         if not local_poses:
             geofence_local = _world_to_local(recipe_obj.constraints.geofence, recipe_obj.asset_frame)
             geofence_local = geofence_local[:-1] if len(geofence_local) > 1 else geofence_local
@@ -5982,6 +5986,54 @@ class MissionPlanner:
             r = math.radians(angle_deg)
             return hub + across * (math.cos(r) * distance), hub_height + math.sin(r) * distance
 
+        # Behind the nacelle's tail by the stand-off nothing of the turbine is closer
+        # than the stand-off. A point behind the rotor plane that is clear of the
+        # nacelle stays clear flying straight back to that plane (its distance to the
+        # nacelle only grows), and any move inside that plane is clear, so
+        # "back, across, forward" joins any two such points safely.
+        tail_offset = nacelle_length + standoff
+
+        def to_tail_plane(xy: np.ndarray) -> np.ndarray:
+            xy = np.asarray(xy, dtype=np.float64)
+            return xy - front * (tail_offset + float(np.dot(xy - hub, front)))
+
+        def via_tail(a, b) -> list:
+            return [(to_tail_plane(a[0]), a[1]), (to_tail_plane(b[0]), b[1])]
+
+        def path_length(chain) -> float:
+            return sum(math.hypot(float(np.linalg.norm(np.asarray(v[0]) - np.asarray(u[0]))), v[1] - u[1])
+                       for u, v in zip(chain, chain[1:]))
+
+        def finish(planned: list[_CapturePose]) -> list[_CapturePose]:
+            # Anything outside the altitude band would be clamped later with the camera
+            # still aimed at what it no longer sees. Every leg here runs in the plane a
+            # stand-off in front of the rotor, behind it, behind the tail, or parallel
+            # to the nacelle at a stand-off or more from it, so moving a point up or
+            # down inside its plane keeps it clear; only the photograph is lost, and
+            # the plan says so instead of shooting at nothing.
+            lost: dict[str, int] = {}
+            for item in planned:
+                if minimum_altitude - 1e-6 <= item.alt_m <= maximum_altitude + 1e-6:
+                    continue
+                if item.trigger:
+                    lost[item.primitive] = lost.get(item.primitive, 0) + 1
+                item.alt_m = float(min(max(item.alt_m, minimum_altitude), maximum_altitude))
+                item.trigger = False
+                item.dwell_s = 0.0
+                item.primitive = "turbine_transit"
+            for name, count in lost.items():
+                part = {"turbine_nacelle": "nacelle", "turbine_tower": "tower"}.get(name, name)
+                self._coverage_notes.append(
+                    f"{count} {part} shot(s) at hub height ({hub_height:.0f} m) are outside the "
+                    f"{minimum_altitude:.0f}-{maximum_altitude:.0f} m altitude band and are not "
+                    "taken; the path passes there at the band's edge. Change the altitude band "
+                    "to include the hub.")
+            if not any(item.trigger for item in planned):
+                # Nothing of the turbine is inside the band: a flight that takes no
+                # photograph is not a plan; the notes say why.
+                return []
+            return planned
+
         poses: list[_CapturePose] = []
 
         # Tower: a vertical stack on the upwind side, camera level on the tower. The
@@ -6062,7 +6114,15 @@ class MissionPlanner:
                 if crossing_angle is not None:
                     break
             if crossing_angle is None:
-                crossing_angle = 90.0
+                # No point of the stand-off circle is inside the altitude band away
+                # from the tower: say so and stop upwind rather than cross through
+                # the rotor at a clamped altitude.
+                self._coverage_notes.append(
+                    "The back faces of the blades and the nacelle sides and tail are not "
+                    "planned: no point a stand-off outside the blade tips is inside the "
+                    "altitude band, so the rotor plane cannot be crossed clear of the blades. "
+                    "Widen min_altitude_m / max_altitude_m.")
+                return finish(poses)
             tip_xy, _tip_alt = station(blade_angle, blade_length)
             beyond_xy, beyond_alt = station(crossing_angle, crossing_radius)
             # Getting there stays in the upwind plane, clear of the rotor by the stand-off.
@@ -6080,7 +6140,7 @@ class MissionPlanner:
                     point = xy - front * standoff
                     if not clear_of_nacelle(point, alt):
                         continue
-                    if leg_clearance(previous, (point, alt)) < 0.95 * standoff:
+                    if leg_clearance(previous, (point, alt)) < standoff - 0.05:
                         # Detours: over the nacelle, under it, or out to either side of
                         # it; the one that stays furthest from it is flown.
                         candidates = []
@@ -6093,12 +6153,18 @@ class MissionPlanner:
                             shift_b = across * (sign * standoff - float(np.dot(point - hub, across)))
                             candidates.append([(previous[0] + shift_a, previous[1]),
                                                (point + shift_b, alt)])
+                        # The shortest detour that keeps the stand-off is flown; the
+                        # way round behind the tail always does, so no detour that
+                        # merely keeps "the most" clearance (possibly almost none) is
+                        # ever taken.
                         best = None
                         for via in candidates:
                             chain = [previous, *via, (point, alt)]
                             margin = min(leg_clearance(a, b) for a, b in zip(chain, chain[1:]))
-                            if best is None or margin > best[0]:
-                                best = (margin, via)
+                            if margin >= standoff - 0.05 and (best is None or path_length(chain) < best[0]):
+                                best = (path_length(chain), via)
+                        if best is None:
+                            best = (0.0, via_tail(previous, (point, alt)))
                         for via_xy, via_alt in best[1]:
                             poses.append(pose(via_xy, via_alt, xy, "turbine_transit", trigger=False))
                     poses.append(pose(point, alt, xy, "turbine_blade_%db" % blade_index))
@@ -6113,12 +6179,22 @@ class MissionPlanner:
         middle = hub - front * (0.5 * nacelle_length)
         right = hub - front * side_back + across * standoff
         left = hub - front * side_back - across * standoff
-        if poses:
-            last = poses[-1]
-            above = max(float(last.alt_m), hub_height + standoff)
-            last_xy = np.array([last.x_m, last.y_m], dtype=np.float64)
-            poses.append(pose(last_xy, above, middle, "turbine_transit", trigger=False))
-            poses.append(pose(right, above, middle, "turbine_transit", trigger=False))
+        # The route there goes straight back from the last back-face point to the plane
+        # behind the tail, across in that plane, and forward to the side point. Climbing
+        # straight up from a blade pointing down (as before) went through the nacelle.
+        last = poses[-1]
+        last_xy = np.array([last.x_m, last.y_m], dtype=np.float64)
+        if float(np.dot(last_xy - hub, front)) > 0.0:
+            # Still upwind: nothing was flown behind the rotor, so there was no crossing
+            # (no blade station in the altitude band). Crossing here would mean flying
+            # through the rotor disc, so the downwind nacelle shots are left out.
+            self._coverage_notes.append(
+                "The nacelle sides and tail are not planned: no blade station is inside the "
+                "altitude band, so there is no checked place to cross the rotor plane. "
+                "Adjust min_altitude_m / max_altitude_m to include the blades.")
+            return finish(poses)
+        for via_xy, via_alt in via_tail((last_xy, float(last.alt_m)), (right, hub_height)):
+            poses.append(pose(via_xy, via_alt, middle, "turbine_transit", trigger=False))
         poses.append(pose(right, hub_height, middle, "turbine_nacelle"))
         poses.append(pose(hub - front * tail_back + across * standoff, hub_height,
                           hub - front * nacelle_length, "turbine_transit", trigger=False))
@@ -6126,7 +6202,7 @@ class MissionPlanner:
         poses.append(pose(hub - front * tail_back - across * standoff, hub_height,
                           hub - front * nacelle_length, "turbine_transit", trigger=False))
         poses.append(pose(left, hub_height, middle, "turbine_nacelle"))
-        return poses
+        return finish(poses)
 
     def _compile_smart_adaptive_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """Uniform coverage plus extra passes over regions that warrant a closer look.

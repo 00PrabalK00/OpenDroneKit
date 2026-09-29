@@ -214,3 +214,51 @@ class TestTypedInputsAreRefusedByName:
                                     "calibration_panel_lonlat": "no"})
         assert not planned["ok"]
         assert "lon, lat" in planned["error"] and "ValueError" not in planned["error"]
+
+
+class TestTurbineWholePath:
+    """Every leg, not only the rotor crossing: a blade parked pointing down on a low hub
+    left the back faces at the bottom of the rotor, and the route to the nacelle sides
+    climbed straight up from there through the nacelle (0.1 m from it)."""
+
+    @pytest.mark.parametrize("facing, hub, blade, angles, standoff", [
+        (90.0, 40.0, 38.0, "270, 30, 150", 10.0),
+        (0.0, 35.0, 33.0, "270, 30, 150", 12.0),
+        (341.17521928452203, 39.9, 24.0, "75.3, 195.3, 315.3", 20.0),
+        (152.82690809130503, 64.7, 23.0, "10.9, 130.9, 250.9", 20.0),
+    ])
+    def test_no_leg_comes_within_the_stand_off(self, tmp_path, facing, hub, blade, angles, standoff):
+        api, origin = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned, items = plan_export(api, tmp_path, {
+            "template": "wind_turbine", "altitude_m": 55, "min_altitude_m": 20,
+            "turbine_rotor_facing_deg": facing, "turbine_hub_height_m": hub,
+            "turbine_blade_length_m": blade, "turbine_nacelle_length_m": 12,
+            "turbine_blade_angles_deg": angles, "standoff_m": standoff})
+        _, parts = turbine_geometry(facing, hub, blade, 12.0, [float(v) for v in angles.split(",")])
+        points = nav_points(items, origin)[1:]
+        worst = min(distance_to_segment(q, a, b) for q in legs(points) for a, b in parts.values())
+        assert worst >= 0.97 * standoff, f"a leg passes {worst:.1f} m from the turbine"
+        assert planned["summary"]["adjustments"]["altitude_clamps"] == 0
+
+    def test_a_hub_above_the_ceiling_is_said_not_clamped(self, tmp_path):
+        api, origin = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned, items = plan_export(api, tmp_path, {
+            "template": "wind_turbine", "altitude_m": 55, "max_altitude_m": 90,
+            "turbine_rotor_facing_deg": 0, "turbine_hub_height_m": 110,
+            "turbine_blade_length_m": 50, "turbine_nacelle_length_m": 12, "standoff_m": 12})
+        assert planned["summary"]["adjustments"]["altitude_clamps"] == 0
+        assert "nacelle shot(s) at hub height (110 m) are outside" in " ".join(planned["warnings"])
+        _, parts = turbine_geometry(0.0, 110.0, 50.0, 12.0, [90.0, 210.0, 330.0])
+        points = nav_points(items, origin)[1:]
+        assert max(p[2] for p in points) <= 90.0 + 0.05
+        assert min(distance_to_segment(q, a, b) for q in legs(points) for a, b in parts.values()) >= 0.97 * 12
+
+    def test_a_turbine_wholly_under_the_floor_is_refused(self, tmp_path):
+        api, _ = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned = api.plan_mission({
+            "template": "wind_turbine", "altitude_m": 55, "min_altitude_m": 70,
+            "turbine_rotor_facing_deg": 0, "turbine_hub_height_m": 30,
+            "turbine_blade_length_m": 25, "turbine_nacelle_length_m": 12, "standoff_m": 12})
+        assert not planned["ok"]
+        assert "below the 70 m minimum altitude" in planned["error"]
+
