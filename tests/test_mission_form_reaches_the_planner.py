@@ -60,6 +60,10 @@ class TestTheFormKeysAreTranslated:
         # ...and the mission-type inputs by the router plan_mission hands them to.
         plan_body += api_source.split("def _plan_special")[1].split("\n    def ")[0]
         read = set(re.findall(r'opts\.get\("([a-z_0-9]+)"', plan_body))
+        # Keys copied in a loop: `for key in ("a", "b", ...): ... opts[key]`.
+        for names, body in re.findall(r'for key in \(([^)]*)\):\n((?:\s{12,}.*\n)+)', plan_body):
+            if "opts[key]" in body:
+                read |= set(re.findall(r'"([a-z_0-9]+)"', names))
 
         unread = {form: api for form, api in mapping.items() if api not in read}
         assert not unread, f"these translate to names plan_mission never reads: {unread}"

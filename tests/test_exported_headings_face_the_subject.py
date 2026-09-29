@@ -194,7 +194,9 @@ class TestPylonAndTurbine:
         assert errs and max(errs) < 1.0
 
     def test_each_blade_face_is_shot_towards_the_blade(self, api, tmp_path):
-        planned, written = plan_and_export(api, tmp_path, {"template": "wind_turbine", "altitude_m": 90})
+        facing = 225.0
+        planned, written = plan_and_export(api, tmp_path, {
+            "template": "wind_turbine", "altitude_m": 90, "turbine_rotor_facing_deg": facing})
         headings = [h for h, _, _ in headed_positions(written)]
         props = [(f["properties"], east_north(*f["geometry"]["coordinates"][:2]))
                  for f in planned["geojson"]["features"] if f["properties"].get("role") == "waypoint"]
@@ -202,26 +204,18 @@ class TestPylonAndTurbine:
         assert len(locked) == len(headings)
         exported = list(zip((name for name, _ in locked), (pos for _, pos in locked), headings))
 
-        nacelle = [pos for name, pos, _ in exported if name == "turbine_nacelle"]
-        hub = (sum(p[0] for p in nacelle) / len(nacelle), sum(p[1] for p in nacelle) / len(nacelle))
+        # The hub is the footprint centre; the tower is shot from upwind, level.
         for name, pos, heading in exported:
-            if name in ("turbine_tower", "turbine_nacelle"):
-                assert angle_between(heading, compass_bearing(pos, hub)) < 1.0, name
+            if name == "turbine_tower":
+                assert angle_between(heading, compass_bearing(pos, (0.0, 0.0))) < 1.0, name
 
-        blades = {}
-        for name, pos, heading in exported:
-            if name.startswith("turbine_blade_"):
-                blades.setdefault(name, []).append((pos, heading))
-        assert blades
-        for name, stations in blades.items():
-            if not name.endswith("a"):
-                continue
-            opposite = blades[name[:-1] + "b"]
-            for (pa, ha), (pb, hb) in zip(stations, opposite):
-                # The blade lies midway between its two faces: each face looks across at
-                # the other, through the blade.
-                assert angle_between(ha, compass_bearing(pa, pb)) < 1.0, name
-                assert angle_between(hb, compass_bearing(pb, pa)) < 1.0, name
+        # A front (a) face stands upwind and looks downwind at the blade; a back (b)
+        # face stands downwind and looks upwind. Both look square onto the rotor plane.
+        faces = [(n, h) for n, _, h in exported if n.startswith("turbine_blade_")]
+        assert faces
+        for name, heading in faces:
+            expected = (facing + 180.0) % 360.0 if name.endswith("a") else facing
+            assert angle_between(heading, expected) < 1.0, (name, heading)
 
     def test_a_turbine_is_not_approached_to_two_metres_by_default(self, api, tmp_path):
         planned, _ = plan_and_export(api, tmp_path, {"template": "wind_turbine", "altitude_m": 90})

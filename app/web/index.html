@@ -95,6 +95,24 @@
           <div data-for="box_inspection">
             <label>Box levels m<input type="text" id="mission-box-levels" placeholder="auto, e.g. 20, 35, 50" /></label>
           </div>
+          <div class="row" data-for="facade facade_mapping multi_facade">
+            <label>Wall base m<input type="number" id="mission-facade-bottom" value="" placeholder="alt - 20" min="0" step="0.5" /></label>
+            <label>Wall top m<input type="number" id="mission-facade-top" value="" placeholder="alt + 20" min="0" step="0.5" /></label>
+          </div>
+          <div class="row" data-for="tower_mapping">
+            <label>Tower base m<input type="number" id="mission-tower-bottom" value="" placeholder="alt - 15" min="0" step="0.5" /></label>
+            <label>Tower top m<input type="number" id="mission-tower-top" value="" placeholder="alt + 25" min="0" step="0.5" /></label>
+            <label>Tower radius m<input type="number" id="mission-tower-radius" value="" placeholder="2" min="0.5" step="0.5" /></label>
+          </div>
+          <div class="row" data-for="wind_turbine">
+            <label title="Compass heading the rotor faces (into the wind), read off the nacelle on the day">Rotor faces deg<input type="number" id="mission-turbine-facing" value="" placeholder="square to 1st edge" min="0" max="360" step="1" /></label>
+            <label>Hub height m<input type="number" id="mission-turbine-hub" value="" placeholder="= altitude" min="1" step="1" /></label>
+          </div>
+          <div class="row" data-for="wind_turbine">
+            <label>Blade length m<input type="number" id="mission-turbine-blade" value="" placeholder="55" min="1" step="0.5" /></label>
+            <label>Nacelle length m<input type="number" id="mission-turbine-nacelle" value="" placeholder="12" min="0" step="0.5" /></label>
+            <label title="Parked blade angles in the rotor plane, 90 = straight up">Blade angles deg<input type="text" id="mission-turbine-angles" placeholder="90, 210, 330" /></label>
+          </div>
           <div data-for="linked_mission">
             <label>Saved version ids<input type="text" id="mission-linked-ids" placeholder="e.g. 3, 5" /></label>
           </div>
