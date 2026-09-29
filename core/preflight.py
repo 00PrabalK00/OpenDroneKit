@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from .drone import DroneClient, DroneTelemetry
+from .drone import TELEMETRY_STALE_AFTER_S, DroneClient, DroneTelemetry
 from .errors import AppError, ERR_PREFLIGHT_FAILED
 from .settings import DroneProfile, validate_safety_settings
 
@@ -115,6 +115,34 @@ def check_drone_connection(drone: DroneClient) -> CheckResult:
         message="Drone not connected.",
         fix_action="Connect drone before flight.",
     )
+
+
+def check_link_lost(age_s: float) -> CheckResult:
+    """The client still holds a connection, but the vehicle has stopped talking."""
+    return CheckResult(
+        id="drone_connection",
+        name="Drone Connection",
+        severity=SEVERITY_BLOCK,
+        message=(f"Link lost: nothing heard from the vehicle for {age_s:.0f} s. The last "
+                 "values it reported are not a current reading."),
+        fix_action="Restore the telemetry link, or reconnect, and run preflight again.",
+    )
+
+
+def unknown_while_link_lost(age_s: float) -> list[CheckResult]:
+    """GPS, home and battery cannot be read over a silent link.
+
+    Each is blocking rather than warning: they are the checks that keep an aircraft from
+    taking off without a fix, a home to return to or the charge to get back, and a value
+    last heard some seconds ago is not evidence of any of them.
+    """
+    note = f"Not readable: the link has been silent for {age_s:.0f} s."
+    fix = "Restore the telemetry link and run preflight again."
+    return [
+        CheckResult("gps_status", "GPS Lock", SEVERITY_BLOCK, note, fix_action=fix),
+        CheckResult("home_position", "Home Position", SEVERITY_BLOCK, note, fix_action=fix),
+        CheckResult("battery", "Battery", SEVERITY_BLOCK, note, fix_action=fix),
+    ]
 
 
 def _hdop_text(telemetry: DroneTelemetry) -> str:
@@ -364,8 +392,16 @@ def run_preflight(
         telemetry = DroneTelemetry()
 
     checks: list[CheckResult] = []
-    checks.append(check_drone_connection(drone))
-    if telemetry.connected:
+    # A link that has gone quiet still holds the last values the vehicle sent. They say
+    # where the aircraft was, not where it is, so none of them can pass a check now.
+    age = telemetry.age_s() if hasattr(telemetry, "age_s") else 0.0
+    link_lost = bool(telemetry.connected) and age > TELEMETRY_STALE_AFTER_S
+    if link_lost:
+        checks.append(check_link_lost(age))
+        checks.extend(unknown_while_link_lost(age))
+    else:
+        checks.append(check_drone_connection(drone))
+    if telemetry.connected and not link_lost:
         checks.append(check_gps_status(telemetry))
         checks.append(check_home_position(telemetry))
         checks.append(check_battery_status(telemetry,
@@ -376,11 +412,11 @@ def run_preflight(
         checks.append(check_imu(telemetry))
     # What the payload said, unless the caller knows better.
     checks.append(check_camera_ready(camera_ok if camera_ok is not None
-                                     else camera_reported(telemetry)))
+                                     else (None if link_lost else camera_reported(telemetry))))
     checks.append(check_gimbal(gimbal_ok))
     checks.append(check_storage_ready(free_mb_available=free_storage_mb))
     checks.append(check_mission_valid(mission_summary))
-    checks.append(check_mission_uploaded(mission_uploaded, drone.is_connected()))
+    checks.append(check_mission_uploaded(mission_uploaded, drone.is_connected() and not link_lost))
     checks.append(check_rth_altitude(drone_profile))
     checks.append(check_geofence(mission_summary, geofence))
     checks.append(check_no_fly_zones(mission_summary, no_fly_zones))

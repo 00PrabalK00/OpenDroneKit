@@ -430,6 +430,42 @@ class TestPreflightFromTheApi:
         assert again["weather"]["confirmed"] is True
         assert "weather" not in api.run_preflight()["pending_confirmation"]
 
+    def test_a_silent_link_passes_nothing_it_can_no_longer_read(self, api, vehicles):
+        """Preflight read the bridge's last snapshot, so a vehicle silent for seconds
+        still showed 'Drone connected and reachable.' and ticked GPS, battery and home
+        while the top bar said the link was lost."""
+        vehicle, uri = vehicles(send_camera_information=True)
+        connect(api, uri)
+        live = {c["id"]: c for c in api.run_preflight()["checks"]}
+        assert live["drone_connection"]["severity"] == "pass"
+        assert live["gps_status"]["severity"] == "pass"
+        assert live["battery"]["severity"] == "pass"
+
+        vehicle.go_silent()
+        time.sleep(4.0)
+        report = api.run_preflight(["camera", "battery", "gps_status"])
+        checks = {c["id"]: c for c in report["checks"]}
+        assert report["can_start"] is False
+        assert checks["drone_connection"]["severity"] == "blocking"
+        assert "Link lost" in checks["drone_connection"]["message"]
+        for check_id in ("gps_status", "home_position", "battery"):
+            assert checks[check_id]["severity"] == "blocking", checks[check_id]
+            assert "silent" in checks[check_id]["message"]
+            # An operator cannot confirm a reading the aircraft is not sending.
+            assert checks[check_id]["confirmed"] is False
+        # The payload's earlier report is not a camera that is ready now.
+        assert checks["camera"]["severity"] != "pass"
+        assert not any(c["severity"] == "pass" and c["id"] in
+                       ("drone_connection", "gps_status", "home_position", "battery",
+                        "compass", "imu", "camera") for c in report["checks"])
+
+        # When the link comes back, the readings are live again and pass again.
+        vehicle.resume()
+        time.sleep(2.0)
+        back = {c["id"]: c for c in api.run_preflight()["checks"]}
+        assert back["drone_connection"]["severity"] == "pass"
+        assert back["gps_status"]["severity"] == "pass"
+
 
 # ------------------------------------------------------------------------- fleet
 

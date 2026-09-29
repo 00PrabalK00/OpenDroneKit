@@ -13,6 +13,12 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 # ── Data models ───────────────────────────────────────────────────────────────
 
+
+# Telemetry older than this is a lost link. ArduPilot streams several messages a
+# second, so three seconds of silence is a lost link, not a slow one. The session's
+# display, the flight session's warning and the preflight checks all use this one value.
+TELEMETRY_STALE_AFTER_S = 3.0
+
 @dataclass
 class DroneTelemetry:
     connected: bool = False

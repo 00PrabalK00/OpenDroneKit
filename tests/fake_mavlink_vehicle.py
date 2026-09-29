@@ -93,6 +93,10 @@ class FakeVehicle:
         """Stop transmitting, as a vehicle out of radio range does."""
         self._silent.set()
 
+    def resume(self) -> None:
+        """Start transmitting again, as a vehicle back in radio range does."""
+        self._silent.clear()
+
     def stop(self) -> None:
         self._stop.set()
         for thread in self._threads:

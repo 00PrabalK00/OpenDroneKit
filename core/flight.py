@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .drone import CommandResult, DroneClient, DroneTelemetry
+from .drone import TELEMETRY_STALE_AFTER_S, CommandResult, DroneClient, DroneTelemetry
 from .errors import AppError, ERR_DRONE_NOT_CONNECTED, ERR_PREFLIGHT_FAILED
 from .events import (
     DRONE_CONNECTED,
@@ -113,9 +113,6 @@ def record_flight_log(session: FlightSession, telemetry: DroneTelemetry) -> None
     }
     _append_jsonl(log_path, record)
 
-
-# Telemetry older than this is a lost link, matching the session's display threshold.
-TELEMETRY_STALE_AFTER_S = 3.0
 
 # Modes in which the autopilot is flying the uploaded mission.
 _MISSION_MODES = {"AUTO", "MISSION"}
