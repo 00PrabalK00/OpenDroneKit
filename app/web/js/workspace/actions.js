@@ -1670,6 +1670,40 @@ export const ACTIONS = {
     },
   },
 
+  "Remove Record": {
+    describe: "Delete the selected aircraft (with its maintenance log), battery or pilot.",
+    async run(ctx) {
+      const picked = ctx.selectedFleetRecord();
+      if (!picked) return { skipped: "Select an aircraft, battery or pilot in the fleet lists first." };
+      const what = `${picked.kind} "${picked.name}"`
+        + (picked.kind === "aircraft" ? " and its maintenance log" : "");
+      if (!(await ctx.confirm(`Remove ${what}? This cannot be undone.`))) {
+        return { skipped: "Nothing removed." };
+      }
+      const result = await call("remove_fleet_record", ctx.organizationId(), picked.kind, picked.id);
+      return {
+        message: `Removed ${result.kind} ${result.label}`
+          + (result.removed_maintenance ? ` and ${result.removed_maintenance} maintenance record(s).` : "."),
+        refresh: true,
+      };
+    },
+  },
+  /* Fleet's toolbar had the generic Export, which exports the MISSION: on the Fleet
+     screen it answered "No mission has been planned yet". */
+  "Export Fleet": {
+    describe: "Write the fleet register (aircraft, batteries, pilots, maintenance) to CSV and JSON.",
+    async run(ctx) {
+      const result = await call("export_fleet", ctx.organizationId(), "");
+      const c = result.counts || {};
+      await tryCall("open_path", result.directory);
+      return {
+        message: `Exported ${c.aircraft || 0} aircraft, ${c.batteries || 0} batteries, `
+          + `${c.pilots || 0} pilots and ${c.maintenance || 0} maintenance records to ${result.directory}`,
+        files: Object.values(result.files || {}),
+      };
+    },
+  },
+
   /* -- sharing ------------------------------------------------------------ */
   Share: {
     confirm: "Issue a share link for this project?",

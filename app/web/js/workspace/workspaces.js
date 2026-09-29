@@ -1812,7 +1812,8 @@ function profileChart(row) {
 const fleet = {
   id: "fleet",
   title: "Fleet",
-  toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance", "Export"],
+  toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance",
+            "Remove Record", "|", "Export Fleet"],
   left: [
     /* Four aircraft that do not exist, one of them "flying". */
     { id: "fl.aircraft", title: "Aircraft", render: () => live({
@@ -1887,6 +1888,7 @@ const fleet = {
          { title: "State", key: "st" }],
         (f.batteries || []).map((b) => ({
           fleetId: b.id,
+          label: b.serial_number || `#${b.id}`,
           s: b.serial_number || `#${b.id}`,
           n: b.cycle_count,
           l: b.cycle_limit || "\u2014",

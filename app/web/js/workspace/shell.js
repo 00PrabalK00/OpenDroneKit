@@ -481,6 +481,8 @@ export class Shell {
         // battery 1 used to log maintenance against aircraft 1.
         const recordId = Number.isInteger(value.fleetId) ? value.fleetId : null;
         if (kind === "aircraft") this.selectedFleetId = recordId;
+        // Remove Record acts on whichever row was picked last, of any kind.
+        this.selectedFleetRecord = recordId ? { kind, id: recordId, name } : null;
         this.toast(`${kind} ${name} selected${recordId ? ` (id ${recordId})` : ""}.`, "ok");
         return;
       }
@@ -1369,6 +1371,9 @@ export class Shell {
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
+      selectedFleetRecord: () => this.selectedFleetRecord || null,
+      // A yes/no asked by the action itself, when the question names what was selected.
+      confirm: (question) => (this.confirmAll ? Promise.resolve(true) : confirmAsk(question)),
       selectionGeometry: () => this.selectionGeometry || null,
       selectionVertices: () => vertices(this.selectionGeometry),
       // The drawn area or line, or null after starting a drawing that will re-run the

@@ -2578,6 +2578,42 @@ class Api:
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
+    @guard
+    def remove_fleet_record(self, organization_id: int, kind: str,
+                            record_id: int) -> dict[str, Any]:
+        """Delete one aircraft (with its maintenance log), battery or pilot."""
+        from app import desktop_ops
+
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            removed = desktop_ops.remove_fleet_record(org, kind, record_id)
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+        self._session.audit("fleet_record_removed", removed)
+        return ok(**removed)
+
+    @guard
+    def export_fleet(self, organization_id: int = 1, directory: str = "") -> dict[str, Any]:
+        """Write the fleet register (aircraft, batteries, pilots, full maintenance log).
+
+        Fleet's Export button exported the MISSION, and on the Fleet screen answered
+        "No mission has been planned yet". Unset, the files go under the data root's
+        exports folder in a timestamped directory, so a second export never overwrites
+        the first.
+        """
+        from app import desktop_ops
+        from core.paths import data_root
+
+        target = str(directory or "").strip()
+        if not target:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target = str(data_root() / "exports" / f"fleet-{stamp}")
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.export_fleet(org, target))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
     # -------------------------------------------------------------- sharing
 
     def _service_ids(self, desktop_project_id: int | None = None,
@@ -2587,21 +2623,36 @@ class Api:
         The cockpit sends DESKTOP project ids, and share links reference the service
         database's projects -- a different table in a different file -- so every Share
         failed with a foreign-key error. See app/local_tenant.py.
+
+        Serialised, and retried once on a unique-key clash: on a fresh install the Fleet
+        screen and the Home tile ask at the same moment, pywebview runs each call on its
+        own thread, and both created the local organisation. The loser failed with
+        "UNIQUE constraint failed: organizations.slug". The retry covers a second process
+        (the Hub service) creating it in between; the second pass finds the winner's row.
         """
+        from sqlalchemy.exc import IntegrityError
+
         from app import desktop_ops, local_tenant
 
-        with desktop_ops._session() as db:
-            org = local_tenant.organization_id(db, organization_id)
-            project = None
-            if desktop_project_id is not None:
-                wanted = int(desktop_project_id)
-                desktop = next((p for p in self._session.store.list_projects()
-                                if int(p["id"]) == wanted), None)
-                if desktop is None:
-                    raise ValueError(f"No project with id {desktop_project_id} on this machine.")
-                project = local_tenant.service_project_id(db, desktop)
-            db.commit()
-        return project, org
+        for attempt in (1, 2):
+            try:
+                with local_tenant.CREATE_LOCK, desktop_ops._session() as db:
+                    org = local_tenant.organization_id(db, organization_id)
+                    project = None
+                    if desktop_project_id is not None:
+                        wanted = int(desktop_project_id)
+                        desktop = next((p for p in self._session.store.list_projects()
+                                        if int(p["id"]) == wanted), None)
+                        if desktop is None:
+                            raise ValueError(
+                                f"No project with id {desktop_project_id} on this machine.")
+                        project = local_tenant.service_project_id(db, desktop)
+                    db.commit()
+                return project, org
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
     @guard
     def create_share_link(self, project_id: int, note: str = "",

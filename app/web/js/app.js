@@ -513,10 +513,10 @@
         `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}` +
         `${a.assigned_mission ? ` · on ${a.assigned_mission}` : ''}</b></div>`) +
       '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
-        `<div><span>${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
+        `<div><span>#${b.id} ${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
         `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
       '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
-        `<div><span>${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`) +
+        `<div><span>#${p.id} ${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`) +
       '<div><b>Maintenance</b></div>' + rows(result.maintenance || [], (m) =>
         `<div><span>${String(m.performed_at || '').slice(0, 10)} ${m.aircraft} — ${m.kind}` +
         `${m.description ? `: ${m.description}` : ''}</span><b>at ${m.hours_at_service} h</b></div>`);
@@ -553,6 +553,18 @@
     $('#btn-fleet-assign').onclick = () => fleetForm('Assign mission',
       [['f-id', 'Aircraft id'], ['f-mission', 'Mission name', 'Mission']],
       (v) => tryCall('assign_mission_to_aircraft', parseInt(v['f-id'] || '0', 10), v['f-mission']));
+    // The ids are the #numbers in the list above; an aircraft takes its maintenance log with it.
+    $('#btn-fleet-remove').onclick = () => fleetForm('Remove record',
+      [['f-kind', 'What (aircraft, battery or pilot)', 'aircraft'], ['f-id', 'Id (the # in the list)']],
+      (v) => tryCall('remove_fleet_record', ORG, v['f-kind'], parseInt(v['f-id'] || '0', 10)));
+    $('#btn-fleet-export').onclick = async () => {
+      const result = await tryCall('export_fleet', ORG, '');
+      if (!result) return;
+      const c = result.counts || {};
+      status(`Export fleet: ${c.aircraft || 0} aircraft, ${c.batteries || 0} batteries, ` +
+             `${c.pilots || 0} pilots, ${c.maintenance || 0} maintenance records written to ${result.directory}`);
+      await tryCall('open_path', result.directory);
+    };
   }
 
   /* ---------- tabs and tools ---------- */

@@ -379,6 +379,101 @@ def assign_mission(aircraft_id: int, mission_name: str) -> dict[str, Any]:
     return {**record, "mission": mission}
 
 
+FLEET_KINDS = ("aircraft", "battery", "pilot")
+
+
+def remove_fleet_record(organization_id: int, kind: str, record_id: Any) -> dict[str, Any]:
+    """Delete one aircraft, battery or pilot from this organisation's register.
+
+    The register could only grow: a mistyped aircraft, a pack that was sold, or rows a
+    test tool once wrote into the user's database stayed on the Fleet screen for good.
+    An aircraft goes with its maintenance log, which describes nothing once the airframe
+    is gone. A record belonging to another organisation is refused, not deleted.
+    """
+    from sqlalchemy import delete, func, select
+
+    from services.api.models import Aircraft, Battery, Maintenance, PilotProfile
+
+    models = {"aircraft": Aircraft, "battery": Battery, "pilot": PilotProfile}
+    wanted = str(kind or "").strip().lower()
+    if wanted not in models:
+        raise ValueError(f"Choose what to remove: {', '.join(FLEET_KINDS)} (got {kind!r}).")
+    try:
+        number = int(record_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{record_id!r} is not a {wanted} id; select one in the fleet "
+                         "list.") from None
+    with _session() as db:
+        row = db.get(models[wanted], number)
+        if row is None or int(row.organization_id) != int(organization_id):
+            raise ValueError(f"No {wanted} with id {number} in this fleet.")
+        label = (getattr(row, "name", None) or getattr(row, "serial_number", None)
+                 or getattr(row, "display_name", None) or f"#{number}")
+        removed_log = 0
+        if wanted == "aircraft":
+            removed_log = int(db.scalar(select(func.count()).select_from(Maintenance).where(
+                Maintenance.aircraft_id == number)) or 0)
+            db.execute(delete(Maintenance).where(Maintenance.aircraft_id == number))
+        db.delete(row)
+        db.commit()
+        return {"kind": wanted, "id": number, "label": str(label),
+                "removed_maintenance": removed_log}
+
+
+def export_fleet(organization_id: int, directory: str | Path) -> dict[str, Any]:
+    """Write the fleet register as CSV files plus one JSON file, and say where.
+
+    Every maintenance record is written, not the latest fifty the screen shows: an
+    export is what an operator hands to an auditor.
+    """
+    import csv
+    import json
+
+    from sqlalchemy import select
+
+    from services.api.models import Maintenance
+
+    register = list_fleet(organization_id)
+    ids = [a["id"] for a in register["aircraft"]]
+    names = {a["id"]: a["name"] for a in register["aircraft"]}
+    log: list[dict[str, Any]] = []
+    if ids:
+        with _session() as db:
+            log = [{
+                "aircraft_id": m.aircraft_id,
+                "aircraft": names.get(m.aircraft_id, f"#{m.aircraft_id}"),
+                "kind": m.kind,
+                "description": m.description or "",
+                "hours_at_service": round(float(m.hours_at_service or 0.0), 1),
+                "performed_at": str(m.performed_at or ""),
+            } for m in db.scalars(select(Maintenance).where(Maintenance.aircraft_id.in_(ids))
+                                  .order_by(Maintenance.performed_at, Maintenance.id))]
+    register["maintenance"] = log
+    sections = ("aircraft", "batteries", "pilots", "maintenance")
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    files: dict[str, str] = {}
+    for key in sections:
+        rows = register[key]
+        path = out / f"{key}.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            columns = list(rows[0].keys()) if rows else []
+            writer.writerow(columns)
+            writer.writerows([[row[c] for c in columns] for row in rows])
+        files[key] = str(path)
+    summary = out / "fleet.json"
+    summary.write_text(json.dumps({
+        "organization_id": int(organization_id),
+        "exported_at": _utc_now().isoformat(),
+        **{key: register[key] for key in sections},
+    }, indent=2, default=str), encoding="utf-8")
+    files["json"] = str(summary)
+    return {"directory": str(out), "files": files,
+            "counts": {key: len(register[key]) for key in sections}}
+
+
 # ------------------------------------------------------------------- sharing
 
 
