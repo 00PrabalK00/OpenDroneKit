@@ -2013,11 +2013,18 @@ class Api:
     @guard
     def add_aircraft(self, organization_id: int, name: str, model: str = "",
                      serial: str = "") -> dict[str, Any]:
-        """Register an aircraft."""
+        """Register an aircraft.
+
+        The fleet rows reference the service database's organisations, which a fresh
+        install has none of, so the cockpit's default organisation 1 failed every Add
+        Aircraft, Add Battery and Add Pilot with a foreign-key error. Each fleet call
+        resolves the organisation the way sharing does (app/local_tenant.py).
+        """
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_aircraft(organization_id, name, model, serial))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_aircraft(org, name, model, serial))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2028,7 +2035,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_battery(organization_id, serial, capacity_mah, cycle_limit))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_battery(org, serial, capacity_mah, cycle_limit))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2039,7 +2047,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_pilot(organization_id, display_name,
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_pilot(org, display_name,
                                               licence_number, licence_expires_on))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
@@ -2071,7 +2080,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.fleet_status(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.fleet_status(org))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2086,7 +2096,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.list_fleet(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.list_fleet(org))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
