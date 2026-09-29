@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import time
 import os
 from pathlib import Path
 import platform
@@ -1602,8 +1603,60 @@ class Api:
         )
 
     @guard
-    def build_detection_corpus(self, labelled: list[dict[str, Any]],
-                               output_dir: str,
+    def save_label_boxes(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Keep the boxes drawn on one image, replacing any earlier set for that image.
+
+        The labelling canvas produces one payload per image; stored in the project so a
+        labelling session survives closing the window, and so Build Corpus reads what
+        was actually drawn rather than whatever the page still held in memory.
+        """
+        from core.custom_training import CorpusRefused
+        from core.label_sets import regions_from_payload
+
+        try:
+            regions_from_payload([entry])
+        except (CorpusRefused, ValueError, TypeError) as exc:
+            return fail(str(exc))
+        if not Path(str(entry.get("path", ""))).is_file():
+            return fail(f"No such image: {entry.get('path')}")
+        store = self._label_store()
+        entries = [e for e in self._read_label_store(store)
+                   if e.get("path") != entry.get("path")]
+        entries.append({
+            "path": str(entry["path"]),
+            "boxes": list(entry.get("boxes") or []),
+            "confirmed_empty": bool(entry.get("confirmed_empty", False)),
+        })
+        store.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        return ok(saved=str(entry["path"]), images=len(entries),
+                  boxes=sum(len(e["boxes"]) for e in entries))
+
+    @guard
+    def list_label_boxes(self) -> dict[str, Any]:
+        """Every image labelled in this project, with its boxes."""
+        entries = self._read_label_store(self._label_store())
+        classes = sorted({b.get("label", "") for e in entries for b in e.get("boxes", [])})
+        return ok(entries=entries, images=len(entries),
+                  boxes=sum(len(e.get("boxes", [])) for e in entries), classes=classes)
+
+    def _label_store(self) -> Path:
+        folder = self._session.project_root() / "training" / "labels"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / "boxes.json"
+
+    @staticmethod
+    def _read_label_store(store: Path) -> list[dict[str, Any]]:
+        if not store.exists():
+            return []
+        try:
+            data = json.loads(store.read_text(encoding="utf-8"))
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    @guard
+    def build_detection_corpus(self, labelled: list[dict[str, Any]] | None = None,
+                               output_dir: str = "",
                                salt: str = "custom-boxes-v1",
                                allow_empty_images: bool = False) -> dict[str, Any]:
         """Turn boxes drawn in the labelling canvas into a trainable corpus, or refuse.
@@ -1620,6 +1673,12 @@ class Api:
         from core.custom_training import CorpusRefused
         from core.label_sets import build_detection_corpus, regions_from_payload
 
+        # With nothing passed, the corpus is built from what was drawn in this project.
+        if labelled is None:
+            labelled = self._read_label_store(self._label_store())
+        if not output_dir:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            output_dir = str(self._session.project_root() / "training" / f"corpus_{stamp}")
         try:
             regions = regions_from_payload(labelled)
             report = build_detection_corpus(
@@ -1629,7 +1688,82 @@ class Api:
             return fail(str(exc))
         except (OSError, ValueError) as exc:
             return fail(str(exc))
-        return ok(**report)
+        return ok(output_dir=str(output_dir), **report)
+
+    @guard
+    def list_training_artifacts(self) -> dict[str, Any]:
+        """The corpora built and the training runs finished in this project."""
+        root = self._session.project_root() / "training"
+        corpora = []
+        for folder in sorted(root.glob("corpus_*")):
+            report = folder / "corpus_report.json"
+            if (folder / "data.yaml").is_file():
+                info = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
+                corpora.append({"path": str(folder), "name": folder.name,
+                                "classes": info.get("classes", []),
+                                "total_images": info.get("total_images"),
+                                "total_boxes": info.get("total_boxes")})
+        runs = []
+        for summary in sorted((root / "runs").glob("*/summary.json")):
+            info = json.loads(summary.read_text(encoding="utf-8"))
+            runs.append({"run_dir": str(summary.parent), "key": summary.parent.name,
+                         "metrics": info.get("metrics", {}),
+                         "deployed": (summary.parent / "export_report.json").is_file()})
+        return ok(corpora=corpora, runs=runs)
+
+    @guard
+    def train_custom_model(self, name: str, corpus_dir: str, epochs: int = 50,
+                           image_size: int = 640, batch_size: int = 8) -> dict[str, Any]:
+        """Train a detector on a corpus built from this project's labels, as a job.
+
+        The result is a metrics card, not an installed model: Deploy Model is a separate
+        step taken after reading the numbers.
+        """
+        from core.custom_model_training import TrainingRefused, custom_key
+
+        if not corpus_dir or not (Path(corpus_dir) / "data.yaml").is_file():
+            return fail("Choose a corpus built with Build Corpus first.")
+        try:
+            key = custom_key(name)
+        except TrainingRefused as exc:
+            return fail(str(exc))
+        runs = self._session.project_root() / "training" / "runs"
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.custom_model_training import train_detector
+
+            progress(2, f"Training {key}")
+            result = train_detector(corpus_dir, runs, name=key, epochs=int(epochs),
+                                    image_size=int(image_size), batch_size=int(batch_size),
+                                    progress=progress, should_cancel=should_cancel)
+            session.audit("custom_model_trained", {"key": key, "metrics": result["metrics"]})
+            return result
+
+        return ok(job_id=self._jobs.submit("training", work), key=key)
+
+    @guard
+    def deploy_custom_model(self, run_dir: str, key: str = "") -> dict[str, Any]:
+        """Export a finished run, gate it on ONNX parity, and install it as a custom_* key."""
+        from core.custom_model_training import custom_key
+
+        run = Path(run_dir)
+        if not (run / "weights" / "best.pt").is_file():
+            return fail(f"No trained weights in {run_dir}.")
+        target = custom_key(key or run.name)
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.custom_model_training import deploy_detector
+
+            progress(10, "Exporting to ONNX and checking parity")
+            result = deploy_detector(run, target)
+            session.audit("custom_model_deployed", {"key": target})
+            return {"key": target, "parity_ok": result["export"].get("parity_ok"),
+                    "labels": result["export"].get("labels"),
+                    "sha256": (result.get("registered") or {}).get("sha256", "")}
+
+        return ok(job_id=self._jobs.submit("deploy_model", work), key=target)
 
     # ---------------------------------------------------------------- fleet
     #

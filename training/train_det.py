@@ -95,6 +95,15 @@ def _localise_data_yaml(data_yaml: Path, workdir: Path | None = None) -> Path:
         recorded = line.split(":", 1)[1].strip()
         if recorded in {".", str(data_yaml.parent)}:
             return data_yaml
+        # The corpus builder records its root as a POSIX path ("C:/Users/..."), which
+        # never string-matches str(parent) on Windows ("C:\Users\..."). Rewriting a
+        # correct absolute path to "." then sent ultralytics looking for the images
+        # beneath the working directory, and a corpus built in the app could not train.
+        try:
+            if Path(recorded).is_absolute() and Path(recorded).resolve() == data_yaml.parent.resolve():
+                return data_yaml
+        except OSError:
+            pass
 
         writable = os.access(data_yaml.parent, os.W_OK)
         if writable:

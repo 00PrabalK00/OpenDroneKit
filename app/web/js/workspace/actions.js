@@ -27,7 +27,8 @@ const NEEDS_PROJECT = new Set([
 ]);
 
 /** Actions that need images on disk. */
-const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D"]);
+const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D",
+                               "Label"]);
 
 /**
  * The dispatch table.
@@ -188,6 +189,146 @@ export const ACTIONS = {
     },
   },
   "Run AI": { alias: "Start" },
+
+  /* -- models, one image at a time ----------------------------------------
+     Six installed, verified models had no caller, and corrosion grading had no Api.
+     Each of these runs the real model and shows what it said beside the registry's own
+     scope note, because several are valid on one kind of imagery only. */
+  "Run Model": {
+    describe: "Run any installed model on one image and show its output.",
+    async run(ctx) {
+      const status = await call("model_status");
+      const options = (status.models || []).filter((m) => m.exists).map((m) => ({
+        label: m.key, value: m.key, hint: (m.spec && m.spec.kind) || "",
+      }));
+      const key = await ctx.choose("Run which installed model?", options);
+      if (!key) return { skipped: "No model chosen." };
+      const image = await pickImage(ctx);
+      if (!image) return { skipped: "No image chosen." };
+      const result = await call("run_model", key, image);
+      await ctx.showResult(`${key} \u2014 ${basename(image)}`, {
+        image: result.overlay_data_uri, lines: describeModelRun(result),
+      });
+      return { message: `${key}: ${summariseModelRun(result)}` };
+    },
+  },
+  "Prelabel": {
+    describe: "Run an installed detector; its detections become findings to review.",
+    async run(ctx) {
+      const status = await call("model_status");
+      const detectors = (status.models || []).filter((m) => m.exists && m.spec
+        && ["onnx_yolo", "onnx_detection"].includes(m.spec.kind));
+      const key = await ctx.choose("Pre-label with which detector?", detectors.map((m) => ({
+        label: m.key, value: m.key, hint: (m.spec.labels || []).join(", "),
+      })));
+      if (!key) return { skipped: "No detector chosen." };
+      const image = await pickImage(ctx);
+      if (!image) return { skipped: "No image chosen." };
+      const result = await call("prelabel_image", image, key);
+      return {
+        message: `${result.count} finding(s) from ${key} are waiting for review.`,
+        refresh: true,
+      };
+    },
+  },
+  "Grade Corrosion": {
+    describe: "Grade corrosion severity per pixel, or refuse without the model.",
+    async run(ctx) {
+      const image = await pickImage(ctx);
+      if (!image) return { skipped: "No image chosen." };
+      const result = await call("grade_corrosion", image);
+      await ctx.showResult(`Corrosion severity \u2014 ${basename(image)}`, {
+        image: result.overlay_data_uri, lines: describeModelRun(result),
+      });
+      return { message: `Worst grade present: ${result.output.worst_present_grade || "none"}.` };
+    },
+  },
+  "Land Cover": {
+    confirm: "Run the land-cover model over this project's orthomosaic?",
+    describe: "Land-cover segmentation of the orthomosaic.",
+    async run(ctx) {
+      const answer = await ctx.ask("Land cover", [{
+        key: "cpu", label: "If no GPU is available, run on the CPU (slow)?",
+        options: ["no", "yes"], value: "no",
+      }]);
+      if (!answer) return { skipped: "Cancelled." };
+      const result = await call("run_landcover", "", answer.cpu === "yes");
+      return { message: "Land-cover segmentation started.", job: result.job_id, refresh: true };
+    },
+  },
+
+  /* -- labelling and custom models ------------------------------------------ */
+  Label: {
+    describe: "Draw defect boxes on a dataset image for a custom model.",
+    async run(ctx) {
+      const listing = await call("list_dataset_images");
+      const name = await ctx.choose("Label which image?", (listing.images || []).map((n) => ({
+        label: n, value: n,
+      })));
+      if (!name) return { skipped: "No image chosen." };
+      const saved = await call("list_label_boxes");
+      const path = joinPath(listing.folder, name);
+      const previous = (saved.entries || []).find((e) => e.path === path);
+      const classText = await ctx.prompt("Classes, comma separated",
+        (saved.classes && saved.classes.length ? saved.classes : ["crack", "spalling", "corrosion"]).join(", "));
+      if (!classText) return { skipped: "A labeller needs at least one class." };
+      const classes = classText.split(",").map((c) => c.trim()).filter(Boolean);
+      const preview = await call("image_preview", name);
+      const payload = await ctx.labelBoxes(`Label ${name}`, {
+        imageUri: preview.data_uri, path, classes,
+        existing: previous ? previous.boxes : [],
+      });
+      if (!payload) return { skipped: "Labels not saved." };
+      const stored = await call("save_label_boxes", payload);
+      return { message: `Saved ${payload.boxes.length} box(es) on ${name}. `
+        + `${stored.images} image(s), ${stored.boxes} box(es) labelled in this project.` };
+    },
+  },
+  "Build Corpus": {
+    confirm: "Build a training corpus from every image labelled in this project?",
+    describe: "Split the labelled boxes into a trainable corpus, or say why not.",
+    async run() {
+      const result = await call("build_detection_corpus", null, "");
+      const counts = result.counts || {};
+      return {
+        message: `Corpus at ${result.output_dir}: ${result.total_images} image(s), `
+          + `${result.total_boxes} box(es); train ${counts.train || 0}, val ${counts.val || 0}, `
+          + `test ${counts.test || 0}.`,
+      };
+    },
+  },
+  "Train Model": {
+    confirm: "Train a detector on a corpus from this project? This can take hours.",
+    describe: "Train a custom detector, then deploy it once its metrics are read.",
+    async run(ctx) {
+      const artifacts = await call("list_training_artifacts");
+      const choice = await ctx.choose("Train on which corpus, or deploy a finished run?", [
+        ...(artifacts.corpora || []).map((c) => ({
+          label: `Train on ${c.name}`, value: { corpus: c.path, name: c.name },
+          hint: `${c.total_images} images, ${c.total_boxes} boxes: ${(c.classes || []).join(", ")}`,
+        })),
+        ...(artifacts.runs || []).map((r) => ({
+          label: `Deploy ${r.key}`, value: { run: r.run_dir, key: r.key },
+          hint: r.metrics && r.metrics.map50 != null
+            ? `val mAP50 ${Number(r.metrics.map50).toFixed(3)}` : "no validation metric",
+        })),
+      ]);
+      if (!choice) return { skipped: "Nothing chosen." };
+      if (choice.run) {
+        const deployed = await call("deploy_custom_model", choice.run, choice.key);
+        return { message: `Deploying ${deployed.key}.`, job: deployed.job_id, refresh: true };
+      }
+      const settings = await ctx.ask("Training", [
+        { key: "name", label: "Model name", value: "custom_detector" },
+        { key: "epochs", label: "Epochs", value: "50", type: "number" },
+        { key: "size", label: "Image size (px)", value: "640", type: "number" },
+      ]);
+      if (!settings) return { skipped: "Cancelled." };
+      const started = await call("train_custom_model", settings.name, choice.corpus,
+        Number(settings.epochs), Number(settings.size));
+      return { message: `Training ${started.key}.`, job: started.job_id, refresh: true };
+    },
+  },
   Cancel: {
     describe: "Cancel the running job.",
     async run(ctx) {
@@ -1068,6 +1209,60 @@ export const ACTIONS = {
  * that genuinely does not exist should say so here rather than failing silently.
  */
 export const UNWIRED = {};
+
+function basename(path) {
+  return String(path || "").split(/[\\/]/).pop();
+}
+
+function joinPath(folder, name) {
+  const separator = String(folder).includes("\\") ? "\\" : "/";
+  return String(folder).replace(/[\\/]+$/, "") + separator + name;
+}
+
+/** An image from the active dataset, or any file when no dataset is open. */
+async function pickImage(ctx) {
+  const listing = await tryCall("list_dataset_images");
+  if (listing && (listing.images || []).length) {
+    const name = await ctx.choose("Which image?", listing.images.map((n) => ({ label: n, value: n })));
+    return name ? joinPath(listing.folder, name) : null;
+  }
+  const picked = await call("pick_file", ["jpg", "jpeg", "png", "tif", "tiff"]);
+  return picked && picked.path ? picked.path : null;
+}
+
+function summariseModelRun(result) {
+  const out = result.output || {};
+  if (out.detection_count != null) return `${out.detection_count} detection(s)`;
+  if (out.flagged_tile_count != null) return `${out.flagged_tile_count} of ${out.tiles} tile(s) flagged`;
+  if (out.top_class) return `${out.top_class} (${Number(out.top_probability).toFixed(2)})`;
+  if (out.worst_present_grade !== undefined) return `worst grade ${out.worst_present_grade || "none"}`;
+  if (out.pixel_ratio != null) return `${(100 * out.pixel_ratio).toFixed(1)}% ${out.label}`;
+  return "done";
+}
+
+/** What a model said, and what it is -- the digest and scope go beside every answer. */
+function describeModelRun(result) {
+  const out = result.output || {};
+  const lines = [
+    ["Model", result.model_key],
+    ["Ran as", result.model_used],
+    ["File digest", String(result.model_sha256 || "").slice(0, 16)],
+    ["Result", summariseModelRun(result)],
+  ];
+  for (const d of (out.detections || []).slice(0, 12)) {
+    lines.push([d.label, `confidence ${Number(d.confidence).toFixed(3)} at [${d.bbox_xyxy.join(", ")}]`]);
+  }
+  for (const [name, value] of Object.entries(out.class_pixel_ratio || {})) {
+    lines.push([name, `${(100 * value).toFixed(2)}% of pixels`]);
+  }
+  if (out.probabilities) {
+    const ranked = Object.entries(out.probabilities).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    for (const [name, value] of ranked) lines.push([name, Number(value).toFixed(3)]);
+  }
+  if (out.note) lines.push(["Note", out.note]);
+  lines.push(["Scope", result.scope]);
+  return lines;
+}
 
 function describeMeasurement(result) {
   if (!result) return "No measurement returned.";

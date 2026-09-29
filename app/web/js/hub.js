@@ -345,6 +345,7 @@
       const review = row.origin === 'model' ? `<div class="annotation-actions">
         <label><input type="checkbox" data-annotation-select="${Number(row.id)}" ${state.annotationSelection.has(Number(row.id)) ? 'checked' : ''} /> Select</label>
         <button data-annotation-action="accept" data-annotation-id="${Number(row.id)}">Accept</button>
+        <button data-annotation-action="reject" data-annotation-id="${Number(row.id)}">Reject</button>
         <button data-annotation-action="edit" data-annotation-id="${Number(row.id)}">Edit</button>
         <button data-annotation-action="reclassify" data-annotation-id="${Number(row.id)}">Reclassify</button>
         <button data-annotation-action="split" data-annotation-id="${Number(row.id)}">Split</button>
@@ -404,6 +405,12 @@
     let operation;
     if (action === 'accept') {
       operation = () => state.api.reviewAnnotation(id, { action: 'accept' });
+    } else if (action === 'reject') {
+      // Dismisses a false positive and keeps it, claim intact, out of the report.
+      const reason = window.prompt('Why is this not a defect? (kept with the rejection)', '');
+      if (reason == null) return;
+      operation = () => state.api.reviewAnnotation(id, reason.trim()
+        ? { action: 'reject', note: reason.trim() } : { action: 'reject' });
     } else if (action === 'edit') {
       const geometry = parsePromptJson('Edit the visible GeoJSON geometry. The model claim remains unchanged.', row.geometry);
       if (!geometry) return;

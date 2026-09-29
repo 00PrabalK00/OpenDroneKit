@@ -505,17 +505,40 @@
 
     'analysis.pipeline': async () => {
       const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value });
-      if (result) { status('Pipeline started.'); pollJob(result.job_id, () => refreshLayers()); }
+      if (result) {
+        status('Pipeline started.');
+        pollJob(result.job_id, (job) => {
+          refreshLayers();
+          // Say what the run produced, including the parts it did not: a failed
+          // reconstruction and heuristic regions left out of the findings.
+          const r = job.result || {};
+          const parts = [`${r.findings_created || 0} model finding(s) to review`];
+          if (r.heuristic_regions_not_recorded) {
+            parts.push(`${r.heuristic_regions_not_recorded} heuristic region(s) not recorded as findings`);
+          }
+          if (r.reconstruction_status === 'failed') parts.push('reconstruction failed (detection results kept)');
+          status(`Pipeline done: ${parts.join('; ')}.`);
+        });
+      }
     },
     'analysis.models': async () => {
       const result = await tryCall('model_status');
       if (!result) return;
+      const esc = (text) => String(text == null ? '' : text).replace(/[&<>"]/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
       const rows = result.models.map((m) =>
-        `<div><span>${m.key}</span><b class="${m.exists ? 'yes' : 'no'}">${m.exists ? 'available' : 'missing'}</b></div>`).join('');
+        `<div><span>${esc(m.key)}</span><b class="${m.exists ? 'yes' : 'no'}">${m.exists ? 'available' : 'missing'}</b></div>`).join('');
+      // Per detector, not one global count: nine models installed said nothing about
+      // metal and solar detection being heuristic on this machine.
+      const detectors = (result.detectors || []).map((d) =>
+        `<div><span>${esc(d.detector)}${d.model_key ? ` (${esc(d.model_key)})` : ''}</span>` +
+        `<b class="${d.backend === 'model' ? 'yes' : 'no'}">${d.backend === 'heuristic' ? 'HEURISTIC' : esc(d.backend)}</b></div>`).join('');
+      const heuristic = result.heuristic_detectors || [];
       modal('Model Manager',
         `<div class="info"><div><span>Available</span><b>${result.available} of ${result.total}</b></div>${rows}</div>` +
-        (result.available === 0
-          ? '<div class="info">No trained weights are installed, so detection falls back to classical image processing. Results are labelled <b>heuristic</b>, not AI.</div>'
+        `<div class="info"><div><span>Detector</span><b>Backend</b></div>${detectors}</div>` +
+        (heuristic.length
+          ? `<div class="info">${esc(heuristic.join(', '))}: no trained model answers on this machine, so these use classical image rules. Their results are labelled <b>heuristic</b> and carry no confidence.</div>`
           : ''));
     },
 

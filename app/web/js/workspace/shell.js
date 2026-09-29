@@ -13,7 +13,7 @@ import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setImage, setView } from "./viewstate.js";
-import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
+import { ask, askOne, choose as chooseModal, confirmAsk, labelBoxes, reveal, showResult } from "./modal.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -281,7 +281,10 @@ export class Shell {
       case "anomaly": {
         // A finding is reviewable, and the review buttons ask for an id. Remembering it
         // here is what lets Accept/Reject/Flag act on what is on screen.
-        this.selectedFindingId = value.id || value.label || null;
+        // The table shows the first eight characters of the id; review needs all of it.
+        // Selecting a row used to hand review_finding the short form, which matched no
+        // annotation, so Accept on a selected finding always failed.
+        this.selectedFindingId = value.full_id || value.id || value.label || null;
         this.toast(`${name} selected. Accept, Reject and Flag act on this finding.`, "ok");
         return;
       }
@@ -747,6 +750,9 @@ export class Shell {
       // twenty-six buttons that looked completely dead and raised nothing.
       prompt: (label, fallback) => askOne(label, label, fallback),
       choose: (title, options) => chooseModal(title, options),
+      ask: (title, fields) => ask(title, fields),
+      showResult: (title, content) => showResult(title, content),
+      labelBoxes: (title, spec) => labelBoxes(title, spec),
       missionOptions: () => {
         // What the mission panels were actually edited to, under the names the planner
         // reads.
