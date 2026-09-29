@@ -12,7 +12,10 @@ other formats have no column for. GPX is what mapping tools and flight-log analy
 import. KML is what gets dropped into Google Earth to show someone where the aircraft
 went.
 
-Two things are deliberate. A sample with no GPS fix is written to CSV and JSON but
+Three things are deliberate. A log records which driver produced it, and a log from
+the simulator says so in every sample, in the summary and in the file names: a
+simulated flight exported without that mark is indistinguishable from a real record,
+which is exactly what an investigation must never be handed. A sample with no GPS fix is written to CSV and JSON but
 omitted from the GPX and KML tracks, because a track is a claim about position and
 0,0 off the coast of Africa is not one. And the exporters never interpolate: a gap in
 the recording stays a gap, since a smooth line through missing data is a picture of a
@@ -41,7 +44,12 @@ CSV_FIELDS = (
     "timestamp_utc", "elapsed_s", "latitude", "longitude", "altitude_rel_m",
     "altitude_abs_m", "heading_deg", "speed_mps", "battery_pct", "battery_v",
     "gps_fix", "satellites", "hdop", "flight_mode", "armed",
-    "waypoint_index", "waypoint_total", "link_quality_pct",
+    "waypoint_index", "waypoint_total", "link_quality_pct", "driver", "simulated",
+)
+
+SIMULATED_NOTICE = (
+    "SIMULATED: this log was recorded from a simulated vehicle, not an aircraft. None of "
+    "its positions, altitudes or battery readings were measured."
 )
 
 
@@ -56,16 +64,20 @@ class FlightSample:
     altitude_abs_m: float = 0.0
     heading_deg: float = 0.0
     speed_mps: float = 0.0
-    battery_pct: float = 0.0
-    battery_v: float = 0.0
+    # None where the vehicle did not report the value; written as an empty cell, never
+    # as a zero nobody measured.
+    battery_pct: float | None = None
+    battery_v: float | None = None
     gps_fix: int = 0
     satellites: int = 0
-    hdop: float = 99.9
+    hdop: float | None = None
     flight_mode: str = "UNKNOWN"
     armed: bool = False
     waypoint_index: int = 0
     waypoint_total: int = 0
-    link_quality_pct: float = 0.0
+    link_quality_pct: float | None = None
+    driver: str = ""
+    simulated: bool = False
 
     @property
     def has_position(self) -> bool:
@@ -80,6 +92,11 @@ class FlightSample:
     def from_telemetry(cls, telemetry: Any) -> "FlightSample":
         get = (telemetry.get if isinstance(telemetry, dict)
                else lambda k, d=None: getattr(telemetry, k, d))
+
+        def optional(key: str) -> float | None:
+            value = get(key, None)
+            return None if value is None else float(value)
+
         return cls(
             timestamp=float(get("timestamp", 0.0) or 0.0),
             latitude=float(get("latitude", 0.0) or 0.0),
@@ -88,16 +105,16 @@ class FlightSample:
             altitude_abs_m=float(get("altitude_abs_m", 0.0) or 0.0),
             heading_deg=float(get("heading_deg", 0.0) or 0.0),
             speed_mps=float(get("speed_mps", 0.0) or 0.0),
-            battery_pct=float(get("battery_pct", 0.0) or 0.0),
-            battery_v=float(get("battery_v", 0.0) or 0.0),
+            battery_pct=optional("battery_pct"),
+            battery_v=optional("battery_v"),
             gps_fix=int(get("gps_fix", 0) or 0),
             satellites=int(get("satellites", 0) or 0),
-            hdop=float(get("hdop", 99.9) or 99.9),
+            hdop=optional("hdop"),
             flight_mode=str(get("flight_mode", "UNKNOWN") or "UNKNOWN"),
             armed=bool(get("armed", False)),
             waypoint_index=int(get("waypoint_index", 0) or 0),
             waypoint_total=int(get("waypoint_total", 0) or 0),
-            link_quality_pct=float(get("link_quality_pct", 0.0) or 0.0),
+            link_quality_pct=optional("link_quality_pct"),
         )
 
     def to_dict(self, start: float = 0.0) -> dict[str, Any]:
@@ -114,6 +131,8 @@ class FlightSample:
             "waypoint_index": self.waypoint_index,
             "waypoint_total": self.waypoint_total,
             "link_quality_pct": self.link_quality_pct,
+            "driver": self.driver,
+            "simulated": self.simulated,
         }
 
 
@@ -125,11 +144,28 @@ class FlightLog:
     aircraft: str = ""
     pilot: str = ""
     mission_name: str = ""
+    driver: str = ""
+    connection_uri: str = ""
+    is_simulated: bool = False
 
-    def record(self, telemetry: Any) -> FlightSample:
+    def record(self, telemetry: Any) -> FlightSample | None:
+        """Append a sample, stamped with where it came from.
+
+        A snapshot whose timestamp matches the last one recorded is the same observation
+        read twice, and is not recorded again.
+        """
         sample = FlightSample.from_telemetry(telemetry)
+        sample.driver = self.driver
+        sample.simulated = self.is_simulated
+        if self.samples and sample.timestamp and sample.timestamp == self.samples[-1].timestamp:
+            return None
         self.samples.append(sample)
         return sample
+
+    def default_stem(self) -> str:
+        """A file stem that cannot be mistaken for a real flight when it is not one."""
+        stem = (self.mission_name or "flight").replace(" ", "_").lower()
+        return f"SIMULATED_{stem}" if self.is_simulated else stem
 
     @property
     def start_time(self) -> float:
@@ -156,7 +192,7 @@ class FlightLog:
     def summary(self) -> dict[str, Any]:
         located = self.positioned_samples()
         altitudes = [s.altitude_rel_m for s in located]
-        batteries = [s.battery_pct for s in self.samples if s.battery_pct > 0]
+        batteries = [s.battery_pct for s in self.samples if s.battery_pct is not None]
 
         return {
             "sample_count": len(self.samples),
@@ -170,6 +206,10 @@ class FlightLog:
             "aircraft": self.aircraft,
             "pilot": self.pilot,
             "mission_name": self.mission_name,
+            "driver": self.driver,
+            "connection_uri": self.connection_uri,
+            "simulated": self.is_simulated,
+            "simulated_notice": SIMULATED_NOTICE if self.is_simulated else "",
             "note": (
                 "Distance and altitude are computed only from samples with a usable GPS "
                 "fix. Gaps in the recording are left as gaps; nothing is interpolated."
@@ -226,10 +266,12 @@ def write_gpx(log: FlightLog, path: str | Path) -> Path:
         "xmlns": "http://www.topografix.com/GPX/1/1",
     })
     metadata = ET.SubElement(gpx, "metadata")
-    ET.SubElement(metadata, "name").text = log.mission_name or "Flight"
+    ET.SubElement(metadata, "name").text = _display_name(log, "Flight")
+    if log.is_simulated:
+        ET.SubElement(metadata, "desc").text = SIMULATED_NOTICE
 
     track = ET.SubElement(gpx, "trk")
-    ET.SubElement(track, "name").text = log.mission_name or "Flight"
+    ET.SubElement(track, "name").text = _display_name(log, "Flight")
     segment = ET.SubElement(track, "trkseg")
 
     for sample in log.positioned_samples():
@@ -239,7 +281,8 @@ def write_gpx(log: FlightLog, path: str | Path) -> Path:
         ET.SubElement(point, "time").text = datetime.fromtimestamp(
             sample.timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         ET.SubElement(point, "sat").text = str(sample.satellites)
-        ET.SubElement(point, "hdop").text = f"{sample.hdop:.2f}"
+        if sample.hdop is not None:
+            ET.SubElement(point, "hdop").text = f"{sample.hdop:.2f}"
 
     ET.ElementTree(gpx).write(target, encoding="utf-8", xml_declaration=True)
     return target
@@ -252,10 +295,12 @@ def write_kml(log: FlightLog, path: str | Path) -> Path:
 
     kml = ET.Element("kml", {"xmlns": "http://www.opengis.net/kml/2.2"})
     document = ET.SubElement(kml, "Document")
-    ET.SubElement(document, "name").text = log.mission_name or "Flight"
+    ET.SubElement(document, "name").text = _display_name(log, "Flight")
+    if log.is_simulated:
+        ET.SubElement(document, "description").text = SIMULATED_NOTICE
 
     placemark = ET.SubElement(document, "Placemark")
-    ET.SubElement(placemark, "name").text = log.mission_name or "Flight track"
+    ET.SubElement(placemark, "name").text = _display_name(log, "Flight track")
     line = ET.SubElement(placemark, "LineString")
     ET.SubElement(line, "extrude").text = "0"
     # absolute rather than clampToGround: the altitude flown is part of the record.
@@ -269,6 +314,11 @@ def write_kml(log: FlightLog, path: str | Path) -> Path:
 
     ET.ElementTree(kml).write(target, encoding="utf-8", xml_declaration=True)
     return target
+
+
+def _display_name(log: FlightLog, fallback: str) -> str:
+    name = log.mission_name or fallback
+    return f"SIMULATED - {name}" if log.is_simulated else name
 
 
 _WRITERS = {"csv": write_csv, "json": write_json, "gpx": write_gpx, "kml": write_kml}

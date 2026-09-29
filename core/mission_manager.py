@@ -28,11 +28,11 @@ from mission import (
     load_flight_recipe,
 )
 
-from .drone import CommandResult, DroneClient, DroneTelemetry, create_drone_client
+from .drone import CommandResult, DroneClient, DroneTelemetry, NoDroneClient, create_drone_client
 from .errors import AppError, ERR_DRONE_NOT_CONNECTED, ERR_INVALID_INPUT, ERR_MISSION_INVALID
 from .events import MISSION_CREATED, MISSION_EXPORTED, MISSION_UPDATED, MISSION_VALIDATED, publish_event
 from .flight import FlightManager, FlightSession, get_flight_manager
-from .preflight import PreflightReport, run_preflight
+from .preflight import PreflightReport, plan_airspace, run_preflight
 from .settings import DroneProfile
 from .workers import ProgressCallback, WorkerHandle, WorkerPool, get_worker_pool
 
@@ -132,7 +132,10 @@ class MissionManager:
         self.project_root = Path(project_root) if project_root is not None else Path("final_toolkit_outputs") / "missions"
         self.project_id = str(project_id or "default_project")
         self.planner = planner or MissionPlanner()
-        self.drone: DroneClient = drone or create_drone_client("mock")
+        # No driver named means no drone, stated as such. Defaulting to the mock handed
+        # SDK users a simulated aircraft they had not asked for, and a preflight that
+        # passed against its invented RTK fix. connect_drone() picks a real driver.
+        self.drone: DroneClient = drone or NoDroneClient()
         self.flight_manager = flight_manager or get_flight_manager()
         self.worker_pool = worker_pool or get_worker_pool()
         self.current_plan: MissionPlan | None = None
@@ -383,10 +386,16 @@ class MissionManager:
         free_storage_mb: float | None = None,
     ) -> PreflightReport:
         plan = plan or self.current_plan
+        geofence: dict[str, Any] | None = None
+        no_fly_zones: list[dict[str, Any]] | None = None
         if plan is None:
             mission_summary: dict[str, Any] | None = None
             mission_id = ""
         else:
+            # Computed from the plan's own fence and exclusions. These were hardcoded to
+            # {"mission_inside": True} and [], so every preflight reported "Mission
+            # inside geofence" and "No NFZs" without looking at the path at all.
+            geofence, no_fly_zones = plan_airspace(plan)
             validation = self.validate_plan(
                 plan,
                 emergency_landing_zone=emergency_landing_zone,
@@ -405,8 +414,8 @@ class MissionManager:
             drone_profile=drone_profile or DroneProfile(),
             mission_summary=mission_summary,
             mission_uploaded=mission_uploaded,
-            geofence={"mission_inside": True},
-            no_fly_zones=[],
+            geofence=geofence,
+            no_fly_zones=no_fly_zones,
             weather_acknowledged=weather_acknowledged,
             free_storage_mb=free_storage_mb,
         )

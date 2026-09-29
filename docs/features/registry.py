@@ -364,9 +364,13 @@ MISSION_PLANNING = [
       "implemented", ["tests/test_fly_to_draw.py::TestMarking",
                       "tests/test_fly_to_draw.py::TestBuildingTheBoundary",
                       "tests/test_fly_to_draw.py::TestRefusals",
-                      "tests/test_fly_to_draw.py::TestThroughTheApi"],
+                      "tests/test_fly_to_draw.py::TestThroughTheApi",
+                      "tests/test_flight_end_to_end.py::TestFlyToDraw"],
       "mission/fly_to_draw.py; Api.mark_boundary_corner, boundary_from_marks, "
-      "clear_boundary_marks. The result never claims to be a surveyed boundary."),
+      "clear_boundary_marks. The result never claims to be a surveyed boundary. "
+      "Until the flight audit it refused every live corner: it read fix_type while the "
+      "session's telemetry carries gps_fix. TestFlyToDraw marks corners from a MAVLink "
+      "peer through the Api."),
     F("mp.camera_db", "Camera database", "core", "Mission engine",
       "Sensor dimensions, resolution, focal length, pixel size and thermal capability, "
       "with user-defined cameras, geometry validated as physically possible, and an "
@@ -409,9 +413,19 @@ FLIGHT = [
                       "tests/test_drone_abstraction.py::TestProtocolConformance",
                       "tests/test_drone_abstraction.py::TestFactory",
                       "tests/test_drone_abstraction.py::TestHonestyAtTheBoundary",
-                      "tests/test_drone_abstraction.py::TestMockBehaviour"],
+                      "tests/test_drone_abstraction.py::TestMockBehaviour",
+                      "tests/test_mavsdk_driver.py",
+                      "tests/test_flight_end_to_end.py::TestConnecting",
+                      "tests/test_flight_end_to_end.py::TestCommandsReportTheVehiclesAnswer"],
       "Three drivers: mock, MAVSDK, pymavlink. pymavlink is confined to "
-      "mission_planner_bridge plus one declared capability probe."),
+      "mission_planner_bridge plus one declared capability probe. The pymavlink driver "
+      "is reachable under 'mavlink' (the default UI's name for it, which was rejected). "
+      "Commands report the vehicle's COMMAND_ACK -- accepted, denied, or unacknowledged -- "
+      "rather than 'Command sent.'. The MAVSDK driver was a stub (no telemetry, no "
+      "upload, no mode change); it now runs its telemetry streams on its own event loop "
+      "and uploads through mission_raw. It is tested against tests/fake_mavsdk.py at the "
+      "SDK boundary only: mavsdk is not installed here, and a PX4 SITL run is what "
+      "verifies it against a real autopilot."),
     F("fl.mavlink.upload", "MAVLink mission upload", "core", "Flight",
       "Request/ack transfer protocol; gimbal, yaw, dwell and trigger items survive a round trip.",
       "verified", ["tests/test_mavlink_transfer.py::test_mission_upload_is_acknowledged",
@@ -419,7 +433,10 @@ FLIGHT = [
                    "tests/test_mavlink_transfer.py::test_download_round_trips_the_uploaded_mission"]),
     F("fl.mavlink.fence", "Geofence and rally upload", "core", "Flight",
       "Fence and rally land in their own MAV_MISSION_TYPE without overwriting the flight plan.",
-      "verified", ["tests/test_mavlink_transfer.py::test_each_list_lands_in_its_own_slot"]),
+      "verified", ["tests/test_mavlink_transfer.py::test_each_list_lands_in_its_own_slot",
+                   "tests/test_flight_end_to_end.py::TestMissionUpload"],
+      "Api.upload_mission now sends the plan's fence and rally after the mission; it "
+      "sent only the mission, and reported ok even when the vehicle rejected it."),
     F("fl.sitl", "SITL verified flight", "core", "Flight",
       "The flight path exercised against a real ArduPilot autopilot rather than a mock.",
       "verified", ["tests/sitl/test_flight_lifecycle.py",
@@ -453,14 +470,24 @@ FLIGHT = [
                       "tests/test_preflight.py::TestGps",
                       "tests/test_preflight.py::TestBattery",
                       "tests/test_preflight.py::TestConnection",
-                      "tests/test_preflight.py::TestWholeReport"],
+                      "tests/test_preflight.py::TestWholeReport",
+                      "tests/test_preflight_is_computed.py",
+                      "tests/test_flight_end_to_end.py::TestPreflightFromTheApi"],
       "core/preflight.py; compass and IMU read the SYS_STATUS sensor health bitmask, "
-      "which the bridge now keeps instead of discarding."),
+      "which the bridge now keeps instead of discarding. Api.run_preflight runs it "
+      "against the connected aircraft and plan, and both UIs show it; before, no UI "
+      "reached it. The camera passes only on the payload's CAMERA_INFORMATION (it "
+      "defaulted to 'Camera ready.'), and geofence / no-fly results are computed from "
+      "the path (they were hardcoded to pass). Over a link silent for longer than "
+      "TELEMETRY_STALE_AFTER_S the connection, GPS, home and battery checks block "
+      "instead of passing on the last values heard."),
     F("fl.telemetry", "Live telemetry", "core", "Flight",
       "Position, battery, GPS, RC link and mission progress streamed to subscribers.",
       "verified", ["tests/test_telemetry_subscribers.py::TestDelivery",
                    "tests/test_telemetry_subscribers.py::TestOneBadSubscriberCannotStopTheFeed",
-                   "tests/test_telemetry_subscribers.py::TestTelemetrySnapshot"],
+                   "tests/test_telemetry_subscribers.py::TestTelemetrySnapshot",
+                   "tests/test_flight_end_to_end.py::TestALostLinkIsReported",
+                   "tests/test_flight_end_to_end.py::TestUnreportedIsNotZero"],
       "Callbacks run on the MAVLink listener thread, so a subscriber that raises must "
       "not take the feed down: a dead listener looks like a quiet aircraft, not a fault."),
     F("fl.manual_override", "Manual override", "app", "Flight",
@@ -470,9 +497,12 @@ FLIGHT = [
       "implemented", ["tests/test_flight_control.py::TestClassification",
                       "tests/test_flight_control.py::TestControlState",
                       "tests/test_flight_control.py::TestTakeManualControl",
-                      "tests/test_flight_control.py::TestCommandedIsNotConfirmed"],
+                      "tests/test_flight_control.py::TestCommandedIsNotConfirmed",
+                      "tests/test_flight_end_to_end.py::TestManualOverride"],
       "core/flight_control.py; Api.control_state and take_manual_control. The bridge "
-      "now verifies mode changes and resolves custom_mode to a name."),
+      "now verifies mode changes and resolves custom_mode to a name. A refused hand-back "
+      "used to surface as 'TypeError: fail() got multiple values'; tests/test_flight_end_to_end.py::TestManualOverride "
+      "drives it against a vehicle that refuses."),
     F("fl.battery_swap", "Battery swap and resume", "app", "Flight",
       "Completed segments recorded; resume continues without duplicate capture and "
       "without dropping a point, with what was flown determined from the imagery on the "
@@ -491,7 +521,8 @@ FLIGHT = [
       "implemented", ["tests/test_flight_state.py::TestPersistence",
                       "tests/test_flight_state.py::TestCleanShutdown",
                       "tests/test_flight_state.py::TestRecovery",
-                      "tests/test_flight_state.py::TestCorruptState"],
+                      "tests/test_flight_state.py::TestCorruptState",
+                      "tests/test_flight_end_to_end.py::TestMissionUpload::test_a_rejected_upload_is_not_recorded_as_on_the_aircraft"],
       "core/flight_state.py; atomic writes, Api.check_interrupted_flight. A test asserts "
       "recover() calls no command that could re-fly a mission."),
     F("fl.camera_control", "Camera control", "app", "Flight",
@@ -523,9 +554,13 @@ FLIGHT = [
                       "tests/test_flight_log.py::TestGpx",
                       "tests/test_flight_log.py::TestKml",
                       "tests/test_flight_log.py::TestExportDispatch",
-                      "tests/test_flight_log.py::TestEmptyAndDegenerate"],
-      "core/flight_log.py; AppSession records every telemetry read, "
-      "Api.export_flight_log writes it out."),
+                      "tests/test_flight_log.py::TestEmptyAndDegenerate",
+                      "tests/test_flight_end_to_end.py::TestFlightLogIsOneConnection"],
+      "core/flight_log.py; one log per vehicle connection (the previous one is archived "
+      "to disk), recorded from the flight session and the telemetry the pilot sees, "
+      "Api.export_flight_log writes it out. A log from the simulator is marked "
+      "SIMULATED in its file names, summary and every sample; it was one log per app "
+      "session, so a mock connection's samples ended up in a real flight's record."),
     F("fl.data_verification", "On-site data verification", "app", "Flight",
       "Image count, blur, exposure, corrupt files, missing GPS and coverage gaps "
       "checked before leaving the site, with a verdict that distinguishes what blocks "
@@ -1441,7 +1476,14 @@ PLATFORM = [
       "when maintenance is due, plus a fleet status view answering what needs "
       "attention before the next job.",
       "implemented", ["tests/test_fleet.py::TestAircraftService",
-                      "tests/test_fleet.py::TestFleetStatus"]),
+                      "tests/test_fleet.py::TestFleetStatus",
+                      "tests/test_flight_end_to_end.py::TestFleetOnAFreshDatabase",
+                      "tests/test_launcher_environment.py"],
+      "The desktop app records against a local organisation it creates on first use; "
+      "on a new install every fleet record failed with a FOREIGN KEY error because only "
+      "the web service created organisations. It needs SQLAlchemy: OpenDroneKit.bat "
+      "checks requirements.txt before launch and offers to install what the conda "
+      "environment lacks, and a fleet call without it names the missing package."),
     F("fm.battery", "Battery management", "hub", "Fleet",
       "Cycle count against a per-battery limit, measured health, and retirement, each "
       "surfaced as a warning rather than left for the reader to compute.",

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 from typing import Any, Callable
 
 from .jobs import JobManager
@@ -37,6 +38,18 @@ def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
+        except ModuleNotFoundError as exc:
+            # Features import their packages when used, so this is where a package the
+            # launcher's environment lacks shows up. Say which one and how to add it.
+            missing = (exc.name or "").split(".")[0]
+            if not missing or (Path(__file__).resolve().parents[1] / missing).exists():
+                return fail(f"{type(exc).__name__}: {exc}")
+            return fail(
+                f"{missing} is not installed in the Python running OpenDroneKit "
+                f"({sys.executable}), so this feature cannot run. Install it with: "
+                f"\"{sys.executable}\" -m pip install -r requirements.txt  (or run "
+                "tools/check_environment.py --install)."
+            )
         except Exception as exc:  # noqa: BLE001
             return fail(f"{type(exc).__name__}: {exc}")
 
@@ -659,7 +672,13 @@ class Api:
             "ok": result.get("ok"),
             "mode": result.get("mode", ""),
         })
-        return ok(**result) if result.get("ok") else fail(result["error"], **result)
+        if result.get("ok"):
+            return ok(**result)
+        # The refusal is the case this feature exists for, and it used to raise
+        # "fail() got multiple values for argument 'error'" -- the pilot saw a Python
+        # exception instead of "the aircraft is still in AUTO".
+        details = {key: value for key, value in result.items() if key not in ("ok", "error")}
+        return fail(result.get("error") or "The vehicle did not hand back control.", **details)
 
     @guard
     def verify_site(self, image_folder: str = "", quality_sample_limit: int = 200) -> dict[str, Any]:
@@ -710,7 +729,10 @@ class Api:
             )
 
         target = Path(output_dir) if output_dir else (self._session.project_root() / "flights")
-        stem = (log.mission_name or "flight").replace(" ", "_").lower()
+        # A simulated log is exported -- it is useful for rehearsal -- but it is marked
+        # in its file names, its summary and every sample, so it cannot be passed off
+        # as the record of a flight.
+        stem = log.default_stem() if hasattr(log, "default_stem") else "flight"
 
         try:
             if output_format == "all":
@@ -721,9 +743,12 @@ class Api:
         except ValueError as exc:
             return fail(str(exc))
 
+        simulated = bool(getattr(log, "is_simulated", False))
         self._session.audit("flight_log_exported",
-                            {"formats": sorted(written), "samples": len(log.samples)})
-        return ok(files=written, summary=log.summary())
+                            {"formats": sorted(written), "samples": len(log.samples),
+                             "simulated": simulated})
+        return ok(files=written, summary=log.summary(), simulated=simulated,
+                  warning=log.summary().get("simulated_notice", "") if simulated else "")
 
     @guard
     def plan_battery_segments(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2564,6 +2589,10 @@ class Api:
         plan = MissionPlanner().generate(**kwargs)
         self._session.mission_plan = plan
         self._session.mission_plan_dict = _plan_to_dict(plan)
+        # Whatever was uploaded before is not this plan, and nothing about it has been
+        # confirmed by the operator yet.
+        self._session.mission_uploaded = False
+        self._session.preflight_acknowledged = set()
         self._session.audit("mission_planned", {"template": kwargs["mode"], "waypoints": len(plan.waypoints)})
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
@@ -2799,8 +2828,15 @@ class Api:
     # -- vehicle ---------------------------------------------------------
 
     @guard
-    def connect_vehicle(self, uri: str, driver: str = "mavlink") -> dict[str, Any]:
-        return ok(vehicle=self._session.connect_vehicle(uri, driver))
+    def connect_vehicle(self, uri: str, driver: str = "pymavlink") -> dict[str, Any]:
+        vehicle = self._session.connect_vehicle(uri, driver)
+        log = self._session.flight_log
+        return ok(vehicle=vehicle, flight_log={
+            "driver": getattr(log, "driver", ""),
+            "simulated": bool(getattr(log, "is_simulated", False)),
+            "archived": (self._session.archived_flight_logs[-1]
+                         if self._session.archived_flight_logs else None),
+        })
 
     @guard
     def disconnect_vehicle(self) -> dict[str, Any]:
@@ -2813,7 +2849,13 @@ class Api:
 
     @guard
     def upload_mission(self) -> dict[str, Any]:
-        """Upload the planned mission, geofence, and rally points to the vehicle."""
+        """Upload the planned mission, geofence, and rally points to the vehicle.
+
+        Reports what the vehicle answered. This returned ok whether the vehicle accepted
+        the mission, rejected it, or never answered, so both UIs said "Mission uploaded"
+        over a MISSION_ACK that said the opposite -- and the crash-recovery record then
+        claimed a mission was on the aircraft.
+        """
         from mission import exporters
 
         if not self._session.mission_plan_dict:
@@ -2825,37 +2867,93 @@ class Api:
         if uploader is None:
             return fail(f"The {self._session.vehicle.driver!r} driver does not support mission upload.")
 
-        items = [item.to_dict() for item in exporters.build_mission_items(self._session.mission_plan_dict)]
-        result = uploader(items)
-        self._session.audit("mission_uploaded", {"items": len(items), "driver": self._session.vehicle.driver})
+        plan = self._session.mission_plan_dict
+        items = [item.to_dict() for item in exporters.build_mission_items(plan)]
+        fence = [item.to_dict() for item in exporters.build_fence_items(plan)]
+        rally = [item.to_dict() for item in exporters.build_rally_items(plan)]
 
-        # Recorded so that, if this software dies before the mission ends, the next
-        # session knows a mission was on the aircraft rather than guessing.
+        manager = self._session.flight_manager
+        logged = manager.active_session() is not None
+
+        def run(name: str, action: Callable[[], Any]) -> Any:
+            return manager.execute(name, action, reason="operator_upload") if logged else action()
+
+        mission_result = run("upload_mission", lambda: uploader(items))
+        report: dict[str, Any] = {"mission": _command_payload(mission_result, len(items))}
+        self._session.audit("mission_uploaded", {
+            "items": len(items), "driver": self._session.vehicle.driver,
+            "success": bool(getattr(mission_result, "success", False)),
+        })
+        if not getattr(mission_result, "success", False):
+            self._session.mission_uploaded = False
+            return fail(
+                getattr(mission_result, "message", "") or "The vehicle did not accept the mission.",
+                items=len(items), result=report["mission"], upload=report,
+            )
+
+        # The mission is on the aircraft now, whatever happens to fence and rally.
+        self._session.mission_uploaded = True
         from core.flight_state import PHASE_UPLOADED, record_transition
 
+        # Recorded so that, if this software dies before the mission ends, the next
+        # session knows a mission was on the aircraft rather than guessing. Only after
+        # the vehicle accepted it: a rejected upload leaves nothing on the aircraft.
         record_transition(
             self._session.project_root(), PHASE_UPLOADED,
-            mission_name=str(self._session.mission_plan_dict.get("template", "")),
+            mission_name=str(plan.get("template", "")),
             vehicle_driver=self._session.vehicle.driver,
         )
-        payload = result.to_dict() if hasattr(result, "to_dict") else {"result": str(result)}
-        return ok(items=len(items), result=payload)
+
+        # Fence and rally, when the plan has them and the driver can carry them. The
+        # docstring always promised these; the call never made them.
+        problems: list[str] = []
+        for key, entries, method in (("fence", fence, "upload_geofence"),
+                                     ("rally", rally, "upload_rally_points")):
+            if not entries:
+                report[key] = None
+                continue
+            sender = getattr(client, method, None)
+            if sender is None:
+                report[key] = {"success": False, "count": len(entries),
+                               "message": f"The {self._session.vehicle.driver!r} driver cannot upload {key}."}
+                problems.append(report[key]["message"])
+                continue
+            result = run(method, lambda sender=sender, entries=entries: sender(entries))
+            report[key] = _command_payload(result, len(entries))
+            if not report[key]["success"]:
+                problems.append(f"{key}: {report[key]['message']}")
+
+        if problems:
+            # The mission is on the aircraft but its fence or rally points are not, and
+            # a pilot relying on the fence needs to hear that as a failure.
+            return fail(
+                "The mission was uploaded, but not all of it: " + "; ".join(problems),
+                items=len(items), result=report["mission"], upload=report, mission_uploaded=True,
+            )
+        return ok(items=len(items), result=report["mission"], upload=report)
 
     @guard
     def vehicle_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
-        """Arm / start / pause / resume / RTL / abort against the connected vehicle."""
+        """Arm / start / pause / resume / RTL / abort against the connected vehicle.
+
+        Reports what the vehicle answered: ok only when it acknowledged the command.
+        Every command used to return ok with "Command sent." inside, so a denied RTL
+        looked exactly like an accepted one.
+        """
         client = self._session._drone_client
         if client is None:
             return fail("No vehicle connected.")
         # The command set a ground station is expected to offer. Anything the
         # connected driver does not implement is reported as unsupported rather than
         # failing silently, because a pilot pressing a button needs to know whether
-        # the aircraft heard it.
+        # the aircraft heard it. "rtl" is accepted beside "rth": it is what every
+        # ArduPilot and PX4 user calls it, and the cockpit's RTL button sent it.
         mapping = {
             "start": "start_mission",
             "pause": "pause_mission",
             "resume": "resume_mission",
             "rth": "return_to_home",
+            "rtl": "return_to_home",
             "abort": "abort_mission",
             "arm": "arm",
             "disarm": "disarm",
@@ -2879,11 +2977,115 @@ class Api:
             altitude = float(kwargs.get("altitude_m", 0.0) or 0.0)
             if altitude <= 0:
                 return fail("Takeoff requires a positive altitude_m.")
-            result = method(altitude)
+            action = lambda: method(altitude)  # noqa: E731
         else:
-            result = method()
-        self._session.audit("vehicle_command", {"command": command, "driver": self._session.vehicle.driver})
-        return ok(result=result.to_dict() if hasattr(result, "to_dict") else str(result))
+            action = method
+
+        # Through the flight session, so every command lands in commands.jsonl and the
+        # session's state follows the named ones (starting, paused, rth, aborted).
+        manager = self._session.flight_manager
+        if manager.active_session() is not None:
+            dispatch = {
+                "start_mission": manager.start_mission,
+                "pause_mission": manager.pause_flight,
+                "resume_mission": manager.resume_flight,
+                "return_to_home": manager.trigger_rth,
+                "abort_mission": manager.abort_flight,
+            }
+            named = dispatch.get(method_name)
+            result = named(reason="operator") if named else manager.execute(method_name, action)
+        else:
+            result = action()
+
+        payload = result.to_dict() if hasattr(result, "to_dict") else {"message": str(result)}
+        self._session.audit("vehicle_command", {
+            "command": command, "driver": self._session.vehicle.driver,
+            "success": bool(getattr(result, "success", False)),
+            "ack": getattr(result, "ack", ""),
+        })
+        if not getattr(result, "success", False):
+            return fail(payload.get("message") or f"The vehicle did not accept {command!r}.",
+                        result=payload)
+        return ok(result=payload)
+
+    @guard
+    def flight_session(self) -> dict[str, Any]:
+        """The live flight session: state, warnings, and the commands sent so far."""
+        status = self._session.flight_manager.status()
+        if status is None:
+            return ok(session=None, reason="No vehicle connected, so there is no flight session.")
+        return ok(session=status)
+
+    @guard
+    def run_preflight(self, acknowledged: list[str] | None = None,
+                      free_storage_mb: float | None = None) -> dict[str, Any]:
+        """Preflight checks against the connected aircraft and the planned mission.
+
+        Everything is read from something: GPS, home, battery, compass and IMU from the
+        vehicle's own telemetry; the camera from the payload's CAMERA_INFORMATION; the
+        geofence and no-fly checks from the plan's path against its own fence and the
+        zones drawn here. What nothing reports is a manual check, which the operator
+        confirms by id in `acknowledged` -- a confirmation is recorded as theirs, not
+        presented as a measurement.
+        """
+        from core.drone import NoDroneClient
+        from core.mission_manager import MissionManager
+        from core.preflight import confirm_manual_check, plan_airspace, run_preflight
+        from core.settings import load_drone_profiles
+
+        client = self._session._drone_client or NoDroneClient()
+        plan_dict = self._session.mission_plan_dict or None
+        plan = self._session.mission_plan
+
+        profile = load_drone_profiles()[0]
+        mission_summary: dict[str, Any] | None = None
+        geofence: dict[str, Any] | None = None
+        no_fly: list[dict[str, Any]] | None = None
+        if plan_dict:
+            # The plan's own limits are what will fly, so they are what is checked --
+            # not the defaults of a generic profile.
+            constraints = plan_dict.get("safety_constraints") or {}
+            for key in ("rth_altitude_m", "min_altitude_m", "max_altitude_m"):
+                if constraints.get(key) is not None:
+                    setattr(profile, key, float(constraints[key]))
+            mission_summary = (MissionManager.summarize_plan(plan) if plan is not None
+                               else {"waypoints": len(plan_dict.get("waypoints") or [])})
+            mission_summary["issues"] = ([] if mission_summary.get("waypoints")
+                                         else ["error: the plan has no waypoints"])
+            geofence, no_fly = plan_airspace(plan_dict, self._session.no_fly_polygons)
+
+        report = run_preflight(
+            project_id=str(self._session.project_id()),
+            mission_id=str((plan_dict or {}).get("template", "")),
+            drone_id=f"{self._session.vehicle.driver}:{self._session.vehicle.uri}",
+            drone=client,
+            drone_profile=profile,
+            mission_summary=mission_summary,
+            mission_uploaded=bool(self._session.mission_uploaded),
+            geofence=geofence,
+            no_fly_zones=no_fly,
+            free_storage_mb=free_storage_mb,
+        )
+        # Confirmations persist for this connection and plan, so confirming the weather
+        # once is not undone by the next refresh of the checklist.
+        confirmed = self._session.preflight_acknowledged
+        confirmed.update(str(check_id) for check_id in (acknowledged or []))
+        # Only checks that need a human can be confirmed by one. A blocking check the
+        # vehicle or the plan failed -- no GPS fix, a path outside the fence -- is not
+        # something an acknowledgement makes true.
+        known = {check.id for check in report.checks if check.requires_manual}
+        for check_id in sorted(confirmed & known):
+            confirm_manual_check(report, check_id, operator_note="confirmed by the operator")
+
+        payload = report.to_dict()
+        payload["simulated"] = self._session.vehicle.to_dict().get("is_simulated", False)
+        payload["pending_confirmation"] = [
+            c["id"] for c in payload["checks"] if c.get("requires_manual") and not c.get("confirmed")
+        ]
+        self._session.audit("preflight_run", {
+            "can_start": payload["can_start"], "blocking": payload["blocking_count"],
+        })
+        return ok(**payload)
 
     # -- datasets and processing ----------------------------------------
 
@@ -3081,6 +3283,15 @@ def _file_type_filters(extensions: list[str] | None) -> tuple[str, ...]:
 
 def _centroid(ring: list[list[float]]) -> list[float]:
     return [sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)]
+
+
+def _command_payload(result: Any, count: int) -> dict[str, Any]:
+    """A CommandResult as the UI reads it, with how many items it carried."""
+    payload = result.to_dict() if hasattr(result, "to_dict") else {"message": str(result)}
+    payload.setdefault("success", bool(getattr(result, "success", False)))
+    payload.setdefault("message", "")
+    payload["count"] = count
+    return payload
 
 
 def _plan_to_dict(plan: Any) -> dict[str, Any]:

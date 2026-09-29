@@ -84,24 +84,37 @@ def test_the_flight_screen_invents_nothing(flight, needle, why) -> None:
 
 
 class TestThePreflightChecklistActuallyChecks:
+    """The checklist is core/preflight.py's report, reached through Api.run_preflight.
+
+    It used to be re-derived in the browser from raw telemetry, which never looked at
+    compass, IMU, camera, geofence or no-fly zones, and drew "Battery 0%" for a vehicle
+    that had not reported a battery. The behaviour of the checks themselves is tested
+    against a real MAVLink peer in test_flight_end_to_end.py; these hold the wiring.
+    """
+
     def test_it_reads_the_aircraft(self, flight) -> None:
         block = flight.split('title: "Preflight"')[1][:2000]
         assert "live({" in block
-        assert '"telemetry"' in block
+        assert '"run_preflight"' in block
 
     def test_an_unknown_check_is_not_a_passed_check(self, flight) -> None:
         """The rule the whole project runs on, at the point it matters most.
 
-        Weather cannot be derived from telemetry. Dropping the item would quietly
-        shorten the checklist; ticking it would be a lie. It is shown as unknown.
+        A check nothing can report is a manual one: shown as needing the operator,
+        never ticked. The panel renders that third state explicitly.
         """
         block = flight.split('title: "Preflight"')[1][:2200]
-        assert "null" in block, "there is no third state between pass and fail"
-        assert "unknown" in block
+        assert "requires_manual" in block, "there is no third state between pass and fail"
+        assert "check yourself" in block
 
     def test_it_still_asks_about_weather(self, flight) -> None:
-        block = flight.split('title: "Preflight"')[1][:2200]
-        assert "Weather" in block, "an item that cannot be automated was dropped instead"
+        """Weather cannot be automated, so the report carries it as a manual check."""
+        from core.preflight import run_preflight
+        import inspect
+
+        assert "check_weather_acknowledged" in inspect.getsource(run_preflight), (
+            "an item that cannot be automated was dropped instead"
+        )
 
     def test_no_check_is_hardcoded_to_pass(self, flight) -> None:
         block = flight.split('title: "Preflight"')[1][:2200]

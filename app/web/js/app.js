@@ -350,7 +350,8 @@
       <div class="form">
         <label>Driver
           <select id="dlg-driver">
-            <option value="mavlink">MAVLink (real autopilot)</option>
+            <option value="pymavlink">MAVLink (real autopilot: ArduPilot / PX4)</option>
+            <option value="mavsdk">PX4 via MAVSDK</option>
             <option value="mock">Mock (simulated, for UI testing)</option>
           </select>
         </label>
@@ -374,7 +375,7 @@
               status(result.vehicle.connected
                 ? `Connected to ${uri} via ${driver}.`
                 : `Connection failed: ${result.vehicle.last_error}`);
-              if (result.vehicle.connected) startTelemetry();
+              if (result.vehicle.connected) { startTelemetry(); switchTab('telemetry'); }
             }
           }
         }
@@ -390,15 +391,102 @@
       if (!result) return;
       const data = result.telemetry;
       const grid = $('#telemetry-grid');
-      if (!data.connected) {
+      const chip = $('#vehicle-chip');
+      /* A lost link keeps its last values on screen -- where the aircraft was last
+         heard is what the pilot needs -- under a status row that says they are old. */
+      if (!data.connected && !data.link_lost) {
         grid.innerHTML = `<div><span>status</span><b>${data.reason || 'disconnected'}</b></div>`;
         return;
       }
-      grid.innerHTML = Object.entries(data)
-        .filter(([k]) => k !== 'connected')
-        .map(([k, v]) => `<div><span>${k}</span><b>${typeof v === 'number' ? v.toFixed(3) : v}</b></div>`)
+      if (data.link_lost) {
+        chip.className = 'chip chip-sim';
+        chip.textContent = `LINK LOST (${Math.round(data.telemetry_age_s || 0)} s)`;
+      } else if (chip.textContent.startsWith('LINK LOST')) {
+        updateVehicleChip({ connected: true, driver: data.driver, is_simulated: data.is_simulated });
+      }
+      const hidden = new Set(['connected', 'timestamp', 'stale', 'link_lost', 'reason']);
+      const head = data.link_lost ? `<div><span>status</span><b class="no">${data.reason}</b></div>` : '';
+      /* Only what the vehicle reported: a field it never sent is absent from the
+         payload, so it is absent here, rather than shown as 0.000. */
+      grid.innerHTML = head + Object.entries(data)
+        .filter(([k]) => !hidden.has(k))
+        .map(([k, v]) => `<div><span>${k}</span><b>${typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(3)) : v}</b></div>`)
         .join('');
     }, 1000);
+  }
+
+  /* ---------- preflight ---------- */
+
+  async function runPreflight(acknowledged) {
+    const result = await tryCall('run_preflight', acknowledged || []);
+    const list = $('#preflight-list');
+    if (!result) return;
+    const mark = (c) => (c.confirmed || c.severity === 'pass') ? '<b class="yes">pass</b>'
+      : c.severity === 'blocking' ? '<b class="no">BLOCKS</b>' : '<b>check</b>';
+    list.innerHTML =
+      `<div><span>${result.simulated ? 'SIMULATED vehicle — ' : ''}Ready to start</span>${flag(result.can_start)}</div>` +
+      result.checks.map((c) => `<div><span>${c.name}: ${c.message}` +
+        (c.requires_manual && !c.confirmed
+          ? ` <button class="mini-btn" data-confirm="${c.id}">I checked this</button>` : '') +
+        `</span>${mark(c)}</div>`).join('');
+    $$('#preflight-list [data-confirm]').forEach((button) => {
+      button.onclick = () => runPreflight([button.dataset.confirm]);
+    });
+    status(result.can_start ? 'Preflight: ready to start.'
+      : `Preflight: ${result.blocking_count} blocking, ${result.pending_confirmation.length} to confirm.`);
+  }
+
+  /* ---------- fleet ---------- */
+
+  const ORG = 1;  // the local organisation a desktop install records against
+
+  async function refreshFleet() {
+    const result = await tryCall('list_fleet', ORG);
+    const list = $('#fleet-list');
+    if (!result) return;
+    const rows = (items, fmt) => items.length ? items.map(fmt).join('') : '<div><span>none registered</span></div>';
+    list.innerHTML =
+      '<div><b>Aircraft</b></div>' + rows(result.aircraft, (a) =>
+        `<div><span>#${a.id} ${a.name} ${a.model || ''}</span><b>${a.flight_hours} h · ${a.status}` +
+        `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}</b></div>`) +
+      '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
+        `<div><span>${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
+        `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
+      '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
+        `<div><span>${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`);
+  }
+
+  function fleetForm(title, fields, submit) {
+    modal(title, `<div class="form">${fields.map(([id, label, value]) =>
+      `<label>${label}<input id="${id}" value="${value || ''}" /></label>`).join('')}</div>`, [
+      { label: 'Cancel' },
+      {
+        label: 'Save', primary: true, onClick: async () => {
+          const values = Object.fromEntries(fields.map(([id]) => [id, $(`#${id}`).value.trim()]));
+          const result = await submit(values);
+          if (result) { status(`${title}: saved.`); await refreshFleet(); }
+        }
+      }
+    ]);
+  }
+
+  function wireFleet() {
+    $('#btn-fleet-aircraft').onclick = () => fleetForm('Add aircraft',
+      [['f-name', 'Name'], ['f-model', 'Model'], ['f-serial', 'Serial']],
+      (v) => tryCall('add_aircraft', ORG, v['f-name'], v['f-model'], v['f-serial']));
+    $('#btn-fleet-battery').onclick = () => fleetForm('Add battery',
+      [['f-serial', 'Serial'], ['f-cap', 'Capacity mAh', '0'], ['f-limit', 'Cycle limit', '0']],
+      (v) => tryCall('add_battery', ORG, v['f-serial'], parseInt(v['f-cap'] || '0', 10) || 0,
+                     parseInt(v['f-limit'] || '0', 10) || 0));
+    $('#btn-fleet-pilot').onclick = () => fleetForm('Add pilot',
+      [['f-name', 'Name'], ['f-licence', 'Licence number'], ['f-expires', 'Licence expires (YYYY-MM-DD)']],
+      (v) => tryCall('add_pilot', ORG, v['f-name'], v['f-licence'], v['f-expires']));
+    $('#btn-fleet-maintenance').onclick = () => fleetForm('Log maintenance',
+      [['f-id', 'Aircraft id'], ['f-kind', 'What was done', 'inspection'], ['f-detail', 'Detail']],
+      (v) => tryCall('log_maintenance', parseInt(v['f-id'] || '0', 10), v['f-kind'], v['f-detail'], 'operator'));
+    $('#btn-fleet-assign').onclick = () => fleetForm('Assign mission',
+      [['f-id', 'Aircraft id'], ['f-mission', 'Mission name', 'Mission']],
+      (v) => tryCall('assign_mission_to_aircraft', parseInt(v['f-id'] || '0', 10), v['f-mission']));
   }
 
   /* ---------- tabs and tools ---------- */
@@ -406,6 +494,8 @@
   function switchTab(name) {
     $$('.tab').forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === name));
     $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${name}`));
+    if (name === 'fleet') refreshFleet();
+    if (name === 'preflight') runPreflight();
   }
 
   function setTool(tool) {
@@ -495,12 +585,18 @@
       if (result) { updateVehicleChip(result.vehicle); status('Vehicle disconnected.'); }
     },
     'fly.upload': async () => {
+      /* tryCall returns null on ok:false and puts the vehicle's refusal in the status
+         bar; only an acknowledged upload reaches the success line. */
       const result = await tryCall('upload_mission');
-      if (result) status(`Uploaded ${result.items} mission items.`);
+      if (!result) return;
+      const upload = result.upload || {};
+      const extras = ['fence', 'rally'].filter((k) => upload[k] && upload[k].success)
+        .map((k) => `${upload[k].count} ${k}`);
+      status(`Vehicle accepted ${result.items} mission items${extras.length ? ` and ${extras.join(', ')} items` : ''}.`);
     },
     'fly.command': async (payload) => {
       const result = await tryCall('vehicle_command', payload.command);
-      if (result) status(`Command ${payload.command}: ${JSON.stringify(result.result)}`);
+      if (result) status(`Command ${payload.command}: ${(result.result && result.result.message) || 'accepted'}`);
     },
 
     'analysis.pipeline': async () => {
@@ -735,6 +831,8 @@
     $('#btn-plan').onclick = planMission;
     $('#btn-connect').onclick = connectDialog;
     $('#btn-upload').onclick = menuHandlers['fly.upload'];
+    $('#btn-preflight').onclick = () => switchTab('preflight');
+    wireFleet();
     $('#btn-dataset').onclick = pickDataset;
     $('#btn-terrain').onclick = menuHandlers['data.import_terrain'];
     $('#btn-add-layer').onclick = () => importLayer(['Geodata (*.tif;*.tiff;*.geojson;*.json)']);

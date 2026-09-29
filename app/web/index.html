@@ -107,6 +107,7 @@
           <a class="tool" href="hub.html" title="Open survey operations Hub">Hub</a>
           <span id="vehicle-chip" class="chip chip-muted">No vehicle</span>
           <button class="tool" id="btn-connect">Connect</button>
+          <button class="tool" id="btn-preflight">Preflight</button>
           <button class="tool" id="btn-upload">Upload</button>
         </div>
       </div>
@@ -117,12 +118,25 @@
         <div class="tabs">
           <button class="tab active" data-tab="attributes">Attributes</button>
           <button class="tab" data-tab="telemetry">Telemetry</button>
+          <button class="tab" data-tab="preflight">Preflight</button>
+          <button class="tab" data-tab="fleet">Fleet</button>
           <button class="tab" data-tab="jobs">Jobs</button>
           <button class="tab" data-tab="console">Console</button>
         </div>
         <div class="tab-body">
           <div class="tab-panel active" id="tab-attributes"><table id="attr-table"><thead></thead><tbody></tbody></table></div>
           <div class="tab-panel" id="tab-telemetry"><div id="telemetry-grid" class="kv-grid"></div></div>
+          <div class="tab-panel" id="tab-preflight"><div id="preflight-list" class="info">Connect a vehicle and press Preflight.</div></div>
+          <div class="tab-panel" id="tab-fleet">
+            <div class="fleet-actions">
+              <button class="mini-btn" id="btn-fleet-aircraft">Add aircraft</button>
+              <button class="mini-btn" id="btn-fleet-battery">Add battery</button>
+              <button class="mini-btn" id="btn-fleet-pilot">Add pilot</button>
+              <button class="mini-btn" id="btn-fleet-maintenance">Log maintenance</button>
+              <button class="mini-btn" id="btn-fleet-assign">Assign mission</button>
+            </div>
+            <div id="fleet-list" class="info"></div>
+          </div>
           <div class="tab-panel" id="tab-jobs"><div id="jobs-list"></div></div>
           <div class="tab-panel" id="tab-console"><pre id="console-log"></pre></div>
         </div>

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .drone import CommandResult, DroneClient, DroneTelemetry
+from .drone import TELEMETRY_STALE_AFTER_S, CommandResult, DroneClient, DroneTelemetry
 from .errors import AppError, ERR_DRONE_NOT_CONNECTED, ERR_PREFLIGHT_FAILED
 from .events import (
     DRONE_CONNECTED,
@@ -36,12 +36,13 @@ def _now_iso() -> str:
 @dataclass
 class FlightState:
     session_id: str
-    status: str = "idle"      # idle | starting | flying | paused | rth | aborted | landed | error
+    # idle | starting | flying | paused | rth | aborted | landed | ended | link_lost
+    status: str = "idle"
     current_waypoint: int = 0
     waypoint_total: int = 0
     progress_pct: float = 0.0
-    battery_pct: float = 0.0
-    battery_v: float = 0.0
+    battery_pct: float | None = None
+    battery_v: float | None = None
     latitude: float = 0.0
     longitude: float = 0.0
     altitude_rel_m: float = 0.0
@@ -49,6 +50,10 @@ class FlightState:
     flight_mode: str = "UNKNOWN"
     warnings: list[str] = field(default_factory=list)
     last_update: str = field(default_factory=_now_iso)
+    # The last telemetry read that failed, and how many have. Swallowing these silently
+    # made a dead link look like a quiet aircraft.
+    last_error: str = ""
+    error_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +114,10 @@ def record_flight_log(session: FlightSession, telemetry: DroneTelemetry) -> None
     _append_jsonl(log_path, record)
 
 
+# Modes in which the autopilot is flying the uploaded mission.
+_MISSION_MODES = {"AUTO", "MISSION"}
+
+
 def record_command(session: FlightSession, command: str, result: CommandResult, reason: str = "") -> None:
     """Append command + result to command log JSONL."""
     log_path = Path(session.log_dir) / "commands.jsonl"
@@ -118,6 +127,7 @@ def record_command(session: FlightSession, command: str, result: CommandResult, 
         "command": command,
         "success": bool(result.success),
         "message": result.message,
+        "ack": getattr(result, "ack", ""),
         "reason": reason,
     }
     _append_jsonl(log_path, record)
@@ -176,7 +186,14 @@ class FlightManager:
             self._stop_polling()
             session.ended_at = _now_iso()
             session.end_reason = reason
-            session.state.status = "landed" if reason == "completed" else "aborted"
+            # A disconnect is not a landing and not an abort; saying either would put a
+            # claim about the aircraft in the record that nothing observed.
+            if reason == "completed":
+                session.state.status = "landed"
+            elif reason.startswith("abort"):
+                session.state.status = "aborted"
+            else:
+                session.state.status = "ended"
             # Persist session summary
             summary_path = Path(session.log_dir) / "session.json"
             summary_path.write_text(json.dumps(session.to_dict(), indent=2), encoding="utf-8")
@@ -214,22 +231,41 @@ class FlightManager:
         self._poll_thread = None
 
     def _poll_loop(self) -> None:
+        last_recorded: float | None = None
         while not self._poll_stop.is_set():
+            drone, session = self._drone, self._session
+            if drone is None or session is None:
+                break
             try:
-                if self._drone is None or self._session is None:
-                    break
-                telem = self._drone.get_telemetry()
-                self._apply_telemetry(telem)
-                record_flight_log(self._session, telem)
-                publish_event(TELEMETRY_UPDATED, telem.to_dict())
-                for cb in list(self._telemetry_callbacks):
-                    try:
-                        cb(telem)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                telem = drone.get_telemetry()
+            except Exception as exc:  # noqa: BLE001
+                # Recorded, not swallowed: a telemetry read that keeps failing is a lost
+                # link, and the state has to say so rather than freeze at the last value.
+                session.state.last_error = f"Telemetry read failed: {exc}"
+                session.state.error_count += 1
+                if "Telemetry read failed" not in session.state.warnings:
+                    session.state.warnings = [*session.state.warnings, "Telemetry read failed"]
+                self._poll_stop.wait(self._poll_interval_s)
+                continue
+            self._apply_telemetry(telem)
+            stamp = getattr(telem, "timestamp", None)
+            # The same snapshot read again is not a new observation.
+            if stamp is None or stamp != last_recorded:
+                last_recorded = stamp
+                if not self._is_stale(telem):
+                    record_flight_log(session, telem)
+                    publish_event(TELEMETRY_UPDATED, telem.to_dict())
+                    for cb in list(self._telemetry_callbacks):
+                        try:
+                            cb(telem)
+                        except Exception:  # noqa: BLE001 - one listener cannot stop the feed
+                            pass
             self._poll_stop.wait(self._poll_interval_s)
+
+    @staticmethod
+    def _is_stale(telem: DroneTelemetry) -> bool:
+        age = telem.age_s() if hasattr(telem, "age_s") else 0.0
+        return age > TELEMETRY_STALE_AFTER_S
 
     def _apply_telemetry(self, telem: DroneTelemetry) -> None:
         if not self._session:
@@ -247,13 +283,23 @@ class FlightManager:
         state.speed_mps = telem.speed_mps
         state.flight_mode = telem.flight_mode
         state.last_update = _now_iso()
-        # Warning sweep
+
+        # "flying" is what the aircraft reports, not what was requested: a start command
+        # the vehicle accepted still has to put it armed and in a mission mode.
+        mode = str(telem.flight_mode or "").upper()
+        if state.status == "starting" and telem.armed and mode in _MISSION_MODES:
+            state.status = "flying"
+
+        # Warning sweep. A value the vehicle never reported raises no warning either way:
+        # "Link quality low" for a USB link with no radio status was a false alarm.
         warnings: list[str] = []
-        if telem.battery_pct < 20.0:
+        if self._is_stale(telem):
+            warnings.append("Telemetry lost")
+        if telem.battery_pct is not None and telem.battery_pct < 20.0:
             warnings.append("Battery low")
         if telem.gps_fix < 3:
             warnings.append("GPS fix degraded")
-        if telem.link_quality_pct < 50.0:
+        if telem.link_quality_pct is not None and telem.link_quality_pct < 50.0:
             warnings.append("Link quality low")
         state.warnings = warnings
 
@@ -280,13 +326,30 @@ class FlightManager:
         })
         return result
 
+    def execute(self, command_name: str, action: Callable[[], CommandResult],
+                reason: str = "operator") -> CommandResult:
+        """Run any vehicle command through the session, so it is logged.
+
+        The named methods below also move the flight state; this is for the commands
+        that do not (arm, land, set home, emergency stop).
+        """
+        return self._execute(command_name, reason, action)
+
     def start_mission(self, reason: str = "operator_start") -> CommandResult:
+        """Ask the vehicle to start the mission.
+
+        The status becomes "starting", and only becomes "flying" once telemetry shows
+        the aircraft armed and in a mission mode. It used to read "flying" the moment
+        the command was transmitted -- before the vehicle had said anything.
+        """
         session, drone = self._require_session()
+        previous = session.state.status
         session.state.status = "starting"
         result = self._execute("start_mission", reason, drone.start_mission)
         if result.success:
-            session.state.status = "flying"
             publish_event(FLIGHT_STARTED, {"session_id": session.id})
+        else:
+            session.state.status = previous
         return result
 
     def pause_flight(self, reason: str = "operator_pause") -> CommandResult:
@@ -319,12 +382,20 @@ class FlightManager:
         if result.success:
             session.state.status = "aborted"
             publish_event(FLIGHT_ABORTED, {"session_id": session.id, "reason": reason})
-            self.end_session(reason=f"aborted:{reason}")
+            # The session stays open. An aborted aircraft is still in the air, and the
+            # telemetry after an abort is the part of the log an investigation wants.
         return result
 
     def upload_mission(self, mission_items: list[dict[str, Any]], reason: str = "operator_upload") -> CommandResult:
         session, drone = self._require_session()
         return self._execute("upload_mission", reason, lambda: drone.upload_mission(mission_items))
+
+    def status(self) -> dict[str, Any] | None:
+        """The session, its state and its recent commands, for a UI to show."""
+        session = self._session
+        if session is None:
+            return None
+        return {**session.to_dict(), "commands": self.get_command_log()[-50:]}
 
     def update_flight_state(self) -> FlightState | None:
         return self._session.state if self._session else None
