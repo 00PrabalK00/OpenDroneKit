@@ -137,8 +137,10 @@ MISSION_PLANNING = [
       "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
-      "capture points sit outside the footprint with the camera facing the wall.",
-      "implemented", ["tests/test_mission_types.py::TestMultiFacade"]),
+      "capture points sit outside the footprint with the camera facing the wall, and "
+      "the transit from one face to the next goes round the corner at the stand-off.",
+      "implemented", ["tests/test_mission_types.py::TestMultiFacade",
+                      "tests/test_multi_facade_transits_keep_clear.py"]),
     F("mp.type.complex_facade", "Complex facade planning", "core", "Mission types",
       "Balconies, recesses, courtyards, overhangs and non-rectangular footprints, with "
       "occlusion reported rather than silently omitted.",
