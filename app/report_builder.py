@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from core.report_engine import (
+    NOTHING_TO_REPORT,  # noqa: F401 - re-exported; callers compare against it
     ReportConfig,
     ReportReadiness,
     ReportResult,
@@ -169,24 +170,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-NOTHING_TO_REPORT = ("content: this project has no imported images, recorded findings, "
-                     "saved missions or analysis runs, so a report would have nothing to be "
-                     "about. Import a dataset, record a finding or save a mission first.")
-
-
 def _judge(context: dict[str, Any], config: ReportConfig) -> ReportReadiness:
-    """The engine's checklist, plus the one thing only the open project can say.
+    """The engine's checklist for the open project's context.
 
     A project with nothing in it used to be declared ready with "Nothing missing", and a
     report of empty sections was written -- a document indistinguishable from a survey
-    that found nothing. It is refused instead.
+    that found nothing. The engine refuses it (NOTHING_TO_REPORT), for this path and its
+    own workspace alike.
     """
-    ready = readiness_from_context(context, config)
-    if not any(context.get(key) for key in ("datasets", "missions", "findings", "pipeline_runs",
-                                            "reconstructions", "measurements")):
-        ready.missing.insert(0, NOTHING_TO_REPORT)
-        ready.ok = False
-    return ready
+    return readiness_from_context(context, config)
 
 
 def readiness(session: Any, config: ReportConfig) -> ReportReadiness:

@@ -37,8 +37,24 @@ def workspace(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def empty_project(workspace):
+    meta = workspace.create_project("Empty 1", description="Nothing imported yet")
+    return meta["id"], meta
+
+
+@pytest.fixture
 def project(workspace):
+    """A project with one saved mission and nothing else: enough for a report to be
+    about, and still no dataset, finding or detector run to warn about."""
+    from pathlib import Path
+
     meta = workspace.create_project("Bridge 14", description="Quarterly inspection")
+    missions = Path(meta["root_dir"]) / "missions"
+    missions.mkdir(parents=True, exist_ok=True)
+    (missions / "deck-grid.json").write_text(json.dumps({
+        "name": "Deck grid", "mode": "grid", "altitude_m": 40,
+        "waypoints": [[77.2, 28.61, 40], [77.201, 28.61, 40], [77.201, 28.611, 40]],
+    }), encoding="utf-8")
     return meta["id"], meta
 
 
@@ -62,7 +78,29 @@ class TestReadiness:
         assert readiness.ok is False
         assert "project" in readiness.missing
 
-    def test_a_fresh_project_is_ready_but_warns_about_what_is_missing(self, project):
+    def test_an_empty_project_is_refused_with_the_reason(self, empty_project):
+        """A fresh project with nothing in it used to be declared ready, and a report of
+        empty sections was written -- indistinguishable from a survey that found
+        nothing. Every report type refuses it, and says what would fix that."""
+        from core.report_engine import NOTHING_TO_REPORT, REPORT_TYPES
+
+        project_id, _ = empty_project
+        for report_type in REPORT_TYPES:
+            readiness = validate_report_readiness(
+                ReportConfig(project_id=project_id, report_type=report_type))
+            assert readiness.ok is False, report_type
+            assert readiness.missing[0] == NOTHING_TO_REPORT
+            assert "Import a dataset" in readiness.missing[0]
+
+    def test_an_empty_project_is_not_written_a_report(self, empty_project):
+        from pathlib import Path
+
+        project_id, meta = empty_project
+        with pytest.raises(AppError, match="nothing to be about"):
+            generate_report(ReportConfig(project_id=project_id))
+        assert not list((Path(meta["root_dir"]) / "reports").glob("**/report.html"))
+
+    def test_a_project_with_content_is_ready_but_warns_about_what_is_missing(self, project):
         """Ready to render is not the same as having something to say."""
         project_id, _ = project
         readiness = validate_report_readiness(ReportConfig(project_id=project_id))

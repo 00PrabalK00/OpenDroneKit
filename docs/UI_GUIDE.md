@@ -10,22 +10,29 @@ Open it with `python main.py --ui cockpit` (or `ODK_UI=cockpit`, or
 default because every one of its controls and every native menu item is wired and
 exercised; the cockpit is bridged to the same `Api` (its toolbar actions call real
 methods, and the native menu maps to the same handlers) and is the interface this
-guide describes. `ODK_UI=classic` selects the classic shell explicitly, and an unknown
-value is refused rather than silently ignored.
+guide describes. `ODK_UI=classic` selects the classic shell explicitly. Case is ignored
+for both `--ui` and `ODK_UI`, a blank `ODK_UI` counts as unset, and `--ui` wins over
+`ODK_UI`. An unknown value is refused rather than silently ignored: the app does not
+open, and the reason (with the valid choices) is shown in a message box and written to
+`<data root>/logs/startup-error.log` -- also when started from `OpenDroneKit.bat`, which
+has no console.
 
 This document once said `python main.py` opened the cockpit while `app/shell.py`
 opened `index.html`; `tests/test_desktop_services.py` now pins the two together.
 
 ## What is real on screen, and what is not
 
-The cockpit shows the structural sample until it can talk to the application. That
-sample is deliberately impossible to mistake for a survey: sites are named DEMO,
+The cockpit can show a structural sample: in demo mode (`?demo=1`), and in any panel
+that has nothing wired to the application yet. That sample is deliberately impossible to mistake for a survey: sites are named DEMO,
 coordinates are Null Island, clocks sit at the epoch, and the wording matches
 `core/demo_mode.py` so the desktop demo and the API demo agree about what synthetic
 looks like.
 
-A banner across the top says so, and it is shown in every state except `connected` --
-the only state in which what you are looking at came from the application. It used to
+A banner across the top says so. It is shown in demo mode (`?demo=1`) or whenever a
+panel is still rendering the bundled sample, and it follows what is on screen rather
+than the connection state: a connected panel that falls back to the sample still raises
+it, and with no bridge at all the panels say "Not connected" instead of drawing
+anything, so there is nothing to label and the banner stays hidden. It used to
 be a chip at the end of the status bar, which was clipped off screen at 1600px, so the
 one thing declaring the data synthetic was the first thing to disappear.
 
@@ -178,20 +185,28 @@ Safety-critical actions — Abort, Land, RTL, Manual Override — are styled apa
 routine ones in the toolbar, and a test asserts that rule holds. An action that stops an
 aircraft should never be one careless click from Save.
 
-## What it is not, yet
+## What the frame says, and what is still missing
 
-The status bar says **sample data — not connected to a project**, permanently, until a
-project is attached. The shell is the framework and the arrangement; the numbers in it
-are illustrative structure, not measurements. Nothing here should be read as a survey
-result, and the frame of the application says so rather than leaving you to work it out.
+The status bar's connection chip reports the real state of the bridge. With a project
+attached it reads **connected — N project(s)**, next to the version from the package; in
+demo mode (`?demo=1`) it reads **demo mode**; with no bridge at all it reads **not
+connected to a project**, and every panel says "Not connected" instead of drawing
+anything. The project name, CRS, clock and storage location in the frame come from the
+application too.
 
-Toolbar actions are not wired to the API. Pressing one reports that it is not wired
-rather than appearing to work — a button that silently does nothing is worse than one
-that admits it.
+Toolbar actions call the `Api` (`js/workspace/actions.js`). An action whose prerequisite
+is absent -- no open project, no selected dataset, no bridge -- refuses before the call
+and says which prerequisite is missing. An action with no handler at all would report
+"no handler" in a toast rather than do nothing; `tests/test_cockpit_actions.py` clicks
+every toolbar button in every workspace and fails if any action is unaccounted for.
 
-The canvas regions are panel-mounted placeholders. MapLibre is already vendored in
-`app/web/vendor/` and the existing hub uses it; mounting a real map, 3D viewport or image
-viewer into a canvas element is the next step and does not change the framework.
+Map canvases mount MapLibre (`js/workspace/mapview.js`). The Textured Mesh and Point
+Cloud views, and the Digital Twin canvas, mount the WebGL viewer
+(`js/workspace/viewer3d.js`). Raster views draw the project's own products, or name the
+one that has not been produced yet. A few canvas regions are still labelled frames with
+no data source behind them: Flight's **Telemetry Charts** and **Camera**, Thermal's
+**Thermal Histogram**, and the Developers **API console**. They show their title and a
+one-line description, never numbers.
 
 ## Extending it
 

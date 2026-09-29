@@ -58,7 +58,11 @@ Desktop shell from a terminal:
 ```bash
 python main.py                 # classic single-screen UI (default)
 python main.py --ui cockpit    # the fourteen-workspace cockpit (docs/UI_GUIDE.md)
+ODK_UI=cockpit python main.py  # the same, from the environment (--ui wins if both are set)
 ```
+
+An unknown interface name is refused: the window does not open, and the reason is shown
+and written to `final_toolkit_outputs/logs/startup-error.log`.
 
 The desktop shell also starts the Hub REST service in-process on 127.0.0.1 (port 8000
 when free, otherwise any free port; `ODK_HUB=0` disables it), so the toolbar's **Hub**

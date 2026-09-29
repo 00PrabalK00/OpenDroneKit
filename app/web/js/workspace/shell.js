@@ -968,8 +968,11 @@ export class Shell {
           this.vehicleDot = el("span", { class: "status-dot idle" }),
           this.vehicleLabel = el("span", { text: " no aircraft" }),
         ]),
-        el("span", { title: "Projects are stored on this machine" }, [
-          el("span", { class: "status-dot idle" }), el("span", { text: " local-first" })]),
+        // Where this install keeps its projects, as get_state reports it (core/paths.py).
+        // It was a fixed "local-first" label with an idle dot in every state.
+        this.storageIndicator = el("span", { title: "Where projects are stored" }, [
+          this.storageDot = el("span", { class: "status-dot idle" }),
+          this.storageText = el("span", { class: "nav-storage", text: " storage —" })]),
         el("span", { class: "sep" }),
         this.clock = el("span", { class: "mono", text: "--:--:-- UTC" }),
         el("span", { class: "sep" }),
@@ -996,7 +999,8 @@ export class Shell {
       // so the one thing saying "none of this was measured" was the first thing to go.
       this.connectionChip = el("span", { class: "chip warn", text: "not connected to a project" }),
       el("span", { class: "sep" }),
-      el("span", { class: "mono", text: "v1.0" }),
+      // Was a literal "v1.0" while the package said 0.1.0. From get_state.
+      this.versionText = el("span", { class: "mono", title: "OpenDroneKit version", text: "version —" }),
     ]);
   }
 
@@ -1497,6 +1501,22 @@ export class Shell {
       this.hubText.title = hub.hub_error || (hub.hub_api ? `Hub service at ${hub.hub_api}` : "");
     }
 
+    // Storage and version come from the application; without it there is nothing true
+    // to show, so the frame says so instead of printing a plausible default.
+    const live = this.mode === "connected";
+    const dataRoot = live && this.state && this.state.dataRoot;
+    if (this.storageText) {
+      this.storageDot.className = `status-dot ${dataRoot ? "ok" : "idle"}`;
+      this.storageText.textContent = dataRoot ? " local storage" : " storage —";
+      this.storageIndicator.title = dataRoot
+        ? `Projects are stored on this machine, under ${dataRoot}`
+        : "Storage location unknown: not connected to the application";
+    }
+    if (this.versionText) {
+      const version = live && this.state && this.state.version;
+      this.versionText.textContent = version ? `v${version}` : "version —";
+    }
+
     const name = this.mode === "demo" ? DEMO.SITES[0] : project && project.name;
     this.siteDot.className = `status-dot ${name ? "ok" : "idle"}`;
     this.siteText.textContent = name ? ` ${name}`
@@ -1522,6 +1542,8 @@ export class Shell {
         dataset: state.dataset || state.active_dataset || null,
         epsg: state.display_epsg || null,
         layers: state.layers || [],
+        version: state.version || null,
+        dataRoot: (state.data_paths && state.data_paths.data_root) || null,
       };
     }
     const projects = await tryCall("list_projects");
@@ -1613,7 +1635,21 @@ export class Shell {
 
   /* --------------------------------------------------------- command palette */
 
-  openPalette() {
+  async openPalette() {
+    if (document.querySelector(".palette-backdrop")) return;
+    // The search box promises projects, missions and findings, and the palette listed
+    // only projects: a finding or a mission typed into it matched nothing. All three
+    // come from the open project now, and each opens where it lives.
+    const live = this.mode === "connected";
+    const [missions, findings] = live
+      ? await Promise.all([tryCall("list_mission_versions"), tryCall("find_annotations")])
+      : [null, null];
+    const latestMission = new Map();
+    for (const row of (missions && missions.versions) || []) {
+      const name = row.mission_name || "(unnamed)";
+      const seen = latestMission.get(name);
+      if (!seen || (row.version_num || 0) > (seen.version_num || 0)) latestMission.set(name, row);
+    }
     const items = [
       ...WORKSPACES.map((w) => ({ kind: "workspace", label: w.title, hint: "switch", run: () => this.open(w.id) })),
       { kind: "layout", label: "Reset workspace layout", run: () => this.dock.resetLayout() },
@@ -1624,15 +1660,40 @@ export class Shell {
       // The projects on this machine, each of which opens. This listed two demo site
       // names that did nothing when chosen, plus a finding and a mission that existed
       // nowhere -- on every install, connected or not.
-      ...(this.mode === "connected" ? (this.projects || []) : []).slice(0, 40).map((p) => ({
+      ...(live ? (this.projects || []) : []).slice(0, 40).map((p) => ({
         kind: "project", label: String(p.name), hint: "open", run: () => this.openProject(p.id, p.name),
+      })),
+      // Saved missions of the open project, each at its newest version. Choosing one
+      // opens Planning with it selected, as picking it in the Mission Browser does.
+      ...[...latestMission.values()].slice(0, 40).map((row) => {
+        const name = row.mission_name || "(unnamed)";
+        return {
+          kind: "mission", label: name, hint: `v${row.version_num ?? 1}`,
+          run: () => {
+            this.open("planning");
+            selection.select("mission", { id: name, label: `${name} (v${row.version_num ?? 1}, `
+              + `saved ${String(row.created_at || "").slice(0, 10) || "date unknown"})` });
+          },
+        };
+      }),
+      // The open project's findings. Choosing one opens AI Inspection with it selected,
+      // so Finding Details shows it and Accept/Reject/Flag act on it.
+      ...(((findings && findings.annotations) || []).slice(0, 80)).map((a) => ({
+        kind: "finding",
+        label: `${a.label || "finding"} · ${String(a.id || "").slice(0, 8)}`,
+        hint: [a.severity, a.status === "dismissed" ? "rejected" : a.status].filter(Boolean).join(" · "),
+        run: () => {
+          selection.select("finding", { id: String(a.id || "").slice(0, 8), full_id: a.id,
+                                        label: a.label || a.id });
+          this.open("inspection");
+        },
       })),
     ];
     this.palette(items, "");
   }
 
   palette(items, initial) {
-    const input = el("input", { placeholder: "Type a command, workspace, project or finding…", value: initial || "" });
+    const input = el("input", { placeholder: "Type a command, workspace, project, mission or finding…", value: initial || "" });
     const list = el("div", { class: "palette-list" });
     const backdrop = el("div", { class: "palette-backdrop" }, [
       el("div", { class: "palette" }, [input, list]),
