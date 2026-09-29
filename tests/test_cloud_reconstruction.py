@@ -72,11 +72,12 @@ def server(tmp_path, monkeypatch):
     organization = admin.get("/organizations", headers=headers).json()[0]["id"]
     project = admin.post(f"/organizations/{organization}/projects", headers=headers,
                          json={"name": "Remote site"}).json()["id"]
-    routes = {getattr(route, "path", "") for route in app.routes}
+    # A missing route answers FastAPI's generic "Not Found"; a present one knows no such job.
+    probe = admin.get("/jobs/999999/artifacts/x", headers=headers)
     yield {
         "endpoint": f"http://127.0.0.1:{port}/projects/{project}",
         "token": token,
-        "serves_artifacts": "/jobs/{job_id}/artifacts/{ref:path}" in routes,
+        "serves_artifacts": probe.json().get("detail") != "Not Found",
     }
     instance.should_exit = True
     thread.join(timeout=10)
