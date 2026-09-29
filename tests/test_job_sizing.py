@@ -132,12 +132,33 @@ class TestTheVerdictAgreesWithItself:
         assert "not on disk" in estimate.note
 
     @pytest.mark.parametrize("images", [1, 8, 40, 299, 301, 2000])
-    @pytest.mark.parametrize("memory", [0, 100, 573, 2500, 8000, 64000])
+    @pytest.mark.parametrize("memory", [0, 5, 36, 44, 45, 100, 573, 2500, 8000, 64000])
     @pytest.mark.parametrize("disk", [0, 500, 5_000_000])
     def test_note_verdict_and_chunk_never_contradict(self, images, memory, disk) -> None:
         e = size_job(images, memory_mb=memory, disk_mb=disk)
-        assert e.chunking_required == (e.recommended_chunk_size < images)
         assert e.note.startswith("This job should be split") == e.chunking_required
         assert ("should run as a single job" in e.note) == e.can_run_as_one_job
+        if not e.fits_one_image:
+            # Nothing fits: no chunk is offered as if it would.
+            assert e.recommended_chunk_size == 0 and not e.chunking_required
+            assert not e.can_run_as_one_job
+            assert e.note.startswith("This machine cannot run this job now")
+            assert not any("Run in chunks" in w for w in e.warnings)
+            return
+        assert e.chunking_required == (e.recommended_chunk_size < images)
+        if memory > 0:
+            # Whatever chunk is recommended must itself fit in what is free.
+            assert e.recommended_chunk_size * MEMORY_PER_IMAGE_MB <= memory
         if not e.fits_in_memory:
             assert e.chunking_required, "a job that does not fit was not split"
+
+    @pytest.mark.parametrize("images,memory", [(24, 36.0), (1, 30.0), (1, 5.0)])
+    def test_less_memory_than_one_image_refuses_instead_of_chunking(self, images, memory
+                                                                    ) -> None:
+        """Audit: 24 images at 36 MB free said "chunks of about 1 fit" though one image
+        is estimated at 45 MB, and 1 image at 30 MB said "Run in chunks of about 1"."""
+        e = size_job(images, memory_mb=memory, disk_mb=500000)
+        assert not e.fits_one_image and e.recommended_chunk_size == 0
+        assert "fit" not in e.note.split(":")[0] or "cannot" in e.note
+        assert any("splitting the job cannot help" in w for w in e.warnings)
+        assert e.to_dict()["fits_one_image"] is False

@@ -54,6 +54,9 @@ class JobEstimate:
     chunking_required: bool
     warnings: list[str] = field(default_factory=list)
     note: str = ""
+    # False when even a single image needs more memory than is free, so no chunk size
+    # helps; recommended_chunk_size is then 0 rather than a chunk that would not fit.
+    fits_one_image: bool = True
 
     @property
     def can_run_as_one_job(self) -> bool:
@@ -71,6 +74,7 @@ class JobEstimate:
             "can_run_as_one_job": self.can_run_as_one_job,
             "chunking_required": self.chunking_required,
             "recommended_chunk_size": self.recommended_chunk_size,
+            "fits_one_image": self.fits_one_image,
             "warnings": list(self.warnings),
             "note": self.note,
             "estimate_basis": (
@@ -150,6 +154,9 @@ def size_job(
         fits_disk = needed_disk <= disk
 
     too_many_to_match = image_count > EXHAUSTIVE_MATCH_LIMIT
+    # Chunking only helps while one image still fits. Below that, a chunk of one was
+    # being recommended as something that "fits" when it needed more than was free.
+    fits_one_image = memory <= 0 or MEMORY_PER_IMAGE_MB <= memory
     if fits_memory:
         by_memory = image_count
     else:
@@ -159,10 +166,19 @@ def size_job(
         if budget < MEMORY_PER_IMAGE_MB:
             budget = memory
         by_memory = int(budget // MEMORY_PER_IMAGE_MB)
-    chunk = max(1, min(EXHAUSTIVE_MATCH_LIMIT, by_memory, image_count))
-    chunking_required = chunk < image_count
+    if fits_one_image:
+        chunk = max(1, min(EXHAUSTIVE_MATCH_LIMIT, by_memory, image_count))
+    else:
+        chunk = 0
+    chunking_required = fits_one_image and chunk < image_count
 
-    if not fits_memory:
+    if not fits_one_image:
+        warnings.append(
+            f"Even one image needs an estimated {MEMORY_PER_IMAGE_MB:.0f} MB, more than "
+            f"the {memory:.0f} MB free now, so splitting the job cannot help. Close other "
+            "programs or run it on a machine with more free memory."
+        )
+    elif not fits_memory:
         warnings.append(
             f"Estimated peak memory {needed_memory:.0f} MB exceeds the {memory:.0f} MB "
             f"available. Run in chunks of about {chunk} images, or the job will fail "
@@ -180,7 +196,13 @@ def size_job(
             "square of the count. Use sequential or vocabulary-tree matching."
         )
 
-    if chunking_required:
+    if not fits_one_image:
+        note = (
+            f"This machine cannot run this job now. {image_count} image(s) need an "
+            f"estimated {needed_memory:.0f} MB, and only {memory:.0f} MB is free: less "
+            f"than the {MEMORY_PER_IMAGE_MB:.0f} MB a single image takes."
+        )
+    elif chunking_required:
         why = (
             f"at roughly {MEMORY_PER_IMAGE_MB:.0f} MB each they exceed the memory this "
             "machine has free for one pass"
@@ -216,6 +238,7 @@ def size_job(
         chunking_required=chunking_required,
         warnings=warnings,
         note=note,
+        fits_one_image=fits_one_image,
     )
 
 

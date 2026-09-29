@@ -1218,8 +1218,13 @@ export const ACTIONS = {
          dataset was reported "may not fit" beside a note that said it would. The verdict
          is can_run_as_one_job, and the note already states it with the figures. */
       const warnings = (result.warnings || []).join(" ");
+      /* Below the memory one image needs, no chunk size helps; this used to recommend
+         "chunks of about 1" that did not fit either. */
+      const verdict = result.can_run_as_one_job ? "Fits"
+        : result.fits_one_image === false ? "Cannot run here now"
+        : "Does not fit as one job";
       return {
-        message: `${result.can_run_as_one_job ? "Fits" : "Does not fit as one job"}: `
+        message: `${verdict}: `
           + `${result.note || `${count} images`}${warnings ? ` ${warnings}` : ""}`,
       };
     },
