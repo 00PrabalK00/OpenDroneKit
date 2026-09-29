@@ -131,6 +131,10 @@ def _serve(api: Any) -> ThreadingHTTPServer:
 
         def do_GET(self) -> None:  # noqa: N802
             relative = self.path.split("?", 1)[0].lstrip("/") or "workspace.html"
+            if relative == "__blank":
+                # A same-origin page that runs nothing, for setting localStorage.
+                self._send(b"<!doctype html><title>blank</title>", "text/html")
+                return
             path = (WEB / relative).resolve()
             if WEB.resolve() not in path.parents or not path.is_file():
                 self._send(b"", "text/plain", 404)
@@ -157,7 +161,8 @@ def _free_port() -> int:
 class LiveUI:
     """The workspace page, served against `api`, open in headless Chromium."""
 
-    def __init__(self, api: Any, workspace: str) -> None:
+    def __init__(self, api: Any, workspace: str, page: str = "workspace.html",
+                 ready: str = "!!document.querySelector('button.tbtn')") -> None:
         import requests
         import websocket
 
@@ -184,16 +189,30 @@ class LiveUI:
         self.socket = websocket.create_connection(
             pages[0]["webSocketDebuggerUrl"], timeout=1800, suppress_origin=True)
         self.counter = 0
-        url = f"http://127.0.0.1:{self.server.server_port}/workspace.html"
-        self._send("Page.navigate", url=url)
-        self.js(f"(async () => {{ await new Promise((r) => setTimeout(r, 1500)); "
-                f"localStorage.setItem('odk.workspace.last', '{workspace}'); return true; }})()")
+        origin = f"http://127.0.0.1:{self.server.server_port}"
+        url = f"{origin}/{page}"
+        # Choose the workspace from a blank page of the same origin, then open the app
+        # once. Loading the app first and navigating again while its startup was still
+        # calling the Api left the second load's scripts unserved now and then (seen as
+        # window.odk never appearing for 60 s), which made the classic-window tests flaky.
+        self._send("Page.navigate", url=f"{origin}/__blank")
+        chosen = False
+        for _ in range(200):
+            try:
+                chosen = bool(self.js(
+                    f"location.pathname === '/__blank' && document.readyState === 'complete' "
+                    f"&& (localStorage.setItem('odk.workspace.last', '{workspace}'), true)"))
+            except RuntimeError:
+                chosen = False
+            if chosen:
+                break
+            time.sleep(0.1)
+        assert chosen, "the blank page never loaded to choose the workspace"
         self._send("Page.navigate", url=url)
         deadline = time.time() + 60
         while time.time() < deadline:
             try:
-                if self.js("document.readyState === 'complete' && "
-                           "!!document.querySelector('button.tbtn')"):
+                if self.js(f"document.readyState === 'complete' && ({ready})"):
                     break
             except RuntimeError:
                 pass

@@ -28,7 +28,15 @@
     pre.scrollTop = pre.scrollHeight;
   }
 
-  function status(message) {
+  /* Counts status-bar writes that carry news: a refusal from a click made while the
+     window was still loading, a failed call, job progress. Ambient messages ('Map ready',
+     'OpenDroneKit ready.') are shown only while nothing newer has been said since
+     startup, so they never cover such a message; otherwise they go to the log only. */
+  let statusSeq = 0;
+  let ambientBase = 0;
+  function status(message, { ambient = false } = {}) {
+    if (ambient && statusSeq !== ambientBase) { log(message); return; }
+    if (!ambient) statusSeq += 1;
     $('#status-message').textContent = message;
     log(message);
   }
@@ -240,6 +248,7 @@
         refreshReportInfo();
         if (job.status === 'done' && onDone) onDone(job);
       } else {
+        statusSeq += 1;
         $('#status-message').textContent = `${job.name} ${job.percent}% — ${job.message}`;
       }
     }, 900);
@@ -982,7 +991,7 @@
     },
 
     'analysis.pipeline': async () => {
-      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value });
+      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value, ...runOnOptions() });
       if (result) {
         status('Pipeline started.');
         pollJob(result.job_id, (job) => {
@@ -1127,10 +1136,24 @@
     status(`Dataset imported: ${meta.image_count} images, ${meta.geotagged_count} geotagged.`);
   }
 
+  /* Where the reconstruction runs. "OpenDroneKit server" sends the imagery to the named
+     server project (core/reconstruction_remote.py); the Api refuses it, with the reason,
+     when the URL or token is missing -- it never quietly runs locally instead. The token
+     stays in this form and is not saved. */
+  function runOnOptions() {
+    if ($('#recon-run-on').value !== 'cloud') return { execution_mode: 'local' };
+    return {
+      execution_mode: 'cloud',
+      cloud_endpoint: $('#recon-cloud-endpoint').value.trim(),
+      cloud_token: $('#recon-cloud-token').value.trim()
+    };
+  }
+
   async function runReconstruction(engine) {
     const result = await tryCall('run_reconstruction', {
       engine: engine || $('#recon-engine').value,
-      profile: $('#recon-profile').value
+      profile: $('#recon-profile').value,
+      ...runOnOptions()
     });
     if (!result) return;
     status('Reconstruction started. Progress is in the Jobs tab.');
@@ -1143,6 +1166,7 @@
       const warnings = (payload.warnings || []).map((w) => `<div><span>warning</span><b>${w}</b></div>`).join('');
       modal('Reconstruction Complete', `<div class="info">${kv([
         ['Engine', payload.engine],
+        ['Ran on', payload.execution_mode_used === 'cloud' ? 'OpenDroneKit server' : 'this computer'],
         ['Registered', `${payload.registered_images} / ${payload.frame_count}`],
         ['Points', (payload.total_points || 0).toLocaleString()],
         ['Reprojection error', payload.reprojection_error_px ? payload.reprojection_error_px.toFixed(2) + ' px' : 'n/a'],
@@ -1239,7 +1263,12 @@
     const c = result.capabilities;
     const html = kv([
       ['pycolmap', flag(c.pycolmap)],
-      ['CUDA (COLMAP)', flag(c.pycolmap_cuda)],
+      ['CUDA (pycolmap)', flag(c.pycolmap_cuda)],
+      // Dense MVS runs through the native binary when the pycolmap wheel has no CUDA,
+      // so which binary was probed is part of the answer.
+      ['COLMAP binary', c.colmap_binary
+        ? String(c.colmap_binary).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))
+        : 'not found'],
       // The reason matters as much as the flag: a CUDA build that cannot run on this
       // GPU used to read "yes" here and then fail every dense run.
       ['Dense MVS', flag(c.dense_stereo) + (c.dense_stereo_reason
@@ -1325,6 +1354,9 @@
     $('#btn-terrain').onclick = menuHandlers['data.import_terrain'];
     $('#btn-add-layer').onclick = () => importLayer(['Geodata (*.tif;*.tiff;*.geojson;*.json)']);
     $('#btn-recon').onclick = () => runReconstruction($('#recon-engine').value);
+    $('#recon-run-on').onchange = () => {
+      $('#recon-cloud-fields').hidden = $('#recon-run-on').value !== 'cloud';
+    };
     $('#btn-pipeline').onclick = menuHandlers['analysis.pipeline'];
     $('#btn-report').onclick = menuHandlers['report.generate'];
     $('#btn-finding').onclick = menuHandlers['report.finding'];
@@ -1346,13 +1378,13 @@
 
   function initMap() {
     state.map = new OdkMap('map', {
-      onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.'); },
+      onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.', { ambient: true }); },
       onBasemapFallback: (message) => { $('#basemap-select').value = 'offline'; status(message); reportOfflineCache(); },
       onCursor: (lon, lat) => {
         $('#status-coords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;
       },
-      onMeasure: (text) => { $('#status-message').textContent = `${text} (map estimate; double-click to measure on the survey)`; },
+      onMeasure: (text) => { statusSeq += 1; $('#status-message').textContent = `${text} (map estimate; double-click to measure on the survey)`; },
       /* The running figure above is a spherical estimate from the basemap. On
          double-click the shape goes to the application, which measures it on the
          project's own orthomosaic/DSM -- with the over-the-ground length for a line --
@@ -1404,12 +1436,16 @@
     initMap();
     wireEvents();
     setTool('pan');
+    ambientBase = statusSeq;
     await refreshProject();
     await loadMissionTemplates();
     await showCapabilities(false);
     await refreshLayers();
     await renderJobs();
-    status('OpenDroneKit ready.');
+    // A message shown while starting (a refusal, a failed call) is newer and more
+    // useful than 'ready'; keep it on screen and only log that startup finished.
+    status('OpenDroneKit ready.', { ambient: true });
+    window.odk.ready = true;
   }
   window.addEventListener('pywebviewready', start);
   start();

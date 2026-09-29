@@ -80,6 +80,37 @@ def check_cloud_request(mode: str | None, endpoint: str | None, token: str | Non
         )
 
 
+def job_options(
+    *,
+    dense: bool | None = None,
+    use_gpu: bool | None = None,
+    max_image_size: int | None = None,
+    raster_px_per_m: float | None = None,
+    target_epsg: int | None = None,
+    ground_control: Any = None,
+) -> dict[str, Any]:
+    """The reconstruction settings a server job carries, leaving out the unset ones."""
+    options: dict[str, Any] = {}
+    if dense is not None:
+        options["dense"] = bool(dense)
+    if use_gpu is not None:
+        options["use_gpu"] = bool(use_gpu)
+    if max_image_size not in (None, "", 0):
+        options["max_image_size"] = int(max_image_size)
+    if raster_px_per_m not in (None, "", 0):
+        options["raster_px_per_m"] = float(raster_px_per_m)
+    if target_epsg not in (None, "", 0):
+        options["target_epsg"] = int(target_epsg)
+    if ground_control:
+        from .gcp import GroundControlPoint, control_to_payload
+
+        points = list(ground_control)
+        options["ground_control"] = (
+            control_to_payload(points) if all(isinstance(p, GroundControlPoint) for p in points)
+            else points)
+    return options
+
+
 class RemoteReconstructor:
     """Runs reconstruction as a job on an OpenDroneKit server and fetches the products."""
 
@@ -93,6 +124,12 @@ class RemoteReconstructor:
         poll_interval_s: float = 1.0,
         timeout_s: float = 60.0,
         max_wait_s: float = 12 * 3600.0,
+        dense: bool | None = None,
+        use_gpu: bool | None = None,
+        max_image_size: int | None = None,
+        raster_px_per_m: float | None = None,
+        target_epsg: int | None = None,
+        ground_control: Any = None,
     ) -> None:
         self.base_url, self.project_id = parse_endpoint(endpoint)
         self.token = str(token or os.environ.get(TOKEN_ENV, "")).strip()
@@ -107,6 +144,16 @@ class RemoteReconstructor:
         self.poll_interval_s = float(poll_interval_s)
         self.timeout_s = float(timeout_s)
         self.max_wait_s = float(max_wait_s)
+        # The settings the operator chose on the same screens as "Run on". Cloud runs used
+        # to send only engine and profile, so a chosen CRS, dense on/off, image size and
+        # marked control points were dropped without a word. They travel with the job now,
+        # and the server says which it applied (see _check_applied).
+        self.options = job_options(
+            dense=dense, use_gpu=use_gpu, max_image_size=max_image_size,
+            raster_px_per_m=raster_px_per_m, target_epsg=target_epsg,
+            ground_control=ground_control,
+        )
+        self.control_report: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------ http
 
@@ -175,6 +222,17 @@ class RemoteReconstructor:
 
     # ------------------------------------------------------------------ run
 
+    def verify_access(self) -> dict[str, Any]:
+        """Authenticate and confirm the project exists, before any local work.
+
+        The pipeline analyses every image before it reaches reconstruction, so a wrong
+        token or project id used to surface as a failed reconstruction minutes later.
+        Called first, it fails in under a second with the step that went wrong.
+        """
+        self._call("GET", "/auth/me", step="Authenticating")
+        return self._call("GET", f"/projects/{self.project_id}",
+                          step=f"Opening project {self.project_id}")
+
     def reconstruct(
         self,
         image_dir: str | Path,
@@ -216,12 +274,14 @@ class RemoteReconstructor:
         job = self._call(
             "POST", f"/projects/{self.project_id}/jobs", step="Submitting the job",
             payload={"kind": "reconstruction", "dataset_id": dataset_id,
-                     "engine": self.engine, "profile": profile},
+                     "engine": self.engine, "profile": profile, "options": self.options},
         )
         job_id = int(job["id"])
         request_record = {
             "server": self.base_url, "project_id": self.project_id, "dataset_id": dataset_id,
             "job_id": job_id, "engine": self.engine, "profile": profile,
+            "options": {k: v for k, v in self.options.items() if k != "ground_control"},
+            "ground_control_points": len(self.options.get("ground_control") or []),
             "submitted_utc": datetime.now(timezone.utc).isoformat(), "uploaded": uploaded,
         }
         request_path = out_dir / "cloud_request.json"
@@ -267,6 +327,9 @@ class RemoteReconstructor:
             )
         payload = json.loads(local[summary_ref].read_text(encoding="utf-8"))
         result = self._localise(payload, local)
+        self.control_report = payload.get("ground_control") if isinstance(
+            payload.get("ground_control"), dict) else None
+        result.warnings = list(result.warnings) + self._check_applied(payload, result)
         result.execution_mode_requested = "cloud"
         result.execution_mode_used = "cloud"
         result.cloud_request_path = str(request_path)
@@ -278,6 +341,43 @@ class RemoteReconstructor:
         ]
         emit(100, "Cloud reconstruction complete")
         return result
+
+    def _check_applied(self, payload: dict[str, Any], result: ReconstructionResult) -> list[str]:
+        """A warning for every requested setting the server's result does not show applied.
+
+        A server that honours job options records them as ``options_applied``. One older
+        than this client ignores them; its products are real but were not made the way
+        the operator asked, so each such setting is named instead of passed over.
+        """
+        requested = {k: v for k, v in self.options.items() if k != "use_gpu"}
+        if not requested:
+            return []
+        applied = payload.get("options_applied")
+        if not isinstance(applied, dict):
+            names = ", ".join(sorted(
+                "ground control points" if k == "ground_control" else k for k in requested))
+            return [
+                f"{self.base_url} does not report applying job options, so these settings "
+                f"were not used on the server: {names}. Update the server, or run on this "
+                "computer."
+            ]
+        label = {"ground_control": "ground control points", "target_epsg": "CRS (EPSG)",
+                 "dense": "dense MVS", "max_image_size": "max image size",
+                 "raster_px_per_m": "raster resolution"}
+        notes: list[str] = []
+        unused = sorted(label.get(k, k) for k in requested if k not in applied)
+        if unused:
+            notes.append(
+                f"The server's {result.engine or 'engine'} engine did not apply: "
+                f"{', '.join(unused)}.")
+        epsg = requested.get("target_epsg")
+        if "target_epsg" in applied and epsg is not None and result.crs_epsg not in (None, epsg):
+            notes.append(f"You asked for EPSG:{epsg}; the server produced EPSG:{result.crs_epsg}.")
+        if "ground_control" in applied and requested.get("ground_control") and not self.control_report:
+            notes.append(
+                "Ground control points were sent to the server but it returned no control "
+                "report, so they did not georeference this model.")
+        return notes
 
     def _download(
         self, job_id: int, refs: list[str], out_dir: Path, emit: Callable[[int, str], None]

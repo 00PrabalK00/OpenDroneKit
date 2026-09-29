@@ -18,6 +18,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any, Callable, Sequence
@@ -135,9 +136,10 @@ def colmap_executable() -> str | None:
 
 
 # Dense stereo used to read True whenever a native binary existed. A CUDA build of
-# COLMAP that was not compiled for this GPU's architecture (an RTX 50-series card
-# against a build without sm_120 kernels) exists, prints "with CUDA", and fails every
-# patch-match run with "the provided PTX was compiled with an unsupported toolchain".
+# COLMAP whose kernels this GPU and driver cannot load (on the RTX 5060 dev box: built
+# with CUDA 13.2 under a driver that supports 13.1) exists, prints "with CUDA", and
+# fails every patch-match run with "the provided PTX was compiled with an unsupported
+# toolchain". explain_dense_failure() names that cause and the fix.
 # The capability is therefore established by running patch-match once on a tiny
 # fixture (native_dense_probe), and the reason is reported next to the answer.
 def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
@@ -172,7 +174,7 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
     return caps
 
 
-_DENSE_PROBE_VERSION = 1
+_DENSE_PROBE_VERSION = 4
 
 
 def _dense_probe_cache_file() -> Path:
@@ -222,16 +224,33 @@ def native_dense_probe(binary: str, *, run: bool = True, use_cache: bool = True)
                 "reason": "Dense stereo has not been tested on this machine yet."}
 
     result = _run_dense_probe(binary)
-    if use_cache:
+    # A timeout is not an answer: the build may simply still be JIT-compiling its
+    # kernels for this GPU. Caching it would report "no" forever for a working build.
+    if use_cache and not result.get("undecided"):
         cache[key] = {"ok": bool(result["ok"]), "reason": str(result["reason"])}
         try:
             cache_file.write_text(json.dumps(cache, indent=2), encoding="utf-8")
         except OSError:
             pass
+    result.pop("undecided", None)
     return dict(result, probed=True)
 
 
-def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
+def _dense_probe_timeout() -> float:
+    """Seconds the probe waits for each COLMAP step (ODK_DENSE_PROBE_TIMEOUT_S, default 900).
+
+    A build whose kernels are older than the GPU (COLMAP 4.0.4 on an RTX 5060) is
+    JIT-compiled by the driver on its first patch-match: 292 s measured on the dev box,
+    then 10 s once the driver's compute cache holds the result. The old 180 s limit
+    killed that first run and reported a working build as broken.
+    """
+    try:
+        return max(1.0, float(os.environ.get("ODK_DENSE_PROBE_TIMEOUT_S", "") or 900.0))
+    except ValueError:
+        return 900.0
+
+
+def _run_dense_probe(binary: str, timeout: float | None = None) -> dict[str, Any]:
     """Undistort and patch-match a two-view synthetic scene with the native binary.
 
     The scene is a textured plane two units in front of two rectified pinhole views, so
@@ -240,6 +259,8 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
     """
     import tempfile
 
+    if timeout is None:
+        timeout = _dense_probe_timeout()
     size, focal = 96, 90.0
     baseline, depth = 0.2, 2.0
     rng = np.random.default_rng(7)
@@ -289,6 +310,14 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
         for label, command in steps:
             try:
                 done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return {"ok": False, "undecided": True, "reason": (
+                    f"Not decided: COLMAP {label} was still running after {timeout:.0f} s. "
+                    "A build whose GPU kernels predate this GPU is JIT-compiled by the "
+                    "NVIDIA driver on its first run (about 5 minutes for COLMAP 4.0.4 on "
+                    "an RTX 5060), and the driver caches the result. Raise "
+                    "ODK_DENSE_PROBE_TIMEOUT_S and check capabilities again; the result "
+                    "was not cached.")}
             except (OSError, subprocess.SubprocessError) as exc:
                 return {"ok": False, "reason": f"COLMAP {label} could not run: {exc}"}
             text = (done.stdout or "") + (done.stderr or "")
@@ -296,11 +325,113 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
             if done.returncode != 0 or error:
                 lines = text.strip().splitlines()
                 detail = error or (lines[-1] if lines else f"exit {done.returncode}")
-                return {"ok": False, "reason": f"COLMAP {label} failed on this machine: {detail}"}
+                reason = f"COLMAP {label} failed on this machine: {detail}"
+                advice = explain_dense_failure(binary, reason)
+                return {"ok": False, "reason": f"{reason} {advice}".strip()}
         depth_maps = list((dense / "stereo" / "depth_maps").glob("*.bin"))
         if not depth_maps:
             return {"ok": False, "reason": "COLMAP patch_match_stereo ran but wrote no depth maps."}
     return {"ok": True, "reason": "Native COLMAP ran patch-match stereo on this GPU."}
+
+
+_TOOLCHAIN_PATTERN = re.compile(rb"Cuda compilation tools, release (\d+\.\d+)")
+
+
+def binary_cuda_toolchain(binary: str) -> str:
+    """The CUDA toolkit release a COLMAP build was compiled with, read from the binary.
+
+    nvcc stamps "Cuda compilation tools, release X.Y" into the objects it produces. The
+    official Windows archive links cudart statically into colmap.exe; conda-forge builds
+    ship it next to the executable, so the neighbouring DLLs are searched too. Returns
+    "" when no stamp is found -- an unknown is reported as unknown, never guessed.
+    """
+    path = Path(binary)
+    if path.suffix.lower() in (".bat", ".cmd"):
+        for candidate in (path.parent / "bin" / "colmap.exe", path.parent / "colmap.exe"):
+            if candidate.is_file():
+                path = candidate
+                break
+    if not path.is_file():
+        return ""
+    candidates = [path]
+    candidates += sorted(p for p in path.parent.glob("*.dll")
+                         if p.name.lower().startswith(("colmap", "cudart")))
+    for candidate in candidates:
+        try:
+            with candidate.open("rb") as handle:
+                tail = b""
+                while True:
+                    chunk = handle.read(8 << 20)
+                    if not chunk:
+                        break
+                    found = _TOOLCHAIN_PATTERN.search(tail + chunk)
+                    if found:
+                        return found.group(1).decode("ascii")
+                    tail = chunk[-64:]
+        except OSError:
+            continue
+    return ""
+
+
+def driver_cuda_version() -> tuple[str, str]:
+    """(driver version, highest CUDA version it supports) from nvidia-smi, or ("", "")."""
+    try:
+        done = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    text = done.stdout or ""
+    driver = re.search(r"Driver Version:\s*([\d.]+)", text)
+    cuda = re.search(r"CUDA Version:\s*([\d.]+)", text)
+    return (driver.group(1) if driver else "", cuda.group(1) if cuda else "")
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text))
+
+
+def explain_dense_failure(binary: str, reason: str) -> str:
+    """Name the cause and the fix for a patch-match failure the user can act on.
+
+    "The provided PTX was compiled with an unsupported toolchain" is CUDA's
+    CUDA_ERROR_UNSUPPORTED_PTX_VERSION: the kernels in the build were produced by a
+    newer CUDA toolkit than the installed NVIDIA driver can load. On the RTX 5060 dev
+    box the official COLMAP 4.1.1 archive is built with CUDA 13.2 while driver 592.15
+    supports CUDA 13.1. Saying "no sm_120 kernels" there sent people after the wrong
+    fix, so the two versions are read and compared rather than assumed.
+    """
+    if "unsupported toolchain" not in reason.lower():
+        return ""
+    toolkit = binary_cuda_toolchain(binary)
+    driver, driver_cuda = driver_cuda_version()
+    if toolkit and driver_cuda and _version_tuple(toolkit) > _version_tuple(driver_cuda):
+        # Measured on the RTX 5060 dev box (driver 592.15, CUDA 13.1): conda-forge's
+        # colmap 4.2.0 cuda_129 build and the official COLMAP 4.0.4 Windows CUDA
+        # archive, both built with CUDA 12.9, run patch-match.
+        known_good = (
+            " (conda-forge's colmap cuda_129 builds and the official COLMAP 4.0.4 "
+            "Windows CUDA archive are built with CUDA 12.9)"
+            if _version_tuple(driver_cuda) >= (12, 9) else ""
+        )
+        return (
+            f"Cause: this COLMAP was compiled with CUDA {toolkit}, but NVIDIA driver "
+            f"{driver} supports CUDA only up to {driver_cuda}, so the driver cannot load "
+            f"its GPU kernels. Fix: update the NVIDIA driver to one that supports CUDA "
+            f"{toolkit}, or install a COLMAP built with CUDA {driver_cuda} or older"
+            f"{known_good} and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
+            "reconstruction on RTX 50-series')."
+        )
+    known = []
+    if toolkit:
+        known.append(f"compiled with CUDA {toolkit}")
+    if driver_cuda:
+        known.append(f"driver {driver} supports CUDA {driver_cuda}")
+    return (
+        "Cause: the build's GPU kernels cannot be loaded by this NVIDIA driver"
+        + (f" ({'; '.join(known)})" if known else "")
+        + ". Fix: install a COLMAP build compiled for this GPU with a CUDA toolkit the "
+        "driver supports, and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
+        "reconstruction on RTX 50-series')."
+    )
 
 
 def _first_error_line(text: str) -> str:
@@ -533,13 +664,17 @@ class ColmapReconstructor:
     ):
         self.profile = _normalize_profile(profile)
         settings = COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"])
-        self.settings = dict(settings)
+        # The caller's explicit choices, kept apart from the profile so that naming a
+        # profile again in reconstruct() cannot reset them. It did: the server passes the
+        # job's profile there, and a cloud run's dense and image-size choices were lost.
+        self._overrides: dict[str, Any] = {}
         if max_image_size is not None:
-            self.settings["max_image_size"] = int(max_image_size)
+            self._overrides["max_image_size"] = int(max_image_size)
         if raster_px_per_m is not None:
-            self.settings["raster_px_per_m"] = float(raster_px_per_m)
+            self._overrides["raster_px_per_m"] = float(raster_px_per_m)
         if dense is not None:
-            self.settings["dense"] = bool(dense)
+            self._overrides["dense"] = bool(dense)
+        self.settings = {**settings, **self._overrides}
         self.use_gpu = bool(use_gpu)
         # Whether GPU SIFT actually ran, as opposed to whether it was asked for.
         self._used_gpu_sift = False
@@ -550,9 +685,21 @@ class ColmapReconstructor:
         self.ground_control = list(ground_control or [])
         self.control_report: dict[str, Any] | None = None
         self.warnings: list[str] = []
+        self._cloud_is_dense = False
         self._should_cancel: Callable[[], bool] | None = None
 
     # -- helpers ---------------------------------------------------------
+
+    def _dense_advice(self, purpose: str) -> str:
+        """What to do about a sparse-only product, given whether dense MVS was asked for.
+
+        "Enable dense MVS" was said to operators who had enabled it and whose dense step
+        could not run; they are pointed at the reason instead.
+        """
+        if self.settings.get("dense", True):
+            return (f"Dense MVS was enabled but did not run (see 'Dense MVS skipped'); fix "
+                    f"that {purpose}.")
+        return f"Enable dense MVS {purpose}."
 
     def _warn(self, message: str) -> None:
         if message not in self.warnings:
@@ -990,8 +1137,9 @@ class ColmapReconstructor:
                 "Dense MVS skipped: "
                 + str(probe.get("reason") or "the native COLMAP build cannot run patch-match here").rstrip(". ")
                 + ". "
-                "Derived products come from the sparse cloud. Install a COLMAP build compiled "
-                "for this GPU (CUDA 12.8+ for RTX 50-series) for full-resolution dense output."
+                "Derived products come from the sparse cloud. See docs/INSTALLATION.md, "
+                "'Dense reconstruction on RTX 50-series', for a COLMAP build that runs "
+                "patch-match on this GPU and driver."
             )
             return empty
 
@@ -1109,10 +1257,14 @@ class ColmapReconstructor:
 
         requested = 1.0 / max(float(self.settings.get("raster_px_per_m", 16.0)), 1e-6)
         if density_floor > requested:
+            dense = self._cloud_is_dense
             self._warn(
                 f"Raster resolution relaxed from {requested:.3f} to {density_floor:.3f} m/px: "
-                f"{points_world.shape[0]:,} points cannot fill a finer grid. "
-                "Enable dense MVS for full-resolution products."
+                f"{points_world.shape[0]:,} {'dense' if dense else 'sparse'} points cannot fill "
+                "a finer grid. "
+                + ("More overlapping images registered, or a larger max image size, give "
+                   "dense MVS more to fuse." if dense
+                   else self._dense_advice("for full-resolution products"))
             )
             return density_floor
         return requested
@@ -1521,8 +1673,13 @@ class ColmapReconstructor:
             )
         if profile:
             self.profile = _normalize_profile(profile)
-            self.settings = dict(COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]))
+            self.settings = {**COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]),
+                             **self._overrides}
         self.warnings = []
+        # Whether the products below come from a fused dense cloud. The resolution and
+        # orthophoto warnings used to call every cloud "sparse" and advise enabling
+        # dense MVS -- including on runs where dense MVS had just produced the cloud.
+        self._cloud_is_dense = False
         self._should_cancel = should_cancel
 
         def progress(percent: int, message: str) -> None:
@@ -1607,6 +1764,7 @@ class ColmapReconstructor:
         dense_xyz, dense_rgb = self._run_dense(images_root, work_dir, sparse, progress)
         if dense_xyz.shape[0] > sparse_xyz.shape[0]:
             cloud_xyz, cloud_rgb = dense_xyz, dense_rgb
+            self._cloud_is_dense = True
         else:
             cloud_xyz, cloud_rgb = sparse_xyz, sparse_rgb
 
@@ -1814,10 +1972,13 @@ class ColmapReconstructor:
                 ortho_grid = fine
                 self._warn(
                     f"The orthomosaic is rectified at {fine['pixel_size']:.3f} m/px onto a surface "
-                    f"interpolated between {fine['surface_points']:,} sparse points, because the "
+                    f"interpolated between {fine['surface_points']:,} "
+                    f"{'dense' if self._cloud_is_dense else 'sparse'} points, because the "
                     f"DSM is only {raster['pixel_size']:.2f} m/px. Pixel colours are measured; "
                     "relief between the points is not, so raised objects (trees, roofs) lean "
-                    "and can be displaced. Dense MVS removes this limit."
+                    "and can be displaced. "
+                    + ("A denser fused cloud (more registered overlap) reduces this."
+                       if self._cloud_is_dense else self._dense_advice("to remove this limit"))
                 )
             else:
                 ortho = self._true_orthophoto(raster, registered, camera_map, image_dir, anchor, progress)
@@ -2161,6 +2322,12 @@ def build_reconstructor(engine: str, **kwargs: Any):
             token=str(kwargs.get("cloud_token") or ""),
             engine=name,
             profile=kwargs.get("profile", "standard"),
+            dense=kwargs.get("dense"),
+            use_gpu=kwargs.get("use_gpu"),
+            max_image_size=kwargs.get("max_image_size"),
+            raster_px_per_m=kwargs.get("raster_px_per_m"),
+            target_epsg=kwargs.get("target_epsg"),
+            ground_control=kwargs.get("ground_control"),
         )
     if name == "auto":
         name = "colmap" if _HAS_PYCOLMAP else "custom"

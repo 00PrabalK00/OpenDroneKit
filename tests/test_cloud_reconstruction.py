@@ -186,3 +186,119 @@ def test_the_cli_refuses_cloud_mode_without_a_server(tmp_path):
     assert refused.returncode != 0
     assert "needs --recon-cloud-endpoint" in refused.stderr
     assert not (tmp_path / "out").exists() or not any((tmp_path / "out").rglob("*.png"))
+
+
+# -- the other ways in: the desktop Api, the processing-run engine, the CLI preflight ----
+
+def _desktop_api(root: Path):
+    from app.api import Api
+    from app.session import AppSession
+    from app.store import ProjectStore
+
+    api = Api(AppSession(ProjectStore(root / "odk.db")))
+    assert api.create_project("cloud desktop", str(root / "project"))["ok"]
+    return api
+
+
+def _wait_job(api, job_id: str, limit_s: float = 900.0) -> dict:
+    deadline = time.time() + limit_s
+    while time.time() < deadline:
+        job = api.job_status(job_id)["job"]
+        if job["status"] in ("done", "failed", "cancelled"):
+            return job
+        time.sleep(1.0)
+    raise AssertionError("job did not finish")
+
+
+def test_the_desktop_api_no_longer_ignores_a_cloud_request(tmp_path, monkeypatch):
+    """execution_mode was dropped on the floor: a cloud request ran locally."""
+    monkeypatch.delenv("ODK_CLOUD_TOKEN", raising=False)
+    api = _desktop_api(tmp_path)
+    images = tmp_path / "images"
+    images.mkdir()
+    for call in (api.run_reconstruction, api.run_pipeline):
+        refused = call({"image_dir": str(images), "execution_mode": "cloud"})
+        assert refused["ok"] is False and "needs the server project URL" in refused["error"]
+        refused = call({"image_dir": str(images), "execution_mode": "cloud",
+                        "cloud_endpoint": "http://127.0.0.1:9/projects/1"})
+        assert refused["ok"] is False and "API token" in refused["error"]
+        refused = call({"image_dir": str(images), "execution_mode": "somewhere"})
+        assert refused["ok"] is False and "Unknown execution_mode" in refused["error"]
+    assert not api.list_jobs().get("jobs"), "a refused request must not start a job"
+
+
+def test_the_processing_run_engine_refuses_cloud_without_a_token(tmp_path, monkeypatch):
+    from core.errors import AppError
+    from core.reconstruction_engine import ReconstructionConfig, run_reconstruction
+
+    monkeypatch.delenv("ODK_CLOUD_TOKEN", raising=False)
+    images = tmp_path / "images"
+    images.mkdir()
+    config = ReconstructionConfig(image_folder=str(images), output_folder=str(tmp_path / "out"),
+                                  execution_mode="cloud",
+                                  cloud_endpoint="http://127.0.0.1:9/projects/1")
+    with pytest.raises(AppError, match="API token"):
+        run_reconstruction(config)
+
+
+def test_the_cli_stops_on_a_bad_token_before_analysing_any_image(server, tmp_path):
+    """A wrong token used to be found after every image had been analysed (5 min here)."""
+    images = tmp_path / "images"
+    images.mkdir()
+    import cv2
+
+    cv2.imwrite(str(images / "a.png"), np.zeros((64, 64, 3), np.uint8))
+    env = {k: v for k, v in os.environ.items() if k != "ODK_CLOUD_TOKEN"}
+    env["PYTHONIOENCODING"] = "utf-8"
+    started = time.monotonic()
+    refused = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "run_pipeline.py"), "--images", str(images),
+         "--output", str(tmp_path / "out"), "--recon-mode", "cloud",
+         "--recon-cloud-endpoint", server["endpoint"], "--recon-cloud-token", "wrong"],
+        capture_output=True, text=True, timeout=300, env=env, cwd=str(REPO_ROOT),
+    )
+    assert refused.returncode == 2, refused.stderr[-2000:]
+    assert "Authenticating failed" in refused.stderr and "HTTP 401" in refused.stderr
+    assert "Traceback" not in refused.stderr
+    assert "Analyzing image" not in refused.stderr
+    assert not list((tmp_path / "out").rglob("*_mask*.png"))
+    assert time.monotonic() - started < 240
+
+
+def test_the_processing_run_engine_reconstructs_on_the_server(server, tmp_path):
+    if not server["serves_artifacts"]:
+        pytest.skip("This services/api has no artifact download route.")
+    rasterio = pytest.importorskip("rasterio")
+    from core.reconstruction_engine import ReconstructionConfig, run_reconstruction
+
+    images = _survey_copy(tmp_path)
+    result = run_reconstruction(ReconstructionConfig(
+        image_folder=str(images), output_folder=str(tmp_path / "out"), profile="fast_preview",
+        execution_mode="cloud", cloud_endpoint=server["endpoint"], cloud_token=server["token"]))
+    assert result.quality_metrics["execution_mode_used"] == "cloud"
+    assert (tmp_path / "out" / "reconstruction_summary.json").is_file()
+    with rasterio.open(result.raw["orthomosaic_cog_path"]) as ortho:
+        assert ortho.crs.to_epsg() == 32617
+
+
+def test_the_desktop_api_reconstructs_on_the_server_and_registers_the_layers(server, tmp_path):
+    if not server["serves_artifacts"]:
+        pytest.skip("This services/api has no artifact download route.")
+    rasterio = pytest.importorskip("rasterio")
+
+    images = _survey_copy(tmp_path)
+    api = _desktop_api(tmp_path)
+    started = api.run_reconstruction({
+        "image_dir": str(images), "output_dir": str(tmp_path / "recon"), "profile": "fast_preview",
+        "execution_mode": "cloud", "cloud_endpoint": server["endpoint"], "cloud_token": server["token"]})
+    assert started["ok"], started
+    job = _wait_job(api, started["job_id"])
+    assert job["status"] == "done", job
+    payload = job["result"]
+    assert payload["execution_mode_used"] == "cloud"
+    assert any("Reconstructed on http://127.0.0.1" in w for w in payload["warnings"])
+    with rasterio.open(payload["orthomosaic_cog_path"]) as ortho:
+        assert ortho.crs.to_epsg() == 32617
+    assert Path(payload["orthomosaic_cog_path"]).resolve().is_relative_to((tmp_path / "recon").resolve())
+    names = [layer.get("name", "") for layer in api.list_layers()["layers"]]
+    assert any("rtho" in name for name in names), names

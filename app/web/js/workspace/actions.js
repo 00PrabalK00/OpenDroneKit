@@ -734,12 +734,17 @@ export const ACTIONS = {
     describe: "What this build can and cannot do.",
     async run() {
       const result = await call("capabilities");
-      const missing = Object.entries(result.capabilities || result)
+      const caps = result.capabilities || result;
+      const missing = Object.entries(caps)
         .filter(([, value]) => value === false)
         .map(([name]) => name);
+      /* "Unavailable: dense_stereo" alone left the operator guessing why; the probe
+         names the cause and the fix, so it travels with the list. */
+      const why = caps.dense_stereo === false && caps.dense_stereo_reason
+        ? ` Dense stereo: ${caps.dense_stereo_reason}` : "";
       return {
         message: missing.length
-          ? `Unavailable: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}`
+          ? `Unavailable: ${missing.slice(0, 4).join(", ")}${missing.length > 4 ? "…" : ""}.${why}`
           : "All capabilities available.",
       };
     },

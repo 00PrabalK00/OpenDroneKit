@@ -44,6 +44,9 @@ def _fake_colmap(tmp_path: Path, behaviour: str) -> Path:
             (out / "stereo" / "depth_maps").mkdir(parents=True, exist_ok=True)
             sys.exit(0)
         if command == "patch_match_stereo":
+            if {behaviour!r} == "slow":
+                import time
+                time.sleep(4)
             if {behaviour!r} == "ptx":
                 print("E0928 cudacc.cc:59] CUDA error at patch_match_cuda.cu:1683 - "
                       "the provided PTX was compiled with an unsupported toolchain.", file=sys.stderr)
@@ -124,3 +127,83 @@ def test_this_machines_colmap_is_probed_for_real():
     assert probe["reason"], "the answer must say why"
     caps = rc.engine_capabilities()
     assert caps["dense_stereo"] == (probe["ok"] or (rc._pycolmap_has_dense() and rc.pycolmap_has_cuda()))
+
+
+def _stamped_binary(tmp_path: Path, release: str) -> Path:
+    """A file carrying the stamp nvcc writes into what it compiles."""
+    binary = tmp_path / "bin" / "colmap.exe"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"\0" * 4096 + f"Cuda compilation tools, release {release}, V{release}.51".encode()
+                       + b"\0" * 4096)
+    return binary
+
+
+def test_the_toolkit_is_read_from_the_binary_and_the_bat_launcher_resolves_to_it(tmp_path):
+    binary = _stamped_binary(tmp_path, "13.2")
+    (tmp_path / "COLMAP.bat").write_text("@echo off\r\n", encoding="ascii")
+    assert rc.binary_cuda_toolchain(str(binary)) == "13.2"
+    assert rc.binary_cuda_toolchain(str(tmp_path / "COLMAP.bat")) == "13.2"
+    assert rc.binary_cuda_toolchain(str(tmp_path / "missing.exe")) == ""
+
+
+def test_a_toolkit_newer_than_the_driver_is_named_as_the_cause_with_the_fix(tmp_path, monkeypatch):
+    """The RTX 5060 box: official COLMAP 4.1.1 is CUDA 13.2, driver 592.15 supports 13.1."""
+    binary = _stamped_binary(tmp_path, "13.2")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("592.15", "13.1"))
+    advice = rc.explain_dense_failure(str(binary), "CUDA error ... unsupported toolchain.")
+    assert "compiled with CUDA 13.2" in advice
+    assert "driver 592.15 supports CUDA only up to 13.1" in advice
+    assert "ODK_COLMAP" in advice and "INSTALLATION.md" in advice
+
+
+def test_an_unknown_cause_is_not_guessed(tmp_path, monkeypatch):
+    binary = tmp_path / "colmap.exe"
+    binary.write_bytes(b"no stamp here")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("", ""))
+    advice = rc.explain_dense_failure(str(binary), "unsupported toolchain")
+    assert "13." not in advice and "compiled with CUDA" not in advice
+    assert rc.explain_dense_failure(str(binary), "out of memory") == ""
+
+
+def test_the_probe_reason_carries_the_explanation(tmp_path, monkeypatch):
+    binary = _fake_colmap(tmp_path, "ptx")
+    monkeypatch.setattr(rc, "binary_cuda_toolchain", lambda _b: "13.2")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("592.15", "13.1"))
+    result = rc.native_dense_probe(str(binary), use_cache=False)
+    assert result["ok"] is False
+    assert "unsupported toolchain" in result["reason"]
+    assert "Cause: this COLMAP was compiled with CUDA 13.2" in result["reason"]
+
+
+def test_a_probe_that_outlives_its_limit_is_undecided_and_not_cached(tmp_path, monkeypatch):
+    """COLMAP 4.0.4 on the RTX 5060 JIT-compiles its kernels on the first patch-match
+    (292 s measured, then 10 s). The old fixed 180 s limit killed that run and cached
+    "no" for a build that works. A timeout now says so and is retried next time."""
+    binary = _fake_colmap(tmp_path, "slow")
+    monkeypatch.setenv("ODK_DENSE_PROBE_TIMEOUT_S", "1")
+    first = rc.native_dense_probe(str(binary))
+    assert first["ok"] is False and first["probed"] is True
+    assert first["reason"].startswith("Not decided")
+    assert "ODK_DENSE_PROBE_TIMEOUT_S" in first["reason"] and "not cached" in first["reason"]
+    assert "undecided" not in first
+    cache = rc._dense_probe_cache_file()
+    assert not cache.exists() or rc._dense_probe_key(str(binary)) not in cache.read_text(encoding="utf-8")
+
+    monkeypatch.setenv("ODK_DENSE_PROBE_TIMEOUT_S", "60")
+    second = rc.native_dense_probe(str(binary))
+    assert second["ok"] is True, "given the time it needs, the same build is found to work"
+
+
+def test_the_default_limit_leaves_room_for_the_first_jit_compile(monkeypatch):
+    monkeypatch.delenv("ODK_DENSE_PROBE_TIMEOUT_S", raising=False)
+    assert rc._dense_probe_timeout() >= 600
+
+
+def test_the_fix_names_a_build_known_to_run_when_the_driver_can_load_it(tmp_path, monkeypatch):
+    binary = tmp_path / "colmap.exe"
+    binary.write_bytes(b"Cuda compilation tools, release 13.2, V13.2.0")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("592.15", "13.1"))
+    advice = rc.explain_dense_failure(str(binary), "unsupported toolchain")
+    assert "COLMAP 4.0.4" in advice and "CUDA 12.9" in advice
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("560.00", "12.6"))
+    assert "4.0.4" not in rc.explain_dense_failure(str(binary), "unsupported toolchain")

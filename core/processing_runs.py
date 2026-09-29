@@ -649,6 +649,7 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
             execution_mode=str(cfg.get("reconstruction_execution_mode", "local")),
             reuse_cache=bool(cfg.get("reconstruction_use_cache", True)),
             cloud_endpoint=str(cfg.get("reconstruction_cloud_endpoint", "")),
+            cloud_token=str(cfg.get("reconstruction_cloud_token", "")),
             max_points=int(cfg.get("reconstruction_max_points", 150_000)),
         )
         result = run_reconstruction(recon_cfg)

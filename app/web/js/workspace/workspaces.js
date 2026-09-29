@@ -96,7 +96,9 @@ const REPORT_FORMATS = { PDF: ["html", "pdf"], DOCX: ["html", "docx"],
  * altitude or an overlap changed the input element and nothing else -- the mission that
  * Plan then generated used the defaults, silently. */
 const settingChanged = (key, value) => {
-  selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+  // A token is a credential: the selection readout names it without echoing it.
+  const shown = key === "cloud_token" ? (value ? "(set)" : "(empty)") : value;
+  selection.select("setting", { id: key, label: `${key} = ${shown}`, key, value });
   if (key in reportChoice) {
     reportChoice[key] = value;
     window.dispatchEvent(new Event("odk:refresh"));
@@ -1177,6 +1179,15 @@ const processing = {
            above ground. Images that do not record that height need it stated here (or
            a terrain model); without it coverage is reported as not computed. */
         { key: "agl", label: "Flight height above ground", value: "", unit: "m" },
+        /* Where Process runs. "server" sends the imagery to an OpenDroneKit server
+           project (core/reconstruction_remote.py); a missing URL or token is refused by
+           the Api with the reason rather than run here. The token is kept in memory
+           for this window only. */
+        { group: "Where to run" },
+        { key: "run_on", label: "Run on", value: "this computer",
+          options: ["this computer", "OpenDroneKit server"] },
+        { key: "cloud_endpoint", label: "Server project URL", value: "", type: "url" },
+        { key: "cloud_token", label: "API token", value: "", type: "password" },
       ], settingChanged) },
       /* Was a fixed "EPSG:4326 / 7 GCPs / RTK fixed" on every project, including ones
          with no GCPs and no RTK at all. Read from the layers the project really has. */

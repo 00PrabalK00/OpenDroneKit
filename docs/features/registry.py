@@ -685,16 +685,19 @@ PROCESSING = [
       "environment is asked before a job starts rather than discovered mid-run.",
       "implemented", ["tests/test_honesty.py::TestNoSyntheticDensification",
                       "tests/test_api_measurements.py::TestReconstructionCapabilities",
-                      "tests/test_dense_stereo_probe.py"],
+                      "tests/test_dense_stereo_probe.py",
+                      "tests/test_dense_mvs_runs.py"],
       "The densification fake -- cloning sparse points with Gaussian jitter and calling "
       "it MVS -- was removed and a test guards its absence. api.reconstruction_"
       "capabilities() now reports dense_available honestly with the specific missing "
       "piece named. A present binary is no longer taken as proof: patch-match is run "
-      "once on a two-view fixture (cached per binary and driver), because the stock "
-      "CUDA build has no sm_120 kernels and fails on an RTX 50-series card. Reaching "
-      "verified needs a COLMAP build that runs patch-match on the host GPU; that is a "
-      "dependency, not code to write, and no post-processing turns a sparse cloud "
-      "into a dense one."),
+      "once on a two-view fixture (cached per binary and driver). On the RTX 5060 dev "
+      "box the installed COLMAP 4.1.1 is built with CUDA 13.2 and the driver loads "
+      "only 13.1, so it fails and the reason says so. With COLMAP 4.0.4 or "
+      "conda-forge's colmap 4.2.0 cuda_129 (both CUDA 12.9) dense MVS runs: 20 "
+      "Aukerman frames gave 672,441 fused points and a 0.32 m/px DSM "
+      "(docs/INSTALLATION.md). tests/test_dense_mvs_runs.py runs it for real only "
+      "when ODK_DENSE_COLMAP names a working build, so it stays implemented here."),
     F("pr.mesh", "Surface mesh", "workers", "Processing",
       "Poisson surface reconstruction with density trimming (untextured, and named "
       "mesh_obj_path rather than textured); the dependency-free engine drapes its "

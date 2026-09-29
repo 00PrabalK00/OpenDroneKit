@@ -37,6 +37,7 @@ class ReconstructionConfig:
     reuse_cache: bool = True
     cloud_endpoint: str = ""
     max_points: int = 150_000
+    cloud_token: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -144,6 +145,25 @@ def run_reconstruction(config: ReconstructionConfig) -> ReconstructionResult:
             f"Unknown reconstruction profile: {config.profile!r}",
             recovery_action=f"Available profiles: {', '.join(available_reconstruction_profiles())}",
         )
+
+    if str(config.execution_mode or "local").strip().lower() == "cloud":
+        # A cloud request runs on the named OpenDroneKit server or is refused here; the
+        # local engine would refuse it too, but only after pointing at the CLI.
+        from .reconstruction_remote import RemoteReconstructor, check_cloud_request
+
+        try:
+            check_cloud_request("cloud", config.cloud_endpoint, config.cloud_token)
+        except ValueError as exc:
+            raise AppError(ERR_INVALID_INPUT, str(exc)) from None
+        remote = RemoteReconstructor(config.cloud_endpoint, token=config.cloud_token,
+                                     profile=config.profile)
+        raw = remote.reconstruct(image_dir=image_folder, output_dir=output_folder,
+                                 profile=config.profile)
+        result = _convert(raw)
+        (output_folder / "reconstruction_summary.json").write_text(
+            json.dumps(result.to_dict(), indent=2), encoding="utf-8"
+        )
+        return result
 
     reconstructor = CustomDroneReconstructor(
         max_points=int(config.max_points),

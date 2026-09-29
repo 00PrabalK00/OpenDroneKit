@@ -278,7 +278,8 @@ def _run_reconstruction(db: Session, job: Job, progress) -> tuple[list[str], int
     output = _job_dir(job)
 
     progress(2, "Starting reconstruction")
-    reconstructor = build_reconstructor(job.engine, profile=job.profile)
+    settings = _reconstruction_settings(_options(job))
+    reconstructor = build_reconstructor(job.engine, profile=job.profile, **settings)
     # Keywords, not positions: the second positional parameter is crack_mask_dir, and
     # passing the output folder there sent every job's files to ./reconstruction.
     result = reconstructor.reconstruct(
@@ -289,6 +290,22 @@ def _run_reconstruction(db: Session, job: Job, progress) -> tuple[list[str], int
     progress(96, "Collecting artifacts")
 
     payload = result.to_dict() if hasattr(result, "to_dict") else {}
+    # Say which requested settings the engine that ran actually used, so a client can
+    # tell the operator about any it did not (the custom engine takes none of them).
+    from core.reconstruction_colmap import ColmapReconstructor
+
+    honoured = isinstance(reconstructor, ColmapReconstructor)
+    applied = {key: value for key, value in _options(job).items()
+               if honoured and key in RECONSTRUCTION_OPTIONS}
+    if "ground_control" in applied:
+        applied["ground_control"] = len(applied["ground_control"])
+    payload["options_applied"] = applied
+    payload["ground_control"] = getattr(reconstructor, "control_report", None)
+    ignored = sorted(key for key in _options(job) if key not in applied)
+    if ignored:
+        payload.setdefault("warnings", []).append(
+            f"The {payload.get('engine') or job.engine} engine does not apply these settings, "
+            f"so they were not used: {', '.join(ignored)}.")
     paths: list[str] = []
     for key, value in payload.items():
         if not key.endswith(("_path", "_paths")):
@@ -490,9 +507,74 @@ _RUNNERS = {
 }
 
 
+RECONSTRUCTION_OPTIONS = ("dense", "use_gpu", "max_image_size", "raster_px_per_m",
+                          "target_epsg", "ground_control")
+
+
+def _reconstruction_settings(options: dict[str, Any]) -> dict[str, Any]:
+    """A reconstruction job's options as build_reconstructor keywords.
+
+    The server used to build every reconstruction from engine and profile alone, so a
+    cloud run from the desktop dropped the operator's CRS, dense choice, image size and
+    marked control points without saying so.
+    """
+    from core.gcp import control_from_payload
+
+    settings: dict[str, Any] = {}
+    if "dense" in options:
+        settings["dense"] = bool(options["dense"])
+    if "use_gpu" in options:
+        settings["use_gpu"] = bool(options["use_gpu"])
+    if options.get("max_image_size") is not None:
+        settings["max_image_size"] = int(options["max_image_size"])
+    if options.get("raster_px_per_m") is not None:
+        settings["raster_px_per_m"] = float(options["raster_px_per_m"])
+    if options.get("target_epsg") is not None:
+        settings["target_epsg"] = int(options["target_epsg"])
+    if options.get("ground_control"):
+        settings["ground_control"] = control_from_payload(options["ground_control"])
+    return settings
+
+
 def _validate_options(db: Session, project_id: int, payload: JobSubmit) -> None:
     """Refuse at submission what would only fail later on the worker."""
     options = payload.options
+    if payload.kind == "reconstruction":
+        unknown = sorted(set(options) - set(RECONSTRUCTION_OPTIONS))
+        if unknown:
+            # An option the server does not know would be ignored on the worker.
+            raise HTTPException(status_code=422, detail=(
+                f"Unknown reconstruction option(s): {', '.join(unknown)}. Supported: "
+                f"{', '.join(RECONSTRUCTION_OPTIONS)}."))
+        for key in ("dense", "use_gpu"):
+            if key in options and not isinstance(options[key], bool):
+                raise HTTPException(status_code=422, detail=f"options.{key} must be true or false.")
+        for key, low in (("max_image_size", 64), ("target_epsg", 1024)):
+            value = options.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                      or value < low):
+                raise HTTPException(status_code=422, detail=(
+                    f"options.{key} must be an integer of at least {low}."))
+        value = options.get("raster_px_per_m")
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                  or value <= 0):
+            raise HTTPException(status_code=422, detail="options.raster_px_per_m must be positive.")
+        if options.get("target_epsg") is not None:
+            try:
+                from pyproj import CRS
+            except ImportError:
+                CRS = None  # the engine then warns that it could not georeference
+            try:
+                if CRS is not None:
+                    CRS.from_epsg(int(options["target_epsg"]))
+            except Exception as exc:  # noqa: BLE001 - pyproj raises its own CRSError
+                raise HTTPException(status_code=422, detail=(
+                    f"options.target_epsg {options['target_epsg']} is not a known EPSG code: {exc}"
+                )) from exc
+        try:
+            _reconstruction_settings(options)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     if payload.kind == "detection":
         if payload.dataset_id is None:
             raise HTTPException(status_code=422, detail="A detection job requires dataset_id.")
