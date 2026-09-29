@@ -241,6 +241,41 @@ def deliver_event(
     return notified
 
 
+def emit(organization_id: int, event: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Announce a committed state change to webhooks and the live stream.
+
+    Called by routers and job workers *after* their own commit, so a receiver is never
+    told about a row that a later rollback removed. It opens its own session because
+    the caller's may already be closed (a worker thread) or mid-request.
+
+    Best-effort, like delivery itself: a failure here is logged and reported in the
+    return value, never raised, because the state change the caller made already
+    happened and must not be reported to its client as failed.
+    """
+    outcome: dict[str, Any] = {"event": event, "webhooks": [], "stream_event_id": None}
+    session = get_session_factory()()
+    try:
+        outcome["webhooks"] = deliver_event(session, organization_id, event, payload)
+    except Exception as exc:  # noqa: BLE001 - reported, not raised
+        outcome["webhook_error"] = f"{type(exc).__name__}: {exc}"
+        _log_emit_failure(event, outcome["webhook_error"])
+    finally:
+        session.close()
+    try:
+        outcome["stream_event_id"] = broker.publish(organization_id, event, payload)
+    except Exception as exc:  # noqa: BLE001
+        outcome["stream_error"] = f"{type(exc).__name__}: {exc}"
+        _log_emit_failure(event, outcome["stream_error"])
+    return outcome
+
+
+def _log_emit_failure(event: str, error: str) -> None:
+    from ..observability import LOGGER  # noqa: PLC0415
+
+    LOGGER.warning("event emission failed", extra={"event": "event.emit_failed",
+                                                   "odk_event": event, "error": error})
+
+
 def _send(webhook_id: int, event: str, payload: dict[str, Any]) -> None:
     """Deliver one event on a worker thread, recording the outcome either way."""
     session = get_session_factory()()
@@ -329,6 +364,8 @@ def publish_telemetry(
     require_role(db, user, organization_id, Role.pilot)
     wire = payload.model_dump(mode="json")
     event_id = broker.publish(organization_id, "telemetry.updated", wire)
+    # Webhook subscribers to telemetry.updated are told too; the stream already has it.
+    deliver_event(db, organization_id, "telemetry.updated", wire)
     return {
         "accepted": True,
         "broker_event_id": event_id,

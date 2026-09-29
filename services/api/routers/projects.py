@@ -11,6 +11,7 @@ import json
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,7 @@ from ..schemas import (
     ProjectOut,
 )
 from ..security import CurrentUser, require_project_role, require_role, role_on_project
+from .events import emit
 
 router = APIRouter(tags=["projects"])
 
@@ -245,6 +247,40 @@ def create_mission(
            organization_id=project.organization_id, resource=f"mission:{mission.id}",
            detail={"template": payload.template, "waypoints": mission.waypoint_count})
     db.commit()
+    emit(project.organization_id, "mission.created", _mission_event(mission))
+    return mission
+
+
+def _mission_event(mission: Mission) -> dict[str, Any]:
+    return {
+        "mission_id": mission.id, "project_id": mission.project_id, "name": mission.name,
+        "template": mission.template, "version": mission.version,
+        "waypoint_count": mission.waypoint_count, "distance_m": mission.distance_m,
+    }
+
+
+class MissionUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+@router.patch("/missions/{mission_id}", response_model=MissionOut)
+def update_mission(
+    mission_id: int, payload: MissionUpdate,
+    user: CurrentUser, db: Annotated[Session, Depends(get_db)],
+) -> Mission:
+    """Rename a mission. The plan itself is immutable: re-planning creates a new version."""
+    mission = db.get(Mission, mission_id)
+    if mission is None:
+        raise HTTPException(status_code=404, detail="Mission not found.")
+    project = _project_or_404(db, mission.project_id)
+    require_role(db, user, project.organization_id, Role.pilot)
+    previous = mission.name
+    mission.name = payload.name.strip()
+    record(db, action="mission_updated", user_id=user.id,
+           organization_id=project.organization_id, resource=f"mission:{mission.id}",
+           detail={"previous_name": previous, "name": mission.name})
+    db.commit()
+    emit(project.organization_id, "mission.updated", _mission_event(mission))
     return mission
 
 

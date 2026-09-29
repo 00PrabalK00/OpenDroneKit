@@ -123,15 +123,22 @@ class TestFailureReporting:
         assert job["artifacts"] == []
         assert job["crs_epsg"] is None
 
-    def test_a_kind_without_a_worker_fails_rather_than_pretending(self, client, project):
-        """A stage that is not built must not report success with nothing behind it."""
-        headers, _, project_id, _ = project
+    def test_every_advertised_kind_has_a_worker(self, client, project):
+        """No kind may be accepted with 202 and then fail for want of an implementation."""
+        from services.api.routers.processing import _RUNNERS, SUPPORTED_KINDS
+
+        assert set(_RUNNERS) == SUPPORTED_KINDS
+
+    def test_a_detection_job_over_an_empty_dataset_fails_with_a_reason(self, client, project):
+        headers, _, project_id, dataset_id = project
         job_id = client.post(f"/projects/{project_id}/jobs", headers=headers, json={
-            "kind": "report"}).json()["id"]
+            "kind": "detection", "dataset_id": dataset_id,
+            "options": {"model_key": "heuristic"}}).json()["id"]
 
         job = wait_for_terminal(client, headers, job_id)
         assert job["status"] == "failed"
-        assert "no worker" in job["error"].lower()
+        assert "no uploaded imagery" in job["error"]
+        assert job["artifacts"] == []
 
     def test_a_failed_job_keeps_a_traceback(self, client, project):
         headers, _, project_id, dataset_id = project

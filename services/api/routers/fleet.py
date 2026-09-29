@@ -24,6 +24,7 @@ from ..audit import record
 from ..db import get_db
 from ..models import Aircraft, Battery, Maintenance, PilotProfile, Role
 from ..security import CurrentUser, require_role
+from .events import emit
 
 router = APIRouter(tags=["fleet"])
 
@@ -240,7 +241,12 @@ def log_flight(
            organization_id=aircraft.organization_id, resource=f"aircraft:{aircraft_id}",
            detail={"hours": hours, "pilot_id": pilot_id})
     db.commit()
-    return _aircraft_out(aircraft)
+    out = _aircraft_out(aircraft)
+    emit(aircraft.organization_id, "flight.completed", {
+        "aircraft_id": aircraft_id, "hours": float(hours), "pilot_id": pilot_id,
+        "aircraft_flight_count": aircraft.flight_count,
+    })
+    return out
 
 
 @router.get("/organizations/{organization_id}/fleet/status")

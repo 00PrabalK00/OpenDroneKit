@@ -127,6 +127,31 @@ def execute_run(
     }
 
 
+def enqueue_api_job(job_id: int, app: Any = None) -> Any:
+    """Send an API processing job to the broker. Called by the API when
+    ODK_JOB_BACKEND=celery; the worker runs it with the same code the API would."""
+    if app is None:
+        from services.worker.celery_app import build_app
+
+        app = build_app()
+    return app.send_task("odk.api.run_job", args=[int(job_id)])
+
+
+def run_api_job(job_id: int) -> dict[str, Any]:
+    """Body of the API-job task: claim and run one queued job from the shared database."""
+    from services.api.db import get_session_factory
+    from services.api.models import Job
+    from services.api.routers.processing import _run_job
+
+    _run_job(int(job_id))
+    session = get_session_factory()()
+    try:
+        job = session.get(Job, int(job_id))
+        return {"job_id": int(job_id), "status": job.status if job is not None else "missing"}
+    finally:
+        session.close()
+
+
 def register(app: Any) -> Any:
     """Attach the task to a Celery app.
 
@@ -144,6 +169,10 @@ def register(app: Any) -> Any:
                               meta={"run_id": run_id, "percent": percent, "message": message})
 
         return execute_run(project_root, run_id, stages, on_progress=report)
+
+    @app.task(name="odk.api.run_job")
+    def run_api_job_task(job_id: int) -> dict[str, Any]:
+        return run_api_job(job_id)
 
     return run_processing
 

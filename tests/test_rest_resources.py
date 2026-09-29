@@ -168,19 +168,35 @@ class TestRestReports:
         assert "not evidence that zero defects" in report["payload"]["defect_note"]
 
 
+def _dataset_with_image(client, headers, project_id):
+    from hub_api_helpers import upload
+
+    dataset_id = client.post(f"/projects/{project_id}/datasets", headers=headers,
+                             json={"name": "Imagery"}).json()["id"]
+    upload(client, headers, dataset_id)
+    return dataset_id
+
+
 class TestRestAIJobs:
-    def test_inference_request_is_persistent_without_claiming_a_result(self, client, project):
+    def test_inference_request_is_persistent_without_claiming_a_result(
+        self, client, project, monkeypatch,
+    ):
+        # External worker mode: the API records the request and claims no result until
+        # a worker has run it.
+        monkeypatch.setenv("ODK_AI_WORKER", "external")
         headers, _, project_id = project
+        dataset_id = _dataset_with_image(client, headers, project_id)
         response = client.post(f"/projects/{project_id}/ai-jobs", headers=headers, json={
             "task": "segmentation",
-            "model_key": "solar_det",
-            "input_ref": "dataset:17/frame:DJI_0042.JPG",
+            "model_key": "heuristic",
+            "input_ref": f"dataset:{dataset_id}/frame:concrete_cracked_public_domain.jpg",
             "parameters": {"score_threshold": 0.4},
         })
         assert response.status_code == 201, response.text
         job = response.json()
         assert job["status"] == "pending_worker"
-        assert "No result is claimed" in job["note"]
+        assert job["result"] is None
+        assert "None is claimed" in job["note"]
         assert job["parameters"] == {"score_threshold": 0.4}
         assert client.get(f"/ai-jobs/{job['id']}", headers=headers).json() == job
         assert client.get(f"/projects/{project_id}/ai-jobs", headers=headers).json() == [job]
@@ -206,8 +222,9 @@ class TestRestContainment:
         created_report = client.post(
             f"/projects/{project_id}/reports", headers=owner, json={"title": "Private"},
         ).json()
+        dataset_id = _dataset_with_image(client, owner, project_id)
         created_job = client.post(f"/projects/{project_id}/ai-jobs", headers=owner, json={
-            "task": "detection", "model_key": "corrosion_det", "input_ref": "dataset:9",
+            "task": "detection", "model_key": "heuristic", "input_ref": f"dataset:{dataset_id}",
         }).json()
 
         _register(client, "engineer@restricted.example.com", organization_name="Personal")

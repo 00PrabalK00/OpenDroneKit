@@ -26,6 +26,7 @@ from ..audit import record
 from ..db import get_db, dumps_geometry, loads_geometry
 from ..models import Defect, Job, Project, Role
 from ..security import CurrentUser, require_project_role
+from .events import emit
 
 router = APIRouter(tags=["inspection"])
 
@@ -197,7 +198,9 @@ def create_defect(
            organization_id=project.organization_id, resource=f"defect:{defect.id}",
            detail={"category": defect.category, "source": defect.source})
     db.commit()
-    return _defect_out(defect)
+    out = _defect_out(defect)
+    emit(project.organization_id, "defect.created", out.model_dump(mode="json"))
+    return out
 
 
 @router.post("/defects/{defect_id}/review", response_model=DefectOut)
@@ -244,7 +247,9 @@ def review_defect(
            organization_id=project.organization_id, resource=f"defect:{defect.id}",
            detail={"decision": payload.decision})
     db.commit()
-    return _defect_out(defect)
+    out = _defect_out(defect)
+    emit(project.organization_id, "defect.reviewed", out.model_dump(mode="json"))
+    return out
 
 
 @router.get("/projects/{project_id}/defects/summary")
@@ -337,6 +342,8 @@ def measure_volume(
                 return path
         return ""
 
+    from ..paths import from_storage_ref  # noqa: PLC0415
+
     dsm = find("dsm")
     if not dsm:
         raise HTTPException(
@@ -350,8 +357,9 @@ def measure_volume(
     from core.dsm_analysis import NotGeoreferenced, estimate_volume
 
     try:
+        dtm = find("dtm")
         result = estimate_volume(
-            dsm, dtm_path=find("dtm") or None,
+            from_storage_ref(dsm), dtm_path=from_storage_ref(dtm) if dtm else None,
             polygon_xy=payload.polygon_xy, base_elevation_m=payload.base_elevation_m,
         )
     except NotGeoreferenced as exc:

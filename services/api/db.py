@@ -15,17 +15,28 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Iterator
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-DEFAULT_SQLITE_URL = "sqlite:///./opendronekit.db"
+def default_sqlite_url() -> str:
+    """SQLite in the per-user hub directory, not the current working directory.
+
+    An install that already has ./opendronekit.db from the old cwd-relative default
+    keeps using it until the per-user database exists, so upgrading never makes
+    existing fleet and project records disappear.
+    """
+    from .paths import hub_data_dir, legacy_or  # noqa: PLC0415
+
+    path = legacy_or(Path("opendronekit.db"), hub_data_dir() / "opendronekit.db")
+    return f"sqlite:///{path.resolve().as_posix()}"
 
 
 def database_url() -> str:
     """Connection string, from the environment so deployment does not need a rebuild."""
-    return os.environ.get("ODK_DATABASE_URL", DEFAULT_SQLITE_URL).strip() or DEFAULT_SQLITE_URL
+    return os.environ.get("ODK_DATABASE_URL", "").strip() or default_sqlite_url()
 
 
 def is_postgres(url: str | None = None) -> bool:

@@ -28,6 +28,7 @@ from ..db import get_db
 from ..models import Dataset, Project, Role, UploadSession
 from ..security import CurrentUser, require_role
 from ..paths import storage_root
+from .events import emit
 
 router = APIRouter(tags=["datasets"])
 
@@ -257,6 +258,18 @@ def complete_upload(
     project = _project_or_404(db, dataset.project_id)
     require_role(db, user, project.organization_id, Role.pilot)
 
+    if session.completed_at is not None:
+        # Completing twice is a retry after a lost response, not a new upload. The
+        # chunks are gone by now, so answer with what was recorded the first time
+        # instead of reporting every chunk as missing.
+        destination = _dataset_dir(session.dataset_id) / session.filename
+        return {
+            "upload_id": upload_id, "filename": session.filename,
+            "bytes": session.total_bytes, "sha256": session.actual_sha256,
+            "checksum_verified": bool(session.sha256), "path": str(destination),
+            "dataset_file_count": dataset.file_count, "already_completed": True,
+        }
+
     expected = _expected_chunks(session.total_bytes, session.chunk_size)
     indices, received = _received(session)
     missing = sorted(set(range(expected)) - indices)
@@ -302,8 +315,13 @@ def complete_upload(
            detail={"filename": session.filename, "bytes": written, "sha256": actual})
     db.commit()
 
-    return {
+    result = {
         "upload_id": upload_id, "filename": session.filename, "bytes": written,
         "sha256": actual, "checksum_verified": bool(session.sha256),
         "path": str(destination), "dataset_file_count": dataset.file_count,
     }
+    emit(project.organization_id, "dataset.uploaded", {
+        **{key: value for key, value in result.items() if key != "path"},
+        "dataset_id": dataset.id, "project_id": project.id,
+    })
+    return result
