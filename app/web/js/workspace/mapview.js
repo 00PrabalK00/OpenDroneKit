@@ -122,7 +122,6 @@ const BASEMAP_TILES = {
   offline: { tiles: [`${TILE_ORIGIN}/tiles/{z}/{x}/{y}.png?provider=satellite`], maxzoom: 20, attribution: "Locally cached tiles" },
 };
 let currentBasemap = "satellite";
-const mounted = new Set();
 
 function styleFor(key) {
   const spec = BASEMAP_TILES[key] || BASEMAP_TILES.satellite;
@@ -147,7 +146,11 @@ function liveMaps() {
 export function setBasemap(key) {
   if (!BASEMAP_TILES[key]) return false;
   currentBasemap = key;
-  for (const map of liveMaps()) map.setStyle(styleFor(key));
+  for (const map of liveMaps()) {
+    map.setStyle(styleFor(key));
+    // A new style drops every added source; the overlays and markers go back on top.
+    drawPinned(map);
+  }
   return true;
 }
 
@@ -231,7 +234,10 @@ export function mountMap(container, {
     if (!/tile|fetch|network|Failed/i.test(message) || reportedOffline) return;
     reportedOffline = true;
     const fallBack = !offline && currentBasemap !== "offline" && !tileLoaded;
-    if (fallBack) map.setStyle(styleFor("offline"));
+    if (fallBack) {
+      map.setStyle(styleFor("offline"));
+      drawPinned(map);
+    }
     container.appendChild(el("div", { class: "canvas-overlay bl" }, [
       el("span", { class: "chip warn", text: fallBack
         ? "no network — showing the offline tile cache"
@@ -239,7 +245,6 @@ export function mountMap(container, {
     ]));
   });
 
-  mounted.add(map);
   map.on("load", () => {
     const placeholder = container.querySelector(".placeholder");
     if (placeholder) placeholder.remove();
