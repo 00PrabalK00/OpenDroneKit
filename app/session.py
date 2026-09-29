@@ -112,6 +112,10 @@ class AppSession:
         # Manual preflight checks the operator has confirmed, by check id, for the
         # current connection and plan.
         self.preflight_acknowledged: set[str] = set()
+        # What the planner warned about the current plan (flat-ground assumption, more
+        # than one battery, a route it had to guess...). Preflight's Mission Valid reads
+        # it: a plan the planner itself qualified is not simply "validated".
+        self.mission_plan_warnings: list[str] = []
         self.no_fly_polygons: list[list[list[float]]] = []
         # The last capture match (Api.match_captures), read by Request Reflight.
         self.capture_report: dict[str, Any] | None = None
@@ -164,6 +168,7 @@ class AppSession:
         # Project-scoped state must not leak between projects.
         self.mission_plan = None
         self.mission_plan_dict = {}
+        self.mission_plan_warnings = []
         self.mission_uploaded = False
         self.preflight_acknowledged = set()
         self.layers.clear()

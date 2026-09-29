@@ -240,15 +240,22 @@ def camera_reported(telemetry: DroneTelemetry) -> bool | None:
     return True if raw.get("camera_information") else None
 
 
-def check_rth_altitude(profile: DroneProfile) -> CheckResult:
+def check_rth_altitude(profile: DroneProfile, source: str = "") -> CheckResult:
+    """The RTH / altitude limits that will be flown, checked against their bounds.
+
+    ``source`` says where the numbers came from (the plan, or a drone profile when no
+    plan exists yet), so a pass on a generic profile's defaults does not read as the
+    mission's own setting. Nothing here reads the autopilot's RTL_ALT.
+    """
     msgs = validate_safety_settings(profile)
     rth_issues = [m for m in msgs if m.field in ("rth_altitude_m", "max_altitude_m", "min_altitude_m")]
     if rth_issues:
         first = rth_issues[0]
         return CheckResult("rth_altitude", "RTH Altitude", SEVERITY_BLOCK,
                            first.message, fix_action=first.fix_action or "Adjust drone profile.")
+    origin = f" ({source})" if source else ""
     return CheckResult("rth_altitude", "RTH Altitude", SEVERITY_PASS,
-                       f"RTH {profile.rth_altitude_m:.0f} m within bounds.")
+                       f"RTH {profile.rth_altitude_m:.0f} m{origin} within bounds.")
 
 
 def check_mission_valid(mission_summary: dict[str, Any] | None) -> CheckResult:
@@ -262,8 +269,14 @@ def check_mission_valid(mission_summary: dict[str, Any] | None) -> CheckResult:
                            f"Mission has {len(issues)} validation error(s).",
                            fix_action="Fix mission in planner.", details={"issues": issues})
     if issues:
+        # The warnings themselves, not only how many: "3 warning(s)" gives an operator
+        # nothing to judge the plan by.
+        text = [str(i).split(":", 1)[1].strip() if str(i).lower().startswith("warning:")
+                else str(i) for i in issues]
         return CheckResult("mission_valid", "Mission Valid", SEVERITY_WARN,
-                           f"Mission validated with {len(issues)} warning(s).",
+                           f"Mission validated with {len(issues)} warning(s): "
+                           + " | ".join(text),
+                           fix_action="Read the planner's warnings before flight.",
                            details={"issues": issues})
     return CheckResult("mission_valid", "Mission Valid", SEVERITY_PASS, "Mission validated.")
 
@@ -400,6 +413,7 @@ def run_preflight(
     free_storage_mb: float | None = None,
     gimbal_ok: bool | None = None,
     camera_ok: bool | None = None,
+    rth_source: str = "",
 ) -> PreflightReport:
     telemetry: DroneTelemetry
     try:
@@ -433,7 +447,7 @@ def run_preflight(
     checks.append(check_storage_ready(free_mb_available=free_storage_mb))
     checks.append(check_mission_valid(mission_summary))
     checks.append(check_mission_uploaded(mission_uploaded, drone.is_connected() and not link_lost))
-    checks.append(check_rth_altitude(drone_profile))
+    checks.append(check_rth_altitude(drone_profile, rth_source))
     checks.append(check_geofence(mission_summary, geofence))
     checks.append(check_no_fly_zones(mission_summary, no_fly_zones))
     checks.append(check_weather_acknowledged(weather_acknowledged))

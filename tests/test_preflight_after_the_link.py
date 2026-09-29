@@ -91,3 +91,34 @@ def test_a_declared_obstacle_avoidance_is_not_a_measured_one():
     result = check_obstacle_avoidance(DroneProfile(obstacle_avoidance="medium"))
     assert result.severity != "pass" and result.requires_manual
     assert "declares medium" in result.message
+
+
+def test_mission_valid_carries_what_the_planner_warned(flown):
+    """"Mission validated." rested on the waypoint count alone, so a plan the planner had
+    just qualified (here: no terrain model, flat ground assumed) got a clean tick."""
+    api, _ = flown
+    planned = api.plan_mission({"template": "grid", "altitude_m": 60})
+    assert planned["ok"] and planned["warnings"], planned
+    valid = checks(api.run_preflight())["mission_valid"]
+    assert valid["severity"] == "warning", valid
+    assert "flat plane" in valid["message"], valid
+    assert len(valid["details"]["issues"]) == len(planned["warnings"])
+
+
+def test_the_rth_check_names_where_its_number_came_from(tmp_path):
+    api = Api(AppSession(ProjectStore(tmp_path / "projects.db")))
+    api.create_project("rth source", str(tmp_path / "project"))
+    unplanned = checks(api.run_preflight())["rth_altitude"]
+    assert "no plan yet" in unplanned["message"], unplanned
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 60, "rth_altitude_m": 90})["ok"]
+    planned = checks(api.run_preflight())["rth_altitude"]
+    assert "RTH 90 m (the plan's setting)" in planned["message"], planned
+
+
+def test_a_new_project_does_not_inherit_the_last_plans_warnings(flown, tmp_path):
+    api, _ = flown
+    assert api._session.mission_plan_warnings  # noqa: SLF001
+    api.create_project("next site", str(tmp_path / "next"))
+    assert api._session.mission_plan_warnings == []  # noqa: SLF001
+    assert checks(api.run_preflight())["mission_valid"]["message"] == "No mission selected."

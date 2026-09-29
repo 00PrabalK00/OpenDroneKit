@@ -4635,6 +4635,8 @@ class Api:
         self._session.audit("mission_planned", {"template": template, "waypoints": len(plan.waypoints)})
         # Extended in place: plan_mission keeps appending to this same list afterwards.
         warnings.extend(self._endurance_warnings(plan, options or {}))
+        # The same list, so warnings appended after this point reach preflight too.
+        self._session.mission_plan_warnings = warnings
         return {
             "summary": {
                 "template": template,
@@ -5350,8 +5352,12 @@ class Api:
                     setattr(profile, key, float(constraints[key]))
             mission_summary = (MissionManager.summarize_plan(plan) if plan is not None
                                else {"waypoints": len(plan_dict.get("waypoints") or [])})
-            mission_summary["issues"] = ([] if mission_summary.get("waypoints")
-                                         else ["error: the plan has no waypoints"])
+            # "Mission validated." used to rest on the waypoint count alone, ticking
+            # a plan the planner had just qualified -- flat ground assumed, three
+            # batteries needed, a route it had to guess. Those are carried as warnings.
+            mission_summary["issues"] = (
+                ([] if mission_summary.get("waypoints") else ["error: the plan has no waypoints"])
+                + [f"warning: {w}" for w in getattr(self._session, "mission_plan_warnings", [])])
             geofence, no_fly = plan_airspace(plan_dict, self._session.no_fly_polygons)
 
         report = run_preflight(
@@ -5365,6 +5371,10 @@ class Api:
             geofence=geofence,
             no_fly_zones=no_fly,
             free_storage_mb=free_storage_mb,
+            rth_source=("the plan's setting" if plan_dict and (plan_dict.get("safety_constraints")
+                                                              or {}).get("rth_altitude_m") is not None
+                        else f"drone profile '{profile.name}' default; no plan yet"
+                        if not plan_dict else f"drone profile '{profile.name}'"),
         )
         # Confirmations persist for this connection and plan, so confirming the weather
         # once is not undone by the next refresh of the checklist.
