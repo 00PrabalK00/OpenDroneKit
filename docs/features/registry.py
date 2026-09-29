@@ -478,7 +478,9 @@ FLIGHT = [
       "against the connected aircraft and plan, and both UIs show it; before, no UI "
       "reached it. The camera passes only on the payload's CAMERA_INFORMATION (it "
       "defaulted to 'Camera ready.'), and geofence / no-fly results are computed from "
-      "the path (they were hardcoded to pass)."),
+      "the path (they were hardcoded to pass). Over a link silent for longer than "
+      "TELEMETRY_STALE_AFTER_S the connection, GPS, home and battery checks block "
+      "instead of passing on the last values heard."),
     F("fl.telemetry", "Live telemetry", "core", "Flight",
       "Position, battery, GPS, RC link and mission progress streamed to subscribers.",
       "verified", ["tests/test_telemetry_subscribers.py::TestDelivery",
@@ -1475,10 +1477,13 @@ PLATFORM = [
       "attention before the next job.",
       "implemented", ["tests/test_fleet.py::TestAircraftService",
                       "tests/test_fleet.py::TestFleetStatus",
-                      "tests/test_flight_end_to_end.py::TestFleetOnAFreshDatabase"],
+                      "tests/test_flight_end_to_end.py::TestFleetOnAFreshDatabase",
+                      "tests/test_launcher_environment.py"],
       "The desktop app records against a local organisation it creates on first use; "
       "on a new install every fleet record failed with a FOREIGN KEY error because only "
-      "the web service created organisations."),
+      "the web service created organisations. It needs SQLAlchemy: OpenDroneKit.bat "
+      "checks requirements.txt before launch and offers to install what the conda "
+      "environment lacks, and a fleet call without it names the missing package."),
     F("fm.battery", "Battery management", "hub", "Fleet",
       "Cycle count against a per-battery limit, measured health, and retirement, each "
       "surfaced as a warning rather than left for the reader to compute.",
