@@ -2818,7 +2818,10 @@ class Api:
         details["chart_samples"] = [[s["distance_m"], s["z"]] for s in samples[::stride]]
         details["chart_stride"] = stride
         result["measurement_id"] = self._record_measurement(
-            "profile", float(result["surface_length_m"]), "m", line_lonlat, dsm, details,
+            # The walked length only when every sample had an elevation; a partial sum
+            # is shorter than the line and is not the profile's length.
+            "profile", float(result["surface_length_m"] if result.get("surface_length_complete")
+                             else result["planar_length_m"]), "m", line_lonlat, dsm, details,
         )
         return ok(**{k: v for k, v in result.items() if k != "ok"})
 
@@ -2890,10 +2893,17 @@ class Api:
                 along = sample_profile(dsm, self._lonlat_to_raster_xy(dsm, points))
             except (FileNotFoundError, ValueError):
                 along = {}
-            if along.get("ok"):
+            if along.get("ok") and along.get("surface_length_complete"):
                 payload["surface_length_m"] = along["surface_length_m"]
-                if along.get("note"):
-                    payload["surface_note"] = along["note"]
+            elif along.get("ok"):
+                # A walked length summed over only the spans with elevation came out
+                # shorter than the map distance on a real survey (96 m for a 100 m line).
+                # Partial, so not offered as the over-the-ground length.
+                payload["surface_note"] = (
+                    f"Over-the-ground length not given: {along['samples_without_data']} of "
+                    f"{along['sample_count']} samples along the line have no elevation "
+                    f"(DSM holes or outside it). Over the {along['surface_covers_planar_m']} m "
+                    f"that has data it is {along['surface_length_m']} m.")
         unit = "m2" if kind == "area" else "m"
         payload["measurement_id"] = self._record_measurement(
             kind, float(measurement["value"]), unit, points, raster,

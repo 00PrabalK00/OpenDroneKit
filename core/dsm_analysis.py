@@ -422,10 +422,12 @@ def elevation_profile(
 
     known = [s for s in samples if s["z"] is not None]
     surface_length = 0.0
+    covered = 0.0
     for first, second in zip(samples, samples[1:]):
         if first["z"] is None or second["z"] is None:
             continue
         run = second["distance_m"] - first["distance_m"]
+        covered += run
         surface_length += float(np.hypot(run, second["z"] - first["z"]))
     gaps = len(samples) - len(known)
 
@@ -436,6 +438,11 @@ def elevation_profile(
         "spacing_m": round(step, 4),
         "planar_length_m": round(travelled, 3),
         "surface_length_m": round(surface_length, 3),
+        # The planar length those surface spans cover. Equal to planar_length_m only when
+        # every sample had an elevation; otherwise surface_length_m is a partial figure
+        # and can come out SHORTER than the map distance.
+        "surface_covers_planar_m": round(covered, 3),
+        "surface_length_complete": len(known) == len(samples),
         "sample_count": len(samples),
         "samples_without_data": gaps,
         "samples": samples,

@@ -1468,6 +1468,8 @@ export function describeMeasurement(result) {
     parts.push(`${m.kind} ${round(m.value)} ${unit}`);
     if (result.surface_length_m !== undefined) {
       parts.push(`over the ground ${round(result.surface_length_m)} m`);
+    } else if (result.surface_note) {
+      parts.push(result.surface_note);
     }
   }
   const preferred = result.preferred;
