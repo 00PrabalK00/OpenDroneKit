@@ -83,19 +83,19 @@ def _normalize_profile(name: str) -> str:
 
 
 CLOUD_REFUSAL = (
-    "Cloud reconstruction is not available: this build is offline-first and never sends "
-    "imagery off the machine, so --recon-mode cloud cannot run. Re-run with local "
-    "execution, or submit the dataset to a self-hosted OpenDroneKit server "
-    "(services/api) with the SDK's submit_job()."
+    "This engine runs on this machine and cannot honour execution_mode='cloud'. Cloud "
+    "runs go to a self-hosted OpenDroneKit server through the remote engine: "
+    "--recon-mode cloud --recon-cloud-endpoint http(s)://<server>/projects/<id>."
 )
 
 
 def refuse_cloud_mode(mode: str | None) -> None:
-    """Refuse a cloud request up front instead of quietly running it locally.
+    """A local engine refuses a cloud request instead of quietly running it locally.
 
     Both engines used to accept execution_mode="cloud", run locally, and add a warning
     to the result -- so the flag looked like it did something, and an operator who
     asked for remote processing only learned otherwise from a warning after the run.
+    Cloud requests are served by core.reconstruction_remote.RemoteReconstructor.
     """
     if str(mode or "").strip().lower() == "cloud":
         raise ValueError(CLOUD_REFUSAL)

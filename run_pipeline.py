@@ -17,7 +17,8 @@ if __package__ in (None, ""):
 
 from core.multisensor import build_capture_bundle_from_folders
 from core.pipeline import PipelineConfig, run_pipeline
-from core.reconstruction import available_reconstruction_profiles, refuse_cloud_mode
+from core.reconstruction import available_reconstruction_profiles
+from core.reconstruction_remote import TOKEN_ENV, check_cloud_request
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -130,8 +131,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["local", "cloud"],
         default="local",
         help=(
-            "Reconstruction execution mode. 'cloud' is refused: this build is offline-first "
-            "and never uploads imagery; use a self-hosted server via the SDK for remote runs."
+            "Reconstruction execution mode. 'cloud' uploads the imagery to the self-hosted "
+            "OpenDroneKit server project named by --recon-cloud-endpoint, runs the job there "
+            "and downloads its products; nothing is uploaded without that endpoint."
         ),
     )
     parser.add_argument(
@@ -142,7 +144,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recon-cloud-endpoint",
         default="",
-        help="Cloud endpoint URL for reconstruction job submission in cloud mode.",
+        help="Server project for cloud mode: http(s)://<server>/projects/<id>.",
+    )
+    parser.add_argument(
+        "--recon-cloud-token",
+        default="",
+        help=f"API token for the cloud-mode server. Defaults to the {TOKEN_ENV} environment variable.",
     )
     parser.add_argument(
         "--coverage-recipe",
@@ -267,7 +274,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     try:
-        refuse_cloud_mode(args.recon_mode)
+        check_cloud_request(args.recon_mode, args.recon_cloud_endpoint, args.recon_cloud_token)
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -311,6 +318,7 @@ def main() -> None:
         reconstruction_execution_mode=str(args.recon_mode or "local"),
         reconstruction_use_cache=not bool(args.recon_no_cache),
         reconstruction_cloud_endpoint=str(args.recon_cloud_endpoint or ""),
+        reconstruction_cloud_token=str(args.recon_cloud_token or ""),
         reconstruction_engine=str(args.engine or "auto"),
         reconstruction_dense=args.dense,
         reconstruction_target_epsg=args.epsg,

@@ -2102,6 +2102,16 @@ def build_reconstructor(engine: str, **kwargs: Any):
     from .reconstruction import CustomDroneReconstructor
 
     name = str(engine or "auto").strip().lower()
+    if str(kwargs.get("execution_mode") or "local").strip().lower() == "cloud":
+        # The server picks between its own engines by the same names.
+        from .reconstruction_remote import RemoteReconstructor
+
+        return RemoteReconstructor(
+            str(kwargs.get("cloud_endpoint") or ""),
+            token=str(kwargs.get("cloud_token") or ""),
+            engine=name,
+            profile=kwargs.get("profile", "standard"),
+        )
     if name == "auto":
         name = "colmap" if _HAS_PYCOLMAP else "custom"
     if name == "colmap":

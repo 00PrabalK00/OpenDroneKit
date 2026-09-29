@@ -23,7 +23,8 @@ from .health_scoring import derive_asset_id, evaluate_asset_health, load_asset_h
 from .models import ensure_model_layout, migrate_legacy_models, model_status
 from .multisensor import MultiSensorConfig, MultiSensorProcessor
 from .propagation import CrackPropagationForecaster, PropagationPhysicsConfig, run_fenicsx_phasefield
-from .reconstruction import CustomDroneReconstructor, refuse_cloud_mode
+from .reconstruction import CustomDroneReconstructor
+from .reconstruction_remote import check_cloud_request
 from .reporting import write_json, write_markdown_report
 
 
@@ -98,6 +99,8 @@ class PipelineConfig:
     reconstruction_execution_mode: str = "local"
     reconstruction_use_cache: bool = True
     reconstruction_cloud_endpoint: str = ""
+    # Bearer token for that server; ODK_CLOUD_TOKEN is read when this is empty.
+    reconstruction_cloud_token: str = ""
     # "auto" prefers COLMAP when pycolmap is importable, else the dependency-free engine.
     reconstruction_engine: str = "auto"
     reconstruction_dense: bool | None = None
@@ -152,6 +155,7 @@ class StructuralFaultPipeline:
                 execution_mode=self.config.reconstruction_execution_mode,
                 use_cache=self.config.reconstruction_use_cache,
                 cloud_endpoint=self.config.reconstruction_cloud_endpoint,
+                cloud_token=self.config.reconstruction_cloud_token,
                 dense=self.config.reconstruction_dense,
                 target_epsg=self.config.reconstruction_target_epsg,
             )
@@ -202,7 +206,11 @@ class StructuralFaultPipeline:
 
         # Before any per-image work: a cloud request used to be discovered only after
         # the whole analysis stage, and then silently run locally.
-        refuse_cloud_mode(self.config.reconstruction_execution_mode)
+        check_cloud_request(
+            self.config.reconstruction_execution_mode,
+            self.config.reconstruction_cloud_endpoint,
+            self.config.reconstruction_cloud_token,
+        )
         _emit_progress(1, "Preparing model layout")
         ensure_model_layout()
         model_migration = migrate_legacy_models()
