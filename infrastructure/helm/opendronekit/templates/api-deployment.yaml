@@ -48,6 +48,12 @@ spec:
               value: {{ .Values.logLevel | quote }}
             - name: ODK_CORS_ORIGINS
               value: {{ .Values.corsOrigins | quote }}
+            # Jobs go to Celery only when a broker and workers are configured; otherwise
+            # this pod runs them on its own threads.
+            - name: ODK_JOB_BACKEND
+              value: {{ if and .Values.worker.brokerUrl (gt (int .Values.worker.replicas) 0) }}"celery"{{ else }}"thread"{{ end }}
+            - name: ODK_BROKER_URL
+              value: {{ .Values.worker.brokerUrl | quote }}
           # Liveness only asks whether the process is up. Readiness asks whether the
           # database and object store actually answer, which is the difference between
           # "running" and "able to do the job" -- a pod that cannot reach PostGIS must

@@ -27,7 +27,8 @@ ENV PYTHONUNBUFFERED=1 PYTHONPATH=/app
 RUN useradd --create-home --uid 10002 odkworker && mkdir -p /data/storage && chown -R odkworker /data/storage
 USER odkworker
 
-# Placeholder until a distributed queue exists: the API currently runs jobs on its own
-# worker threads, so this container stays alive and reports readiness without claiming
-# to consume a queue that is not there yet.
-CMD ["python", "-c", "import time, core.geo; print('worker ready (queue consumer not implemented)', flush=True)\nwhile True: time.sleep(3600)"]
+# The Celery consumer. With ODK_JOB_BACKEND=celery the API enqueues each processing job
+# as odk.api.run_job and this worker runs it against the shared database and storage.
+# The same image runs the AI inference worker with
+#   python -m services.worker.ai_worker
+CMD ["python", "-m", "services.worker.tasks"]
