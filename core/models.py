@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import shutil
 from typing import Any
@@ -58,6 +59,18 @@ def models_root() -> Path:
 
 def registry_path() -> Path:
     return models_root() / "model_registry.json"
+
+
+def extra_weights_root() -> Path | None:
+    """A second place to look for weights, after the models folder beside the registry.
+
+    ODK_MODEL_WEIGHTS_DIR names it, for weights kept on another drive or shared between
+    checkouts. The local folder always wins, and the registry and the digests it records
+    still come from this checkout, so a file found here is verified exactly like one
+    found locally.
+    """
+    override = os.environ.get("ODK_MODEL_WEIGHTS_DIR", "").strip()
+    return Path(override) if override else None
 
 
 def _default_registry() -> dict[str, Any]:
@@ -225,7 +238,11 @@ def resolve_model_path(model_key: str) -> Path | None:
         return None
     path = Path(spec.path)
     if not path.is_absolute():
-        path = models_root() / path
+        local = models_root() / path
+        extra = extra_weights_root()
+        if not local.exists() and extra is not None and (extra / path).exists():
+            local = extra / path
+        path = local
     return path.resolve()
 
 
