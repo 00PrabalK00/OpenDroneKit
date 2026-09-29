@@ -1448,9 +1448,27 @@ def _load_terrain_samples_from_ascii_grid(path: str, frame: AssetReferenceFrame)
     return _terrain_model_from_samples_local(samples_local, source=f"terrain_ascii:{src.name}")
 
 
+def _raster_crs_or_none(path: str):
+    try:
+        import rasterio
+
+        with rasterio.open(path) as ds:
+            return ds.crs
+    except Exception:  # noqa: BLE001 - not a raster rasterio reads
+        return None
+
+
 def _load_terrain_samples_from_raster(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
     src = Path(path)
     if not src.exists():
+        return None
+    from core.terrain_cache import TerrainCacheError, refuse_non_metre_heights
+
+    try:
+        # Heights are read as metres below; a feet DEM would put the ground 3.28x
+        # too high. None here surfaces as "terrain source could not be read".
+        refuse_non_metre_heights(_raster_crs_or_none(str(src)), src.name)
+    except TerrainCacheError:
         return None
     try:
         import rasterio
@@ -1555,6 +1573,11 @@ def _load_terrain_model_from_path(path: str, frame: AssetReferenceFrame) -> dict
             return model
 
     if ext in {".asc", ".grd"}:
+        # A grid with a .prj is georeferenced: its x/y are in that CRS (often a UTM
+        # zone), not the mission's local frame, and it must be reprojected -- and
+        # refused if it is in feet -- exactly like a GeoTIFF.
+        if _raster_crs_or_none(source) is not None:
+            return _load_terrain_samples_from_raster(source, frame=frame)
         model = _load_terrain_samples_from_ascii_grid(source, frame=frame)
         if isinstance(model, dict):
             return model

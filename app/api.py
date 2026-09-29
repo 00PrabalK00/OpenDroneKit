@@ -5031,6 +5031,13 @@ class Api:
                 columns = terrain_csv_columns(self._session.terrain_source_path)
                 detail = (f" Its columns are {columns}; a terrain CSV needs lon/lat (or x/y) and "
                           f"an elevation column named one of {TERRAIN_CSV_ELEVATION_COLUMNS}.")
+            else:
+                from core.terrain_cache import TerrainCacheError, check_terrain_file
+
+                try:
+                    check_terrain_file(self._session.terrain_source_path)
+                except TerrainCacheError as exc:
+                    detail = f" {exc}"
             warnings.append(
                 "Terrain following was requested but the source could not be read; "
                 "the plan assumes flat ground." + detail

@@ -186,24 +186,45 @@ def refuse_non_metre_heights(crs, name: str) -> None:
     if not (float(factor) == 1.0):
         raise TerrainCacheError(
             f"{name} is in {crs.to_string()} ({unit} horizontally). Its heights are "
-            "probably in the same unit, and a GeoTIFF does not record which, but "
+            "probably in the same unit, and the raster does not record which, but "
             "terrain here is read in metres. Export the DEM with heights in metres in a "
             "metric or lon/lat CRS (a UTM zone or EPSG:4326) first."
         )
 
 
+# Terrain given as a table of points rather than a raster; their columns are checked
+# where they are read (mission.planner.terrain_csv_columns).
+TERRAIN_SAMPLE_TABLE_SUFFIXES = {".csv", ".tsv", ".txt", ".xyz", ".json"}
+
+
 def check_terrain_file(path: str | Path) -> None:
-    """Refuse a terrain GeoTIFF that cannot be placed or whose heights are not metres."""
+    """Refuse a terrain raster that cannot be placed or whose heights are not metres.
+
+    Every raster format is checked, not only GeoTIFF: the Import Terrain picker offers
+    ESRI ASCII grids (.asc, with the CRS in a sidecar .prj), and a feet .asc was accepted
+    while the same DEM as a GeoTIFF was refused.
+    """
     source = Path(path)
-    if source.suffix.lower() not in {".tif", ".tiff", ".vrt", ".img"}:
+    if source.suffix.lower() in TERRAIN_SAMPLE_TABLE_SUFFIXES:
         return
     import rasterio
 
-    with rasterio.open(source) as raster:
+    try:
+        raster = rasterio.open(source)
+    except Exception as exc:  # noqa: BLE001 - any unreadable raster is refused in words
+        raise TerrainCacheError(
+            f"{source.name} cannot be read as a terrain raster ({exc}). Use a GeoTIFF, "
+            "an ESRI ASCII grid with its .prj, or a CSV of lon/lat/elevation points."
+        ) from exc
+    with raster:
         if raster.crs is None:
+            sidecar = (" An ESRI ASCII grid keeps its CRS in a .prj file of the same "
+                       "name next to it; none was found."
+                       if source.suffix.lower() in {".asc", ".grd"} else "")
             raise TerrainCacheError(
                 f"{source.name} has no coordinate reference system, so the ground it "
                 "covers is unknown and its heights cannot be matched to a position."
+                + sidecar
             )
         refuse_non_metre_heights(raster.crs, source.name)
 
