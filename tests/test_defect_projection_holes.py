@@ -117,8 +117,31 @@ class TestPartialOutlinesAreNotMeasured:
         defects = project_defects(detections=[detection], poses={"a.jpg": pose},
                                   surface=surface, anchor=_identity_anchor(),
                                   diagnostics=diagnostics)
+        # Placed from the ray through its centre, and not sized: no triangle area, and
+        # not dropped from the map either.
+        assert len(defects) == 1
+        assert defects[0].area_m2 is None and defects[0].length_m is None
+        assert defects[0].easting == pytest.approx(ORIGIN[0] + 100.0, abs=0.01)   # under the camera
+        assert diagnostics["incomplete_boundaries"] == 1
+        assert diagnostics["located_unsized"] == 1
+        feature = defects[0].to_feature()
+        assert feature["geometry"]["type"] == "Point"
+        assert feature["properties"]["sized"] is False
+
+    def test_a_bbox_whose_centre_is_in_the_hole_is_not_placed(self):
+        elevation = np.zeros((200, 200))
+        elevation[60:140, 60:140] = np.nan          # hole under the whole footprint
+        surface = _surface(elevation)
+        cx, cy = ORIGIN[0] + 100.0, ORIGIN[1] + 100.0
+        pose = _nadir("a.jpg", cx, cy, 100.0)
+        detection = {"image": "a.jpg", "bbox": [450, 350, 550, 450], "defect_type": "spalling"}
+        diagnostics: dict[str, int] = {}
+        defects = project_defects(detections=[detection], poses={"a.jpg": pose},
+                                  surface=surface, anchor=_identity_anchor(),
+                                  diagnostics=diagnostics)
         assert defects == []
         assert diagnostics["incomplete_boundaries"] == 1
+        assert diagnostics.get("located_unsized", 0) == 0
 
     def test_a_complete_outline_is_measured_exactly(self):
         surface = _surface(np.zeros((200, 200)))
