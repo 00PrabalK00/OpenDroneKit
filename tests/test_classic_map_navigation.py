@@ -37,8 +37,10 @@ def test_an_imported_layer_is_framed(tmp_path) -> None:
             const seen = [ODK.$("#status-message").textContent];
             new MutationObserver(() => seen.push(ODK.$("#status-message").textContent))
               .observe(ODK.$("#status-message"), { childList: true, characterData: true, subtree: true });
-            await ODK.waitFor(() => seen.some((t) => t.startsWith("Map ready")), 30000);
-            await ODK.waitFor(() => seen.some((t) => t.startsWith("OpenDroneKit ready")), 30000);
+            // 'Map ready' and 'OpenDroneKit ready.' are ambient: with no network the
+            // basemap fallback note is newer, so they are logged rather than shown.
+            await ODK.waitFor(() => ODK.$("#console-log").textContent.includes("Map ready"), 30000);
+            await ODK.waitFor(() => window.odk && window.odk.ready, 30000);
             const before = ODK.$("#status-scale").textContent;
             window.odk.onMenu({ action: "data.import_vector" });
             const said = await ODK.waitFor(() => {
@@ -75,8 +77,10 @@ def test_place_search_offline_finds_the_project_and_says_the_remote_search_did_n
             const seen = [ODK.$("#status-message").textContent];
             new MutationObserver(() => seen.push(ODK.$("#status-message").textContent))
               .observe(ODK.$("#status-message"), { childList: true, characterData: true, subtree: true });
-            await ODK.waitFor(() => seen.some((t) => t.startsWith("Map ready")), 30000);
-            await ODK.waitFor(() => seen.some((t) => t.startsWith("OpenDroneKit ready")), 30000);
+            // 'Map ready' and 'OpenDroneKit ready.' are ambient: with no network the
+            // basemap fallback note is newer, so they are logged rather than shown.
+            await ODK.waitFor(() => ODK.$("#console-log").textContent.includes("Map ready"), 30000);
+            await ODK.waitFor(() => window.odk && window.odk.ready, 30000);
             ODK.$("#place-search").value = "site_bound";
             ODK.$("#btn-place-search").click();
             const rows = await ODK.waitFor(() => ODK.$$("#place-results li[data-index]").length ? ODK.$$("#place-results li") : null, 30000);

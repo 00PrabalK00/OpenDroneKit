@@ -183,6 +183,11 @@ class TestTheProcessingPanelReachesTheJob:
         # epsg read past the old 1500-character cut.
         body = api_source.split("def run_reconstruction")[1].split("\n    @guard")[0]
         read = set(re.findall(r'opts\.get\("([a-z_0-9]+)"', body))
+        # Where the run happens (local or an OpenDroneKit server) is read by the shared
+        # _cloud_options helper that run_reconstruction calls, not inline.
+        if "self._cloud_options(opts)" in body:
+            helper = api_source.split("def _cloud_options")[1].split("\n    def ")[0]
+            read |= set(re.findall(r'opts\.get\("([a-z_0-9]+)"', helper))
         sent = set(re.findall(r'options\.(\w+) =',
                               shell_js.split("reconstructionOptions: () => {")[1]
                               .split("\n      },")[0]))
