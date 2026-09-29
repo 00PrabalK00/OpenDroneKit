@@ -272,3 +272,29 @@ def test_thermal_anomaly_and_corridor_packs_in_the_cockpit(api, tmp_path):
     ], picks=[str(target), str(baseline)])
     assert "[ok] Find anomalies:" in found["find"], found
     assert "candidate count 1" in found["find"]
+
+
+def test_an_explicit_gpu_request_that_falls_back_to_cpu_refuses(api):
+    """ONNX Runtime can list CUDA and then load on the CPU; asking for cuda must not
+    quietly run on the CPU. "auto" (above) may fall back, "cuda" may not."""
+    ort = pytest.importorskip("onnxruntime")
+    model = MODELS / "shared_semantic_dinov2_vitb14_v4.onnx"
+    if not model.is_file() or not ORTHO.is_file():
+        pytest.skip("The semantic model or the demo orthomosaic is not present (gitignored).")
+    if "CUDAExecutionProvider" not in ort.get_available_providers():
+        pytest.skip("CUDA is not even listed here; the fallback cannot occur.")
+    from core.semantic_engine import ONNXSemanticPredictor
+
+    if ONNXSemanticPredictor(model, device="cuda").device == "cuda":
+        pytest.skip("CUDA loads on this machine; there is no fallback to refuse.")
+    started = api.semantic_map(str(ORTHO), str(model), device="cuda")
+    assert started["ok"], started
+    deadline = time.time() + 600
+    while True:
+        job = api.job_status(started["job_id"])["job"]
+        if job["status"] in ("done", "failed", "cancelled") or time.time() > deadline:
+            break
+        time.sleep(1)
+    assert job["status"] == "failed", job
+    assert "CPU semantic inference is disabled" in (job.get("error") or "")
+    assert any("CUDA did not load" in line for line in job.get("log", []))

@@ -4276,17 +4276,23 @@ class Api:
             chosen = device
             if chosen == "auto":
                 chosen = "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
-            progress(5, f"Semantic inference on {chosen}")
             predictor = ONNXSemanticPredictor(model, device=chosen,
                                               mean=defaults.get("mean", (0.485, 0.456, 0.406)),
                                               std=defaults.get("std", (0.229, 0.224, 0.225)))
+            # ONNX Runtime can list CUDA and then load on the CPU (cuBLAS/cuDNN missing);
+            # the predictor reports the device that actually loaded. "auto" means run on
+            # whatever works, so a CPU fallback is allowed -- still under the CPU pixel
+            # limit -- while an explicit "cuda" request that could not get a GPU refuses.
+            actual = str(getattr(predictor, "device", chosen))
+            progress(5, f"Semantic inference on {actual}"
+                        + (" (CUDA did not load)" if chosen == "cuda" and actual == "cpu" else ""))
             package = run_semantic_inference(
                 source, output, schema=schema, model=metadata, predictor=predictor,
                 config=SemanticInferenceConfig(
                     tile_size=int(defaults.get("tile_size", 518)),
                     overlap=int(defaults.get("overlap", 126)),
-                    device=chosen,
-                    allow_cpu=chosen == "cpu",
+                    device=actual,
+                    allow_cpu=device != "cuda",
                     max_cpu_pixels=int(defaults.get("max_cpu_pixels", 4_000_000)),
                     min_polygon_area_m2=float(defaults.get("min_polygon_area_m2", 1.0)),
                 ))
