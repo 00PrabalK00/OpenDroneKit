@@ -172,3 +172,36 @@ def test_the_crack_classifier_reads_its_measured_input_contract(client, site):
     assert job["status"] == "done", job
     assert job["result"]["summary"]["predicted_counts"] == {"cracked": 1}
     assert job["result"]["model_sha256"].startswith("92a4d142")
+
+
+def test_events_from_a_separate_worker_process_reach_the_api_live_stream(client, site, monkeypatch):
+    """The live-event broker is the shared database, so a worker in another process
+    (the compose ``ai-worker`` service, a Celery worker) reaches API WebSocket clients."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    monkeypatch.setenv("ODK_AI_WORKER", "external")
+    headers, project_id, dataset_id = site
+    org = client.get(f"/projects/{project_id}", headers=headers).json()["organization_id"]
+    token = headers["Authorization"].split()[1]
+    with client.websocket_connect(f"/ws/organizations/{org}?token={token}") as socket:
+        assert socket.receive_json()["event"] == "stream.connected"
+        created = client.post(f"/projects/{project_id}/ai-jobs", headers=headers, json={
+            "task": "detection", "model_key": "heuristic", "input_ref": f"dataset:{dataset_id}",
+        }).json()
+        assert created["status"] == "pending_worker"
+
+        worker = subprocess.run(
+            [sys.executable, "-m", "services.worker.ai_worker", "--once"],
+            cwd=Path(__file__).resolve().parents[1], env=dict(os.environ),
+            capture_output=True, text=True, timeout=300,
+        )
+        assert worker.returncode == 0, worker.stderr[-2000:]
+        for _ in range(10):
+            message = socket.receive_json()
+            if message["event"] == "ai.completed":
+                break
+    assert message["event"] == "ai.completed", message
+    assert message["data"]["ai_job_id"] == created["id"] and message["data"]["status"] == "done"

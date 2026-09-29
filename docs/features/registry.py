@@ -1445,7 +1445,9 @@ PLATFORM = [
       "implemented", ["tests/test_events.py::TestLiveStream",
                       "tests/test_realtime.py::TestSharedBroker",
                       "tests/test_realtime.py::TestTelemetryStream",
-                      "tests/test_webhook_emission.py::test_domain_events_reach_the_live_stream"],
+                      "tests/test_webhook_emission.py::test_domain_events_reach_the_live_stream",
+                      "tests/test_ai_job_worker.py::"
+                      "test_events_from_a_separate_worker_process_reach_the_api_live_stream"],
       "The shared database buffer supports multi-worker fan-out. Delivery remains "
       "best effort: there are no client acknowledgements, durable offline cursors or "
       "exactly-once guarantee."),
