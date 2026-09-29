@@ -72,7 +72,8 @@ class TestTheFormKeysAreTranslated:
         """A field on screen that the planner ignores is worse than one that is absent:
         the operator sets it, watches it change, and it does nothing."""
         panel = WORKSPACES.read_text(encoding="utf-8")
-        block = panel.split('{ title: "Mission", render: () => fields([')[1].split("])")[0]
+        # The form is one spec, MISSION_FORM, that the panel draws and Plan reads.
+        block = panel.split("export const MISSION_FORM = [")[1].split("\n];")[0]
         shown = set(re.findall(r'key:\s*"(\w+)"', block))
         mapping = _map(shell_js, "MISSION_OPTION_KEYS")
         # `type` goes through the template table. The rest must be either mapped or

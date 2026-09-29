@@ -18,6 +18,7 @@ import time
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 from typing import Any, Callable
@@ -880,7 +881,7 @@ class Api:
             if entry is None:
                 available = ", ".join(str(v.get("version_num")) for v in versions) or "none"
                 return fail(f"No version {version_num}. Saved versions: {available}.")
-            source = entry
+            source = _saved_version_as_plan(entry)
 
         if not source:
             return fail("No mission to repeat. Plan one, or name a saved version.")
@@ -5320,6 +5321,19 @@ class Api:
         recipe = self._session.mission_plan_dict.get("flight_recipe") or {}
         terrain = (recipe.get("metadata") or {}).get("terrain_model") or recipe.get("terrain_model") or {}
         warnings.extend(self._structure_assumptions(template, opts, recipe.get("metadata") or {}))
+        # 3D modelling and facade mapping raise the overlaps to what reconstruction needs.
+        # That is right, and it was silent: the form said 80/70 % and 85/80 % was flown.
+        meta = recipe.get("metadata") or {}
+        if meta.get("overlap_floor_applied"):
+            flown = self._session.mission_plan_dict
+            warnings.append(
+                f"Overlap raised to {float(flown.get('front_overlap_pct', 0)):g}/"
+                f"{float(flown.get('side_overlap_pct', 0)):g} % (front/side) from the "
+                f"{float(meta.get('requested_front_overlap_pct', 0)):g}/"
+                f"{float(meta.get('requested_side_overlap_pct', 0)):g} % asked for: a "
+                f"{kwargs['mode'].replace('_', ' ')} mission needs at least that for the "
+                "model to reconstruct."
+            )
         if self._session.terrain_source_path and terrain.get("source") == "missing_terrain_source":
             detail = ""
             from core.terrain_cache import TerrainCacheError, check_terrain_file
@@ -5484,6 +5498,16 @@ class Api:
             flight_recipe=plan.get("flight_recipe") or {},
             plan_summary={
                 "waypoints": len(plan.get("waypoints") or []),
+                # What decides what gets flown, so a version can be compared and repeated
+                # later: history named "Camera" and "Front overlap" as significant but
+                # never had them to compare, and a repeat of a saved version had no camera.
+                "camera": plan.get("camera"),
+                "front_overlap_pct": plan.get("front_overlap_pct"),
+                "side_overlap_pct": plan.get("side_overlap_pct"),
+                "flight_direction_deg": plan.get("flight_direction_deg"),
+                "line_spacing_m": plan.get("line_spacing_m"),
+                "capture_spacing_m": plan.get("capture_spacing_m"),
+                "terrain_follow_enabled": plan.get("terrain_follow_enabled"),
                 "altitude_m": plan.get("altitude_m"),
                 "path_distance_m": plan.get("path_distance_m"),
                 "estimated_time_min": plan.get("estimated_time_min"),
@@ -6323,6 +6347,41 @@ class Api:
         return ok(opened=str(target))
 
 
+
+def _saved_version_as_plan(entry: dict[str, Any]) -> dict[str, Any]:
+    """A saved mission version in the shape a repeat reads: waypoints as coordinates.
+
+    A version stores its waypoint COUNT in the summary and the waypoints themselves in
+    the stored GeoJSON. Handing the row straight to the repeat planner gave it an int
+    where it wanted coordinates, so every saved version was refused with "no waypoints,
+    so there is nothing to repeat" -- the one thing Repeat Survey exists to do.
+    """
+    summary: dict[str, Any] = {}
+    raw = entry.get("plan_summary") or entry.get("plan_summary_json") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    if isinstance(raw, dict):
+        summary = dict(raw)
+
+    features = ((summary.get("geojson") or {}).get("features") or [])
+    points = sorted(
+        (f for f in features
+         if (f.get("properties") or {}).get("role") == "waypoint"
+         and (f.get("geometry") or {}).get("type") == "Point"),
+        key=lambda f: int((f.get("properties") or {}).get("index", 0) or 0))
+    waypoints = [list(f["geometry"]["coordinates"]) for f in points]
+    polygon = next((f["geometry"]["coordinates"][0] for f in features
+                    if (f.get("properties") or {}).get("role") == "survey_polygon"
+                    and (f.get("geometry") or {}).get("type") == "Polygon"), [])
+
+    summary["waypoints"] = waypoints
+    summary["polygon"] = polygon
+    summary.setdefault("template", entry.get("template"))
+    return summary
+
 #: Extensions the UI asks for, grouped the way a person picking a file thinks about them.
 _FILE_TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Rasters", ("tif", "tiff", "img", "vrt")),
@@ -6330,6 +6389,10 @@ _FILE_TYPE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Imagery", ("jpg", "jpeg", "png")),
     ("Point clouds", ("las", "laz", "ply")),
 )
+
+
+#: pywebview's own test for one entry of `file_types` (webview.util.parse_file_type).
+_DISPLAY_FILTER = re.compile(r"^([\w ]+)\((\*(?:\.(?:\w+|\*))*(?:;\*(?:\.(?:\w+|\*))*)*)\)$")
 
 
 def _file_type_filters(extensions: list[str] | None) -> tuple[str, ...]:
@@ -6343,6 +6406,18 @@ def _file_type_filters(extensions: list[str] | None) -> tuple[str, ...]:
     entry of its own rather than being dropped: silently narrowing what a user is allowed
     to open is worse than an ugly label.
     """
+    # A caller that already wrote the display string ("Terrain (*.tif;*.asc)") gets it
+    # through unchanged. The default window's Import Terrain, Import Vector, Import Raster
+    # and Add Layer all pass one; lower-casing it into "TERRAIN (*.TIF;...) files
+    # (*.terrain (*.tif;...))" failed pywebview's check, so each of those menu items raised
+    # before the chooser opened and the window said nothing at all.
+    written = [str(e).strip() for e in (extensions or []) if _DISPLAY_FILTER.match(str(e).strip())]
+    rest = [e for e in (extensions or []) if not _DISPLAY_FILTER.match(str(e).strip())]
+    if written and not rest:
+        return (*written, "All files (*.*)")
+    extensions = rest + [ext for entry in written
+                         for ext in _DISPLAY_FILTER.match(entry).group(2).split(";")]
+
     wanted = [str(e).strip().lstrip("*.").lower() for e in (extensions or []) if str(e).strip()]
     if not wanted:
         return ("All files (*.*)",)
