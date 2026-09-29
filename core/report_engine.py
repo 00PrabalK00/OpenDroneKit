@@ -170,8 +170,19 @@ def _failed_reconstructions(context: dict[str, Any]) -> list[tuple[str, str]]:
 
     "No reconstruction was run" is false for these: one was run, and it failed.
     """
+    # "reconstruction_failures" is collected whatever include_defects says: leaving the
+    # defect section out must not turn a failed reconstruction into "none was run".
+    failures = context.get("reconstruction_failures")
+    if failures is not None:
+        return [(str(f.get("name", "")), str(f.get("error", ""))) for f in failures]
     return [(str(run.get("name", "")), str(run["reconstruction_error"]))
             for run in context.get("pipeline_runs") or [] if run.get("reconstruction_error")]
+
+
+def reconstruction_failures(runs: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """{name, error} for each pipeline run whose reconstruction was attempted and failed."""
+    return [{"name": str(run.get("name", "")), "error": str(run["reconstruction_error"])}
+            for run in runs if run.get("reconstruction_error")]
 
 
 def _no_reconstruction_text(context: dict[str, Any]) -> str:
@@ -597,6 +608,7 @@ def build_report_context(config: ReportConfig) -> dict[str, Any]:
                           "event_type": e.get("event_type", ""),
                           "detail": e.get("detail", "")})
 
+    all_pipeline_runs = find_pipeline_runs(root)
     return {
         "config": config.to_dict(),
         "project": {
@@ -612,7 +624,8 @@ def build_report_context(config: ReportConfig) -> dict[str, Any]:
         "image_dirs": [str(p) for p in image_dirs],
         "findings": findings,
         "defect_runs": _engine_defect_runs(root) if config.include_defects else [],
-        "pipeline_runs": find_pipeline_runs(root) if config.include_defects else [],
+        "pipeline_runs": all_pipeline_runs if config.include_defects else [],
+        "reconstruction_failures": reconstruction_failures(all_pipeline_runs),
         "crack_runs": _engine_crack_runs(root),
         "reconstructions": find_reconstructions(root),
         "measurements": measurements,
@@ -836,9 +849,8 @@ def derive_follow_up(context: dict[str, Any]) -> list[str]:
         if bad:
             items.append(f"Pipeline run {run['name']}: {len(bad)} image(s) failed the quality "
                          "check and may need re-flying.")
-        if run.get("reconstruction_error"):
-            items.append(f"Pipeline run {run['name']}: reconstruction failed "
-                         f"({run['reconstruction_error']}).")
+    for name, error in _failed_reconstructions(context):
+        items.append(f"Pipeline run {name}: reconstruction failed ({error}).")
     for recon in context.get("reconstructions") or []:
         prov = recon.get("provenance") or {}
         if prov.get("modified"):

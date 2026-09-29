@@ -23,6 +23,7 @@ from core.report_engine import (
     ReportReadiness,
     ReportResult,
     find_pipeline_runs,
+    reconstruction_failures,
     find_reconstructions,
     findings_from_annotations,
     list_reports_in,
@@ -142,6 +143,7 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
 
     cfg = config.to_dict()
     cfg["sections"] = sections_for(config.report_type, config.sections)
+    all_pipeline_runs = find_pipeline_runs(root)
     return {
         "config": cfg,
         "project": {
@@ -157,7 +159,8 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
         "image_dirs": [str(p) for p in image_dirs],
         "findings": findings,
         "defect_runs": [],
-        "pipeline_runs": find_pipeline_runs(root) if config.include_defects else [],
+        "pipeline_runs": all_pipeline_runs if config.include_defects else [],
+        "reconstruction_failures": reconstruction_failures(all_pipeline_runs),
         "crack_runs": [],
         "reconstructions": reconstructions,
         "measurements": measurements,
@@ -187,7 +190,8 @@ def _judge(context: dict[str, Any], config: ReportConfig) -> ReportReadiness:
     """
     ready = readiness_from_context(context, config)
     if not any(context.get(key) for key in ("datasets", "missions", "findings", "pipeline_runs",
-                                            "reconstructions", "measurements")):
+                                            "reconstruction_failures", "reconstructions",
+                                            "measurements")):
         ready.missing.insert(0, NOTHING_TO_REPORT)
         ready.ok = False
     return ready
