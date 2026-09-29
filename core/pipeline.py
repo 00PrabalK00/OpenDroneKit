@@ -21,7 +21,13 @@ from .detection import (
 from .health_scoring import derive_asset_id, evaluate_asset_health, load_asset_health_history
 from .models import ensure_model_layout, migrate_legacy_models, model_status
 from .multisensor import MultiSensorConfig, MultiSensorProcessor
-from .propagation import CrackPropagationForecaster, PropagationPhysicsConfig, run_fenicsx_phasefield
+from .propagation import (
+    ILLUSTRATIVE_NOTE,
+    CrackPropagationForecaster,
+    PropagationPhysicsConfig,
+    assumed_physics_inputs,
+    run_fenicsx_phasefield,
+)
 from .reconstruction import CustomDroneReconstructor
 from .reporting import write_json, write_markdown_report
 
@@ -53,6 +59,12 @@ class PipelineConfig:
     coverage_sharpness_threshold: float = 120.0
     coverage_exposure_clip_threshold: float = 0.12
     coverage_overlap_threshold: float = 0.14
+    # Where the images do not say how high they were taken, coverage needs one of these
+    # to size their footprints; without any, coverage is reported as not computed.
+    coverage_flight_height_agl_m: float = 0.0
+    coverage_ground_elevation_m: float | None = None
+    coverage_terrain_path: str = ""
+    coverage_aoi_lonlat: list | None = None
     run_multisensor_processing: bool = True
     multi_sensor_bundle_path: str = ""
     multi_sensor_calibration_profile_path: str = ""
@@ -192,12 +204,16 @@ class StructuralFaultPipeline:
                 sharpness_threshold=float(max(1.0, self.config.coverage_sharpness_threshold)),
                 exposure_clip_threshold=float(np.clip(self.config.coverage_exposure_clip_threshold, 0.0, 0.95)),
                 overlap_threshold=float(np.clip(self.config.coverage_overlap_threshold, 0.0, 1.0)),
+                flight_height_agl_m=float(max(0.0, self.config.coverage_flight_height_agl_m)),
+                ground_elevation_m=self.config.coverage_ground_elevation_m,
+                terrain_path=str(self.config.coverage_terrain_path or ""),
             )
             coverage_validator = CoverageValidator(config=coverage_cfg)
             coverage_payload = coverage_validator.validate(
                 image_paths=image_paths,
                 output_dir=coverage_dir,
                 reference_recipe_path=str(self.config.coverage_reference_recipe_path or ""),
+                aoi_lonlat=self.config.coverage_aoi_lonlat or None,
             )
             for item in coverage_payload.get("images", []):
                 name = str(item.get("image", "")).strip()
@@ -329,8 +345,10 @@ class StructuralFaultPipeline:
                         "dark_clip_pct": float(quality.get("dark_clip_pct", 0.0)),
                         "bright_clip_pct": float(quality.get("bright_clip_pct", 0.0)),
                         "mean_luma": float(quality.get("mean_luma", 0.0)),
-                        "overlap_prev": float(quality.get("overlap_prev", 0.0)),
-                        "overlap_next": float(quality.get("overlap_next", 0.0)),
+                        # None when the image could not be placed on the ground: an
+                        # unmeasured overlap is not an overlap of zero.
+                        "overlap_prev": quality.get("overlap_prev"),
+                        "overlap_next": quality.get("overlap_next"),
                         "low_overlap": bool(quality.get("low_overlap", False)),
                         "quality_ok": bool(quality.get("quality_ok", True)),
                         "quality_flags": list(quality.get("quality_flags", [])),
@@ -352,6 +370,10 @@ class StructuralFaultPipeline:
         solar_class_avg = {k: float(v / divisor) for k, v in solar_class_sum.items()}
 
         forecast_payload: dict = {
+            # Labelled at the source so it cannot be lifted out of this payload and read
+            # as a prediction; health scoring only scores growth whose basis is measured.
+            "basis": "illustrative_extrapolation",
+            "disclaimer": ILLUSTRATIVE_NOTE,
             "target_image": None,
             "mode": str(self.config.propagation_mode or "geometric"),
             "steps": 0,
@@ -420,6 +442,17 @@ class StructuralFaultPipeline:
                     }
                 )
                 if physics_cfg is not None:
+                    forecast_payload["assumed_inputs"] = assumed_physics_inputs(
+                        sigma_nominal_mpa=(None if self.config.propagation_sigma_nominal_mpa <= 0.0
+                                           else self.config.propagation_sigma_nominal_mpa),
+                        delta_sigma_mpa=(None if self.config.propagation_delta_sigma_mpa <= 0.0
+                                         else self.config.propagation_delta_sigma_mpa),
+                        fracture_toughness_mpa_sqrt_m=(
+                            None if self.config.propagation_fracture_toughness_mpa_sqrt_m <= 0.0
+                            else self.config.propagation_fracture_toughness_mpa_sqrt_m),
+                        paris_c=None if self.config.propagation_paris_c <= 0.0 else self.config.propagation_paris_c,
+                        paris_m=None if self.config.propagation_paris_m <= 0.0 else self.config.propagation_paris_m,
+                    )
                     forecast_payload["physics_config"] = {
                         "pixel_size_mm": float(physics_cfg.pixel_size_mm),
                         "sigma_nominal_mpa": float(physics_cfg.sigma_nominal_mpa),
@@ -439,7 +472,6 @@ class StructuralFaultPipeline:
                         "final_delta_k_mpa_sqrt_m": float(last.get("delta_k_mpa_sqrt_m", 0.0) or 0.0),
                         "final_fatigue_da_dn_m_per_cycle": float(last.get("fatigue_da_dn_m_per_cycle", 0.0) or 0.0),
                         "final_factor_of_safety": float(last.get("factor_of_safety", 0.0) or 0.0),
-                        "final_failure_probability_horizon": float(last.get("failure_probability_horizon", 0.0) or 0.0),
                     }
 
                 if self.config.use_fenicsx:

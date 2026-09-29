@@ -879,6 +879,10 @@ export class Shell {
         if (raw.dense !== undefined && raw.dense !== "") {
           options.dense = String(raw.dense).toLowerCase() === "yes";
         }
+        const agl = Number(raw.agl);
+        if (raw.agl !== undefined && raw.agl !== "" && Number.isFinite(agl) && agl > 0) {
+          options.flight_height_agl_m = agl;
+        }
         return options;
       },
       /* What the Report panel was set to.

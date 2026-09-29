@@ -3381,6 +3381,8 @@ class Api:
             return fail("Select a dataset before running the pipeline.")
         output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
         chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
+        terrain = self._session.terrain_source_path
+        aoi = list(self._session.aoi_polygon or [])
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
@@ -3389,8 +3391,14 @@ class Api:
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
             config.reconstruction_target_epsg = opts.get("epsg") or chosen_epsg
+            # Coverage QA sizes each image's footprint from its height above ground.
+            config.coverage_flight_height_agl_m = float(opts.get("flight_height_agl_m") or 0.0)
+            if opts.get("ground_elevation_m") not in (None, ""):
+                config.coverage_ground_elevation_m = float(opts["ground_elevation_m"])
+            config.coverage_terrain_path = str(opts.get("terrain_path") or terrain or "")
+            config.coverage_aoi_lonlat = aoi or None
             pipeline = StructuralFaultPipeline(config)
-            result = pipeline.run(image_dir=images, output_root=output, progress_callback=progress)
+            result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
             return result.to_dict() if hasattr(result, "to_dict") else dict(result)
 
         return ok(job_id=self._jobs.submit("pipeline", work))

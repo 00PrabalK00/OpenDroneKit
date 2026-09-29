@@ -1,4 +1,13 @@
-"""Crack propagation forecasting with optional FEniCSx integration."""
+"""Crack propagation forecasting with optional FEniCSx integration.
+
+What this produces is an ILLUSTRATIVE EXTRAPOLATION, not a prediction. The geometric
+mode extends each crack tip by a fixed number of pixels per "step", and a step has no
+time base. The physics mode applies the Paris law, but to a nominal stress, a stress
+range, a cycle count and material constants that are defaults unless an engineer
+supplies them -- nothing in a photograph measures any of them. So the output is labelled
+as illustrative, lists which inputs were assumed, carries no failure probability, and
+is kept out of every health and risk score.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +37,10 @@ class ForecastMetrics:
     fatigue_da_dn_m_per_cycle: float = 0.0
     growth_px_applied: float = 0.0
     factor_of_safety: float = 0.0
-    failure_probability_horizon: float = 0.0
+    # Not computed. The mapping from a crack-length ratio to a probability of failure was
+    # a hand-shaped curve with no calibration behind it; a percentage printed from it
+    # read as a reliability figure. Kept as a field so old payloads still load.
+    failure_probability_horizon: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -111,6 +123,20 @@ class PropagationPhysicsConfig:
             min_growth_px_per_step=0.5,
             max_growth_px_per_step=15.0,
         )
+
+
+ILLUSTRATIVE_NOTE = (
+    "Illustrative extrapolation, not a prediction. Steps have no time base; the "
+    "geometric mode extends each crack tip a fixed distance per step, and the physics "
+    "mode applies the Paris law to stress, cycle and material inputs that are assumed "
+    "unless supplied. No failure probability is derived, and this forecast is not used "
+    "in any health or risk score."
+)
+
+
+def assumed_physics_inputs(**supplied: float | None) -> list[str]:
+    """Names of the physics inputs that fell back to a default instead of a supplied value."""
+    return sorted(name for name, value in supplied.items() if value is None)
 
 
 class CrackPropagationForecaster:
@@ -202,7 +228,7 @@ class CrackPropagationForecaster:
             fatigue_da_dn_m_per_cycle=float(values.get("da_dn", 0.0)),
             growth_px_applied=float(values.get("growth_px", 0.0)),
             factor_of_safety=float(values.get("fos", 0.0)),
-            failure_probability_horizon=float(values.get("failure_probability", 0.0)),
+            failure_probability_horizon=None,
         )
 
     @staticmethod
@@ -234,8 +260,6 @@ class CrackPropagationForecaster:
 
         a_crit = float((cfg.fracture_toughness_mpa_sqrt_m / max(y * sigma, 1e-9)) ** 2 / math.pi)
         fos = float(np.clip(a_crit / max(a_m, 1e-9), 0.0, 100.0))
-        progress = float(np.clip(a_m / max(a_crit, 1e-9), 0.0, 5.0))
-        failure_probability = float(np.clip(1.0 - math.exp(-max(0.0, progress - 0.80) * 1.4), 0.0, 1.0))
 
         return {
             "crack_length_m": crack_length_m,
@@ -246,7 +270,6 @@ class CrackPropagationForecaster:
             "a_m": a_m,
             "a_crit": a_crit,
             "fos": fos,
-            "failure_probability": failure_probability,
         }
 
     def _forecast_geometric(self, base_mask: np.ndarray, steps: int) -> tuple[list[np.ndarray], list[ForecastMetrics]]:

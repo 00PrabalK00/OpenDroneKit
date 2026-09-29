@@ -1037,6 +1037,10 @@ const processing = {
         { key: "imgsize", label: "Max image size", value: "4096", unit: "px" },
         { key: "dense", label: "Dense cloud", value: "yes", options: ["yes", "no"] },
         { key: "mesh", label: "Mesh depth", value: "9" },
+        /* Coverage QA places each image from its GPS tag and sizes it from its height
+           above ground. Images that do not record that height need it stated here (or
+           a terrain model); without it coverage is reported as not computed. */
+        { key: "agl", label: "Flight height above ground", value: "", unit: "m" },
       ], settingChanged) },
       /* Was a fixed "EPSG:4326 / 7 GCPs / RTK fixed" on every project, including ones
          with no GCPs and no RTK at all. Read from the layers the project really has. */

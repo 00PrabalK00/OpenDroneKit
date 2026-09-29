@@ -1,4 +1,23 @@
-"""Asset-level structural health scoring and temporal trend analytics."""
+"""Asset-level structural health scoring and temporal trend analytics.
+
+The scores here are a weighted SEVERITY INDEX over what the run measured: crack, corrosion,
+structural and solar coverage ratios in the imagery, coverage quality, and the trend
+across earlier runs of the same asset. The weights are engineering judgement, not a
+calibrated model, and the output says so.
+
+Two things it used to add are gone because nothing measured them:
+
+* a "probabilistic failure" block -- 6-month, 1-year and 3-year failure probabilities --
+  computed from a hard-coded baseline hazard per structure type and a hand-weighted
+  multiplier. With zero defects it still reported a 2.95%/yr failure probability for a
+  concrete bridge, printed in the run report as a measured figure;
+* a growth component taken from the crack propagation forecast, which is an
+  illustrative extrapolation with no time base, and a criticality component that
+  substituted fixed constants (0.35 / 0.50) when no critical-point file existed.
+
+A component that was not measured is reported as not assessed and excluded from the
+weighted sum, rather than contributing an invented value.
+"""
 
 from __future__ import annotations
 
@@ -92,7 +111,16 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     }
 
 
-def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float, dict[str, float]]:
+def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
+    # Only growth MEASURED between two surveys may be scored. The in-run forecast is an
+    # illustrative extrapolation (a fixed tip extension per step, no time base), and
+    # scoring it made the asset look worse the more steps it was asked to extrapolate.
+    if str(forecast_payload.get("basis", "")) != "measured_between_surveys":
+        return None, {
+            "assessed": False,
+            "note": "Crack growth was not measured between surveys; the propagation "
+                    "forecast is illustrative and is not scored.",
+        }
     metrics = forecast_payload.get("metrics", [])
     if not isinstance(metrics, list) or len(metrics) < 2:
         return 0.0, {"initial_crack_ratio": 0.0, "final_crack_ratio": 0.0, "delta_crack_ratio": 0.0}
@@ -111,7 +139,7 @@ def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float, di
     }
 
 
-def _criticality_metric(reconstruction_payload: dict[str, Any]) -> tuple[float, dict[str, float | int]]:
+def _criticality_metric(reconstruction_payload: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
     total_points = int(max(0, _safe_float(reconstruction_payload.get("total_points", 0))))
     critical_count = 0
     avg_critical_risk = 0.0
@@ -137,11 +165,14 @@ def _criticality_metric(reconstruction_payload: dict[str, Any]) -> tuple[float, 
                 pass
 
     if critical_count == 0:
-        # Fallback proxy from crack-focused 3D points if critical points file is unavailable.
-        crack_points = int(max(0, _safe_float(reconstruction_payload.get("crack_points", 0))))
-        critical_count = int(max(0, crack_points))
-        avg_critical_risk = 0.35 if crack_points > 0 else 0.0
-        high_critical_risk = 0.50 if crack_points > 0 else 0.0
+        # No scored critical points: the criticality of this structure was not measured.
+        # This used to substitute 0.35 / 0.50 whenever any crack point existed.
+        return None, {
+            "total_points": int(total_points),
+            "critical_points": 0,
+            "assessed": False,
+            "note": "No critical-point scores were produced, so criticality was not assessed.",
+        }
 
     density = float(critical_count / max(1, total_points))
     # 1.5% critical-point density is treated as severe.
@@ -161,7 +192,9 @@ def _coverage_penalty_metric(coverage_payload: dict[str, Any], image_metrics: di
     low_overlap = float(image_metrics.get("low_overlap_ratio", 0.0))
     gap_count = int(max(0, _safe_float(coverage_payload.get("gap_suggestion_count", 0))))
     fail_count = int(max(0, _safe_float(coverage_payload.get("quality_fail_count", 0))))
-    completion = _safe_float(coverage_payload.get("coverage_completion_pct", 100.0))
+    completion_raw = coverage_payload.get("coverage_completion_pct")
+    # Not computed (images could not be placed on the ground) is not 0% complete.
+    completion = 100.0 if completion_raw is None else _safe_float(completion_raw, 100.0)
 
     gap_penalty = _clip01(gap_count / 20.0)
     fail_penalty = _clip01(fail_count / 12.0)
@@ -201,29 +234,6 @@ def _weights_for_structure(structure_type: str) -> dict[str, float]:
         "criticality": 0.06,
         "quality": 0.04,
     }
-
-
-def _base_hazard_per_year(structure_type: str, material_type: str) -> float:
-    s = str(structure_type or "generic").strip().lower()
-    m = str(material_type or "concrete").strip().lower()
-
-    structure_base = {
-        "bridge": 0.028,
-        "building": 0.020,
-        "tower": 0.024,
-        "pipeline": 0.031,
-        "solar": 0.016,
-        "generic": 0.022,
-    }.get(s, 0.022)
-    material_adj = {
-        "steel": 0.005,
-        "reinforced_steel": 0.006,
-        "concrete": 0.002,
-        "masonry": 0.003,
-        "composite": 0.002,
-        "mixed": 0.003,
-    }.get(m, 0.002)
-    return float(max(1e-4, structure_base + material_adj))
 
 
 def _grade_from_integrity(integrity_score: float) -> tuple[int, str]:
@@ -466,15 +476,22 @@ def evaluate_asset_health(
     solar_norm = _clip01(image_metrics["solar_ratio_avg"] / 0.025)
 
     w = _weights_for_structure(structure_type)
-    severity_norm = _clip01(
-        w["crack"] * crack_norm
-        + w["metal"] * metal_norm
-        + w["structural"] * structural_norm
-        + w["solar"] * solar_norm
-        + w["growth"] * growth_norm
-        + w["criticality"] * critical_norm
-        + w["quality"] * coverage_norm
-    )
+    measured = {
+        "crack": crack_norm,
+        "metal": metal_norm,
+        "structural": structural_norm,
+        "solar": solar_norm,
+        "growth": growth_norm,
+        "criticality": critical_norm,
+        "quality": coverage_norm,
+    }
+    assessed = {k: v for k, v in measured.items() if v is not None}
+    # Weights re-normalised over what was actually assessed, so an unmeasured component
+    # neither drags the index down nor props it up.
+    weight_total = sum(w[k] for k in assessed) or 1.0
+    severity_norm = _clip01(sum(w[k] * assessed[k] for k in assessed) / weight_total)
+    growth_scored = float(growth_norm or 0.0)
+    critical_scored = float(critical_norm or 0.0)
     severity_index = _clip100(100.0 * severity_norm)
     integrity_score = _clip100(100.0 - severity_index)
 
@@ -489,24 +506,11 @@ def evaluate_asset_health(
 
     structural_risk_score = _clip100(
         0.62 * severity_index
-        + 20.0 * growth_norm
-        + 12.0 * critical_norm
+        + 20.0 * growth_scored
+        + 12.0 * critical_scored
         + 6.0 * coverage_norm
         + 8.0 * trend_penalty_norm
     )
-
-    baseline_hazard = _base_hazard_per_year(structure_type=structure_type, material_type=material_type)
-    hazard_factor = (
-        1.0
-        + 1.8 * (structural_risk_score / 100.0)
-        + 0.9 * growth_norm
-        + 0.7 * critical_norm
-        + 0.8 * trend_penalty_norm
-    )
-    adjusted_hazard = float(max(1e-6, baseline_hazard * hazard_factor))
-    prob_6m = float(1.0 - math.exp(-adjusted_hazard * 0.5))
-    prob_1y = float(1.0 - math.exp(-adjusted_hazard))
-    prob_3y = float(1.0 - math.exp(-adjusted_hazard * 3.0))
 
     level, level_label = _grade_from_integrity(integrity_score)
     quality_confidence = _clip01(1.0 - coverage_norm)
@@ -540,21 +544,29 @@ def evaluate_asset_health(
         "condition_level": int(level),
         "condition_grade": f"Level {level}",
         "condition_label": level_label,
+        "index_basis": (
+            "Uncalibrated severity index: a weighted sum of the components measured in "
+            "this run, weights by structure type from engineering judgement. It ranks "
+            "condition; it is not a reliability model and implies no failure rate."
+        ),
         "probabilistic_failure": {
-            "baseline_hazard_per_year": float(baseline_hazard),
-            "adjusted_hazard_per_year": float(adjusted_hazard),
-            "probability_6_month": float(prob_6m),
-            "probability_1_year": float(prob_1y),
-            "probability_3_year": float(prob_3y),
+            "available": False,
+            "reason": (
+                "No failure probability is computed. It would need a deterioration model "
+                "calibrated on inspection and failure history for this asset class, which "
+                "this software does not have; the figures previously shown here came from "
+                "a hard-coded baseline hazard table."
+            ),
         },
         "components": {
             "crack_component": float(crack_norm),
             "metal_component": float(metal_norm),
             "structural_component": float(structural_norm),
             "solar_component": float(solar_norm),
-            "growth_component": float(growth_norm),
-            "criticality_component": float(critical_norm),
+            "growth_component": None if growth_norm is None else float(growth_norm),
+            "criticality_component": None if critical_norm is None else float(critical_norm),
             "quality_penalty_component": float(coverage_norm),
+            "not_assessed": sorted(k for k, v in measured.items() if v is None),
             "weights": {k: float(v) for k, v in w.items()},
         },
         "image_metrics": image_metrics,

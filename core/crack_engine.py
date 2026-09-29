@@ -15,6 +15,7 @@ import numpy as np
 
 from .errors import AppError, ERR_INVALID_INPUT
 from .propagation import (
+    ILLUSTRATIVE_NOTE,
     CrackPropagationForecaster,
     PropagationPhysicsConfig,
     ForecastMetrics,
@@ -245,13 +246,14 @@ def classify_crack_risk(result: CrackPropagationResult) -> str:
         return "Low"
     last = metrics[-1]
     fos = float(last.get("factor_of_safety", 0.0) or 0.0)
-    fail_p = float(last.get("failure_probability_horizon", 0.0) or 0.0)
     grew = float(last.get("crack_length_m", 0.0) or 0.0) > float(metrics[0].get("crack_length_m", 0.0) or 0.0) * 1.5
-    if fos < 1.0 or fail_p > 0.5:
+    # From the factor of safety under the stated assumptions and the extrapolated growth.
+    # The uncalibrated "failure probability" that used to feed this is no longer computed.
+    if fos < 1.0:
         return "Critical"
-    if fos < 1.5 or fail_p > 0.2 or grew:
+    if fos < 1.5 or grew:
         return "High"
-    if fos < 3.0 or fail_p > 0.05:
+    if fos < 3.0:
         return "Medium"
     return "Low"
 
@@ -366,7 +368,6 @@ def run_crack_propagation(config: CrackPropagationConfig, output_dir: Path | str
             "step": m.get("step"),
             "crack_length_m": m.get("crack_length_m"),
             "factor_of_safety": m.get("factor_of_safety"),
-            "failure_probability_horizon": m.get("failure_probability_horizon"),
         }
         for m in ranked[:3]
     ]
@@ -376,8 +377,8 @@ def run_crack_propagation(config: CrackPropagationConfig, output_dir: Path | str
         f"Predicted crack length grows from "
         f"{(metrics_payload[0].get('crack_length_m') if metrics_payload else 0):.4f} m "
         f"to {last.get('crack_length_m', 0):.4f} m over {len(metrics_payload) - 1} steps. "
-        f"FoS: {last.get('factor_of_safety', 0):.2f}. Failure probability over horizon: "
-        f"{100.0 * float(last.get('failure_probability_horizon', 0.0) or 0.0):.1f}%."
+        f"FoS: {last.get('factor_of_safety', 0):.2f} under the stated assumptions. "
+        + ILLUSTRATIVE_NOTE
     )
 
     result = CrackPropagationResult(
@@ -396,6 +397,7 @@ def run_crack_propagation(config: CrackPropagationConfig, output_dir: Path | str
             f"Paris C = {physics_cfg.paris_c:.2e}, m = {physics_cfg.paris_m:.2f}.",
             f"K_IC = {physics_cfg.fracture_toughness_mpa_sqrt_m:.1f} MPa√m.",
             "Estimates are engineering forecasts, not certified physical truth.",
+            ILLUSTRATIVE_NOTE,
         ],
         output_dir=str(out_dir),
         fenicsx_message=fenicsx_msg,
