@@ -122,7 +122,7 @@ def read_raster_evidence(
             try:
                 # Web Mercator's "metre" is 1.33 ground metres at 41 N: every area
                 # and length would be inflated.
-                require_true_scale(int(epsg), source_path.name, (float(xs[0]), float(ys[0])))
+                require_true_scale(source.crs, source_path.name, (float(xs[0]), float(ys[0])))
             except SurfaceNotProjected as exc:
                 raise IndiaPackRefused(str(exc)) from exc
         return RasterEvidence(

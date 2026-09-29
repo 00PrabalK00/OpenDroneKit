@@ -78,6 +78,19 @@ def linear_unit_factor(crs) -> tuple[str, float]:
         return str(getattr(crs, "linear_units", "") or "unknown"), float("nan")
 
 
+def _unnamed_crs(path: str | Path) -> str:
+    """The PROJ text of a raster's CRS when it has one but no EPSG code, else ''."""
+    try:
+        import rasterio
+
+        with rasterio.open(str(path)) as raster:
+            if raster.crs is not None and not raster.crs.to_epsg():
+                return crs_label(raster.crs)
+    except Exception:  # noqa: BLE001 - unreadable rasters are refused elsewhere
+        pass
+    return ""
+
+
 def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
     """Refuse a CRS whose horizontal units are not metres.
 
@@ -90,6 +103,13 @@ def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
     """
     label = str(path) or "The raster"
     if not epsg:
+        unnamed = _unnamed_crs(path) if path else ""
+        if unnamed:
+            raise NotProjected(
+                f"{label} has a coordinate reference system ({unnamed}) with no EPSG "
+                "code, so its unit and scale cannot be checked against ground metres. "
+                "Reproject it to the survey's UTM zone (an EPSG CRS) first."
+            )
         raise NotGeoreferenced(
             f"{label} has no coordinate reference system, so distances and volumes "
             "measured on it would not be in metres."
@@ -130,11 +150,36 @@ def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
 MAX_SCALE_DISTORTION = 0.01
 
 
-def projection_scale_error(epsg: int, longitude: float, latitude: float) -> float:
-    """Largest fractional error of the CRS's metre against ground metres at a point."""
-    from pyproj import CRS, Proj
+def _as_pyproj_crs(crs: Any):
+    """A pyproj CRS from an EPSG code, a rasterio/pyproj CRS or WKT/PROJ text."""
+    from pyproj import CRS
 
-    factors = Proj(CRS.from_epsg(int(epsg))).get_factors(float(longitude), float(latitude))
+    if isinstance(crs, (int, np.integer)):
+        return CRS.from_epsg(int(crs))
+    if hasattr(crs, "to_wkt"):
+        return CRS.from_wkt(crs.to_wkt())
+    return CRS.from_user_input(crs)
+
+
+def crs_label(crs: Any) -> str:
+    """EPSG:n when the CRS has a code, otherwise its PROJ string."""
+    try:
+        pc = _as_pyproj_crs(crs)
+    except Exception:  # noqa: BLE001
+        return str(crs)
+    epsg = pc.to_epsg()
+    return f"EPSG:{epsg}" if epsg else (pc.to_proj4() or pc.name)
+
+
+def projection_scale_error(crs: Any, longitude: float, latitude: float) -> float:
+    """Largest fractional error of the CRS's metre against ground metres at a point.
+
+    ``crs`` may be an EPSG code or a CRS object: a Mercator written with no EPSG code
+    (+proj=merc) inflates lengths exactly as EPSG:3857 does and must not escape.
+    """
+    from pyproj import Proj
+
+    factors = Proj(_as_pyproj_crs(crs)).get_factors(float(longitude), float(latitude))
     scales = [float(factors.meridional_scale), float(factors.parallel_scale)]
     return max(abs(k - 1.0) for k in scales)
 
@@ -159,7 +204,7 @@ def raster_centre_lonlat(path: str | Path) -> tuple[float, float] | None:
         return None
 
 
-def require_true_scale(epsg: int, path: str | Path = "",
+def require_true_scale(epsg: Any, path: str | Path = "",
                        lonlat: tuple[float, float] | None = None) -> None:
     """Refuse a CRS whose metre is not a ground metre where the raster lies."""
     where = lonlat or (raster_centre_lonlat(path) if path else None)
@@ -173,7 +218,7 @@ def require_true_scale(epsg: int, path: str | Path = "",
         label = str(path) or "The raster"
         shown = "unbounded" if not np.isfinite(error) else f"{error * 100:.1f}%"
         raise NotProjected(
-            f"{label} is in EPSG:{epsg}, whose metres differ from ground metres by "
+            f"{label} is in {crs_label(epsg)}, whose metres differ from ground metres by "
             f"{shown} at this site ({where[1]:.4f}, {where[0]:.4f}). Web Mercator "
             "(EPSG:3857) does this away from the equator: lengths, areas and volumes "
             "measured on it would be inflated. Reproject it to a true-scale CRS -- the "
@@ -195,6 +240,14 @@ def load_surface(path: str | Path) -> RasterSurface:
     """
     data, meta = geo.read_geotiff(path)
     if not meta.get("epsg"):
+        unnamed = _unnamed_crs(path)
+        if unnamed:
+            raise NotProjected(
+                f"{path} has a coordinate reference system ({unnamed}) with no EPSG "
+                "code, so its unit and scale cannot be checked against ground metres "
+                "and nothing measured on it can be trusted as metres. Reproject it to "
+                "the survey's UTM zone (an EPSG CRS) first."
+            )
         raise NotGeoreferenced(
             f"{path} has no coordinate reference system, so distances and volumes "
             "measured on it would not be in metres. Reconstruct with the COLMAP "
