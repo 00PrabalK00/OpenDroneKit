@@ -1655,18 +1655,32 @@ const reports = {
   title: "Reports",
   toolbar: ["New Report", "|", "Generate", "Export PDF", "Share", "Save Template"],
   left: [
-    { id: "rp.structure", title: "Report Structure", render: () => tree([
+    /* "Inspection Findings" carried a count of 6 written into the source, shown over
+       every project whatever it held. The count is now the project's own findings that
+       a report would include, and absent when the application cannot say. */
+    { id: "rp.structure", title: "Report Structure", render: () => live({
+      calls: ["find_annotations"],
+      empty: "",
+      isEmpty: () => false,
+      render: ([found]) => {
+        const count = found && Array.isArray(found.annotations)
+          ? String(found.annotations.filter(
+            (a) => a.status !== "dismissed" && a.include_in_report !== false).length)
+          : undefined;
+        return tree([
       { id: "r1", label: "Executive Summary", icon: "§" },
       { id: "r2", label: "Project", icon: "§" },
       { id: "r3", label: "Mission & Coverage", icon: "§" },
       { id: "r4", label: "Processing", icon: "§" },
-      { id: "r5", label: "Inspection Findings", icon: "§", meta: "6" },
+      { id: "r5", label: "Inspection Findings", icon: "§", meta: count },
       { id: "r6", label: "Measurements", icon: "§" },
       { id: "r7", label: "Thermal", icon: "§" },
       { id: "r8", label: "Change Analysis", icon: "§" },
       { id: "r9", label: "Recommendations", icon: "§" },
       { id: "r10", label: "Appendix", icon: "§" },
-    ], { selectKind: "section" }) },
+        ], { selectKind: "section" });
+      },
+    }) },
   ],
   canvas: () => canvas({ title: "Report preview", note: "Live preview of the generated document." }),
   right: [
@@ -1681,9 +1695,12 @@ const reports = {
                   "dataset_quality", "mission_summary"] },
       { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX"] },
     ], settingChanged) },
+    /* Defaulted to "DEMO organisation" and "brand.png": an organisation nobody typed,
+       headed for the client's document, and a logo file that does not exist. Empty
+       until the operator fills them in. */
     { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
-      { key: "org", label: "Organisation", value: "DEMO organisation" },
-      { key: "logo", label: "Logo", value: "brand.png" },
+      { key: "org", label: "Organisation", value: "" },
+      { key: "logo", label: "Logo", value: "" },
     ], settingChanged) },
   ],
   bottom: [

@@ -315,3 +315,55 @@ class TestFirstRender:
         assert "Viaduct 3 survey" in seen["nav"] and "Viaduct 3 survey" in seen["status"]
         assert "3 workers" not in seen["nav"] and "Aukerman" not in seen["status"]
         assert "00:00:00" not in seen["nav"]
+
+    def test_the_reports_workspace_holds_no_invented_figures(self):
+        source = (WEB / "js" / "workspace" / "workspaces.js").read_text(encoding="utf-8")
+        reports = source.split('  id: "reports",', 1)[1].split('  id: "developers",', 1)[0]
+        code = "\n".join(line for line in reports.splitlines()
+                         if not line.lstrip().startswith(("*", "//", "/*")))
+        for literal in ('meta: "6"', '"DEMO organisation"', '"brand.png"'):
+            assert literal not in code, literal
+
+    @pytest.mark.skipif(__import__("os").environ.get("ODK_GUI_TESTS") != "1",
+                        reason="drives a real WebView2 window; set ODK_GUI_TESTS=1 on a desktop")
+    def test_the_real_reports_workspace_counts_the_projects_findings(self, tmp_path, monkeypatch):
+        """Report Structure said "Inspection Findings 6" and Branding said "DEMO
+        organisation" / "brand.png" over every project. Two findings are recorded here,
+        one dismissed: the real cockpit must show 1 and leave branding for the operator."""
+        import webview
+
+        from app.shell import WEB_ROOT, Shell
+        from core.annotations import create_annotation
+
+        monkeypatch.setenv("ODK_DATA_DIR", str(tmp_path / "data"))
+        shell = Shell()
+        project = shell.api.create_project("Pier 4 reports", "", "")["project"]
+        root = Path(shell.api._session.project_root())
+        for status in ("open", "dismissed"):
+            create_annotation(root, str(project["id"]), "image", "IMG_0001.JPG", "point",
+                              {"type": "Point", "coordinates": [10, 20]}, "crack", "high", status)
+        url = shell._serve(WEB_ROOT, "workspace.html", runtime=shell.runtime)
+        window = webview.create_window("reports", url, js_api=shell.api, hidden=True)
+        seen = {}
+
+        def look():
+            try:
+                time.sleep(8)
+                window.evaluate_js(
+                    "[...document.querySelectorAll('.nav-item')]"
+                    ".find((b) => b.textContent.trim() === 'Reports').click()")
+                time.sleep(4)
+                seen["structure"] = window.evaluate_js(
+                    "document.querySelector('[data-panel-id=\"rp.structure\"]').innerText")
+                seen["branding"] = window.evaluate_js(
+                    "[...document.querySelectorAll('[data-panel-id=\"rp.branding\"] input')]"
+                    ".map((i) => i.value).join('|')")
+            finally:
+                window.destroy()
+
+        webview.start(look)
+        lines = [line.strip() for line in seen["structure"].splitlines() if line.strip()]
+        at = lines.index("Inspection Findings")
+        assert lines[at + 1] == "1", lines
+        assert "6" not in lines
+        assert seen["branding"] == "|", seen["branding"]
