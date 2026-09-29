@@ -152,6 +152,7 @@ def raster_bounds(path: str | Path) -> tuple[tuple[float, float, float, float], 
                 f"{source.name} has no coordinate reference system, so the ground it "
                 "covers is unknown and it cannot be cached against an area."
             )
+        refuse_non_metre_heights(raster.crs, source.name)
         epsg = raster.crs.to_epsg()
         bounds = transform_bounds(raster.crs, "EPSG:4326", *raster.bounds, densify_pts=21)
 
@@ -165,6 +166,46 @@ def raster_bounds(path: str | Path) -> tuple[tuple[float, float, float, float], 
             cell = float(abs(raster.transform.a) * 111_320.0 * math.cos(math.radians(mid_lat)))
 
     return bounds, epsg, cell
+
+
+def refuse_non_metre_heights(crs, name: str) -> None:
+    """Refuse a terrain raster whose horizontal CRS is in feet.
+
+    Heights are read as metres everywhere terrain is used (terrain following, coverage
+    height above ground). A DEM in a State Plane feet CRS almost always carries heights
+    in feet too, and a GeoTIFF does not record the vertical unit, so its 770 "m" of
+    ground would plan a flight -- or place an image -- as if the ground were 535 m
+    higher than it is. Refused, in words.
+    """
+    if crs is None or not crs.is_projected:
+        return
+    try:
+        unit, factor = crs.linear_units_factor
+    except Exception:  # noqa: BLE001 - an unknown unit is as unusable as feet
+        unit, factor = "an unknown unit", float("nan")
+    if not (float(factor) == 1.0):
+        raise TerrainCacheError(
+            f"{name} is in {crs.to_string()} ({unit} horizontally). Its heights are "
+            "probably in the same unit, and a GeoTIFF does not record which, but "
+            "terrain here is read in metres. Export the DEM with heights in metres in a "
+            "metric or lon/lat CRS (a UTM zone or EPSG:4326) first."
+        )
+
+
+def check_terrain_file(path: str | Path) -> None:
+    """Refuse a terrain GeoTIFF that cannot be placed or whose heights are not metres."""
+    source = Path(path)
+    if source.suffix.lower() not in {".tif", ".tiff", ".vrt", ".img"}:
+        return
+    import rasterio
+
+    with rasterio.open(source) as raster:
+        if raster.crs is None:
+            raise TerrainCacheError(
+                f"{source.name} has no coordinate reference system, so the ground it "
+                "covers is unknown and its heights cannot be matched to a position."
+            )
+        refuse_non_metre_heights(raster.crs, source.name)
 
 
 def cache_terrain(source: str | Path, project_root: str | Path,

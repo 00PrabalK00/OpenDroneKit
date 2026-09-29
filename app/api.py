@@ -407,6 +407,13 @@ class Api:
         source = Path(path)
         if path and not source.exists():
             return fail(f"Terrain file not found: {path}")
+        if path:
+            from core.terrain_cache import TerrainCacheError, check_terrain_file
+
+            try:
+                check_terrain_file(source)
+            except TerrainCacheError as exc:
+                return fail(str(exc))
         self._session.terrain_source_path = str(source) if path else ""
 
         # Selecting a terrain file says nothing about whether it covers the site, and a

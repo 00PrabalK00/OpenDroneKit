@@ -112,6 +112,19 @@ def read_raster_evidence(
                     f"{source_path.name} does not declare a usable linear unit."
                 )
             area = determinant * factor * factor
+            from rasterio.warp import transform as rio_transform
+
+            from .dsm_analysis import NotProjected as SurfaceNotProjected, require_true_scale
+
+            b = source.bounds
+            xs, ys = rio_transform(source.crs, "EPSG:4326", [(b.left + b.right) / 2.0],
+                                   [(b.top + b.bottom) / 2.0])
+            try:
+                # Web Mercator's "metre" is 1.33 ground metres at 41 N: every area
+                # and length would be inflated.
+                require_true_scale(int(epsg), source_path.name, (float(xs[0]), float(ys[0])))
+            except SurfaceNotProjected as exc:
+                raise IndiaPackRefused(str(exc)) from exc
         return RasterEvidence(
             path=str(source_path),
             data=np.asarray(data),

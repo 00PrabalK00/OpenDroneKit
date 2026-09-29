@@ -107,7 +107,20 @@ def _require_projected(raster, path: Path) -> int | None:
             "degrees is not square metres and varies with latitude. Reproject to a "
             "projected CRS such as the survey's UTM zone first."
         )
-    return crs.to_epsg()
+    epsg = crs.to_epsg()
+    if epsg:
+        from rasterio.warp import transform as rio_transform
+
+        from .dsm_analysis import NotProjected as SurfaceNotProjected, require_true_scale
+
+        b = raster.bounds
+        xs, ys = rio_transform(crs, "EPSG:4326", [(b.left + b.right) / 2.0],
+                               [(b.top + b.bottom) / 2.0])
+        try:
+            require_true_scale(int(epsg), path.name, (float(xs[0]), float(ys[0])))
+        except SurfaceNotProjected as exc:
+            raise NotProjected(str(exc)) from exc
+    return epsg
 
 
 def pixel_to_world(path: str | Path,

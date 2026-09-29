@@ -119,6 +119,66 @@ def require_projected_epsg(epsg: int | None, path: str | Path = "") -> None:
             "depths would mix units. Reproject it to a CRS in metres -- the survey's UTM "
             "zone -- first."
         )
+    require_true_scale(int(epsg), path)
+
+
+# A projected CRS in metres can still misstate ground distances. Web Mercator
+# (EPSG:3857, what web-tile exports use) is "metres" only at the equator: at the
+# Aukerman site (41.3 N) a 100 m line measured 133 m and a ~4,600 m3 volume 8,125 m3,
+# all recorded as real. UTM stays within ~0.1% across a zone and a State Plane zone
+# within ~0.01%, so anything off by more than this at the raster itself is refused.
+MAX_SCALE_DISTORTION = 0.01
+
+
+def projection_scale_error(epsg: int, longitude: float, latitude: float) -> float:
+    """Largest fractional error of the CRS's metre against ground metres at a point."""
+    from pyproj import CRS, Proj
+
+    factors = Proj(CRS.from_epsg(int(epsg))).get_factors(float(longitude), float(latitude))
+    scales = [float(factors.meridional_scale), float(factors.parallel_scale)]
+    return max(abs(k - 1.0) for k in scales)
+
+
+def raster_centre_lonlat(path: str | Path) -> tuple[float, float] | None:
+    """The centre of a georeferenced raster in lon/lat, or None if it cannot be read."""
+    source = Path(str(path))
+    if not source.is_file():
+        return None
+    try:
+        import rasterio
+        from rasterio.warp import transform as rio_transform
+
+        with rasterio.open(source) as raster:
+            if raster.crs is None:
+                return None
+            b = raster.bounds
+            xs, ys = rio_transform(raster.crs, "EPSG:4326",
+                                   [(b.left + b.right) / 2.0], [(b.top + b.bottom) / 2.0])
+        return float(xs[0]), float(ys[0])
+    except Exception:  # noqa: BLE001 - a raster that cannot be read is refused elsewhere
+        return None
+
+
+def require_true_scale(epsg: int, path: str | Path = "",
+                       lonlat: tuple[float, float] | None = None) -> None:
+    """Refuse a CRS whose metre is not a ground metre where the raster lies."""
+    where = lonlat or (raster_centre_lonlat(path) if path else None)
+    if where is None:
+        return
+    try:
+        error = projection_scale_error(epsg, *where)
+    except Exception:  # noqa: BLE001 - PROJ cannot evaluate it; the unit checks stand
+        return
+    if not np.isfinite(error) or error > MAX_SCALE_DISTORTION:
+        label = str(path) or "The raster"
+        shown = "unbounded" if not np.isfinite(error) else f"{error * 100:.1f}%"
+        raise NotProjected(
+            f"{label} is in EPSG:{epsg}, whose metres differ from ground metres by "
+            f"{shown} at this site ({where[1]:.4f}, {where[0]:.4f}). Web Mercator "
+            "(EPSG:3857) does this away from the equator: lengths, areas and volumes "
+            "measured on it would be inflated. Reproject it to a true-scale CRS -- the "
+            "survey's UTM zone -- first."
+        )
 
 
 class IncompatibleReferenceSurface(ValueError):

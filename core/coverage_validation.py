@@ -253,6 +253,10 @@ def _terrain_sampler(terrain_path: str):
     import rasterio
     from pyproj import Transformer
 
+    from .terrain_cache import check_terrain_file
+
+    # A feet DEM would put the ground ~2.3x too high and every image below it.
+    check_terrain_file(terrain_path)
     dataset = rasterio.open(terrain_path)
     to_raster = Transformer.from_crs("EPSG:4326", dataset.crs, always_xy=True)
     band = dataset.read(1, masked=True)
