@@ -22,19 +22,61 @@ const OFFLINE_STYLE = {
   layers: [{ id: "bg", type: "background", paint: { "background-color": "#0d1117" } }],
 };
 
-const SATELLITE_STYLE = {
-  version: 8,
-  sources: {
-    basemap: {
-      type: "raster",
-      tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
-      tileSize: 256,
-      maxzoom: 19,
-      attribution: "Esri World Imagery",
-    },
-  },
-  layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+/* Basemaps the native View menu can choose between.
+
+   `offline` is the tile cache on disk, served by the desktop shell from its own
+   loopback origin (tiles/{z}/{x}/{y}.png). Before, the cockpit had exactly two styles:
+   internet satellite imagery, or a dark background -- so without a network the map
+   was blank even on a machine whose cache covered the site. */
+const TILE_ORIGIN = typeof location !== "undefined" && /^https?:$/.test(location.protocol)
+  ? location.origin : "http://127.0.0.1:8000";
+const BASEMAP_TILES = {
+  satellite: { tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], maxzoom: 19, attribution: "Esri World Imagery" },
+  street: { tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], maxzoom: 19, attribution: "OpenStreetMap contributors" },
+  topo: { tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"], maxzoom: 19, attribution: "Esri, USGS, NOAA" },
+  offline: { tiles: [`${TILE_ORIGIN}/tiles/{z}/{x}/{y}.png?provider=satellite`], maxzoom: 20, attribution: "Locally cached tiles" },
 };
+let currentBasemap = "satellite";
+const mounted = new Set();
+
+function styleFor(key) {
+  const spec = BASEMAP_TILES[key] || BASEMAP_TILES.satellite;
+  return {
+    version: 8,
+    sources: { basemap: { type: "raster", tiles: spec.tiles, tileSize: 256, maxzoom: spec.maxzoom, attribution: spec.attribution } },
+    layers: [
+      { id: "bg", type: "background", paint: { "background-color": "#0d1117" } },
+      { id: "basemap", type: "raster", source: "basemap" },
+    ],
+  };
+}
+
+function liveMaps() {
+  for (const map of [...mounted]) {
+    if (!map.getContainer || !map.getContainer().isConnected) mounted.delete(map);
+  }
+  return [...mounted];
+}
+
+/** Switch every map on screen (and every map mounted later) to this basemap. */
+export function setBasemap(key) {
+  if (!BASEMAP_TILES[key]) return false;
+  currentBasemap = key;
+  for (const map of liveMaps()) map.setStyle(styleFor(key));
+  return true;
+}
+
+export function basemapNames() {
+  return Object.keys(BASEMAP_TILES);
+}
+
+/** The area shown by the map currently on screen, or null when none is. */
+export function visibleBounds() {
+  const map = liveMaps().pop();
+  if (!map) return null;
+  const b = map.getBounds();
+  return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth(), zoom: map.getZoom() };
+}
 
 export function mapAvailable() {
   return typeof window !== "undefined" && typeof window.maplibregl !== "undefined";
@@ -66,7 +108,7 @@ export function mountMap(container, {
   try {
     map = new window.maplibregl.Map({
       container: holder,
-      style: offline ? OFFLINE_STYLE : SATELLITE_STYLE,
+      style: offline ? OFFLINE_STYLE : styleFor(currentBasemap),
       center: centre,
       zoom,
       attributionControl: false,
@@ -86,13 +128,26 @@ export function mountMap(container, {
   // Tile errors are reported once, not per tile: a site with no connectivity would
   // otherwise fill the console with hundreds of identical failures and bury anything
   // else. Offline is the expected state for this product, so it is stated calmly.
+  //
+  // With no network the online basemap is switched to the local tile cache, and the
+  // chip says so: whatever was cached before going to site is shown, the rest stays
+  // honestly empty.
+  mounted.add(map);
   let reportedOffline = false;
+  let tileLoaded = false;
+  map.on("sourcedata", (event) => {
+    if (event && event.sourceId === "basemap" && event.tile && event.tile.state === "loaded") tileLoaded = true;
+  });
   map.on("error", (event) => {
     const message = String(event?.error?.message || "");
     if (!/tile|fetch|network|Failed/i.test(message) || reportedOffline) return;
     reportedOffline = true;
+    const fallBack = !offline && currentBasemap !== "offline" && !tileLoaded;
+    if (fallBack) map.setStyle(styleFor("offline"));
     container.appendChild(el("div", { class: "canvas-overlay bl" }, [
-      el("span", { class: "chip warn", text: "basemap tiles unavailable — offline" }),
+      el("span", { class: "chip warn", text: fallBack
+        ? "no network — showing the offline tile cache"
+        : "basemap tiles unavailable — offline" }),
     ]));
   });
 
