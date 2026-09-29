@@ -95,6 +95,24 @@ class PipelineResult:
         return asdict(self)
 
 
+class _FailedReconstruction:
+    """Stands in for a reconstruction result when the reconstruction step failed.
+
+    Every field a later stage reads is empty, and `error` says why, so nothing
+    downstream can mistake the absence of a reconstruction for an empty one.
+    """
+
+    point_cloud_path = ""
+    crack_cloud_path = ""
+
+    def __init__(self, error: str):
+        self.error = error
+
+    def to_dict(self) -> dict:
+        return {"status": "failed", "error": self.error, "frame_count": 0,
+                "total_points": 0, "crack_points": 0}
+
+
 class StructuralFaultPipeline:
     """Coordinator for crack detection, propagation forecast, 3D reconstruction, and reporting."""
 
@@ -458,16 +476,24 @@ class StructuralFaultPipeline:
             mapped = 74 + int((22.0 * float(max(0, min(100, int(percent))))) / 100.0)
             _emit_progress(mapped, f"Reconstruction: {message}")
 
-        recon = self.reconstructor.reconstruct(
-            image_dir=image_dir,
-            crack_mask_dir=masks_dir,
-            output_dir=recon_dir,
-            profile=self.config.reconstruction_profile,
-            execution_mode=self.config.reconstruction_execution_mode,
-            use_cache=self.config.reconstruction_use_cache,
-            cloud_endpoint=self.config.reconstruction_cloud_endpoint,
-            progress_callback=_recon_progress,
-        )
+        # A reconstruction that cannot run (fewer than three images, no overlap, no
+        # engine) used to raise here and take every per-image result with it: minutes of
+        # analysis, and no summary or report written. The failure is now recorded in the
+        # summary and the report, and the stages that need a reconstruction say so.
+        try:
+            recon = self.reconstructor.reconstruct(
+                image_dir=image_dir,
+                crack_mask_dir=masks_dir,
+                output_dir=recon_dir,
+                profile=self.config.reconstruction_profile,
+                execution_mode=self.config.reconstruction_execution_mode,
+                use_cache=self.config.reconstruction_use_cache,
+                cloud_endpoint=self.config.reconstruction_cloud_endpoint,
+                progress_callback=_recon_progress,
+            )
+        except Exception as exc:  # noqa: BLE001 - recorded, not swallowed
+            recon = _FailedReconstruction(f"{type(exc).__name__}: {exc}")
+            _emit_progress(96, f"Reconstruction failed: {exc}")
 
         _emit_progress(96, "Computing structural health score")
         history_rows = load_asset_health_history(

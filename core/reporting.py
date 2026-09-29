@@ -66,6 +66,13 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## Crack and Defect Summary")
     lines.append("")
+    structural_used = sorted({str(i.get("structural_model_used", "")) for i in images} - {""})
+    lines.append(
+        "- Crack and metal ratios come from classical image processing (heuristic), not a "
+        "trained model; they are screening indicators, not measured defects."
+    )
+    lines.append(f"- Structural detector used: `{', '.join(structural_used) or 'not recorded'}`")
+    lines.append("")
     lines.append("| Image | Crack Ratio | Crack Length (px) | Max Crack Width (px) | Metal Defect Ratio | Defect Regions | Structural Ratio | Solar Ratio |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for item in images:
@@ -212,6 +219,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## 3D Reconstruction")
     lines.append("")
+    if recon.get("status") == "failed":
+        lines.append(f"- Reconstruction FAILED: `{recon.get('error', '')}`")
+        lines.append("- No 3D output, measurements or volumes were produced from this run.")
     lines.append(f"- Frames: `{recon.get('frame_count', 0)}`")
     lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
     lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")
