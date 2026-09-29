@@ -1365,7 +1365,11 @@ PLATFORM = [
                       "tests/test_report_from_the_open_project.py::TestReportTypesAreDifferentDocuments",
                       "tests/test_report_from_the_open_project.py::TestNothingIsWrittenOnTheProjectsBehalf",
                       "tests/test_reports_in_the_desktop_window.py::TestTheWindowProducesAReport",
-                      "tests/test_reports_in_the_cockpit.py::TestTheReportsWorkspace"],
+                      "tests/test_reports_in_the_cockpit.py::TestTheReportsWorkspace",
+                      "tests/test_a_refused_report_says_why.py::TestReadinessThroughTheApi",
+                      "tests/test_a_refused_report_says_why.py::TestTheDefaultWindowSaysWhatIsMissing",
+                      "tests/test_a_refused_report_says_why.py::TestTheCockpitSaysWhatIsMissing",
+                      "tests/test_a_refused_report_says_why.py::TestThePipelineReportDoesNotGradeAStructure"],
       "core/report_engine.py + app/report_builder.py: built from the open desktop project "
       "(store datasets, mission versions, audit; folder findings, reconstruction, pipeline "
       "runs), written to <project>/reports/<time>_<title>_<id>/ with a manifest and "
