@@ -22,14 +22,17 @@ opened `index.html`; `tests/test_desktop_services.py` now pins the two together.
 
 ## What is real on screen, and what is not
 
-The cockpit shows the structural sample until it can talk to the application. That
-sample is deliberately impossible to mistake for a survey: sites are named DEMO,
+The cockpit can show a structural sample: in demo mode (`?demo=1`), and in any panel
+that has nothing wired to the application yet. That sample is deliberately impossible to mistake for a survey: sites are named DEMO,
 coordinates are Null Island, clocks sit at the epoch, and the wording matches
 `core/demo_mode.py` so the desktop demo and the API demo agree about what synthetic
 looks like.
 
-A banner across the top says so, and it is shown in every state except `connected` --
-the only state in which what you are looking at came from the application. It used to
+A banner across the top says so. It is shown in demo mode (`?demo=1`) or whenever a
+panel is still rendering the bundled sample, and it follows what is on screen rather
+than the connection state: a connected panel that falls back to the sample still raises
+it, and with no bridge at all the panels say "Not connected" instead of drawing
+anything, so there is nothing to label and the banner stays hidden. It used to
 be a chip at the end of the status bar, which was clipped off screen at 1600px, so the
 one thing declaring the data synthetic was the first thing to disappear.
 
