@@ -40,7 +40,7 @@ function jobOutcome(result) {
   }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   /* The pipeline's markdown report was written and never mentioned. */
-  if (result.report_markdown_path) parts.push("inspection report written (Reports > Inspection Report)");
+  if (result.report_markdown_path) parts.push("inspection report written (reopen it from Reports > Inspection Report)");
   if (result.metrics && typeof result.metrics.map50 === "number") {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
   }
@@ -1528,6 +1528,20 @@ export class Shell {
     }
   }
 
+  /**
+   * A Run Pipeline job that wrote an inspection report opens it, as the default window
+   * does. The cockpit used to leave it behind a toast naming a menu.
+   */
+  async showFinishedPipelineReport(result) {
+    const path = result && result.report_markdown_path;
+    if (!path) return;
+    const runId = String(path).split(/[\\/]/).slice(-2)[0];
+    const report = await tryCall("read_pipeline_report", runId);
+    if (report && typeof report.markdown === "string") {
+      reveal(`Inspection report: ${report.id}`, report.markdown, 28);
+    }
+  }
+
   /** Follow a background job to completion, reporting progress as it goes. */
   watchJob(jobId) {
     this.selectedJobId = jobId;
@@ -1546,6 +1560,7 @@ export class Shell {
         await this.refreshState();
         this.dock.refreshLive();
         refreshLive();
+        this.showFinishedPipelineReport(status.result);
         return;
       }
       if (state === "failed" || state === "error") {

@@ -174,6 +174,24 @@ class TestTheHtmlReportSaysTheReconstructionFailed:
         assert "attempted and failed" in notes and "none was run" not in notes
 
 
+    def test_leaving_out_the_defect_section_does_not_hide_the_failure(self, surveyed) -> None:
+        """include_defects=False emptied pipeline_runs, and the failed reconstruction was
+        again reported as "No reconstruction was run." """
+        from dataclasses import replace
+
+        from app import report_builder
+
+        api, _, _ = surveyed
+        config = replace(api._report_config(report_type="standard", formats=["html"]),
+                         include_defects=False)
+        readiness = report_builder.readiness(api._session, config)
+        assert "attempted and failed" in " ".join(readiness.notes)
+        result = report_builder.generate(api._session, config)
+        html = Path(result.html_path).read_text(encoding="utf-8")
+        assert "No reconstruction was run." not in html
+        assert "Reconstruction was attempted 1 time(s) and failed" in html
+        assert "reconstruction failed (" in html
+
 def test_readiness_warns_when_an_imported_folder_is_gone(tmp_path) -> None:
     images = _real_frames(tmp_path / "imagery", 1)
     api = Api(AppSession(ProjectStore(tmp_path / "state.db")))
@@ -207,7 +225,13 @@ const out = {};
 // The Readiness panel fills once the shell has the open project.
 await __waitFor(() => /warning|note|ready|missing/.test(
   qa('.console .line').map((l) => l.textContent).join(' ')));
-qa('.tbtn').find((b) => b.textContent === 'Inspection Report').click();
+// Under load the panel can fill before the shell has read the open project, and the
+// action then (rightly) answers "Open a project first". Click again until it has.
+const started = Date.now();
+while (!document.querySelector('textarea.modal-reveal') && Date.now() - started < 90000) {
+  qa('.tbtn').find((b) => b.textContent === 'Inspection Report').click();
+  await new Promise((r) => setTimeout(r, 3000));
+}
 await __waitFor(() => document.querySelector('textarea.modal-reveal'));
 out.text = document.querySelector('textarea.modal-reveal').value;
 out.title = document.body.innerText.match(/Inspection report: run_\d+_\d+/)?.[0] || '';
@@ -251,3 +275,33 @@ def test_the_native_menu_reaches_it() -> None:
     web = Path(__file__).resolve().parents[1] / "app" / "web" / "js"
     assert "'report.pipeline'" in (web / "app.js").read_text(encoding="utf-8")
     assert 'case "report.pipeline"' in (web / "workspace" / "shell.js").read_text(encoding="utf-8")
+
+
+def test_the_cockpit_opens_it_when_run_ai_finishes(tmp_path) -> None:
+    """The default window opened the report when a pipeline job finished; the cockpit only
+    named the menu it could be found under. Run AI is clicked in the cockpit, and the
+    finished run's report opens by itself, identical to the file on disk."""
+    from live_ui import LiveUI
+
+    images = _real_frames(tmp_path / "imagery", 1)
+    api = Api(AppSession(ProjectStore(tmp_path / "state.db")))
+    assert api.create_project("Cockpit run", str(tmp_path / "project"))["ok"]
+    assert api.import_dataset(str(images), "Aukerman frame")["ok"]
+    ui = LiveUI(api, "inspection")
+    try:
+        # The shell refuses actions until it has read the open project.
+        ui.js("T.until(() => document.body.innerText.includes('Cockpit run'), 240000, 'the project')")
+        ui.js("T.tool('Run AI')")
+        ui.js("T.ok('Confirm')")
+        message = ui.js("T.toast('finished|failed', 900000)")
+        assert "finished" in message, message
+        shown = ui.js("T.until(() => { const t = document.querySelector('textarea.modal-reveal');"
+                      " return t && { text: t.value, title: (document.body.innerText"
+                      ".match(/Inspection report: run_\d+_\d+/) || [''])[0] }; },"
+                      " 60000, 'the inspection report')")
+    finally:
+        ui.close()
+    reports = sorted((tmp_path / "project" / "analysis").glob("run_*/inspection_report.md"))
+    assert len(reports) == 1
+    assert shown["title"] == f"Inspection report: {reports[0].parent.name}"
+    assert shown["text"].strip() == reports[0].read_text(encoding="utf-8").strip()
