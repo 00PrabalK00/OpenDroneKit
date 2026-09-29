@@ -679,6 +679,7 @@ class ColmapReconstructor:
         self.ground_control = list(ground_control or [])
         self.control_report: dict[str, Any] | None = None
         self.warnings: list[str] = []
+        self._cloud_is_dense = False
         self._should_cancel: Callable[[], bool] | None = None
 
     # -- helpers ---------------------------------------------------------
@@ -1239,10 +1240,14 @@ class ColmapReconstructor:
 
         requested = 1.0 / max(float(self.settings.get("raster_px_per_m", 16.0)), 1e-6)
         if density_floor > requested:
+            dense = self._cloud_is_dense
             self._warn(
                 f"Raster resolution relaxed from {requested:.3f} to {density_floor:.3f} m/px: "
-                f"{points_world.shape[0]:,} points cannot fill a finer grid. "
-                "Enable dense MVS for full-resolution products."
+                f"{points_world.shape[0]:,} {'dense' if dense else 'sparse'} points cannot fill "
+                "a finer grid. "
+                + ("More overlapping images registered, or a larger max image size, give "
+                   "dense MVS more to fuse." if dense
+                   else "Enable dense MVS for full-resolution products.")
             )
             return density_floor
         return requested
@@ -1653,6 +1658,10 @@ class ColmapReconstructor:
             self.profile = _normalize_profile(profile)
             self.settings = dict(COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]))
         self.warnings = []
+        # Whether the products below come from a fused dense cloud. The resolution and
+        # orthophoto warnings used to call every cloud "sparse" and advise enabling
+        # dense MVS -- including on runs where dense MVS had just produced the cloud.
+        self._cloud_is_dense = False
         self._should_cancel = should_cancel
 
         def progress(percent: int, message: str) -> None:
@@ -1737,6 +1746,7 @@ class ColmapReconstructor:
         dense_xyz, dense_rgb = self._run_dense(images_root, work_dir, sparse, progress)
         if dense_xyz.shape[0] > sparse_xyz.shape[0]:
             cloud_xyz, cloud_rgb = dense_xyz, dense_rgb
+            self._cloud_is_dense = True
         else:
             cloud_xyz, cloud_rgb = sparse_xyz, sparse_rgb
 
@@ -1944,10 +1954,13 @@ class ColmapReconstructor:
                 ortho_grid = fine
                 self._warn(
                     f"The orthomosaic is rectified at {fine['pixel_size']:.3f} m/px onto a surface "
-                    f"interpolated between {fine['surface_points']:,} sparse points, because the "
+                    f"interpolated between {fine['surface_points']:,} "
+                    f"{'dense' if self._cloud_is_dense else 'sparse'} points, because the "
                     f"DSM is only {raster['pixel_size']:.2f} m/px. Pixel colours are measured; "
                     "relief between the points is not, so raised objects (trees, roofs) lean "
-                    "and can be displaced. Dense MVS removes this limit."
+                    "and can be displaced. "
+                    + ("A denser fused cloud (more registered overlap) reduces this."
+                       if self._cloud_is_dense else "Dense MVS removes this limit.")
                 )
             else:
                 ortho = self._true_orthophoto(raster, registered, camera_map, image_dir, anchor, progress)
