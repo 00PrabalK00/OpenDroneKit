@@ -136,6 +136,10 @@ class TestHeight:
         down = measure_height(cube, (0, 0, 4), (0, 0, 10))["height_m"]
         assert up == down == pytest.approx(6.0)
 
+    def test_the_higher_point_is_the_top_whichever_was_picked_first(self, cube):
+        result = measure_height(cube, (0, 0, 4), (0, 0, 10))
+        assert (result["top_elevation_m"], result["base_elevation_m"]) == (10.0, 4.0)
+
     def test_the_base_assumption_is_stated(self, cube):
         result = measure_height(cube, (0, 0, 10), (0, 0, 0))
         assert any("not on the ground" in limit for limit in result["limits"])

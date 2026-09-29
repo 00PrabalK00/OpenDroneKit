@@ -182,6 +182,9 @@ def measure_height(model_path: str | Path,
     base = float(base_xyz[2])
     if not math.isfinite(top) or not math.isfinite(base):
         raise ValueError("Measurement points must be finite.")
+    # Whichever point was picked first, the higher one is the top; the labels used to
+    # follow click order and could call 239.84 m the top over a 240.51 m base.
+    top, base = max(top, base), min(top, base)
     return {
         "kind": "height",
         "height_m": round(abs(top - base), 4),

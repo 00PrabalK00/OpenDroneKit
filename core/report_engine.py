@@ -384,7 +384,7 @@ def _render_section(section: str, context: dict[str, Any]) -> str:
             blocks.append(
                 f"<div class='section'><h3>Run {html.escape(str(r.get('id', '')))}</h3>"
                 f"<p>{html.escape(str(r.get('summary', '')))}</p>"
-                f"<p class='muted'>Risk level: <span class='chip {'danger' if r.get('risk_level') in ('Critical', 'High') else 'warn' if r.get('risk_level') == 'Medium' else 'ok'}'>{html.escape(str(r.get('risk_level', '')))}</span></p>"
+                f"<p class='muted'>Illustrative risk level (from the assumed stresses and toughness below, not measured): <span class='chip {'danger' if r.get('risk_level') in ('Critical', 'High') else 'warn' if r.get('risk_level') == 'Medium' else 'ok'}'>{html.escape(str(r.get('risk_level', '')))}</span></p>"
                 f"<h4>Assumptions</h4><ul>{''.join(f'<li>{html.escape(str(a))}</li>' for a in r.get('assumptions', []))}</ul></div>"
             )
         return f"<section class='section'><h2>Crack Propagation</h2>{''.join(blocks)}</section>"
