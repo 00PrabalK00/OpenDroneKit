@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import platform
 import subprocess
+import sys
 from typing import Any, Callable
 
 from .jobs import JobManager
@@ -37,6 +38,18 @@ def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
+        except ModuleNotFoundError as exc:
+            # Features import their packages when used, so this is where a package the
+            # launcher's environment lacks shows up. Say which one and how to add it.
+            missing = (exc.name or "").split(".")[0]
+            if not missing or (Path(__file__).resolve().parents[1] / missing).exists():
+                return fail(f"{type(exc).__name__}: {exc}")
+            return fail(
+                f"{missing} is not installed in the Python running OpenDroneKit "
+                f"({sys.executable}), so this feature cannot run. Install it with: "
+                f"\"{sys.executable}\" -m pip install -r requirements.txt  (or run "
+                "tools/check_environment.py --install)."
+            )
         except Exception as exc:  # noqa: BLE001
             return fail(f"{type(exc).__name__}: {exc}")
 
