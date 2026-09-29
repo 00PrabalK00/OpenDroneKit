@@ -289,11 +289,13 @@ export const ACTIONS = {
     describe: "Split the labelled boxes into a trainable corpus, or say why not.",
     async run() {
       const result = await call("build_detection_corpus", null, "");
+      // counts[split] is {images, <class>: boxes}; the image count is what a split holds.
       const counts = result.counts || {};
+      const images = (split) => (counts[split] && counts[split].images) || 0;
       return {
         message: `Corpus at ${result.output_dir}: ${result.total_images} image(s), `
-          + `${result.total_boxes} box(es); train ${counts.train || 0}, val ${counts.val || 0}, `
-          + `test ${counts.test || 0}.`,
+          + `${result.total_boxes} box(es); train ${images("train")}, val ${images("val")}, `
+          + `test ${images("test")} image(s).`,
       };
     },
   },

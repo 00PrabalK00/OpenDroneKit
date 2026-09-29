@@ -929,7 +929,8 @@ export class Shell {
       ...SHORTCUTS.map(([keys, what]) => ({ kind: "shortcut", label: what, hint: keys, run: () => {} })),
       { kind: "project", label: DEMO.SITES[0], hint: "project", run: () => {} },
       { kind: "project", label: DEMO.SITES[1], hint: "project", run: () => {} },
-      { kind: "finding", label: "F-118 crack — Roof Block A", hint: "finding", run: () => this.open("inspection") },
+      // An invented finding, "F-118 crack on Roof Block A", used to be offered here on every
+      // project. Real findings are in the AI Inspection Findings table.
       { kind: "mission", label: "Roof Block A v3", hint: "mission", run: () => this.open("planning") },
     ];
     this.palette(items, "");

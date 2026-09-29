@@ -133,3 +133,11 @@ class TestTheCanvasShowsThisProject:
         worse than the empty canvas it replaced."""
         body = primitives.split("async function projectProduct")[1].split("\n}")[0]
         assert "DATA" not in body, "the resolver can still fall back to the example data"
+
+
+def test_the_command_palette_offers_no_invented_finding() -> None:
+    """The palette listed "F-118 crack -- Roof Block A" on every project, one click from
+    the AI Inspection screen, after the same finding had been removed from its tables."""
+    shell = strip_comments((WORKSPACE_JS / "shell.js").read_text(encoding="utf-8"))
+    for needle in ("F-118", "F-116", "F-112"):
+        assert needle not in shell, f"{needle} is still offered by the command palette"
