@@ -251,3 +251,37 @@ class TestLabelToRunningModel:
         assert ran["model_key"] == "custom_wall_defects"
         assert ran["model_sha256"] == job["result"]["sha256"]
         assert "detection_count" in ran["output"]
+
+        # Exporting imported ultralytics in-process, which on Windows swaps cv2.imread for
+        # a wrapper that reads grayscale as HxWx1; every later mask read in the app then
+        # failed. After a deploy, a grayscale read is still two-dimensional.
+        import cv2
+        import numpy as np
+
+        probe = str(api._session.project_root() / "gray_probe.png")
+        assert cv2.imwrite(probe, np.zeros((4, 4), np.uint8))
+        assert cv2.imread(probe, cv2.IMREAD_GRAYSCALE).ndim == 2
+
+
+def test_deploy_restores_what_the_exporter_patched(tmp_path, monkeypatch):
+    """The exporter's import of ultralytics rebinds cv2.imread/imwrite/imshow; deploy
+    puts them back whatever the export's outcome. The fake stands in for ultralytics
+    (the external library) and does exactly what its import does on Windows."""
+    import cv2
+
+    import training.export_onnx as export_onnx
+    from core.custom_model_training import TrainingRefused, deploy_detector
+
+    originals = (cv2.imread, cv2.imwrite, cv2.imshow)
+
+    def patched(*_a, **_k):
+        raise AssertionError("the exporter's cv2 wrapper leaked out of deploy")
+
+    def fake_export(run):
+        cv2.imread = cv2.imwrite = cv2.imshow = patched
+        return {"parity_ok": False}
+
+    monkeypatch.setattr(export_onnx, "export_yolo", fake_export)
+    with pytest.raises(TrainingRefused):
+        deploy_detector(tmp_path, "custom_probe")
+    assert (cv2.imread, cv2.imwrite, cv2.imshow) == originals

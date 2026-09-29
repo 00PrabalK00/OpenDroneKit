@@ -21,6 +21,7 @@ in one go would install a model nobody had looked at.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,32 @@ CUSTOM_PREFIX = "custom_"
 
 class TrainingRefused(ValueError):
     """The inputs cannot produce a model worth reading a metric from."""
+
+
+@contextlib.contextmanager
+def _ultralytics_leaves_globals_alone():
+    """Undo what importing ultralytics does to the rest of this process.
+
+    On Windows, importing ultralytics replaces cv2.imread/imwrite/imshow with its own
+    wrappers (and torch.save with its own). Its imread returns a grayscale read as
+    HxWx1 rather than HxW, so after one Deploy in the desktop app every later
+    grayscale mask read elsewhere -- crack propagation, the full pipeline -- failed
+    with "base_mask must be a single-channel mask" until the app was restarted.
+    """
+    import cv2
+
+    saved = [(cv2, name, getattr(cv2, name)) for name in ("imread", "imwrite", "imshow")]
+    try:
+        import torch
+
+        saved.append((torch, "save", torch.save))
+    except ImportError:
+        pass
+    try:
+        yield
+    finally:
+        for module, name, original in saved:
+            setattr(module, name, original)
 
 
 def _base_weights() -> Path:
@@ -154,7 +181,8 @@ def deploy_detector(run_dir: str | Path, key: str) -> dict[str, Any]:
             f"{key!r} would replace a shipped model and its published metrics.")
     run = Path(run_dir)
     try:
-        report = export_yolo(run)
+        with _ultralytics_leaves_globals_alone():
+            report = export_yolo(run)
     except SystemExit as exc:
         raise TrainingRefused(str(exc)) from exc
     (run / "export_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
