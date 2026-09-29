@@ -195,7 +195,11 @@ class TestRealReconstruction:
 
         from core.reconstruction_colmap import ColmapReconstructor, colmap_available
 
-        imagery = Path("training/data/aukerman_subset")
+        from conftest import survey_imagery_dir
+
+        # The checkout's gitignored frames, or ODK_SURVEY_IMAGERY -- not the working
+        # directory, which only matched when pytest was started from the repo root.
+        imagery = survey_imagery_dir()
         if not colmap_available() or not imagery.is_dir():
             pytest.skip("Survey imagery or pycolmap not available.")
 
