@@ -274,6 +274,10 @@ class _CapturePose:
     trigger: bool = True
     dwell_s: float = 0.0
     camera_yaw_locked: bool = False
+    # The point the camera is aimed at, when the pose aims at one (an orbit centre, a
+    # structure). A pose the geofence or a no-fly zone moves is re-aimed at it, instead
+    # of keeping a heading computed for a position it no longer occupies.
+    look_at_xy: tuple[float, float] | None = None
 
 
 def _normalize_template(mode: str) -> str:
@@ -408,6 +412,9 @@ TEMPLATE_DEFAULT_GIMBAL_DEG: dict[str, float] = {
 # against the wall and shrank each frame to a couple of metres, which is where the
 # 4,879-waypoint facade came from.
 DEFAULT_STRUCTURE_STANDOFF_M = 8.0
+# A turbine blade flexes and the rotor may yaw in gusts; 12 m is the clearance the
+# turbine primitive has always assumed when nobody set one.
+DEFAULT_TURBINE_STANDOFF_M = 12.0
 DEFAULT_BOX_STANDOFF_M = 15.0
 
 
@@ -880,6 +887,25 @@ def _wrap_deg(value: float) -> float:
     return wrapped
 
 
+# Two yaw conventions meet in this module, and mixing them is how a camera ends up
+# pointing along a wall instead of at it. Inside the planner, in the asset's local
+# frame, a pose yaw is a math angle: 0 along +x, counter-clockwise positive, the same
+# convention as _bearing_deg and the frame rotation. Everything that leaves the planner
+# (the plan GeoJSON, autopilot commands, every export format) carries a compass
+# heading: 0 north, clockwise positive, which is what an autopilot's CONDITION_YAW, a
+# Litchi heading and a DJI waypointHeadingAngle all mean. These two functions are the
+# only crossing between them.
+def _heading_from_math_deg(math_deg: float) -> float:
+    """World math angle (0 = east, counter-clockwise) to compass heading [0, 360)."""
+    heading = (90.0 - float(math_deg)) % 360.0
+    return 0.0 if heading >= 360.0 - 1e-9 else heading
+
+
+def _math_from_heading_deg(heading_deg: float) -> float:
+    """Compass heading (0 = north, clockwise) to world math angle."""
+    return _wrap_deg(90.0 - float(heading_deg))
+
+
 def _camera_profile(camera: str):
     """Resolve a camera through the profile database.
 
@@ -1227,7 +1253,12 @@ def terrain_csv_columns(path: str) -> list[str]:
         return []
 
 
-def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
+def read_terrain_csv_points(path: str) -> tuple[list[list[float]], list[list[float]]] | None:
+    """The samples of a terrain CSV: ([lon, lat, z] rows, [x_m, y_m, z] local rows).
+
+    None when the file cannot be read at all. Shared by the planner and the coverage
+    check, so the file the planner follows is the file whose extent is checked.
+    """
     src = Path(path)
     if not src.exists():
         return None
@@ -1287,6 +1318,15 @@ def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dic
             world_pts.append([float(c0), float(c1), float(c2)])
         else:
             local_samples.append([float(c0), float(c1), float(c2)])
+    return world_pts, local_samples
+
+
+def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
+    src = Path(path)
+    points = read_terrain_csv_points(path)
+    if points is None:
+        return None
+    world_pts, local_samples = points
 
     if len(world_pts) >= 3:
         world_xy = [[p[0], p[1]] for p in world_pts]
@@ -3790,7 +3830,9 @@ class MissionPlanner:
                         x_m=float(xy[0]),
                         y_m=float(xy[1]),
                         alt_m=float(max(1.0, item.get("alt_m", 60.0))),
-                        yaw_deg=_wrap_deg(float(item.get("yaw_deg", 0.0)) - float(frame.yaw_deg)),
+                        yaw_deg=_wrap_deg(
+                            _math_from_heading_deg(float(item.get("yaw_deg", 0.0))) - float(frame.yaw_deg)
+                        ),
                         gimbal_pitch_deg=float(item.get("gimbal_pitch_deg", -90.0)),
                         primitive=str(item.get("primitive", "linked_segment")),
                         trigger=bool(item.get("trigger", True)),
@@ -4986,7 +5028,8 @@ class MissionPlanner:
                         "polygon_local": local_polygon,
                         "standoff_m": float(
                             facade_standoff_m if facade_standoff_m is not None
-                            else constraints.standoff_m
+                            else constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_STRUCTURE_STANDOFF_M
                         ),
                         "top_altitude_m": float(
                             facade_top_altitude_m if facade_top_altitude_m is not None
@@ -5012,7 +5055,10 @@ class MissionPlanner:
                     kind="closed_loop",
                     params={
                         "polygon_local": local_polygon,
-                        "standoff_m": constraints.standoff_m,
+                        "standoff_m": (
+                            constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_STRUCTURE_STANDOFF_M
+                        ),
                         "radii_m": list(closed_loop_radii_m or []),
                         "altitude_levels_m": self._altitude_levels(
                             altitude_m, constraints, min_levels=2, max_levels=4
@@ -5096,7 +5142,12 @@ class MissionPlanner:
                             else altitude_m
                         ),
                         "blade_length_m": float(turbine_blade_length_m),
-                        "standoff_m": constraints.standoff_m,
+                        # An unset stand-off (0) used to reach the primitive's 2 m floor,
+                        # which puts the aircraft inside a blade's flex envelope.
+                        "standoff_m": (
+                            constraints.standoff_m if constraints.standoff_m > 0.0
+                            else DEFAULT_TURBINE_STANDOFF_M
+                        ),
                         "blade_angles_deg": list(turbine_blade_angles_deg or []),
                         "tower_levels": int(turbine_tower_levels),
                         "blade_stations": int(turbine_blade_stations),
@@ -5230,7 +5281,10 @@ class MissionPlanner:
                 kind="facade",
                 params={
                     "polygon_local": local_polygon,
-                    "standoff_m": constraints.standoff_m,
+                    "standoff_m": (
+                        constraints.standoff_m if constraints.standoff_m > 0.0
+                        else DEFAULT_STRUCTURE_STANDOFF_M
+                    ),
                     "altitude_levels_m": levels,
                     "horizontal_spacing_m": max(2.5, point_step_m * 0.9),
                 },
@@ -5463,7 +5517,7 @@ class MissionPlanner:
                 normal = -normal
 
             # The camera looks back at the wall, opposite the stand-off direction.
-            yaw = _wrap_deg(math.degrees(math.atan2(-normal[0], -normal[1])))
+            yaw = _wrap_deg(math.degrees(math.atan2(-normal[1], -normal[0])))
 
             columns = max(2, int(math.ceil(length / h_spacing)) + 1)
             levels = max(1, int(math.ceil(abs(top - bottom) / v_spacing)) + 1)
@@ -5536,12 +5590,13 @@ class MissionPlanner:
                 angle = 2.0 * math.pi * (-fraction if clockwise else fraction)
                 x = centre_xy[0] + radius * math.cos(angle)
                 y = centre_xy[1] + radius * math.sin(angle)
-                yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[1] - y, centre_xy[0] - x)))
                 poses.append(_CapturePose(
                     x_m=float(x), y_m=float(y), alt_m=altitude,
                     yaw_deg=yaw, gimbal_pitch_deg=float(tilt),
                     primitive="oblique_band_%d" % band_index, dwell_s=dwell_s,
                     camera_yaw_locked=True,
+                    look_at_xy=(float(centre_xy[0]), float(centre_xy[1])),
                 ))
         return poses
 
@@ -5588,12 +5643,13 @@ class MissionPlanner:
                     y = centre_xy[1] + radius * math.sin(angle)
                     # The camera always faces the structure, which is what makes a loop
                     # usable for reconstruction rather than just a perimeter flight.
-                    yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[0] - x, centre_xy[1] - y)))
+                    yaw = _wrap_deg(math.degrees(math.atan2(centre_xy[1] - y, centre_xy[0] - x)))
                     poses.append(_CapturePose(
                         x_m=float(x), y_m=float(y), alt_m=float(altitude),
                         yaw_deg=yaw, gimbal_pitch_deg=gimbal_pitch,
                         primitive="closed_loop_r%d" % ring_index, dwell_s=dwell_s,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(centre_xy[0]), float(centre_xy[1])),
                     ))
         return poses
 
@@ -5625,7 +5681,7 @@ class MissionPlanner:
             altitude = hub_height * (level + 1) / tower_levels
             poses.append(_CapturePose(
                 x_m=float(centre_xy[0]), y_m=float(centre_xy[1] - standoff),
-                alt_m=float(altitude), yaw_deg=0.0, gimbal_pitch_deg=0.0,
+                alt_m=float(altitude), yaw_deg=90.0, gimbal_pitch_deg=0.0,
                 primitive="turbine_tower", dwell_s=dwell_s, camera_yaw_locked=True,
             ))
 
@@ -5635,7 +5691,9 @@ class MissionPlanner:
             point = centre_xy + np.array([math.sin(radians), math.cos(radians)]) * standoff
             poses.append(_CapturePose(
                 x_m=float(point[0]), y_m=float(point[1]), alt_m=float(hub_height),
-                yaw_deg=_wrap_deg(bearing + 180.0), gimbal_pitch_deg=0.0,
+                # The point sits at compass `bearing` from the hub; the camera looks
+                # back along it, expressed as a local math angle like every other pose.
+                yaw_deg=_wrap_deg(90.0 - (bearing + 180.0)), gimbal_pitch_deg=0.0,
                 primitive="turbine_nacelle", dwell_s=dwell_s, camera_yaw_locked=True,
             ))
 
@@ -5655,7 +5713,9 @@ class MissionPlanner:
                     poses.append(_CapturePose(
                         x_m=float(x), y_m=float(centre_xy[1] + face_sign * standoff),
                         alt_m=float(altitude),
-                        yaw_deg=0.0 if face_sign > 0 else 180.0,
+                        # Face a stands on +y and looks back along -y at the blade;
+                        # face b the reverse.
+                        yaw_deg=-90.0 if face_sign > 0 else 90.0,
                         gimbal_pitch_deg=0.0,
                         primitive="turbine_blade_%d%s" % (blade_index, face_label),
                         dwell_s=dwell_s, camera_yaw_locked=True,
@@ -6186,6 +6246,7 @@ class MissionPlanner:
                         trigger=True,
                         dwell_s=0.0,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(center[0]), float(center[1])),
                     )
                 )
 
@@ -6254,6 +6315,7 @@ class MissionPlanner:
                         trigger=True,
                         dwell_s=0.0,
                         camera_yaw_locked=True,
+                        look_at_xy=(float(center[0]), float(center[1])) if count > 1 else None,
                     )
                 )
         return poses
@@ -6320,6 +6382,7 @@ class MissionPlanner:
                             trigger=True,
                             dwell_s=0.0,
                             camera_yaw_locked=True,
+                            look_at_xy=(float(centre[0]), float(centre[1])),
                         )
                     )
         return poses
@@ -6851,6 +6914,7 @@ class MissionPlanner:
                         primitive="orbit",
                         trigger=True,
                         camera_yaw_locked=bool(yaw_lock_to_poi),
+                        look_at_xy=(float(poi[0]), float(poi[1])) if yaw_lock_to_poi else None,
                     )
                 )
         return poses
@@ -7209,7 +7273,14 @@ class MissionPlanner:
                         pt = projected
                         adjustments["no_fly_projections"] += 1
 
-            if terrain_follow and (abs(x - float(pose.x_m)) > 1e-6 or abs(y - float(pose.y_m)) > 1e-6):
+            moved_xy = abs(x - float(pose.x_m)) > 1e-6 or abs(y - float(pose.y_m)) > 1e-6
+            if moved_xy and pose.look_at_xy is not None:
+                # Keep the camera on what it was aimed at from the position it now has.
+                target = np.asarray(pose.look_at_xy, dtype=np.float64)
+                if float(np.hypot(target[0] - x, target[1] - y)) > 1e-6:
+                    yaw = _bearing_deg(np.asarray([x, y], dtype=np.float64), target)
+
+            if terrain_follow and moved_xy:
                 # A pose moved by the fence or a no-fly zone now sits over different
                 # ground; carry its terrain offset with it rather than keep the old one.
                 moved = _terrain_delta_m(np.asarray([x, y], dtype=np.float64), terrain_model)
@@ -7325,7 +7396,7 @@ class MissionPlanner:
                     "lon": float(ll[0]),
                     "lat": float(ll[1]),
                     "alt_m": float(pose.alt_m),
-                    "yaw_deg": _wrap_deg(float(pose.yaw_deg) + float(frame.yaw_deg)),
+                    "yaw_deg": _heading_from_math_deg(float(pose.yaw_deg) + float(frame.yaw_deg)),
                     "gimbal_pitch_deg": float(pose.gimbal_pitch_deg),
                     "primitive": pose.primitive,
                     "trigger": bool(pose.trigger),

@@ -283,13 +283,16 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
     for index, pose in enumerate(viewpoints):
         gimbal = pose["gimbal_pitch_deg"]
         # DO_MOUNT_CONTROL: params 1-3 are pitch/roll/yaw and param7 (the z slot) is
-        # the mount mode, which is why the mode is written to `altitude` here.
+        # the mount mode, which is why the mode is written to `altitude` here. Mount yaw
+        # is relative to the airframe, and CONDITION_YAW below turns the airframe to the
+        # heading, so the mount stays centred; an absolute heading here would be added
+        # on top by any gimbal with a yaw axis.
         add(
             MAV_CMD_DO_MOUNT_CONTROL,
             frame=MAV_FRAME_MISSION,
             param1=gimbal,
             param2=0.0,
-            param3=pose["yaw_deg"] if pose["yaw_locked"] else 0.0,
+            param3=0.0,
             altitude=float(MAV_MOUNT_MODE_MAVLINK_TARGETING),
             label=f"gimbal {gimbal:.1f} deg",
         )
@@ -995,7 +998,7 @@ def export_all(directory: str | Path, mission: Any, stem: str = "mission") -> di
         try:
             record_written(written, name, writer(root / f"{stem}{suffix}", mission))
         except Exception as exc:  # noqa: BLE001
-            written[name] = f"failed: {exc}"
+            written[name] = f"failed: {type(exc).__name__}: {exc}"
     return written
 
 
