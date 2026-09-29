@@ -21,7 +21,13 @@ class StorePaths:
 
     @staticmethod
     def default() -> "StorePaths":
-        root = Path("final_toolkit_outputs") / "app_state"
+        # Absolute, from the one data root. This was `Path("final_toolkit_outputs")`,
+        # relative to wherever the process happened to start, so launching from a
+        # shortcut or another terminal opened a fresh empty store and the user's projects
+        # looked deleted.
+        from core.paths import app_state_dir
+
+        root = app_state_dir()
         root.mkdir(parents=True, exist_ok=True)
         return StorePaths(db_path=root / "projects.db")
 
@@ -125,7 +131,16 @@ class ProjectStore:
     def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
             return None
-        return {k: row[k] for k in row.keys()}
+        out = {k: row[k] for k in row.keys()}
+        root_dir = out.get("root_dir")
+        if isinstance(root_dir, str) and root_dir and not Path(root_dir).is_absolute():
+            # Rows written before project folders were stored absolute hold a path
+            # relative to the cwd of that launch, which the launcher always set to the
+            # toolkit folder. Resolve it there rather than against today's cwd.
+            from core.paths import toolkit_root
+
+            out["root_dir"] = str((toolkit_root() / root_dir).resolve())
+        return out
 
     def set_setting(self, key: str, value: Any) -> None:
         payload = json.dumps(value)
@@ -154,9 +169,11 @@ class ProjectStore:
             raise ValueError("Project name is required.")
         if root_dir is None:
             safe_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in name_clean).strip("_")
-            root = Path("final_toolkit_outputs") / "projects" / (safe_name or "project")
+            from core.paths import projects_dir
+
+            root = projects_dir() / (safe_name or "project")
         else:
-            root = Path(root_dir)
+            root = Path(root_dir).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         cur = self._conn.cursor()
         cur.execute(

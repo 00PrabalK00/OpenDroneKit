@@ -482,9 +482,13 @@ def report_readiness(project_id: str, *, report_type: str = "standard") -> dict[
     readiness = validate_report_readiness(
         ReportConfig(project_id=str(project_id), report_type=str(report_type))
     )
+    # "ready", not "ok": spread into Api.ok() an "ok" key overrode the call's own, so a
+    # refusal reached the UI as an error with no message. Warnings and notes were dropped.
     return {
-        "ok": bool(getattr(readiness, "ok", False)),
+        "ready": bool(getattr(readiness, "ok", False)),
         "missing": list(getattr(readiness, "missing", []) or []),
+        "warnings": list(getattr(readiness, "warnings", []) or []),
+        "notes": list(getattr(readiness, "notes", []) or []),
     }
 
 

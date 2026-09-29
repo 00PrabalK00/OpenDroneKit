@@ -27,23 +27,39 @@ def shell_py() -> str:
 
 
 class TestTheAppOpensSomethingThatWorks:
-    def test_the_desktop_shell_opens_the_wired_ui(self, shell_py) -> None:
-        """index.html, because it is the only one of the two whose buttons do anything.
+    def test_the_desktop_shell_opens_the_classic_ui_by_default(self, monkeypatch) -> None:
+        """index.html by default: every control and every native menu item is wired
+        and exercised there.
 
-        The cockpit was briefly made the default on the strength of its layout. Every
-        toolbar button in it routes to runAction(), which writes "not wired to the API
-        yet" into the status bar -- in text small enough that the app simply appears
-        broken. A better-looking UI that cannot plan a mission is a downgrade.
+        This used to justify the default by saying every cockpit button wrote "not
+        wired to the API yet". That stopped being true when actions.js reached the Api
+        (UNWIRED is empty), and the stale claim sat here and in shell.py while
+        UI_GUIDE.md said the opposite. The reason now is coverage, and the choice is
+        explicit in both directions.
         """
-        assert 'else "index.html"' in shell_py
+        from app.shell import UI_PAGES, resolve_ui
 
-    def test_the_cockpit_is_reachable_for_development(self, shell_py) -> None:
-        assert 'ODK_UI' in shell_py
-        assert '"workspace.html"' in shell_py
+        monkeypatch.delenv("ODK_UI", raising=False)
+        assert UI_PAGES[resolve_ui()] == "index.html"
+        monkeypatch.setenv("ODK_UI", "classic")
+        assert UI_PAGES[resolve_ui()] == "index.html"
+
+    def test_the_cockpit_is_reachable(self, shell_py, monkeypatch) -> None:
+        from app.shell import UI_PAGES, resolve_ui
+
+        assert '"--ui"' in shell_py and "ODK_UI" in shell_py
+        assert UI_PAGES[resolve_ui("cockpit")] == "workspace.html"
+        monkeypatch.setenv("ODK_UI", "cockpit")
+        assert UI_PAGES[resolve_ui()] == "workspace.html"
+
+    def test_the_cockpit_actions_are_wired(self) -> None:
+        actions = (WORKSPACE_JS / "actions.js").read_text(encoding="utf-8")
+        assert "export const UNWIRED = {};" in actions
 
     def test_the_documentation_names_what_actually_opens(self) -> None:
         guide = (REPO_ROOT / "docs" / "UI_GUIDE.md").read_text(encoding="utf-8")
         assert "workspace.html" in guide
+        assert "`python main.py` opens the classic" in guide
 
 
 class TestTheCockpitCanReachTheApplication:

@@ -3,17 +3,18 @@
 `app/web/workspace.html` is the operations interface: fourteen workspaces built from one
 dockable framework, arranged around a canvas that keeps most of the screen.
 
-Open it with the desktop shell (`python main.py`), or serve `app/web/` and visit
-`/workspace.html`.
+Open it with `python main.py --ui cockpit` (or `ODK_UI=cockpit`, or
+`OpenDroneKit.bat --ui cockpit`), or serve `app/web/` and visit `/workspace.html`.
 
-This document described the cockpit as the interface for some time while `app/shell.py`
-opened `index.html` instead, so the UI documented here was one no user could reach and
-the one they did reach was documented nowhere. `python main.py` now opens the cockpit.
+`python main.py` opens the classic single-screen shell (`index.html`). That is the
+default because every one of its controls and every native menu item is wired and
+exercised; the cockpit is bridged to the same `Api` (its toolbar actions call real
+methods, and the native menu maps to the same handlers) and is the interface this
+guide describes. `ODK_UI=classic` selects the classic shell explicitly, and an unknown
+value is refused rather than silently ignored.
 
-The older single-screen shell is still there behind `ODK_UI=classic`, because it is the
-more completely wired of the two while the cockpit's workspaces are connected to the Api
-one at a time, and removing a working screen before its replacement is finished loses
-capability quietly.
+This document once said `python main.py` opened the cockpit while `app/shell.py`
+opened `index.html`; `tests/test_desktop_services.py` now pins the two together.
 
 ## What is real on screen, and what is not
 
@@ -111,9 +112,14 @@ is a canvas with nothing true to draw, and it names what to run to produce one.
 ### Starting it
 
 ```bash
-python main.py                 # the cockpit
-ODK_UI=classic python main.py  # the older single-screen shell
+python main.py                 # the classic single-screen shell (default)
+python main.py --ui cockpit    # the cockpit
+ODK_UI=cockpit python main.py  # the same, from the environment
 ```
+
+On Windows, double-click `OpenDroneKit.bat` (arguments such as `--ui cockpit` are
+passed through). It uses the `odk` conda environment from `environment.yml` and checks
+`requirements.txt` before starting; see `docs/INSTALLATION.md`.
 
 The UI is served over 127.0.0.1 on an ephemeral port rather than opened as a file. ES
 modules fetched from `file://` have origin "null" and the webview refuses them, which

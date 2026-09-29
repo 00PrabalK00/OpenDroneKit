@@ -17,6 +17,33 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_data_root(tmp_path_factory):
+    """Keep every test away from the user's real projects.
+
+    Application state lives under one absolute data root (core/paths.py). Without this
+    a test that builds `AppSession()` would open the developer's real project store --
+    and block on the running desktop app's write lock, which is how the old
+    cwd-relative store was found to leak. Session-scoped so module fixtures see it too.
+    """
+    import os
+
+    previous = os.environ.get("ODK_DATA_DIR")
+    os.environ["ODK_DATA_DIR"] = str(tmp_path_factory.mktemp("odk_data"))
+    yield
+    if previous is None:
+        os.environ.pop("ODK_DATA_DIR", None)
+    else:
+        os.environ["ODK_DATA_DIR"] = previous
+
+
+@pytest.fixture(autouse=True)
+def _fresh_data_root_per_test(_isolated_data_root, tmp_path, monkeypatch):
+    """A clean root per test, as the old cwd-relative store gave tests that chdir'd:
+    two tests creating a project of the same name must not collide."""
+    monkeypatch.setenv("ODK_DATA_DIR", str(tmp_path / "odk_data"))
+
+
 # A 40x40 m patch at 0.5 m/px: flat ground at 100 m with a 10x10x3 m block on top,
 # so the correct volume is exactly 300 m^3 and can be asserted rather than eyeballed.
 PIXEL_SIZE_M = 0.5

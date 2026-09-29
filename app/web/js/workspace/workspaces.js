@@ -28,6 +28,27 @@ import { emptyState, live, reported } from "./live.js";
    instead of showing a state the application never accepted. */
 import { tryCall } from "./api.js";
 
+/* One audit_log row as a console line.
+
+   The rows are {event_type, payload_json, created_at} -- the store's schema. The panels
+   read message/action/at, which no row has ever carried, so every line rendered as
+   "— —" over a real history. */
+export function auditLine(e) {
+  let detail = "";
+  try {
+    const payload = typeof e.payload_json === "string" ? JSON.parse(e.payload_json || "{}") : (e.payload_json || {});
+    detail = Object.entries(payload || {}).slice(0, 3)
+      .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ");
+  } catch { detail = ""; }
+  const kind = String(e.event_type || e.action || e.message || "");
+  const text = [kind.replace(/_/g, " "), detail].filter(Boolean).join(" — ") || "(unnamed event)";
+  return {
+    t: String(e.created_at || e.at || e.timestamp || "").slice(11, 19) || "—",
+    text,
+    level: /fail|error|refus/i.test(kind) ? "error" : /warn/i.test(kind) ? "warn" : "",
+  };
+}
+
 /* A readout in the corner of the canvas, asking the application for its numbers.
  *
  * Six overlays used to carry figures written into this file: the mission map's capture
@@ -247,12 +268,7 @@ const home = {
       calls: ["audit_log"],
       empty: "Nothing has happened in this workspace yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 12).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || e.event || "—",
-        level: /fail|error|refus/i.test(e.message || e.action || "") ? "error"
-          : /warn/i.test(e.message || e.action || "") ? "warn" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 12).map(auditLine)),
     }) },
     /* Reported three workers, a redis broker and postgis. This build is local-first and
        runs none of them; it was describing a deployment that does not exist here. */
@@ -279,11 +295,7 @@ const home = {
       calls: ["audit_log"],
       empty: "No activity recorded yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 20).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || "—",
-        level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 20).map(auditLine)),
     }) },
     /* Three jobs at 34, 72 and 95 per cent on workers w-01 to w-03. This build runs
        jobs on threads in this process; there are no workers, and a Worker column
@@ -1748,18 +1760,32 @@ const reports = {
   title: "Reports",
   toolbar: ["New Report", "|", "Generate", "Export PDF", "Share", "Save Template"],
   left: [
-    { id: "rp.structure", title: "Report Structure", render: () => tree([
+    /* "Inspection Findings" carried a count of 6 written into the source, shown over
+       every project whatever it held. The count is now the project's own findings that
+       a report would include, and absent when the application cannot say. */
+    { id: "rp.structure", title: "Report Structure", render: () => live({
+      calls: ["find_annotations"],
+      empty: "",
+      isEmpty: () => false,
+      render: ([found]) => {
+        const count = found && Array.isArray(found.annotations)
+          ? String(found.annotations.filter(
+            (a) => a.status !== "dismissed" && a.include_in_report !== false).length)
+          : undefined;
+        return tree([
       { id: "r1", label: "Executive Summary", icon: "§" },
       { id: "r2", label: "Project", icon: "§" },
       { id: "r3", label: "Mission & Coverage", icon: "§" },
       { id: "r4", label: "Processing", icon: "§" },
-      { id: "r5", label: "Inspection Findings", icon: "§", meta: "6" },
+      { id: "r5", label: "Inspection Findings", icon: "§", meta: count },
       { id: "r6", label: "Measurements", icon: "§" },
       { id: "r7", label: "Thermal", icon: "§" },
       { id: "r8", label: "Change Analysis", icon: "§" },
       { id: "r9", label: "Recommendations", icon: "§" },
       { id: "r10", label: "Appendix", icon: "§" },
-    ], { selectKind: "section" }) },
+        ], { selectKind: "section" });
+      },
+    }) },
   ],
   canvas: () => canvas({ title: "Report preview", note: "Live preview of the generated document." }),
   right: [
@@ -1774,9 +1800,12 @@ const reports = {
                   "dataset_quality", "mission_summary"] },
       { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX"] },
     ], settingChanged) },
+    /* Defaulted to "DEMO organisation" and "brand.png": an organisation nobody typed,
+       headed for the client's document, and a logo file that does not exist. Empty
+       until the operator fills them in. */
     { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
-      { key: "org", label: "Organisation", value: "DEMO organisation" },
-      { key: "logo", label: "Logo", value: "brand.png" },
+      { key: "org", label: "Organisation", value: "" },
+      { key: "logo", label: "Logo", value: "" },
     ], settingChanged) },
   ],
   bottom: [
@@ -1810,11 +1839,20 @@ const reports = {
       calls: ["report_readiness"],
       empty: "Open a project to check what a report still needs.",
       isEmpty: ([r]) => !r,
-      render: ([r]) => consoleView(
-        (r.missing || []).length
-          ? (r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "warn" }))
-          : [{ t: "ready", text: "Nothing missing. Generate writes the report and its "
-               + "provenance together.", level: "ok" }]),
+      /* Said "Nothing missing. Generate writes the report and its provenance
+         together." over an empty project, and the engine writes no provenance. The
+         engine's warnings -- sections that will be empty -- were dropped before they
+         reached this panel; they are shown now. */
+      render: ([r]) => consoleView([
+        ...(r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "error" })),
+        ...(r.warnings || []).map((item) => ({ t: "warning", text: String(item), level: "warn" })),
+        ...(r.notes || []).map((item) => ({ t: "note", text: String(item), level: "info" })),
+        r.ready
+          ? { t: "ready", text: "Nothing blocks a report; Generate writes it into the project.",
+              level: "ok" }
+          : { t: "blocked", text: "Generate will refuse until the missing items exist.",
+              level: "error" },
+      ]),
     }) },
   ],
 };

@@ -7,15 +7,17 @@ upload path does not change shape when object storage is introduced.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-DEFAULT_ROOT = "./odk_storage"
-
-
 def storage_root() -> Path:
-    """Root for uploads and derived artifacts, from ODK_STORAGE_PATH."""
-    root = Path(os.environ.get("ODK_STORAGE_PATH", DEFAULT_ROOT)).expanduser()
+    """Root for uploads and derived artifacts, from ODK_STORAGE_PATH.
+
+    Unset, it is `<data root>/storage` -- absolute, so the service and the desktop shell
+    agree on it regardless of the working directory either was started from.
+    """
+    from core.paths import storage_dir
+
+    root = storage_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root
 

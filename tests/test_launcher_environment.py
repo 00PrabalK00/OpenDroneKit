@@ -51,10 +51,12 @@ class TestTheEnvironmentCheck:
         assert "sqlalchemy" in names and names["sqlalchemy"] == "SQLAlchemy>=2.0"
 
     def test_the_launcher_runs_the_check_before_the_app(self):
+        """The launcher checks requirements.txt before starting the window, and its
+        install answer installs only the missing packages through this tool."""
         bat = (ROOT / "OpenDroneKit.bat").read_text(encoding="utf-8")
-        check = bat.index(r"tools\check_environment.py")
-        assert check < bat.index("pythonw")
-        assert "--install" in bat
+        check = bat.index("--check-deps")
+        assert check < bat.index('start "OpenDroneKit"')
+        assert r'tools\check_environment.py" --install' in bat
 
 
 class TestAMissingPackageIsNamed:

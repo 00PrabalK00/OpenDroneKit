@@ -20,7 +20,18 @@
      `offline` is served from this deployment's own tile cache. It is not a blank
      background: whatever has been cached for the working area is shown, and the rest
      is honestly empty rather than pretending coverage exists. */
-  const OFFLINE_TILE_URL = 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';
+  // Same origin as the page: the desktop shell serves the tile cache from disk on its
+  // own loopback port, and so does the Hub service when it serves this UI. This used
+  // to be hardwired to the Hub on port 8000, which the desktop launcher never started,
+  // so with no network the "offline" map was a blank canvas. A page opened from a file
+  // has no origin to share, so it falls back to the Hub's default address.
+  const OFFLINE_TILE_URL = (typeof location !== 'undefined' && /^https?:$/.test(location.protocol)
+    ? location.origin
+    : 'http://127.0.0.1:8000') + '/tiles/{z}/{x}/{y}.png?provider=satellite';
+
+  // Tile failures on an online basemap before any tile has loaded: past this the
+  // machine is treated as offline and the map moves to the local cache.
+  const OFFLINE_FALLBACK_ERRORS = 4;
 
   const BASEMAPS = {
     satellite: {
@@ -189,6 +200,30 @@
         if (this.opts.onReady) this.opts.onReady();
       });
 
+      // No network, no basemap: the default layers are internet tile servers, and on a
+      // disconnected field laptop they fail silently into a dark canvas. When the
+      // online basemap fails before a single tile has loaded, switch to the offline
+      // cache and say so, rather than leaving the operator staring at nothing.
+      this._resetTileHealth();
+      this.map.on('error', (e) => {
+        if (!e || e.sourceId !== 'basemap' || this.basemap === 'offline') return;
+        this._tileHealth.errors += 1;
+        if (!this._tileHealth.loaded && this._tileHealth.errors >= OFFLINE_FALLBACK_ERRORS
+            && !this._tileHealth.fellBack && this.opts.autoOffline !== false) {
+          this._tileHealth.fellBack = true;
+          const from = (BASEMAPS[this.basemap] || {}).label || this.basemap;
+          this.setBasemap('offline');
+          if (this.opts.onBasemapFallback) {
+            this.opts.onBasemapFallback(
+              `${from} tiles could not be reached (no network?). Showing the offline tile cache instead; ` +
+              'areas that were never cached stay empty.');
+          }
+        }
+      });
+      this.map.on('sourcedata', (e) => {
+        if (e && e.sourceId === 'basemap' && e.tile && e.tile.state === 'loaded') this._tileHealth.loaded = true;
+      });
+
       this.map.on('mousemove', (e) => {
         if (this.opts.onCursor) this.opts.onCursor(e.lngLat.lng, e.lngLat.lat);
       });
@@ -244,9 +279,21 @@
       if (!this.map.getLayer(spec.id)) this.map.addLayer(spec);
     }
 
+    _resetTileHealth() {
+      const fellBack = this._tileHealth ? this._tileHealth.fellBack : false;
+      this._tileHealth = { errors: 0, loaded: false, fellBack: fellBack };
+    }
+
+    /* The area currently on screen, for caching it before going to site. */
+    visibleBounds() {
+      const b = this.map.getBounds();
+      return { west: b.getWest(), south: b.getSouth(), east: b.getEast(), north: b.getNorth(), zoom: this.map.getZoom() };
+    }
+
     setBasemap(key) {
       if (!BASEMAPS[key]) return;
       this.basemap = key;
+      this._resetTileHealth();
       const drawn = this.draw.getAll();
       this.map.setStyle(basemapStyle(key));
       this.map.once('styledata', () => {

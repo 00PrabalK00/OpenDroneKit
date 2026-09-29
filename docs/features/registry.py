@@ -1410,8 +1410,11 @@ PLATFORM = [
     F("hub.map.offline_tiles", "Offline tile cache", "hub", "Hub",
       "Tiles actually downloaded and served without connectivity.",
       "implemented", ["tests/test_hub_web.py::TestHubOfflineTiles",
-                      "tests/test_hub_web.py::TestHubRestClient"],
-      "The UI reports real cache progress; evidence downloads from a local XYZ server, stops it, then serves the disk copy."),
+                      "tests/test_hub_web.py::TestHubRestClient",
+                      "tests/test_desktop_services.py::TestOfflineBasemap"],
+      "The UI reports real cache progress; evidence downloads from a local XYZ server, stops it, then serves the disk copy. "
+      "The desktop shell fills (Api.cache_basemap_area) and serves the same cache from its own loopback origin, so the "
+      "Offline cache basemap works without the Hub service or a network."),
     F("hub.projects", "Projects", "hub", "Hub",
       "Projects with client, site, type, tags, members, history and activity timeline, "
       "with project-scoped roles that add to organisation roles rather than replacing "

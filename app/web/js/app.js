@@ -684,7 +684,8 @@
     },
 
     'view.panel': (payload) => switchTab(payload.panel === 'layers' ? 'attributes' : payload.panel),
-    'view.basemap': (payload) => { $('#basemap-select').value = payload.basemap; state.map.setBasemap(payload.basemap); },
+    'view.basemap': (payload) => { $('#basemap-select').value = payload.basemap; chooseBasemap(payload.basemap); },
+    'view.cache_tiles': () => cacheVisibleMap(),
     'view.zoom_aoi': () => {
       const geometry = state.map.getGeometry();
       if (geometry.aoi) state.map.fitToCoords(geometry.aoi);
@@ -879,13 +880,49 @@
     ]);
   }
 
+  /* ---------- offline basemap ---------- */
+
+  function chooseBasemap(key) {
+    state.map.setBasemap(key);
+    if (key === 'offline') reportOfflineCache();
+  }
+
+  /* Say what the offline basemap can show, so an empty cache reads as empty rather
+     than as a broken map. */
+  async function reportOfflineCache() {
+    const result = await tryCall('basemap_cache_status');
+    if (!result) return;
+    const sat = (result.providers || {}).satellite;
+    status(sat && sat.tiles
+      ? `Offline cache: ${sat.tiles} satellite tiles at zoom ${sat.zoom_levels.join(', ')}. Uncached areas stay empty.`
+      : 'The offline tile cache is empty. While online, frame the site and press "Cache view".');
+  }
+
+  /* Download the tiles for what is on screen, a few zoom levels deeper, so the map
+     still shows this site with no signal. Explicit: panning never downloads. */
+  async function cacheVisibleMap() {
+    const view = state.map.visibleBounds();
+    const minZoom = Math.max(0, Math.floor(view.zoom));
+    const maxZoom = Math.min(19, minZoom + 3);
+    const result = await tryCall('cache_basemap_area', view.west, view.south, view.east, view.north, minZoom, maxZoom, 'satellite');
+    if (!result) return;
+    status(`Caching ${result.tiles} satellite tiles (z${minZoom}-${maxZoom}) for offline use…`);
+    pollJob(result.job_id, (job) => {
+      const r = job.result || {};
+      status(`Offline cache: ${r.fetched || 0} downloaded, ${r.already_cached || 0} already cached, ` +
+             `${r.failed || 0} failed of ${r.requested || result.tiles}.` +
+             (r.failed ? ' Failed tiles stay empty on the offline map.' : ''));
+    });
+  }
+
   /* ---------- bootstrap ---------- */
 
   function wireEvents() {
     $$('.tool[data-tool]').forEach((button) => { button.onclick = () => setTool(button.dataset.tool); });
     $$('.tab').forEach((tab) => { tab.onclick = () => switchTab(tab.dataset.tab); });
 
-    $('#basemap-select').onchange = (e) => state.map.setBasemap(e.target.value);
+    $('#basemap-select').onchange = (e) => chooseBasemap(e.target.value);
+    $('#btn-cache-tiles').onclick = cacheVisibleMap;
     wirePlaceSearch();
     $('#btn-zoom-aoi').onclick = menuHandlers['view.zoom_aoi'];
     $('#btn-zoom-mission').onclick = menuHandlers['view.zoom_mission'];
@@ -916,6 +953,7 @@
   function initMap() {
     state.map = new OdkMap('map', {
       onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.'); },
+      onBasemapFallback: (message) => { $('#basemap-select').value = 'offline'; status(message); reportOfflineCache(); },
       onCursor: (lon, lat) => {
         $('#status-coords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;
@@ -954,7 +992,18 @@
     }
   };
 
-  window.addEventListener('pywebviewready', async () => {
+  /* Start once the Python bridge exists.
+
+     pywebview fires 'pywebviewready' once. If it fires before this script has added
+     its listener -- which happens when the page loads slowly, measured with the network
+     unreachable -- a listener alone never runs: the bridge is there, and the window
+     sits on "Ready" with no map for the whole session. So check for the bridge first,
+     listen as well, and start exactly once. */
+  let started = false;
+  async function start() {
+    if (started || !window.pywebview || !window.pywebview.api
+        || typeof window.pywebview.api.get_state !== 'function') return;
+    started = true;
     initMap();
     wireEvents();
     setTool('pan');
@@ -964,5 +1013,7 @@
     await refreshLayers();
     await renderJobs();
     status('OpenDroneKit ready.');
-  });
+  }
+  window.addEventListener('pywebviewready', start);
+  start();
 })();

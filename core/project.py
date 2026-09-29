@@ -25,7 +25,12 @@ def _workspace_root() -> Path:
 
 
 def _default_workspace() -> Path:
-    return _workspace_root() / "opendrone_workspace"
+    # Inside the one data root, not beside the repository: this used to be
+    # `<repo parent>/opendrone_workspace`, a folder outside the install that nothing
+    # else in the application knew about.
+    from .paths import engine_workspace_dir
+
+    return engine_workspace_dir()
 
 
 # ── Data models ───────────────────────────────────────────────────────────────

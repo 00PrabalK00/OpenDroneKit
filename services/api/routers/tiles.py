@@ -16,10 +16,7 @@ looking like terrain.
 
 from __future__ import annotations
 
-import math
 import threading
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
@@ -28,42 +25,30 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+# The storage and download logic lives in core.tile_cache so the desktop shell can serve
+# and fill the same cache without this service running. Names are re-exported here
+# because this module has always been where they were found.
+from core.tile_cache import (  # noqa: F401 - re-exported
+    MAX_TILES_PER_REQUEST,
+    PROVIDERS,
+    TRANSPARENT_PNG,
+    USER_AGENT,
+    count_tiles,
+    deg_to_tile,
+    fetch_area,
+    read_tile,
+    tile_path as _core_tile_path,
+    summary as tile_summary,
+    tile_media_type,
+    tile_root,
+)
+
 from ..audit import record
 from ..db import get_db
 from ..models import Role
-from ..paths import storage_root
 from ..security import CurrentUser, require_role
 
 router = APIRouter(tags=["tiles"])
-
-# Providers the cache may fetch from, and their real zoom ceilings. Requesting beyond
-# a provider's ceiling returns nothing, which is what makes a layer look broken.
-PROVIDERS: dict[str, dict[str, Any]] = {
-    "satellite": {
-        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "max_zoom": 23, "attribution": "Esri, Maxar, Earthstar Geographics",
-    },
-    "street": {
-        "url": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-        "max_zoom": 19, "attribution": "OpenStreetMap contributors",
-    },
-    "topo": {
-        "url": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-        "max_zoom": 19, "attribution": "Esri, USGS, NOAA",
-    },
-}
-
-USER_AGENT = "OpenDroneKit/1.0 (offline tile cache; +https://github.com/openDroneKit)"
-
-# A 1x1 transparent PNG, returned for a tile that was never cached.
-TRANSPARENT_PNG = bytes.fromhex(
-    "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
-    "890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
-)
-
-# Downloading a whole city at z20 is millions of tiles. This ceiling turns an
-# accidental request into a refusal rather than a runaway job filling the disk.
-MAX_TILES_PER_REQUEST = 20_000
 
 
 @dataclass
@@ -93,63 +78,21 @@ class CacheRequest(BaseModel):
     max_zoom: int = Field(default=17, ge=0, le=23)
 
 
-def tile_root() -> Path:
-    path = storage_root() / "tiles"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def deg_to_tile(longitude: float, latitude: float, zoom: int) -> tuple[int, int]:
-    """Web Mercator tile indices for a coordinate."""
-    latitude = max(-85.05112878, min(85.05112878, latitude))
-    n = 2.0**zoom
-    x = int((longitude + 180.0) / 360.0 * n)
-    radians = math.radians(latitude)
-    y = int((1.0 - math.asinh(math.tan(radians)) / math.pi) / 2.0 * n)
-    return max(0, min(int(n) - 1, x)), max(0, min(int(n) - 1, y))
-
-
-def count_tiles(request: CacheRequest) -> int:
-    total = 0
-    for zoom in range(request.min_zoom, request.max_zoom + 1):
-        x0, y0 = deg_to_tile(request.west, request.north, zoom)
-        x1, y1 = deg_to_tile(request.east, request.south, zoom)
-        total += (abs(x1 - x0) + 1) * (abs(y1 - y0) + 1)
-    return total
-
-
 def _tile_path(provider: str, zoom: int, x: int, y: int) -> Path:
-    return tile_root() / provider / str(zoom) / str(x) / f"{y}.png"
+    return _core_tile_path(provider, zoom, x, y)
 
 
 def _fetch_area(job: CacheJob, request: CacheRequest) -> None:
     """Download every tile in the requested area, recording failures."""
-    spec = PROVIDERS[request.provider]
-    try:
-        for zoom in range(request.min_zoom, request.max_zoom + 1):
-            x0, y0 = deg_to_tile(request.west, request.north, zoom)
-            x1, y1 = deg_to_tile(request.east, request.south, zoom)
-            for x in range(min(x0, x1), max(x0, x1) + 1):
-                for y in range(min(y0, y1), max(y0, y1) + 1):
-                    target = _tile_path(request.provider, zoom, x, y)
-                    if target.exists():
-                        job.fetched += 1
-                        continue
 
-                    url = spec["url"].format(z=zoom, x=x, y=y)
-                    try:
-                        http_request = urllib.request.Request(
-                            url, headers={"User-Agent": USER_AGENT}
-                        )
-                        with urllib.request.urlopen(http_request, timeout=20) as response:
-                            body = response.read()
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        target.write_bytes(body)
-                        job.fetched += 1
-                    except (urllib.error.URLError, OSError):
-                        # A provider gap is not a failure of the run; it is recorded
-                        # and the area stays honestly incomplete.
-                        job.failed += 1
+    def on_tile(success: bool) -> None:
+        if success:
+            job.fetched += 1
+        else:
+            job.failed += 1
+
+    try:
+        fetch_area(request, on_tile=on_tile)
     except Exception as exc:  # noqa: BLE001
         job.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -242,18 +185,7 @@ def cache_status(job_id: str) -> dict[str, Any]:
 @router.get("/tiles/status")
 def cache_summary() -> dict[str, Any]:
     """What is actually on disk, so "offline ready" is a fact rather than a hope."""
-    root = tile_root()
-    summary: dict[str, Any] = {"providers": {}, "total_tiles": 0, "bytes": 0}
-    for provider_dir in sorted(p for p in root.iterdir() if p.is_dir()):
-        tiles = list(provider_dir.rglob("*.png"))
-        size = sum(tile.stat().st_size for tile in tiles)
-        zooms = sorted({int(t.parent.parent.name) for t in tiles}) if tiles else []
-        summary["providers"][provider_dir.name] = {
-            "tiles": len(tiles), "bytes": size, "zoom_levels": zooms,
-        }
-        summary["total_tiles"] += len(tiles)
-        summary["bytes"] += size
-    return summary
+    return tile_summary()
 
 
 @router.get("/tiles/{z}/{x}/{y}.png")
@@ -263,13 +195,13 @@ def serve_tile(z: int, x: int, y: int, provider: str = "satellite") -> Response:
     An uncached tile returns 404 with a transparent image rather than a substituted
     neighbour: a gap in coverage should look like a gap, not like terrain.
     """
-    target = _tile_path(provider, z, x, y)
-    if not target.exists():
+    body = read_tile(provider, z, x, y)
+    if body is None:
         return Response(
             content=TRANSPARENT_PNG, media_type="image/png", status_code=404,
             headers={"X-ODK-Tile": "not-cached"},
         )
     return Response(
-        content=target.read_bytes(), media_type="image/png",
+        content=body, media_type=tile_media_type(body),
         headers={"Cache-Control": "public, max-age=86400", "X-ODK-Tile": "cached"},
     )

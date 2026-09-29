@@ -1,116 +1,169 @@
-"""Core pipeline modules for structural fault analysis."""
+"""Core pipeline modules for structural fault analysis.
 
-# New modules
-from .project import ProjectManager, ProjectReadiness, ProjectSummary, AuditEvent, get_manager
-from .workflows import WorkflowTemplate, WorkflowReadiness, list_workflow_templates, get_workflow_template, validate_workflow_readiness
-from .survey_intelligence import (
-    ChangeRegion,
-    SelectedROIChangePackage,
-    StockpilePackage,
-    SurveyChangePackage,
-    create_selected_roi_change_package,
-    create_stockpile_package,
-    create_surface_change_package,
-)
-from .semantic_engine import (
-    ONNXSemanticPredictor,
-    SemanticClass,
-    SemanticInferenceConfig,
-    SemanticInferencePackage,
-    SemanticInferenceRefused,
-    SemanticModelMetadata,
-    SemanticSchema,
-    load_semantic_manifest,
-    run_semantic_inference,
-)
-from .measurements import Measurement, create_measurement, list_measurements, delete_measurement, update_measurement, export_measurements, measure_image_distance, measure_polygon_area, measure_crack_length
-from .annotations import Annotation, create_annotation, list_annotations, update_annotation, delete_annotation, export_annotations, get_report_annotations
-from .drone import DroneTelemetry, CommandResult, DroneClient, MockDroneClient, MAVSDKDroneClient, create_drone_client
-from .workers import (
-    WORKER_CANCELLED,
-    WORKER_COMPLETED,
-    WORKER_FAILED,
-    WORKER_PENDING,
-    WORKER_RUNNING,
-    CancellationToken,
-    WorkerCancelled,
-    WorkerContext,
-    WorkerHandle,
-    WorkerPool,
-    WorkerProgress,
-    WorkerResult,
-    WorkerStage,
-    get_worker_pool,
-    run_stages,
-    submit_worker,
-)
-from .mission_manager import (
-    MissionManager,
-    MissionPlanRequest,
-    MissionSaveResult,
-    MissionValidationCheck,
-    generate_mission,
-    get_mission_manager,
-    save_mission,
-)
+The public names below are resolved lazily (PEP 562). This package used to import every
+submodule eagerly -- detection, skimage, rasterio, boto3, the pipeline -- so anything
+that touched `core` at all, including `from core.flight_log import FlightLog` while the
+desktop window was being built, paid for all of it: 7-11 s of blank screen on a cold
+start before the window appeared. `from core import X` still works exactly as before; it
+just loads X's module when X is first asked for.
+"""
 
-from .detection import (
-    CorrosionGradingRefused,
-    CorrosionSeverityResult,
-    CrackDetectionResult,
-    DefectHit,
-    MetalDefectResult,
-    SolarDefectResult,
-    StructuralDefectResult,
-    detect_cracks,
-    grade_corrosion_severity,
-    detect_metal_defects,
-    detect_solar_defects,
-    detect_structural_defects,
-    load_image,
-)
-from .coverage_validation import CoverageValidationConfig, CoverageValidator
-from .multisensor import (
-    CalibrationProfile,
-    MultiSensorConfig,
-    MultiSensorProcessor,
-    build_capture_bundle_from_folders,
-    create_calibration_profile,
-    load_calibration_profile,
-    load_capture_bundle,
-    write_capture_bundle,
-)
-from .models import (
-    ModelSpec,
-    ensure_model_layout,
-    get_model_spec,
-    load_registry,
-    migrate_legacy_models,
-    model_status,
-    resolve_model_path,
-    sync_legacy_checkpoint_archive,
-)
-from .health_scoring import derive_asset_id, evaluate_asset_health, load_asset_health_history
-from .pipeline import PipelineConfig, PipelineResult, StructuralFaultPipeline, run_pipeline
-from .propagation import CrackPropagationForecaster, PropagationPhysicsConfig, run_fenicsx_phasefield
-from .reconstruction import (
-    CustomDroneReconstructor,
-    ReconstructionResult,
-    available_reconstruction_profiles,
-)
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+# public name -> submodule that defines it
+_EXPORTS: dict[str, str] = {
+    "ProjectManager": "project",
+    "ProjectReadiness": "project",
+    "ProjectSummary": "project",
+    "AuditEvent": "project",
+    "get_manager": "project",
+    "WorkflowTemplate": "workflows",
+    "WorkflowReadiness": "workflows",
+    "list_workflow_templates": "workflows",
+    "get_workflow_template": "workflows",
+    "validate_workflow_readiness": "workflows",
+    "ChangeRegion": "survey_intelligence",
+    "SelectedROIChangePackage": "survey_intelligence",
+    "StockpilePackage": "survey_intelligence",
+    "SurveyChangePackage": "survey_intelligence",
+    "create_selected_roi_change_package": "survey_intelligence",
+    "create_stockpile_package": "survey_intelligence",
+    "create_surface_change_package": "survey_intelligence",
+    "ONNXSemanticPredictor": "semantic_engine",
+    "SemanticClass": "semantic_engine",
+    "SemanticInferenceConfig": "semantic_engine",
+    "SemanticInferencePackage": "semantic_engine",
+    "SemanticInferenceRefused": "semantic_engine",
+    "SemanticModelMetadata": "semantic_engine",
+    "SemanticSchema": "semantic_engine",
+    "load_semantic_manifest": "semantic_engine",
+    "run_semantic_inference": "semantic_engine",
+    "Measurement": "measurements",
+    "create_measurement": "measurements",
+    "list_measurements": "measurements",
+    "delete_measurement": "measurements",
+    "update_measurement": "measurements",
+    "export_measurements": "measurements",
+    "measure_image_distance": "measurements",
+    "measure_polygon_area": "measurements",
+    "measure_crack_length": "measurements",
+    "Annotation": "annotations",
+    "create_annotation": "annotations",
+    "list_annotations": "annotations",
+    "update_annotation": "annotations",
+    "delete_annotation": "annotations",
+    "export_annotations": "annotations",
+    "get_report_annotations": "annotations",
+    "DroneTelemetry": "drone",
+    "CommandResult": "drone",
+    "DroneClient": "drone",
+    "MockDroneClient": "drone",
+    "MAVSDKDroneClient": "drone",
+    "create_drone_client": "drone",
+    "WORKER_CANCELLED": "workers",
+    "WORKER_COMPLETED": "workers",
+    "WORKER_FAILED": "workers",
+    "WORKER_PENDING": "workers",
+    "WORKER_RUNNING": "workers",
+    "CancellationToken": "workers",
+    "WorkerCancelled": "workers",
+    "WorkerContext": "workers",
+    "WorkerHandle": "workers",
+    "WorkerPool": "workers",
+    "WorkerProgress": "workers",
+    "WorkerResult": "workers",
+    "WorkerStage": "workers",
+    "get_worker_pool": "workers",
+    "run_stages": "workers",
+    "submit_worker": "workers",
+    "MissionManager": "mission_manager",
+    "MissionPlanRequest": "mission_manager",
+    "MissionSaveResult": "mission_manager",
+    "MissionValidationCheck": "mission_manager",
+    "generate_mission": "mission_manager",
+    "get_mission_manager": "mission_manager",
+    "save_mission": "mission_manager",
+    "CorrosionGradingRefused": "detection",
+    "CorrosionSeverityResult": "detection",
+    "CrackDetectionResult": "detection",
+    "DefectHit": "detection",
+    "MetalDefectResult": "detection",
+    "SolarDefectResult": "detection",
+    "StructuralDefectResult": "detection",
+    "detect_cracks": "detection",
+    "grade_corrosion_severity": "detection",
+    "detect_metal_defects": "detection",
+    "detect_solar_defects": "detection",
+    "detect_structural_defects": "detection",
+    "load_image": "detection",
+    "CoverageValidationConfig": "coverage_validation",
+    "CoverageValidator": "coverage_validation",
+    "CalibrationProfile": "multisensor",
+    "MultiSensorConfig": "multisensor",
+    "MultiSensorProcessor": "multisensor",
+    "build_capture_bundle_from_folders": "multisensor",
+    "create_calibration_profile": "multisensor",
+    "load_calibration_profile": "multisensor",
+    "load_capture_bundle": "multisensor",
+    "write_capture_bundle": "multisensor",
+    "ModelSpec": "models",
+    "ensure_model_layout": "models",
+    "get_model_spec": "models",
+    "load_registry": "models",
+    "migrate_legacy_models": "models",
+    "model_status": "models",
+    "resolve_model_path": "models",
+    "sync_legacy_checkpoint_archive": "models",
+    "derive_asset_id": "health_scoring",
+    "evaluate_asset_health": "health_scoring",
+    "load_asset_health_history": "health_scoring",
+    "PipelineConfig": "pipeline",
+    "PipelineResult": "pipeline",
+    "StructuralFaultPipeline": "pipeline",
+    "run_pipeline": "pipeline",
+    "CrackPropagationForecaster": "propagation",
+    "PropagationPhysicsConfig": "propagation",
+    "run_fenicsx_phasefield": "propagation",
+    "CustomDroneReconstructor": "reconstruction",
+    "ReconstructionResult": "reconstruction",
+    "available_reconstruction_profiles": "reconstruction",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _EXPORTS.get(name)
+    if module is None:
+        # `core.detection` etc.: a submodule nobody has imported yet.
+        try:
+            return importlib.import_module(f".{name}", __name__)
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(f".{module}", __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
+
 
 __all__ = [
-    'ONNXSemanticPredictor',
-    'SemanticClass',
-    'SemanticInferenceConfig',
-    'SemanticInferencePackage',
-    'SemanticInferenceRefused',
-    'SemanticModelMetadata',
-    'SemanticSchema',
-    'load_semantic_manifest',
-    'run_semantic_inference',
-    'SelectedROIChangePackage',
-    'create_selected_roi_change_package',
+    "ONNXSemanticPredictor",
+    "SemanticClass",
+    "SemanticInferenceConfig",
+    "SemanticInferencePackage",
+    "SemanticInferenceRefused",
+    "SemanticModelMetadata",
+    "SemanticSchema",
+    "load_semantic_manifest",
+    "run_semantic_inference",
+    "SelectedROIChangePackage",
+    "create_selected_roi_change_package",
     "ProjectManager",
     "ProjectReadiness",
     "ProjectSummary",
