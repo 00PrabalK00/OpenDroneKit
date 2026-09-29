@@ -6073,6 +6073,15 @@ class MissionPlanner:
                 item.trigger = False
                 item.dwell_s = 0.0
                 item.primitive = "turbine_transit"
+            # Check the path as it will be flown, after the band is applied: a leg
+            # that comes within the stand-off of the nacelle is stated, never hidden.
+            flown = [(np.array([item.x_m, item.y_m], dtype=np.float64), float(item.alt_m)) for item in planned]
+            closest = min((leg_clearance(a, b) for a, b in zip(flown, flown[1:])), default=float("inf"))
+            if closest < standoff - 0.05:
+                self._coverage_notes.append(
+                    f"Part of the path passes {closest:.1f} m from the nacelle, inside the "
+                    f"{standoff:.0f} m stand-off, because of the {minimum_altitude:.0f}-"
+                    f"{maximum_altitude:.0f} m altitude band. Widen the band or reduce the stand-off.")
             for name, count in lost.items():
                 part = {"turbine_nacelle": "nacelle", "turbine_tower": "tower"}.get(name, name)
                 self._coverage_notes.append(
@@ -6195,10 +6204,14 @@ class MissionPlanner:
                     if leg_clearance(previous, (point, alt)) < standoff - 0.05:
                         # Detours: over the nacelle, under it, or out to either side of
                         # it; the one that stays furthest from it is flown.
+                        # A level outside the altitude band is not a candidate: finish()
+                        # would clamp it back into the band, and the "over the nacelle"
+                        # level clamped under a low ceiling passes right over the nacelle
+                        # (hub 105 m, ceiling 120 m, stand-off 20 m went 17 m from it).
                         candidates = []
                         for level in (max(previous[1], alt, hub_height + standoff),
                                       min(previous[1], alt, hub_height - standoff)):
-                            if level >= minimum_altitude:
+                            if minimum_altitude - 1e-6 <= level <= maximum_altitude + 1e-6:
                                 candidates.append([(previous[0], level), (point, level)])
                         for sign in (1.0, -1.0):
                             shift_a = across * (sign * standoff - float(np.dot(previous[0] - hub, across)))

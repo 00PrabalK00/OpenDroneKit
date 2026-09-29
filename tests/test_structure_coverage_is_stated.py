@@ -240,6 +240,31 @@ class TestTurbineWholePath:
         assert worst >= 0.97 * standoff, f"a leg passes {worst:.1f} m from the turbine"
         assert planned["summary"]["adjustments"]["altitude_clamps"] == 0
 
+    @pytest.mark.parametrize("facing, hub, blade, angles, standoff, nacelle, floor, ceiling", [
+        # A ceiling under hub + stand-off: the "over the nacelle" detour was chosen at
+        # hub + stand-off and then clamped down to the ceiling, straight over the nacelle.
+        (0.0, 105.0, 40.0, "270, 30, 150", 20.0, 12.0, 20.0, 120.0),
+        (45.0, 110.0, 45.0, "270, 30, 150", 12.0, 12.0, 20.0, 120.0),
+        (7.3, 94.0, 14.5, "38.9, 158.9, 278.9", 10.0, 12.3, 6.9, 101.9),
+        (95.5, 33.2, 22.6, "161.9, 281.9, 41.9", 15.0, 15.4, 25.1, 39.9),
+        (30.3, 40.8, 33.5, "183.8, 303.8, 63.8", 25.0, 17.8, 34.7, 46.1),
+    ])
+    def test_the_altitude_band_does_not_pull_a_detour_onto_the_nacelle(
+            self, tmp_path, facing, hub, blade, angles, standoff, nacelle, floor, ceiling):
+        api, origin = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned, items = plan_export(api, tmp_path, {
+            "template": "wind_turbine", "altitude_m": 55,
+            "min_altitude_m": floor, "max_altitude_m": ceiling,
+            "turbine_rotor_facing_deg": facing, "turbine_hub_height_m": hub,
+            "turbine_blade_length_m": blade, "turbine_nacelle_length_m": nacelle,
+            "turbine_blade_angles_deg": angles, "standoff_m": standoff})
+        _, parts = turbine_geometry(facing, hub, blade, nacelle, [float(v) for v in angles.split(",")])
+        points = nav_points(items, origin)[1:]
+        assert max(p[2] for p in points) <= ceiling + 0.05
+        worst = min(distance_to_segment(q, a, b) for q in legs(points) for a, b in parts.values())
+        assert worst >= 0.97 * standoff, f"a leg passes {worst:.1f} m from the turbine"
+        assert "from the nacelle, inside the" not in " ".join(planned["warnings"])
+
     def test_a_hub_above_the_ceiling_is_said_not_clamped(self, tmp_path):
         api, origin = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
         planned, items = plan_export(api, tmp_path, {
