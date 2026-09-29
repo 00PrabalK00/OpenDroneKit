@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from .detection import detect_cracks, detect_metal_defects, detect_solar_defects, detect_structural_defects
+from .errors import OperationCancelled
 from .propagation import CrackPropagationForecaster
 
 
@@ -77,6 +78,25 @@ def _normalize_profile(name: str) -> str:
     }
     normalized = aliases.get(value, value)
     return normalized if normalized in RECONSTRUCTION_PROFILES else "standard"
+
+
+CLOUD_REFUSAL = (
+    "Cloud reconstruction is not available: this build is offline-first and never sends "
+    "imagery off the machine, so --recon-mode cloud cannot run. Re-run with local "
+    "execution, or submit the dataset to a self-hosted OpenDroneKit server "
+    "(services/api) with the SDK's submit_job()."
+)
+
+
+def refuse_cloud_mode(mode: str | None) -> None:
+    """Refuse a cloud request up front instead of quietly running it locally.
+
+    Both engines used to accept execution_mode="cloud", run locally, and add a warning
+    to the result -- so the flag looked like it did something, and an operator who
+    asked for remote processing only learned otherwise from a warning after the run.
+    """
+    if str(mode or "").strip().lower() == "cloud":
+        raise ValueError(CLOUD_REFUSAL)
 
 
 def _normalize_execution_mode(mode: str) -> str:
@@ -154,6 +174,12 @@ class ReconstructionResult:
     defects_geojson_path: str = ""
     camera_track_geojson_path: str = ""
     ground_sample_distance_m: float | None = None
+    # An untextured OBJ export of the surface mesh. Kept apart from
+    # textured_mesh_obj_path so a plain Poisson surface is never labelled "textured".
+    mesh_obj_path: str = ""
+    # The orthomosaic can be finer than the DSM (photos rectified onto an interpolated
+    # sparse surface), so its resolution is reported separately.
+    orthomosaic_gsd_m: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -902,15 +928,22 @@ class CustomDroneReconstructor:
         use_cache: bool | None = None,
         cloud_endpoint: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+        **_ignored: Any,
     ) -> ReconstructionResult:
         def _emit_progress(percent: int, message: str) -> None:
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled("Reconstruction cancelled")
             if progress_callback is None:
                 return
             try:
                 progress_callback(int(max(0, min(100, int(percent)))), str(message))
+            except OperationCancelled:
+                raise
             except Exception:
                 pass
 
+        refuse_cloud_mode(execution_mode if execution_mode is not None else self.execution_mode)
         _emit_progress(1, "Scanning input images")
         if profile is not None:
             self.profile = _normalize_profile(profile)

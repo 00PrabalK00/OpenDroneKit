@@ -17,6 +17,20 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+def survey_imagery_dir() -> Path:
+    """The gitignored Aukerman frames: under the checkout, or where ODK_SURVEY_IMAGERY says.
+
+    A git worktree does not carry gitignored data, and on a filesystem without junctions
+    it cannot link to it either, so the location can be named instead of copied.
+    """
+    import os
+
+    override = os.environ.get("ODK_SURVEY_IMAGERY", "").strip()
+    if override:
+        return Path(override)
+    return REPO_ROOT / "training" / "data" / "aukerman_subset"
+
+
 # A 40x40 m patch at 0.5 m/px: flat ground at 100 m with a 10x10x3 m block on top,
 # so the correct volume is exactly 300 m^3 and can be asserted rather than eyeballed.
 PIXEL_SIZE_M = 0.5

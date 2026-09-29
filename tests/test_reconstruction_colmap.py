@@ -28,7 +28,9 @@ pytest.importorskip("pycolmap", reason="COLMAP engine not installed")
 
 from core.reconstruction_colmap import ColmapReconstructor, colmap_available
 
-IMAGERY = Path("training/data/aukerman_subset")
+from conftest import survey_imagery_dir  # noqa: E402
+
+IMAGERY = survey_imagery_dir()
 
 # Enough views to triangulate and register, few enough to run in seconds.
 IMAGE_COUNT = 8
@@ -230,3 +232,70 @@ class TestNoFabrication:
             assert any("mesh" in w.lower() for w in twin.get("warnings", [])), (
                 "a missing mesh must be explained"
             )
+
+
+class TestSparseProductsAreUsableAndHonest:
+    """Audit findings on the sparse path: a 75x64 px ortho, an invented hillshade, and a
+    Poisson mesh reported as "textured"."""
+
+    def test_the_orthomosaic_is_at_the_photos_resolution_not_the_sparse_grid(self, survey):
+        """Colouring the sparse DSM grid gave a 3.8 m/px ortho of a site the camera saw at cm."""
+        rasterio = pytest.importorskip("rasterio")
+        result, twin, out = survey
+        dsm_gsd = twin["ground_sample_distance_m"]
+        ortho_gsd = twin["orthomosaic_gsd_m"]
+        assert result.orthomosaic_gsd_m == ortho_gsd
+        with rasterio.open(out / "orthomosaic.tif") as ortho, rasterio.open(out / "dsm.tif") as dsm:
+            assert ortho.res[0] == pytest.approx(ortho_gsd)
+            assert dsm.res[0] == pytest.approx(dsm_gsd)
+            if dsm_gsd > 1.5 * ortho_gsd:
+                # Same CRS, and the fine ortho lies inside the area the DSM covers.
+                assert ortho.crs == dsm.crs
+                assert ortho.bounds.left >= dsm.bounds.left - dsm_gsd
+                assert ortho.bounds.right <= dsm.bounds.right + dsm_gsd
+                band = ortho.read(1)
+                assert (band > 0).mean() > 0.3, "the rectified photos should cover most of the site"
+
+    def test_a_fine_ortho_on_a_sparse_surface_says_what_the_surface_is(self, survey):
+        _, twin, _ = survey
+        if twin["dense"] or twin["ground_sample_distance_m"] <= 1.5 * twin["orthomosaic_gsd_m"]:
+            pytest.skip("Only a sparse run rectifies onto an interpolated surface.")
+        assert any("interpolated between" in w and "sparse points" in w for w in twin["warnings"])
+
+    def test_the_hillshade_is_nodata_wherever_the_dsm_is(self, survey):
+        """NaNs were filled with the minimum before shading: 100% 'valid' over a 24% DSM."""
+        rasterio = pytest.importorskip("rasterio")
+        np = pytest.importorskip("numpy")
+        _, _, out = survey
+        shade_path = out / "dsm_hillshade.tif"
+        if not shade_path.exists():
+            pytest.skip("No DSM cell had measured neighbours; nothing to shade.")
+        with rasterio.open(out / "dsm.tif") as dsm, rasterio.open(shade_path) as shade:
+            elevation = dsm.read(1)
+            shaded = shade.read(1)
+            assert shade.nodata == 0
+            missing = elevation == dsm.nodata
+        assert missing.any(), "fixture expected a sparse DSM with holes"
+        assert not np.any(shaded[missing]), "hillshade invented slope where no height was measured"
+        assert (shaded > 0).mean() <= (~missing).mean()
+
+    def test_the_mesh_is_not_called_textured(self, survey):
+        result, _, _ = survey
+        assert result.textured_mesh_obj_path == ""
+        assert result.texture_image_path == ""
+        if result.mesh_obj_path:
+            text = Path(result.mesh_obj_path).read_text(encoding="utf-8", errors="replace")
+            assert "usemtl" not in text and "\nvt " not in text
+
+
+def test_masked_hillshade_only_shades_cells_with_measured_neighbours():
+    np = pytest.importorskip("numpy")
+    from core.reconstruction_colmap import masked_hillshade
+
+    dsm = np.full((6, 6), np.nan)
+    dsm[1:5, 1:5] = np.arange(16, dtype=float).reshape(4, 4)
+    shade, coverage = masked_hillshade(dsm, 1.0)
+    # Only the 2x2 interior has all four neighbours measured.
+    assert np.count_nonzero(shade) == 4
+    assert coverage == pytest.approx(4 / 36)
+    assert not shade[np.isnan(dsm)].any()

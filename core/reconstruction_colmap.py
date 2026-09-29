@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from . import geo
+from .errors import OperationCancelled
 from .reconstruction import (
     SUPPORTED_EXTENSIONS,
     ReconstructionResult,
@@ -33,6 +34,7 @@ from .reconstruction import (
     _write_obj_mesh,
     available_reconstruction_profiles,
     _normalize_profile,
+    refuse_cloud_mode,
 )
 
 try:  # pragma: no cover - environment dependent
@@ -132,21 +134,184 @@ def colmap_executable() -> str | None:
     return None
 
 
-def engine_capabilities() -> dict[str, Any]:
-    """Report exactly what this environment can do, for honest UI and log reporting."""
+def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
+    """Report exactly what this environment can do, for honest UI and log reporting.
+
+    Dense stereo used to read True whenever a native binary existed. A CUDA build of
+    COLMAP that was not compiled for this GPU's architecture (an RTX 50-series card
+    against a build without sm_120 kernels) exists, prints "with CUDA", and fails every
+    patch-match run with "the provided PTX was compiled with an unsupported toolchain".
+    The capability is therefore established by running patch-match once on a tiny
+    fixture, and the reason is reported next to the answer.
+    """
     caps = geo.geo_capabilities()
+    binary = colmap_executable() or ""
+    bindings_dense = _pycolmap_has_dense() and pycolmap_has_cuda()
+    if bindings_dense:
+        probe = {"ok": True, "probed": True, "reason": "pycolmap was built with CUDA."}
+    elif binary:
+        probe = native_dense_probe(binary, run=probe_dense)
+    else:
+        probe = {
+            "ok": False,
+            "probed": False,
+            "reason": "No native COLMAP binary was found (set ODK_COLMAP or install COLMAP "
+                      "with CUDA), and the pycolmap wheel has no CUDA.",
+        }
     caps.update(
         {
             "pycolmap": _HAS_PYCOLMAP,
             "open3d": _HAS_OPEN3D,
-            "colmap_binary": colmap_executable() or "",
+            "colmap_binary": binary,
             "pycolmap_cuda": pycolmap_has_cuda(),
-            # Dense patch-match stereo needs CUDA, from either the bindings or a native
-            # build. Without it only the sparse cloud is available.
-            "dense_stereo": bool(colmap_executable()) or (_pycolmap_has_dense() and pycolmap_has_cuda()),
+            # Dense patch-match stereo needs a CUDA build that actually runs on this GPU.
+            # Without it only the sparse cloud is available.
+            "dense_stereo": bool(probe.get("ok")),
+            "dense_stereo_reason": str(probe.get("reason", "")),
+            "dense_stereo_probed": bool(probe.get("probed", False)),
         }
     )
     return caps
+
+
+_DENSE_PROBE_VERSION = 1
+
+
+def _dense_probe_cache_file() -> Path:
+    from .settings import user_config_dir
+
+    return user_config_dir() / "dense_stereo_probe.json"
+
+
+def _dense_probe_key(binary: str) -> str:
+    """Cache key: the binary's identity plus the GPU and driver it would run on."""
+    try:
+        stat = Path(binary).stat()
+        stamp = f"{stat.st_size}:{int(stat.st_mtime)}"
+    except OSError:
+        stamp = "missing"
+    gpu = ""
+    try:
+        query = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=20,
+        )
+        gpu = (query.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        gpu = ""
+    return f"v{_DENSE_PROBE_VERSION}|{Path(binary).resolve()}|{stamp}|{gpu}"
+
+
+def native_dense_probe(binary: str, *, run: bool = True, use_cache: bool = True) -> dict[str, Any]:
+    """Whether this COLMAP binary can run patch-match stereo on this machine.
+
+    Returns {"ok", "reason", "probed"}. The answer is cached per binary and GPU/driver,
+    because the probe starts a CUDA context and takes a few seconds. `run=False` answers
+    from the cache only, reporting "not yet tested" rather than guessing.
+    """
+    key = _dense_probe_key(binary)
+    cache_file = _dense_probe_cache_file()
+    cache: dict[str, Any] = {}
+    if use_cache and cache_file.exists():
+        try:
+            cache = json.loads(cache_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cache = {}
+    if use_cache and isinstance(cache.get(key), dict):
+        return dict(cache[key], probed=True)
+    if not run:
+        return {"ok": False, "probed": False,
+                "reason": "Dense stereo has not been tested on this machine yet."}
+
+    result = _run_dense_probe(binary)
+    if use_cache:
+        cache[key] = {"ok": bool(result["ok"]), "reason": str(result["reason"])}
+        try:
+            cache_file.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    return dict(result, probed=True)
+
+
+def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
+    """Undistort and patch-match a two-view synthetic scene with the native binary.
+
+    The scene is a textured plane two units in front of two rectified pinhole views, so
+    a working build writes depth maps and a broken one fails the way it would on a real
+    survey -- only in seconds instead of after an hour of undistorting imagery.
+    """
+    import tempfile
+
+    size, focal = 96, 90.0
+    baseline, depth = 0.2, 2.0
+    rng = np.random.default_rng(7)
+    texture = (rng.random((size, size + 32)) * 255).astype(np.uint8)
+    texture = cv2.GaussianBlur(texture, (3, 3), 0)
+    shift = int(round(focal * baseline / depth))
+    left = texture[:, 16:16 + size]
+    right = texture[:, 16 + shift:16 + shift + size]
+
+    with tempfile.TemporaryDirectory(prefix="odk_dense_probe_") as tmp:
+        root = Path(tmp)
+        images = root / "images"
+        sparse = root / "sparse"
+        dense = root / "dense"
+        for folder in (images, sparse, dense):
+            folder.mkdir()
+        cv2.imwrite(str(images / "a.png"), cv2.cvtColor(left, cv2.COLOR_GRAY2BGR))
+        cv2.imwrite(str(images / "b.png"), cv2.cvtColor(right, cv2.COLOR_GRAY2BGR))
+
+        cx = cy = size / 2.0
+        points: list[str] = []
+        obs_a: list[str] = []
+        obs_b: list[str] = []
+        grid = [(x, y) for x in (-0.3, 0.0, 0.3) for y in (-0.3, 0.0, 0.3)]
+        for index, (x, y) in enumerate(grid):
+            points.append(f"{index + 1} {x} {y} {depth} 128 128 128 0.5 1 {index} 2 {index}")
+            obs_a.append(f"{focal * x / depth + cx} {focal * y / depth + cy} {index + 1}")
+            obs_b.append(f"{focal * (x - baseline) / depth + cx} {focal * y / depth + cy} {index + 1}")
+        (sparse / "cameras.txt").write_text(
+            f"1 PINHOLE {size} {size} {focal} {focal} {cx} {cy}\n", encoding="ascii")
+        (sparse / "images.txt").write_text(
+            f"1 1 0 0 0 0 0 0 1 a.png\n{' '.join(obs_a)}\n"
+            f"2 1 0 0 0 {-baseline} 0 0 1 b.png\n{' '.join(obs_b)}\n",
+            encoding="ascii",
+        )
+        (sparse / "points3D.txt").write_text("\n".join(points) + "\n", encoding="ascii")
+
+        steps = [
+            ("image_undistorter",
+             [binary, "image_undistorter", "--image_path", str(images), "--input_path", str(sparse),
+              "--output_path", str(dense), "--output_type", "COLMAP"]),
+            ("patch_match_stereo",
+             [binary, "patch_match_stereo", "--workspace_path", str(dense),
+              "--workspace_format", "COLMAP", "--PatchMatchStereo.max_image_size", str(size),
+              "--PatchMatchStereo.geom_consistency", "false"]),
+        ]
+        for label, command in steps:
+            try:
+                done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return {"ok": False, "reason": f"COLMAP {label} could not run: {exc}"}
+            text = (done.stdout or "") + (done.stderr or "")
+            error = _first_error_line(text)
+            if done.returncode != 0 or error:
+                lines = text.strip().splitlines()
+                detail = error or (lines[-1] if lines else f"exit {done.returncode}")
+                return {"ok": False, "reason": f"COLMAP {label} failed on this machine: {detail}"}
+        depth_maps = list((dense / "stereo" / "depth_maps").glob("*.bin"))
+        if not depth_maps:
+            return {"ok": False, "reason": "COLMAP patch_match_stereo ran but wrote no depth maps."}
+    return {"ok": True, "reason": "Native COLMAP ran patch-match stereo on this GPU."}
+
+
+def _first_error_line(text: str) -> str:
+    """The line that explains a CUDA failure, which COLMAP does not always exit non-zero on."""
+    for line in text.splitlines():
+        lowered = line.lower()
+        if "cuda error" in lowered or "unsupported toolchain" in lowered or "check failed" in lowered:
+            return line.strip()
+    return ""
 
 
 def _pycolmap_has_dense() -> bool:
@@ -381,12 +546,56 @@ class ColmapReconstructor:
         self._used_gpu_sift = False
         self.target_epsg = target_epsg
         self.warnings: list[str] = []
+        self._should_cancel: Callable[[], bool] | None = None
 
     # -- helpers ---------------------------------------------------------
 
     def _warn(self, message: str) -> None:
         if message not in self.warnings:
             self.warnings.append(message)
+
+    def _check_cancel(self) -> None:
+        if self._should_cancel is not None and self._should_cancel():
+            raise OperationCancelled("Reconstruction cancelled")
+
+    def _run_command(self, command: list[str], timeout: float = 7200.0) -> subprocess.CompletedProcess:
+        """Run a native COLMAP step, killing it if the operator cancels.
+
+        `subprocess.run` blocks until the child exits, so a cancel requested during a
+        two-hour patch-match run did nothing until it finished. Polling lets the job
+        stop within a second and leaves no orphaned GPU process behind.
+        """
+        import tempfile
+        import time
+
+        with tempfile.TemporaryFile() as out_handle, tempfile.TemporaryFile() as err_handle:
+            proc = subprocess.Popen(command, stdout=out_handle, stderr=err_handle)
+            deadline = time.monotonic() + float(timeout)
+            try:
+                while True:
+                    try:
+                        proc.wait(timeout=0.5)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    if self._should_cancel is not None and self._should_cancel():
+                        proc.kill()
+                        proc.wait()
+                        raise OperationCancelled("Reconstruction cancelled")
+                    if time.monotonic() > deadline:
+                        proc.kill()
+                        proc.wait()
+                        raise subprocess.TimeoutExpired(command, timeout)
+            except BaseException:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+                raise
+            out_handle.seek(0)
+            err_handle.seek(0)
+            stdout = out_handle.read().decode("utf-8", errors="replace")
+            stderr = err_handle.read().decode("utf-8", errors="replace")
+        return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
     @staticmethod
     def _image_paths(image_dir: str | Path) -> list[Path]:
@@ -600,7 +809,7 @@ class ColmapReconstructor:
         ):
             progress(percent, label)
             try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=7200)
+                result = self._run_command(command)
             except (OSError, subprocess.SubprocessError) as exc:
                 self._warn(f"Native COLMAP step {step} could not run: {exc}")
                 return False
@@ -768,6 +977,20 @@ class ColmapReconstructor:
             )
             return empty
 
+        # A binary that exists is not a binary that runs here: a CUDA build without
+        # kernels for this GPU fails patch-match after the whole dataset has been
+        # undistorted. The probe answers that in seconds (cached per binary and driver).
+        probe = native_dense_probe(binary)
+        if not probe.get("ok"):
+            self._warn(
+                "Dense MVS skipped: "
+                + str(probe.get("reason") or "the native COLMAP build cannot run patch-match here").rstrip(". ")
+                + ". "
+                "Derived products come from the sparse cloud. Install a COLMAP build compiled "
+                "for this GPU (CUDA 12.8+ for RTX 50-series) for full-resolution dense output."
+            )
+            return empty
+
         dense_dir = work_dir / "dense"
         dense_dir.mkdir(parents=True, exist_ok=True)
         sparse_export = work_dir / "sparse_for_dense"
@@ -790,8 +1013,8 @@ class ColmapReconstructor:
         for index, command in enumerate(steps):
             progress(62 + index * 6, f"Dense stereo step {index + 1}/3")
             try:
-                completed = subprocess.run(command, capture_output=True, text=True, timeout=7200)
-            except (OSError, subprocess.TimeoutExpired) as exc:
+                completed = self._run_command(command)
+            except (OSError, subprocess.SubprocessError) as exc:
                 self._warn(f"Dense MVS failed at step {index + 1}: {exc}. Falling back to the sparse cloud.")
                 return empty
             if completed.returncode != 0:
@@ -821,10 +1044,9 @@ class ColmapReconstructor:
         if not pycolmap_has_cuda():
             # patch_match_stereo is CUDA-only; calling it on a CPU wheel aborts the
             # process rather than raising, so the check must happen before the call.
-            self._warn(
-                "Dense MVS unavailable: the installed pycolmap wheel was built without CUDA. "
-                "Install a native CUDA COLMAP build to enable dense reconstruction."
-            )
+            # No warning here: the caller tries the native binary next and reports the
+            # one outcome, instead of a "wheel has no CUDA" line followed by a second,
+            # contradictory line about the binary.
             return None
 
         dense_dir = work_dir / "dense"
@@ -1080,6 +1302,197 @@ class ColmapReconstructor:
             return None
         return canvas
 
+    def _ortho_target_gsd(
+        self, images: Sequence[Any], cameras: dict[int, Any], anchor: geo.GeoAnchor, ground_m: float
+    ) -> float | None:
+        """Ground sample distance the source imagery actually resolves, in metres.
+
+        Median over registered views of height-above-ground divided by focal length in
+        pixels. The profile's requested resolution is a floor: nothing finer than the
+        camera saw is ever produced.
+        """
+        samples: list[float] = []
+        for image in images:
+            center = _camera_center(image)
+            camera = cameras.get(int(getattr(image, "camera_id", -1)))
+            if center is None or camera is None:
+                continue
+            focal = float(_camera_matrix(camera)[0, 0])
+            height = float(anchor.apply(center.reshape(1, 3), absolute=True)[0, 2]) - ground_m
+            if focal > 0 and height > 0:
+                samples.append(height / focal)
+        if not samples:
+            return None
+        requested = 1.0 / max(float(self.settings.get("raster_px_per_m", 16.0)), 1e-6)
+        return max(float(np.median(samples)), requested)
+
+    def _orthophoto_on_interpolated_surface(
+        self,
+        world_points: np.ndarray,
+        images: Sequence[Any],
+        cameras: dict[int, Any],
+        image_dir: Path,
+        anchor: geo.GeoAnchor,
+        progress: Callable[[int, str], None],
+        max_dimension: int = 8192,
+    ) -> dict[str, Any] | None:
+        """Orthorectify the source photos at their own resolution onto a sparse-cloud surface.
+
+        Without dense MVS the DSM is one height per several metres, and colouring that
+        grid gave a 75x64 px "orthomosaic" of a 280 m site. The photographs themselves
+        resolve centimetres. This lifts every output cell onto a surface linearly
+        interpolated between the triangulated points -- the same compromise as
+        OpenDroneMap's fast-orthophoto -- and samples the source pixel from the view
+        whose image centre is nearest. Colour is measured; the surface between points is
+        interpolated, which is stated in the run's warnings and never exported as a DSM.
+        """
+        try:
+            from scipy.interpolate import LinearNDInterpolator
+        except Exception:  # noqa: BLE001
+            self._warn("scipy is not installed, so the orthomosaic stays at DSM resolution.")
+            return None
+
+        east, north, up = world_points[:, 0], world_points[:, 1], world_points[:, 2]
+        keep = np.ones(world_points.shape[0], dtype=bool)
+        for axis in (east, north, up):
+            low, high = np.percentile(axis, [1.0, 99.0])
+            keep &= (axis >= low) & (axis <= high)
+        if int(keep.sum()) < 16:
+            return None
+        east, north, up = east[keep], north[keep], up[keep]
+        ground = float(np.median(up))
+
+        gsd = self._ortho_target_gsd(images, cameras, anchor, ground)
+        if gsd is None:
+            return None
+        west, east_max = float(east.min()), float(east.max())
+        south, north_max = float(north.min()), float(north.max())
+        width = int(math.ceil((east_max - west) / gsd)) + 1
+        height = int(math.ceil((north_max - south) / gsd)) + 1
+        if max(width, height) > max_dimension:
+            relaxed = gsd * max(width, height) / max_dimension
+            self._warn(
+                f"Orthomosaic resolution reduced from {gsd:.3f} to {relaxed:.3f} m/px to keep it "
+                f"under {max_dimension}x{max_dimension}."
+            )
+            gsd = relaxed
+            width = int(math.ceil((east_max - west) / gsd)) + 1
+            height = int(math.ceil((north_max - south) / gsd)) + 1
+
+        surface = LinearNDInterpolator(np.column_stack([east, north]), up)
+        rotation = anchor.rotation_matrix
+        canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        best = np.full((height, width), -np.inf, dtype=np.float32)
+        rows_per_chunk = max(1, 2_000_000 // max(width, 1))
+
+        total = max(1, len(images))
+        for index, image in enumerate(images):
+            progress(78 + int(8.0 * index / total), f"Orthorectifying {index + 1}/{total} at {gsd:.3f} m/px")
+            camera = cameras.get(int(getattr(image, "camera_id", -1)))
+            extrinsic = _cam_from_world_matrix(image)
+            if camera is None or extrinsic is None:
+                continue
+            source = cv2.imread(str(image_dir / _image_name(image)), cv2.IMREAD_COLOR)
+            if source is None:
+                continue
+            cam_w = int(getattr(camera, "width", source.shape[1]) or source.shape[1])
+            cam_h = int(getattr(camera, "height", source.shape[0]) or source.shape[0])
+            if (cam_w, cam_h) != (source.shape[1], source.shape[0]):
+                source = cv2.resize(source, (cam_w, cam_h), interpolation=cv2.INTER_AREA)
+            k_matrix = _camera_matrix(camera)
+            principal = k_matrix[:2, 2]
+            half_diag = 0.5 * math.hypot(cam_w, cam_h)
+            rot, trans = extrinsic[:, :3], extrinsic[:, 3]
+
+            row_lo, row_hi, col_lo, col_hi = self._footprint_window(
+                camera, rot, trans, anchor, ground, west, north_max, gsd, width, height, cam_w, cam_h
+            )
+            if col_hi <= col_lo:
+                continue
+            for start in range(row_lo, row_hi, rows_per_chunk):
+                stop = min(row_hi, start + rows_per_chunk)
+                rr, cc = np.mgrid[start:stop, col_lo:col_hi]
+                rr = rr.ravel()
+                cc = cc.ravel()
+                cell_e = west + (cc + 0.5) * gsd
+                cell_n = north_max - (rr + 0.5) * gsd
+                cell_u = surface(cell_e, cell_n)
+                on_surface = np.isfinite(cell_u)
+                if not on_surface.any():
+                    continue
+                rr, cc = rr[on_surface], cc[on_surface]
+                world = np.column_stack([cell_e[on_surface], cell_n[on_surface], cell_u[on_surface]])
+                local = world - anchor.origin_vector - anchor.translation_vector
+                sfm = (local @ rotation) / max(anchor.scale, 1e-12)
+                cam_pts = sfm @ rot.T + trans
+                front = cam_pts[:, 2] > 1e-6
+                if not front.any():
+                    continue
+                rr, cc, cam_pts = rr[front], cc[front], cam_pts[front]
+                pixels = _project_to_image(camera, cam_pts, k_matrix)
+                px, py = pixels[:, 0], pixels[:, 1]
+                inside = (px >= 0) & (px < cam_w - 1) & (py >= 0) & (py < cam_h - 1)
+                if not inside.any():
+                    continue
+                rr, cc, px, py = rr[inside], cc[inside], px[inside], py[inside]
+                score = (1.0 - np.hypot(px - principal[0], py - principal[1]) / half_diag).astype(np.float32)
+                better = score > best[rr, cc]
+                if not better.any():
+                    continue
+                rr, cc = rr[better], cc[better]
+                canvas[rr, cc] = source[py[better].astype(np.int64), px[better].astype(np.int64)][:, ::-1]
+                best[rr, cc] = score[better]
+
+        filled = np.isfinite(best)
+        if not filled.any():
+            return None
+        return {
+            "ortho": canvas,
+            "valid": filled,
+            "west": west,
+            "north": north_max,
+            "pixel_size": float(gsd),
+            "width": width,
+            "height": height,
+            "surface_points": int(east.shape[0]),
+        }
+
+    @staticmethod
+    def _footprint_window(
+        camera: Any, rot: np.ndarray, trans: np.ndarray, anchor: geo.GeoAnchor, ground: float,
+        west: float, north: float, gsd: float, width: int, height: int, cam_w: int, cam_h: int,
+    ) -> tuple[int, int, int, int]:
+        """Grid window a view can see, from its corner rays meeting the median ground.
+
+        Only an optimisation: a view whose corners do not all reach the ground (an
+        oblique frame looking at the horizon) is tested against the whole grid.
+        """
+        full = (0, height, 0, width)
+        k_inv = np.linalg.inv(_camera_matrix(camera))
+        center_sfm = -rot.T @ trans
+        center = anchor.apply(center_sfm.reshape(1, 3), absolute=True)[0]
+        hits = []
+        for u, v in ((0, 0), (cam_w, 0), (0, cam_h), (cam_w, cam_h)):
+            ray_cam = k_inv @ np.array([u, v, 1.0])
+            ray_world = anchor.rotation_matrix @ (rot.T @ ray_cam)
+            if ray_world[2] >= -1e-9:
+                return full
+            t = (ground - center[2]) / ray_world[2]
+            if t <= 0:
+                return full
+            hits.append(center[:2] + t * ray_world[:2])
+        hits_arr = np.asarray(hits)
+        span = hits_arr.max(axis=0) - hits_arr.min(axis=0)
+        lo = hits_arr.min(axis=0) - 0.25 * span
+        hi = hits_arr.max(axis=0) + 0.25 * span
+        col_lo = int(np.clip(math.floor((lo[0] - west) / gsd), 0, width))
+        col_hi = int(np.clip(math.ceil((hi[0] - west) / gsd) + 1, 0, width))
+        row_lo = int(np.clip(math.floor((north - hi[1]) / gsd), 0, height))
+        row_hi = int(np.clip(math.ceil((north - lo[1]) / gsd) + 1, 0, height))
+        if row_hi <= row_lo or col_hi <= col_lo:
+            return (0, 0, 0, 0)
+        return (row_lo, row_hi, col_lo, col_hi)
+
     # -- main ------------------------------------------------------------
 
     def reconstruct(
@@ -1092,9 +1505,11 @@ class ColmapReconstructor:
         use_cache: bool = True,
         cloud_endpoint: str = "",
         progress_callback: Callable[[int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
         **_ignored: Any,
     ) -> ReconstructionResult:
         """Run the full COLMAP pipeline and write georeferenced artifacts."""
+        refuse_cloud_mode(execution_mode)
         if not _HAS_PYCOLMAP:
             raise RuntimeError(
                 "pycolmap is not installed. Install it with `pip install pycolmap`, "
@@ -1104,8 +1519,10 @@ class ColmapReconstructor:
             self.profile = _normalize_profile(profile)
             self.settings = dict(COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]))
         self.warnings = []
+        self._should_cancel = should_cancel
 
         def progress(percent: int, message: str) -> None:
+            self._check_cancel()
             if progress_callback is not None:
                 progress_callback(int(max(0, min(100, percent))), message)
 
@@ -1126,12 +1543,6 @@ class ColmapReconstructor:
             _k, intrinsics_method = geo.intrinsics_from_exif(camera_exif)
         except ValueError:
             intrinsics_method = "unavailable"
-
-        if execution_mode and execution_mode.lower() == "cloud":
-            self._warn(
-                "Cloud reconstruction is not implemented in this build; the run executed locally. "
-                "No data was sent to a remote endpoint."
-            )
 
         sparse = self._run_sfm(images_root, work_dir, len(image_paths), progress)
         registered = _registered_images(sparse)
@@ -1244,6 +1655,7 @@ class ColmapReconstructor:
             "mean_reprojection_error_px": reprojection_error,
             "geo_rmse_m": anchor.rmse_m if anchor else None,
             "ground_sample_distance_m": artifacts.get("gsd_m"),
+            "orthomosaic_gsd_m": artifacts.get("ortho_gsd_m"),
             "artifacts": {key: value for key, value in artifacts.items() if isinstance(value, str)},
             "warnings": list(self.warnings),
         }
@@ -1263,9 +1675,13 @@ class ColmapReconstructor:
             dsm_path=artifacts.get("dsm_png", ""),
             dtm_path=artifacts.get("dtm_png", ""),
             mesh_path=artifacts.get("mesh", ""),
-            textured_mesh_obj_path=artifacts.get("mesh_obj", ""),
+            # The Poisson mesh carries vertex colours only; no UV texture is baked. It was
+            # reported as "Textured mesh OBJ" with the orthomosaic as its "texture image",
+            # neither of which was true of the files on disk.
+            textured_mesh_obj_path="",
             textured_mesh_mtl_path="",
-            texture_image_path=artifacts.get("orthomosaic_png", ""),
+            texture_image_path="",
+            mesh_obj_path=artifacts.get("mesh_obj", ""),
             digital_twin_path=str(twin_path),
             processing_profile=self.profile,
             execution_mode_requested=str(execution_mode),
@@ -1291,6 +1707,7 @@ class ColmapReconstructor:
             hillshade_path=artifacts.get("hillshade_cog", ""),
             camera_track_geojson_path=artifacts.get("camera_track", ""),
             ground_sample_distance_m=artifacts.get("gsd_m"),
+            orthomosaic_gsd_m=artifacts.get("ortho_gsd_m"),
         )
 
     def _write_products(
@@ -1337,13 +1754,34 @@ class ColmapReconstructor:
         artifacts["gsd_m"] = raster["pixel_size"] if anchor is not None else None
 
         ortho = None
+        ortho_grid = raster
         camera_map = _map_items(getattr(sparse, "cameras", None))
         if anchor is not None and registered:
-            ortho = self._true_orthophoto(raster, registered, camera_map, image_dir, anchor, progress)
+            fine = None
+            target = self._ortho_target_gsd(
+                registered, camera_map, anchor, float(np.nanmedian(raster["dsm"])))
+            # The DSM grid is only as fine as the cloud. When that is much coarser than the
+            # photographs, rectify onto the interpolated surface at the photos' resolution.
+            if target is not None and raster["pixel_size"] > 1.5 * target:
+                fine = self._orthophoto_on_interpolated_surface(
+                    world_points, registered, camera_map, image_dir, anchor, progress)
+            if fine is not None:
+                ortho = fine["ortho"].astype(np.float32)
+                ortho_grid = fine
+                self._warn(
+                    f"The orthomosaic is rectified at {fine['pixel_size']:.3f} m/px onto a surface "
+                    f"interpolated between {fine['surface_points']:,} sparse points, because the "
+                    f"DSM is only {raster['pixel_size']:.2f} m/px. Pixel colours are measured; "
+                    "relief between the points is not, so raised objects (trees, roofs) lean "
+                    "and can be displaced. Dense MVS removes this limit."
+                )
+            else:
+                ortho = self._true_orthophoto(raster, registered, camera_map, image_dir, anchor, progress)
         if ortho is None:
             ortho = raster["ortho"]
             if anchor is not None:
                 self._warn("True-orthophoto generation failed; the point-colour raster was used instead.")
+        artifacts["ortho_gsd_m"] = ortho_grid["pixel_size"] if anchor is not None else None
 
         ortho_uint8 = np.clip(np.nan_to_num(ortho), 0, 255).astype(np.uint8)
         ortho_png = out_dir / "orthomosaic.png"
@@ -1371,15 +1809,27 @@ class ColmapReconstructor:
                     out_dir / "dtm.tif", np.nan_to_num(dtm, nan=-9999.0).astype(np.float32), nodata=-9999.0, **common
                 )
                 artifacts["orthomosaic_cog"] = geo.write_geotiff(
-                    out_dir / "orthomosaic.tif", np.moveaxis(ortho_uint8, 2, 0), nodata=0, **common
+                    out_dir / "orthomosaic.tif", np.moveaxis(ortho_uint8, 2, 0), nodata=0,
+                    epsg=anchor.epsg, west=ortho_grid["west"], north=ortho_grid["north"],
+                    pixel_size=ortho_grid["pixel_size"],
                 )
-                artifacts["hillshade_cog"] = geo.write_geotiff(
-                    out_dir / "dsm_hillshade.tif",
-                    geo.hillshade(np.nan_to_num(dsm, nan=float(np.nanmin(dsm)) if np.isfinite(dsm).any() else 0.0),
-                                  raster["pixel_size"]),
-                    nodata=0,
-                    **common,
-                )
+                shade, shaded_fraction = masked_hillshade(dsm, raster["pixel_size"])
+                if shaded_fraction > 0.0:
+                    artifacts["hillshade_cog"] = geo.write_geotiff(
+                        out_dir / "dsm_hillshade.tif", shade, nodata=0, **common,
+                    )
+                    valid_fraction = float(np.isfinite(dsm).mean())
+                    if shaded_fraction < 0.5 * valid_fraction:
+                        self._warn(
+                            f"The hillshade covers {shaded_fraction:.0%} of the grid against "
+                            f"{valid_fraction:.0%} for the DSM: slope is only shown where a cell "
+                            "and its neighbours were all measured."
+                        )
+                else:
+                    self._warn(
+                        "No hillshade was written: no DSM cell has measured neighbours on every "
+                        "side, so no slope could be computed without inventing terrain."
+                    )
             except Exception as exc:  # noqa: BLE001
                 self._warn(f"GeoTIFF export failed: {exc}. PNG products were still written.")
         elif anchor is not None:
@@ -1459,6 +1909,24 @@ class ColmapReconstructor:
 # ---------------------------------------------------------------------------
 
 
+def _project_to_image(camera: Any, cam_points: np.ndarray, k_matrix: np.ndarray) -> np.ndarray:
+    """Camera-frame points to pixels, applying the camera's lens distortion when possible.
+
+    pycolmap's Camera.img_from_cam applies the fitted distortion model; a bare pinhole
+    projection misplaces edge pixels by several pixels on a typical drone lens.
+    """
+    project = getattr(camera, "img_from_cam", None)
+    if callable(project):
+        try:
+            pixels = np.asarray(project(np.ascontiguousarray(cam_points, dtype=np.float64)), dtype=float)
+            if pixels.shape == (cam_points.shape[0], 2):
+                return pixels
+        except Exception:  # noqa: BLE001
+            pass
+    projected = cam_points @ k_matrix.T
+    return projected[:, :2] / projected[:, 2:3]
+
+
 def _camera_record(image: Any, camera: Any) -> dict[str, Any]:
     """Serialize one registered view: centre, world->camera extrinsics, and K."""
     center = _camera_center(image)
@@ -1508,6 +1976,29 @@ def _ground_filter(min_grid: np.ndarray, pixel_size: float) -> np.ndarray:
     opened = cv2.morphologyEx(grid, cv2.MORPH_OPEN, kernel)
     opened[mask] = np.nan
     return opened
+
+
+def masked_hillshade(dsm: np.ndarray, pixel_size: float) -> tuple[np.ndarray, float]:
+    """Hillshade only where the slope was measured. Returns (uint8 raster, coverage).
+
+    This used to fill every empty DSM cell with the minimum elevation before shading,
+    so a DSM that was 24% measured produced a hillshade that was 100% "valid" -- three
+    quarters of it flat terrain that nobody surveyed, plus cliffs along every hole edge.
+    Slope needs a cell and its four neighbours (np.gradient's central difference), so
+    only those cells are shaded; everything else is nodata (0). Shaded values are
+    clamped to 1..255 so a genuinely black pixel is not mistaken for nodata.
+    """
+    elevation = np.asarray(dsm, dtype=float)
+    valid = np.isfinite(elevation)
+    if not valid.any():
+        return np.zeros(elevation.shape, dtype=np.uint8), 0.0
+    computable = valid.copy()
+    padded = np.pad(valid, 1, mode="edge")
+    computable &= padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    fill = float(np.nanmedian(elevation[valid]))
+    shade = geo.hillshade(np.where(valid, elevation, fill), pixel_size)
+    out = np.where(computable, np.maximum(shade, 1), 0).astype(np.uint8)
+    return out, float(computable.mean())
 
 
 def _write_elevation_png(path: Path, elevation: np.ndarray) -> Path:

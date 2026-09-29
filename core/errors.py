@@ -12,6 +12,15 @@ SEVERITY_ERROR = "error"
 SEVERITY_CRITICAL = "critical"
 
 
+class OperationCancelled(Exception):
+    """A long operation stopped because the operator cancelled it.
+
+    Core code raises and re-raises this rather than a job-runner class, so a progress
+    callback that signals cancellation is not swallowed by the "a broken progress
+    callback must not kill the run" guards in the pipeline and engines.
+    """
+
+
 class AppError(Exception):
     """Standard structured error raised by core modules.
 
