@@ -142,6 +142,23 @@ class Shell:
             ],
         )
 
+        reports_menu = Menu(
+            "Reports",
+            [
+                MenuAction("Generate Report...", act("report.generate")),
+                MenuAction("Export Findings as PDF", act("report.export", {"format": "pdf"})),
+                MenuAction("Export Findings as Word", act("report.export", {"format": "docx"})),
+                MenuAction("Generated Reports...", act("report.list")),
+                MenuSeparator(),
+                MenuAction("Record Finding...", act("report.finding")),
+                MenuAction("Findings and Review...", act("report.review")),
+                MenuSeparator(),
+                MenuAction("Verify Provenance", act("report.provenance")),
+                MenuAction("Export Audit Log (CSV)", act("report.audit_export")),
+                MenuAction("Notifications...", act("report.notifications")),
+            ],
+        )
+
         view_menu = Menu(
             "View",
             [
@@ -180,7 +197,8 @@ class Shell:
             ],
         )
 
-        return [file_menu, mission_menu, fly_menu, analysis_menu, reconstruct_menu, view_menu, tools_menu, help_menu]
+        return [file_menu, mission_menu, fly_menu, analysis_menu, reconstruct_menu, reports_menu,
+                view_menu, tools_menu, help_menu]
 
     def _quit(self) -> None:
         if self.window is not None:

@@ -23,8 +23,8 @@ const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
   "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
   "Change", "Volume", "Cut & Fill", "Stockpile", "Slope", "Ponding", "Generate Report",
-  "Export Report",
-  "Export PDF", "New Report", "Share", "Archive",
+  "Export Report", "Export PDF", "Export Word", "Open Report", "Record Finding", "Annotate",
+  "New Report", "Share", "Archive",
 ]);
 
 /* -- survey packs ---------------------------------------------------------- */
@@ -882,7 +882,6 @@ export const ACTIONS = {
               describe: "Measure a distance on the map." },
   Area: { tool: "area", draw: "polygon", measure: "area",
           describe: "Measure an area on the map; it also becomes the selection." },
-  Annotate: { tool: "annotate", describe: "Draw an annotation." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
   /* -- fly to draw --------------------------------------------------------
@@ -1588,36 +1587,85 @@ export const ACTIONS = {
   "New Report": { alias: "Generate Report" },
   Generate: { alias: "Generate Report" },
   "Generate Report": {
-    describe: "Build a report from what the project contains.",
+    describe: "Build a report from what the open project contains.",
     async run(ctx) {
-      const readiness = await call("report_readiness");
+      const chosen = ctx.reportOptions ? ctx.reportOptions() : {};
+      const formats = chosen.formats || ["html", "pdf"];
+      const readiness = await call("report_readiness", "", chosen.reportType || "standard", formats);
       if (!readiness.ready) {
         // The engine refuses rather than emitting empty sections, and the checklist is
         // the useful part -- it says exactly what to produce first.
-        return { skipped: `Not ready: ${(readiness.missing || []).join(", ") || "unknown"}` };
+        return { skipped: `Not ready: ${(readiness.missing || []).join("; ") || "unknown"}` };
       }
       const title = await ctx.prompt("Report title", "Inspection report") || "Inspection report";
-      const chosen = ctx.reportOptions ? ctx.reportOptions() : {};
-
-      // DOCX only exists on the export_report path; the report engine renders HTML and
-      // then PDF. Sending a Word request to the engine would produce a PDF named
-      // correctly and be wrong in the one way nobody checks.
-      if (chosen.format === "docx") {
-        const written = await call("export_report", "docx", title,
-                                   chosen.organization || "");
-        return { message: `Word report written to ${written.path}.`, refresh: true };
-      }
-
+      // Word and PDF are written by the same call from the same sections: the engine
+      // renders HTML and hands the blocks to the reportlab / python-docx writers.
       const result = await call("generate_report", "", title,
                                 chosen.reportType || "standard",
-                                chosen.organization || "");
+                                chosen.author || "", chosen.organization || "",
+                                chosen.client || "", chosen.logo || "", formats);
+      const files = ["html", result.pdf_path ? "pdf" : "", result.docx_path ? "docx" : ""]
+        .filter(Boolean).join(", ");
       // What the report says it left out travels with the confirmation, not after it.
       const caveats = (result.warnings || []).length ? ` ${result.warnings.join(" ")}` : "";
-      return { message: `Report built: ${result.id || "done"}.${caveats}`, refresh: true };
+      return { message: `Report written (${files}) to ${result.output_dir}.${caveats}`, refresh: true };
     },
   },
   "Export Report": { alias: "Generate Report" },
-  "Export PDF": { alias: "Generate Report" },
+  "Export PDF": {
+    describe: "Write the report as a PDF.",
+    async run(ctx) {
+      return ACTIONS["Generate Report"].run({ ...ctx, reportOptions: () => ({
+        ...(ctx.reportOptions ? ctx.reportOptions() : {}), formats: ["html", "pdf"] }) });
+    },
+  },
+  "Export Word": {
+    describe: "Write the report as an editable Word document.",
+    async run(ctx) {
+      return ACTIONS["Generate Report"].run({ ...ctx, reportOptions: () => ({
+        ...(ctx.reportOptions ? ctx.reportOptions() : {}), formats: ["html", "docx"] }) });
+    },
+  },
+  "Open Report": {
+    describe: "Open the selected report, or the newest one.",
+    async run(ctx) {
+      const listed = await call("list_reports");
+      const reports = listed.reports || [];
+      if (!reports.length) return { skipped: "No reports in this project yet." };
+      const id = (ctx.selectedReport && ctx.selectedReport()) || reports[0].id;
+      const report = reports.find((r) => r.id === id) || reports[0];
+      const kind = report.pdf_path ? "pdf" : "html";
+      const opened = await call("open_report", report.id, kind);
+      return { message: `Opened ${opened.opened}.` };
+    },
+  },
+  /* The Annotate tool armed a cursor nothing read, so no finding could ever be made
+     from this screen and no report could contain one an inspector had drawn. */
+  Annotate: { alias: "Record Finding" },
+  "Record Finding": {
+    describe: "Record a finding on one of the project's images.",
+    async run(ctx) {
+      const image = await ctx.prompt("Image file name (from the project's datasets)", "");
+      if (!image) return { skipped: "No image chosen." };
+      const label = await ctx.prompt("What is it (crack, spalling, corrosion...)", "");
+      if (!label) return { skipped: "A finding needs a label." };
+      const severity = (await ctx.prompt("Severity: critical, high, medium, low or info",
+                                          "medium") || "medium").trim().toLowerCase();
+      const note = await ctx.prompt("Note (optional)", "") || "";
+      const boxText = (await ctx.prompt("Box x0,y0,x1,y1 in pixels (blank = whole photo)", "")
+                       || "").trim();
+      let box = null;
+      if (boxText) {
+        box = boxText.split(/[ ,]+/).map(Number);
+        if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) {
+          return { skipped: "The box needs four numbers: x0, y0, x1, y1." };
+        }
+      }
+      const result = await call("record_finding", image, label, severity, note, box);
+      return { message: `Recorded ${result.finding.label} (${result.finding.severity}).`,
+               refresh: true };
+    },
+  },
 
   /* -- review -------------------------------------------------------------
      The decision moves the status and records who moved it. What the model claimed
@@ -1694,13 +1742,22 @@ export const ACTIONS = {
       return { message: "Reflight requested and recorded.", refresh: true };
     },
   },
+  /* On the Reports toolbar this saved a MISSION. It saves the report settings. */
   "Save Template": {
-    describe: "Save the current mission so it can be flown again.",
+    describe: "Save the report type, formats and branding for next time.",
     async run(ctx) {
       const name = await ctx.prompt("Template name", "Template");
       if (!name) return { skipped: "No name given." };
-      await call("save_mission", name, "saved as a template");
-      return { message: `Saved "${name}".`, refresh: true };
+      const chosen = ctx.reportOptions ? ctx.reportOptions() : {};
+      await call("save_report_template", name, {
+        report_type: chosen.reportType || "standard",
+        formats: chosen.formats || ["html", "pdf"],
+        organization: chosen.organization || "",
+        client: chosen.client || "",
+        author: chosen.author || "",
+        logo_path: chosen.logo || "",
+      });
+      return { message: `Saved report template "${name}".`, refresh: true };
     },
   },
 };

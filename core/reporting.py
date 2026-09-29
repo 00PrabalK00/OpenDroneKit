@@ -36,20 +36,43 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append(f"- Input image directory: `{payload.get('input_image_dir', '')}`")
     lines.append(f"- Images processed: `{len(images)}`")
     lines.append("")
-    lines.append("## Structural Health Scoring")
+    lines.append("## Structural Health Screening (heuristic)")
     lines.append("")
     if isinstance(health, dict) and health:
+        # The score is built from the crack and metal pixel ratios of classical image
+        # processing plus a geometric growth forecast of that same heuristic mask. It
+        # ranks runs for a person to look at; it measures nothing about the structure.
+        # A condition grade and a failure probability derived from it would present
+        # screening output as a structural assessment, so they are not printed.
+        basis = health.get("basis") or {}
+        if basis.get("defect_evidence") == "trained_model":
+            lines.append(
+                "- Basis: crack pixel ratios from a trained segmentation model "
+                f"(`{', '.join(basis.get('crack_sources') or [])}`), with metal and solar "
+                "counted only where a trained model produced them. This is an "
+                "uncalibrated screening index for choosing what to review, not a "
+                "structural assessment."
+            )
+        else:
+            lines.append(
+                "- Basis: crack and metal pixel ratios from classical image processing "
+                "(heuristic). This is an uncalibrated screening index for choosing what "
+                "to review, not a structural assessment."
+            )
         lines.append(f"- Asset ID: `{health.get('asset_id', '[unknown]')}`")
-        lines.append(f"- Structure type: `{health.get('structure_type', 'generic')}`")
-        lines.append(f"- Material type: `{health.get('material_type', 'concrete')}`")
-        lines.append(f"- Integrity score: `{float(health.get('integrity_score', 0.0)):.2f}/100`")
-        lines.append(f"- Severity index: `{float(health.get('severity_index', 0.0)):.2f}/100`")
-        lines.append(f"- Structural risk score: `{float(health.get('structural_risk_score', 0.0)):.2f}/100`")
+        lines.append(f"- Structure type (as configured): `{health.get('structure_type', 'generic')}`")
+        lines.append(f"- Material type (as configured): `{health.get('material_type', 'concrete')}`")
         lines.append(
-            f"- Condition grade: `{health.get('condition_grade', '')}` ({health.get('condition_label', '')})"
+            f"- Screening severity index "
+            f"({'uncalibrated' if basis.get('defect_evidence') == 'trained_model' else 'heuristic'}): "
+            f"`{float(health.get('severity_index', 0.0)):.2f}/100`"
         )
-        if health.get("index_basis"):
-            lines.append(f"- Basis: {health.get('index_basis')}")
+        lines.append(
+            "- Condition grade, integrity score and failure probabilities: not reported. "
+            "They need defect measurements (a trained model's detections confirmed by an "
+            "inspector, or a georeferenced defect layer) and a hazard model calibrated "
+            "for this asset; this run has only heuristic ratios."
+        )
         excluded = (health.get("components", {}) or {}).get("excluded_heuristic_images", {}) or {}
         for detector in ("metal", "solar"):
             count = int(excluded.get(detector, 0) or 0)
@@ -60,21 +83,17 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
                     f"the {detector} component is not scored, which is not the same as "
                     "no defects."
                 )
-        failure = health.get("probabilistic_failure", {})
-        if isinstance(failure, dict) and failure.get("available") is False:
-            lines.append(f"- Failure probability: not computed. {failure.get('reason', '')}")
         not_assessed = (health.get("components") or {}).get("not_assessed") or []
         if not_assessed:
             lines.append(f"- Not assessed (excluded from the index): `{', '.join(not_assessed)}`")
         trend = health.get("trend", {})
-        if isinstance(trend, dict):
-            lines.append(f"- Trend direction: `{trend.get('trend_direction', 'stable')}`")
-            lines.append(f"- Trend summary: `{trend.get('summary', '')}`")
-            lines.append(f"- Integrity change / month: `{float(trend.get('integrity_change_per_month', 0.0)):.3f}`")
-            lines.append(f"- Projected integrity (6 months): `{float(trend.get('projected_integrity_6m', 0.0)):.2f}`")
-            lines.append(f"- Projected integrity (12 months): `{float(trend.get('projected_integrity_12m', 0.0)):.2f}`")
+        if isinstance(trend, dict) and trend.get("trend_direction"):
+            lines.append(
+                f"- Screening index trend across runs of this asset: "
+                f"`{trend.get('trend_direction', 'stable')}`"
+            )
     else:
-        lines.append("- Structural health scoring not available.")
+        lines.append("- Structural health screening not available.")
 
     lines.append("")
     lines.append("## Crack and Defect Summary")
@@ -205,7 +224,7 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append("- Coverage validation was not run.")
 
     lines.append("")
-    lines.append("## Crack Propagation Forecast")
+    lines.append("## Crack Propagation Forecast (illustrative)")
     lines.append("")
     if forecast.get("basis") == "what_if_simulation":
         lines.append(f"- **What-if simulation, not a measurement.** {forecast.get('note', '')}")
@@ -215,15 +234,19 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     if forecast.get("target_image"):
         if forecast.get("disclaimer"):
             lines.append(f"- **{forecast.get('disclaimer')}**")
-        if forecast.get("assumed_inputs"):
-            lines.append(f"- Assumed (not measured) inputs: `{', '.join(forecast['assumed_inputs'])}`")
+        lines.append(
+            "- Basis: the forecast grows the detected crack mask of one image. It "
+            "illustrates how a crack of that shape could extend; it is not a measured "
+            "crack or a prediction for this structure."
+        )
         lines.append(f"- Target image: `{forecast.get('target_image')}`")
         lines.append(f"- Mode: `{forecast.get('mode', 'geometric')}`")
         lines.append(f"- Steps: `{forecast.get('steps', 0)}`")
         lines.append(f"- Output dir: `{forecast.get('output_dir', '')}`")
         physics_cfg = forecast.get("physics_config", {})
+        physics_summary = forecast.get("physics_summary", {})
         if isinstance(physics_cfg, dict) and physics_cfg:
-            lines.append("- Physics configuration:")
+            lines.append("- Physics configuration (assumed inputs, not measured on site):")
             lines.append(f"  - Pixel size: `{float(physics_cfg.get('pixel_size_mm', 0.0)):.4f} mm/px`")
             lines.append(f"  - Sigma nominal: `{float(physics_cfg.get('sigma_nominal_mpa', 0.0)):.3f} MPa`")
             lines.append(f"  - Delta sigma: `{float(physics_cfg.get('delta_sigma_mpa', 0.0)):.3f} MPa`")
@@ -231,18 +254,36 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
             lines.append(f"  - Horizon: `{float(physics_cfg.get('horizon_years', 0.0)):.3f} years`")
             lines.append(f"  - Fracture toughness KIC: `{float(physics_cfg.get('fracture_toughness_mpa_sqrt_m', 0.0)):.3f}`")
             lines.append(f"  - Paris C,m: `{float(physics_cfg.get('paris_c', 0.0)):.3e}`, `{float(physics_cfg.get('paris_m', 0.0)):.3f}`")
-        physics_summary = forecast.get("physics_summary", {})
-        if isinstance(physics_summary, dict) and physics_summary:
-            lines.append("- Physics summary (final step):")
-            lines.append(f"  - Crack length: `{float(physics_summary.get('final_crack_length_m', 0.0)):.6f} m`")
+            usable = isinstance(physics_summary, dict) and float(
+                physics_summary.get("final_crack_length_m", 0.0) or 0.0) > 0.0
+            if usable:
+                lines.append(
+                    "- Fracture-mechanics model output (final step), computed from the "
+                    "heuristic mask and the assumed inputs above:"
+                )
+                lines.append(f"  - Modelled crack length: `{float(physics_summary.get('final_crack_length_m', 0.0)):.6f} m`")
+                lines.append(
+                    f"  - K_I / DeltaK: `{float(physics_summary.get('final_stress_intensity_mpa_sqrt_m', 0.0)):.3f}` / "
+                    f"`{float(physics_summary.get('final_delta_k_mpa_sqrt_m', 0.0)):.3f}`"
+                )
+                lines.append(
+                    f"  - da/dN: `{float(physics_summary.get('final_fatigue_da_dn_m_per_cycle', 0.0)):.3e} m/cycle`"
+                )
+                fos = float(physics_summary.get("final_factor_of_safety", 0.0) or 0.0)
+                lines.append(
+                    f"  - Modelled factor of safety: `{fos:.3f}`" if fos > 0.0
+                    else "  - Factor of safety: not computed."
+                )
+            else:
+                lines.append(
+                    "- Fracture-mechanics output: not computed (the model produced no "
+                    "crack length for this mask)."
+                )
+        else:
             lines.append(
-                f"  - K_I / DeltaK: `{float(physics_summary.get('final_stress_intensity_mpa_sqrt_m', 0.0)):.3f}` / "
-                f"`{float(physics_summary.get('final_delta_k_mpa_sqrt_m', 0.0)):.3f}`"
+                "- Geometric growth only: no crack length, stress intensity, factor of "
+                "safety or failure probability was computed."
             )
-            lines.append(
-                f"  - da/dN: `{float(physics_summary.get('final_fatigue_da_dn_m_per_cycle', 0.0)):.3e} m/cycle`"
-            )
-            lines.append(f"  - Factor of safety: `{float(physics_summary.get('final_factor_of_safety', 0.0)):.3f}`")
         if forecast.get("fenicsx_message"):
             lines.append(f"- FEniCSx: `{forecast.get('fenicsx_message')}`")
     else:
@@ -253,7 +294,8 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     if recon.get("status") == "failed":
         lines.append(f"- Reconstruction FAILED: `{recon.get('error', '')}`. Detection results "
-                     "above are complete; nothing below was produced.")
+                     "above are complete.")
+        lines.append("- No 3D output, measurements or volumes were produced from this run.")
     lines.append(f"- Frames: `{recon.get('frame_count', 0)}`")
     lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
     lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")

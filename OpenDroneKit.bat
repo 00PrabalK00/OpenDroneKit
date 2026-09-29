@@ -57,6 +57,7 @@ if errorlevel 1 goto :no_env
 if /I not "%CONDA_DEFAULT_ENV%"=="%ODK_CONDA_ENV%" goto :no_env
 set "PY=%CONDA_PREFIX%\python.exe"
 set "PYW=%CONDA_PREFIX%\pythonw.exe"
+echo [OpenDroneKit] Using conda environment: %ODK_CONDA_ENV%
 goto :have_python
 
 :no_env
@@ -74,6 +75,15 @@ if not exist "%PY%" (
     exit /b 1
 )
 if not exist "%PYW%" set "PYW=%PY%"
+
+rem Say so up front when the environment cannot write report deliverables; the
+rem application also refuses PDF/Word by name, but this is where it can be fixed.
+"%PY%" -c "import reportlab, docx" 1>nul 2>nul
+if errorlevel 1 (
+    echo [OpenDroneKit] This environment cannot write PDF/Word reports: %PY%
+    echo [OpenDroneKit] Fix: "%PY%" -m pip install -r "%ROOT%requirements.txt"
+)
+if "%ODK_LAUNCH_CHECK_ONLY%"=="1" exit /b 0
 
 :check_deps
 "%PY%" "%ROOT%main.py" --check-deps

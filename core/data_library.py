@@ -346,6 +346,18 @@ def extract_image_metadata(image_path: Path | str) -> dict[str, Any]:
             exif_raw = img.getexif() if hasattr(img, "getexif") else None
             if exif_raw:
                 tags = {ExifTags.TAGS.get(k, k): v for k, v in exif_raw.items()}
+                # getexif() returns IFD0 only: GPSInfo there is an OFFSET (an int), not
+                # the GPS block, and ISO/exposure/focal/DateTimeOriginal live in the Exif
+                # sub-IFD. Reading them from IFD0 reported "no GPS" for 24 of 24
+                # geotagged images.
+                try:
+                    tags.update({ExifTags.TAGS.get(k, k): v
+                                 for k, v in exif_raw.get_ifd(0x8769).items()})
+                    gps_ifd = exif_raw.get_ifd(0x8825)
+                    if gps_ifd:
+                        tags["GPSInfo"] = dict(gps_ifd)
+                except Exception:  # noqa: BLE001 - older Pillow: keep what IFD0 gave
+                    pass
                 meta["camera_make"] = str(tags.get("Make")) if tags.get("Make") else None
                 meta["camera_model"] = str(tags.get("Model")) if tags.get("Model") else None
                 iso = tags.get("ISOSpeedRatings") or tags.get("PhotographicSensitivity")

@@ -190,6 +190,24 @@ def _forecast_assumptions(config: "PipelineConfig") -> dict[str, Any]:
     }
 
 
+class _FailedReconstruction:
+    """Stands in for a reconstruction result when the reconstruction step failed.
+
+    Every field a later stage reads is empty, and `error` says why, so nothing
+    downstream can mistake the absence of a reconstruction for an empty one.
+    """
+
+    point_cloud_path = ""
+    crack_cloud_path = None
+
+    def __init__(self, error: str):
+        self.error = error
+
+    def to_dict(self) -> dict:
+        return {"status": "failed", "error": self.error, "frame_count": 0,
+                "total_points": 0, "crack_points": 0}
+
+
 class StructuralFaultPipeline:
     """Coordinator for crack detection, propagation forecast, 3D reconstruction, and reporting."""
 
@@ -641,7 +659,9 @@ class StructuralFaultPipeline:
                         "paris_c": float(physics_cfg.paris_c),
                         "paris_m": float(physics_cfg.paris_m),
                     }
-                if metrics_payload:
+                # Geometric mode computes no physical quantities; recording zeros here
+                # made reports print "factor of safety 0.000" as if it were a result.
+                if metrics_payload and physics_cfg is not None:
                     last = metrics_payload[-1]
                     forecast_payload["physics_summary"] = {
                         "final_crack_length_m": float(last.get("crack_length_m", 0.0) or 0.0),
@@ -667,11 +687,10 @@ class StructuralFaultPipeline:
             mapped = 74 + int((22.0 * float(max(0, min(100, int(percent))))) / 100.0)
             _emit_progress(mapped, f"Reconstruction: {message}")
 
-        # Reconstruction is one stage of the run, not a precondition for the rest of it.
-        # Close-range inspection photos often share no overlap, COLMAP then registers
-        # nothing, and the whole run used to abort AFTER detection had finished -- no
-        # summary, no report, only loose masks. The failure is recorded as the stage's
-        # result instead, and nothing downstream pretends a model exists.
+        # A reconstruction that cannot run (fewer than three images, no overlap, no
+        # engine) used to raise here and take every per-image result with it: minutes of
+        # analysis, and no summary or report written. The failure is now recorded in the
+        # summary and the report, and the stages that need a reconstruction say so.
         try:
             recon = self.reconstructor.reconstruct(
                 image_dir=image_dir,
@@ -709,6 +728,24 @@ class StructuralFaultPipeline:
             coverage_payload=coverage_payload,
             history=history_rows,
         )
+        # Say in the file itself what the score was built from, so no reader takes its
+        # grade for a structural assessment. The crack ratio comes from the trained
+        # segmentation model when it ran, and from the classical heuristic otherwise;
+        # metal and solar count only where a trained model produced them.
+        crack_sources = sorted({str(r.get("crack_model_used", "")) for r in image_rows} - {""})
+        model_evidence = any(src.startswith("onnx:") for src in crack_sources)
+        health_scoring["basis"] = {
+            "defect_evidence": "trained_model" if model_evidence else "heuristic",
+            "crack_sources": crack_sources,
+            "calibrated": False,
+            "note": (
+                ("Screening index from trained-model crack ratios"
+                 if model_evidence else
+                 "Screening index from classical-image-processing crack ratios")
+                + ", with metal and solar counted only where a trained model produced "
+                "them. It is uncalibrated and is not a structural assessment."
+            ),
+        }
         health_scoring_path = write_json(run_dir / "health_scoring.json", health_scoring)
 
         _emit_progress(96, "Extracting measurements and scoring defect risk")
@@ -871,19 +908,6 @@ class StructuralFaultPipeline:
             structural_risk_score=float(health_scoring.get("structural_risk_score", 0.0)),
             condition_level=int(health_scoring.get("condition_level", 0)),
         )
-
-
-class _FailedReconstruction:
-    """What a reconstruction stage that failed contributes: its error, and no products."""
-
-    point_cloud_path = ""
-    crack_cloud_path = None
-
-    def __init__(self, error: str) -> None:
-        self.error = error
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"status": "failed", "error": self.error, "frame_count": 0}
 
 
 def run_pipeline(

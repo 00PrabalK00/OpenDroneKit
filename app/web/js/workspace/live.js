@@ -46,7 +46,12 @@ export function live({ calls, render, empty, isEmpty, every }) {
   const settle = async () => {
     let results;
     try {
-      results = await Promise.all(calls.map((name) => tryCall(name)));
+      // A call is a method name, or a function returning [name, ...args] so a panel
+      // can ask about what the operator has chosen right now (a report type, say).
+      results = await Promise.all(calls.map((spec) => {
+        const [name, ...args] = typeof spec === "function" ? spec() : [spec];
+        return tryCall(name, ...args);
+      }));
     } catch {
       results = calls.map(() => null);
     }
@@ -81,8 +86,22 @@ export function live({ calls, render, empty, isEmpty, every }) {
       settle();
     }, every);
   }
+  // Re-read after an action changes the project (a finding recorded, a report written).
+  // Without this a panel showed what was true when the workspace opened, so the list of
+  // reports stayed empty after Generate had written one.
+  const onRefresh = () => {
+    if (!host.isConnected) {
+      window.removeEventListener(REFRESH_EVENT, onRefresh);
+      return;
+    }
+    settle();
+  };
+  if (typeof window !== "undefined") window.addEventListener(REFRESH_EVENT, onRefresh);
   return host;
 }
+
+/** Dispatched on window after an action that changed what the panels read. */
+export const REFRESH_EVENT = "odk:refresh";
 
 /**
  * What a panel shows when the application has nothing for it.

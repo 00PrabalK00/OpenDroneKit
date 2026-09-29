@@ -2300,136 +2300,277 @@ class Api:
             return fail(str(exc))
 
     # -------------------------------------------------------------- reports
+    #
+    # Reports are built from the project the desktop has open: its store (datasets,
+    # mission versions, audit) and its folder (findings, measurements, reconstruction,
+    # pipeline runs). They used to go through a mirror project created by name in
+    # core.project's separate workspace, with no root folder -- so every report described
+    # an empty project and was written outside the one the user chose.
 
-    def _report_project_id(self) -> str:
-        """The active project, as core.report_engine knows it.
+    def _report_config(self, title: str = "Inspection report", report_type: str = "standard",
+                       author: str = "", organization: str = "", client: str = "",
+                       logo_path: str = "", formats: list[str] | None = None,
+                       summary: str = "", recommendations: list[str] | str | None = None,
+                       sections: list[str] | None = None):
+        from core.report_engine import REPORT_TYPES, ReportConfig
 
-        There are two project stores. app/store.py holds what the desktop opened;
-        core/project.py holds what the report engine reads, with its own ids. Assuming
-        they were the same made every report refuse with "Open a project" while a project
-        was plainly open.
-
-        So the desktop project is mirrored into the engine's store on demand, matched by
-        name, and the engine's id is returned. Mirrored rather than merged: merging two
-        schemas that have diverged this far is a migration, and a report should not be
-        the thing that performs one.
-        """
-        from core.project import get_manager
-
-        project = self._session.ensure_active_project()
-        name = str(project.get("name") or "").strip()
-        if not name:
-            raise ValueError("Open a project before generating a report.")
-
-        manager = get_manager()
-        for candidate in manager.list_projects(include_archived=True):
-            if str(candidate.get("name", "")).strip() == name:
-                return str(candidate["id"])
-
-        # No root_dir: the manager refuses a folder that already has files in it, which
-        # is right for its own workspace and wrong to argue with here. The desktop
-        # project keeps its folder; the engine keeps its own and writes the report there.
-        created = manager.create_project(
-            name=name,
-            description=str(project.get("description") or ""),
+        if str(report_type) not in REPORT_TYPES:
+            raise ValueError(f"Unknown report type {report_type!r}. "
+                             f"Use one of: {', '.join(REPORT_TYPES)}.")
+        if isinstance(recommendations, str):
+            recommendations = [line.strip() for line in recommendations.splitlines() if line.strip()]
+        chosen = [str(f).lower() for f in (formats or ["html", "pdf"])]
+        unknown = [f for f in chosen if f not in ("html", "pdf", "docx")]
+        if unknown:
+            raise ValueError(f"Unknown report format(s) {unknown}. Use html, pdf or docx.")
+        if logo_path and not Path(logo_path).is_file():
+            raise ValueError(f"Logo file not found: {logo_path}")
+        return ReportConfig(
+            project_id=str(self._session.project_id()),
+            title=str(title or "Inspection report"),
+            report_type=str(report_type),
+            author=str(author or ""),
+            organization=str(organization or ""),
+            client=str(client or ""),
+            logo_path=str(logo_path or ""),
+            summary=str(summary or ""),
+            recommendations=list(recommendations or []),
+            formats=chosen,
+            sections=list(sections or []),
         )
-        return str(created["id"] if isinstance(created, dict) else created)
-
-    def _open_project_content(self) -> list[str]:
-        """What a report of the open desktop project could be about.
-
-        The engine judged readiness on its own mirror of the project, which never holds
-        anything, so a project with no images, findings or missions was declared ready
-        with "Nothing missing" and a report of empty sections was written -- a document
-        indistinguishable from a survey that found nothing.
-        """
-        from core.annotations import list_annotations
-
-        content: list[str] = []
-        if self._session.list_datasets():
-            content.append("dataset")
-        root = self._session.project_root()
-        if root is not None and list_annotations(Path(root)):
-            content.append("findings")
-        if self._session.store.list_mission_versions(self._session.project_id(), None, 1):
-            content.append("mission")
-        return content
-
-    _NOTHING_TO_REPORT = ("content: this project has no imported images, recorded findings "
-                          "or saved missions, so a report would have nothing to be about. "
-                          "Import a dataset, record a finding or save a mission first.")
 
     @guard
-    def report_readiness(self, project_id: str = "", report_type: str = "standard") -> dict[str, Any]:
-        """What a report still needs, before anyone presses Generate.
+    def report_types(self) -> dict[str, Any]:
+        """The report types the engine builds, with the sections each one contains."""
+        from core.report_engine import REPORT_TYPES, SECTION_TITLES
 
-        The call's `ok` says the check ran; `ready` says whether a report can be written.
-        The engine's own "ok" used to be spread over the call's, so a refusal reached the
-        UI as an error with no message, and its warnings were dropped on the way.
-        """
-        from app import desktop_ops
+        return ok(types=[
+            {"key": key, "sections": [{"key": s, "title": SECTION_TITLES.get(s, s)} for s in sections]}
+            for key, sections in REPORT_TYPES.items()
+        ])
+
+    @guard
+    def report_readiness(self, project_id: str = "", report_type: str = "standard",
+                         formats: list[str] | None = None) -> dict[str, Any]:
+        """What a report still needs, judged on the open project, before Generate."""
+        from app import report_builder
 
         try:
-            target = str(project_id) if project_id else self._report_project_id()
-        except Exception as exc:  # noqa: BLE001 - no project open yet
+            config = self._report_config(report_type=report_type, formats=formats)
+            readiness = report_builder.readiness(self._session, config)
+        except ValueError as exc:
             return fail(str(exc))
-        try:
-            checklist = desktop_ops.report_readiness(target, report_type=report_type)
-        except Exception as exc:  # noqa: BLE001 - the engine raises its own error type
-            return fail(str(exc))
-        missing = list(checklist.get("missing") or [])
-        warnings = list(checklist.get("warnings") or [])
-        if not project_id:
-            content = self._open_project_content()
-            if not content:
-                missing.insert(0, self._NOTHING_TO_REPORT)
-            warnings.extend(self._engine_gaps(content))
-        return ok(ready=not missing, missing=missing, warnings=warnings,
-                  notes=list(checklist.get("notes") or []))
-
-    @staticmethod
-    def _engine_gaps(content: list[str]) -> list[str]:
-        """What the engine's report will leave out of the open project, said up front.
-
-        The engine reads its own mirror of the project, not the desktop project folder,
-        so recorded findings do not reach its Annotations section. Export Report
-        (export_report) builds the PDF/Word deliverable from this project's findings."""
-        if "findings" in content:
-            return ["The report engine does not read this project's recorded findings; "
-                    "its Annotations section will say none. Export Report (PDF/Word) "
-                    "writes them."]
-        return []
+        # The call itself succeeded; whether the report can be written is `ready`.
+        # readiness.to_dict() carries its own "ok", which must not override the call's,
+        # or a refused report type reaches both UIs as an error with no message and the
+        # list of what is missing is never shown.
+        checklist = {k: v for k, v in readiness.to_dict().items() if k != "ok"}
+        return ok(ready=readiness.ok, **checklist)
 
     @guard
     def generate_report(self, project_id: str = "", title: str = "Inspection report",
-                        report_type: str = "standard", author: str = "") -> dict[str, Any]:
-        """Build the report, or return the engine refusal naming what is missing."""
-        from app import desktop_ops
+                        report_type: str = "standard", author: str = "",
+                        organization: str = "", client: str = "", logo_path: str = "",
+                        formats: list[str] | None = None, summary: str = "",
+                        recommendations: list[str] | str | None = None) -> dict[str, Any]:
+        """Write the report into <project>/reports: HTML, plus PDF and/or DOCX if asked.
+
+        Refuses, naming what is missing, when the report type has nothing to be about
+        or a requested format cannot be written here.
+        """
+        from app import report_builder
 
         try:
-            target = str(project_id) if project_id else self._report_project_id()
-        except Exception as exc:  # noqa: BLE001 - no project open yet
+            config = self._report_config(title, report_type, author, organization, client,
+                                         logo_path, formats, summary, recommendations)
+            result = report_builder.generate(self._session, config)
+        except ValueError as exc:
             return fail(str(exc))
-        content = self._open_project_content() if not project_id else ["given"]
-        if not content:
-            return fail("Report not generated: " + self._NOTHING_TO_REPORT,
-                        missing=[self._NOTHING_TO_REPORT])
-        # Findings are stored under the desktop project's root and id, not the report
-        # engine's mirror, so the report is told where to read them. Only for the open
-        # project: an explicit engine id is that engine project's own findings.
-        findings: dict[str, str] = {}
-        if not project_id:
-            findings = {"findings_root": str(self._session.project_root()),
-                        "findings_project_id": str(self._session.project_id())}
+        # store.save_report (in report_builder.generate) records report_generated in
+        # the audit trail with the report's path.
+        return ok(**result.to_dict())
+
+    @guard
+    def list_reports(self) -> dict[str, Any]:
+        """Reports written into the open project's folder, newest first."""
+        from app import report_builder
+
+        return ok(reports=report_builder.list_reports(self._session))
+
+    @guard
+    def open_report(self, report_id: str, kind: str = "html") -> dict[str, Any]:
+        """Open a generated report (html, pdf, docx) or its folder in the OS."""
+        from app import report_builder
+
+        for report in report_builder.list_reports(self._session):
+            if report["id"] == str(report_id) or report["id"].startswith(str(report_id)):
+                key = {"html": "html_path", "pdf": "pdf_path", "docx": "docx_path",
+                       "folder": "output_dir"}.get(str(kind))
+                if key is None:
+                    return fail(f"Unknown kind {kind!r}. Use html, pdf, docx or folder.")
+                target = report.get(key)
+                if not target:
+                    return fail(f"This report has no {kind.upper()} file.")
+                return self.open_path(target)
+        return fail(f"No report {report_id!r} in this project.")
+
+    @guard
+    def save_report_template(self, name: str, settings: dict[str, Any]) -> dict[str, Any]:
+        """Keep branding and type choices so the next report starts from them."""
+        name = str(name or "").strip()
+        if not name:
+            return fail("A report template needs a name.")
+        allowed = {"title", "report_type", "organization", "client", "logo_path", "author",
+                   "formats"}
+        clean = {k: v for k, v in dict(settings or {}).items() if k in allowed}
+        templates = dict(self._session.store.get_setting("report_templates", {}) or {})
+        templates[name] = clean
+        self._session.store.set_setting("report_templates", templates)
+        self._session.audit("report_template_saved", {"name": name})
+        return ok(name=name, template=clean)
+
+    @guard
+    def report_templates(self) -> dict[str, Any]:
+        templates = self._session.store.get_setting("report_templates", {}) or {}
+        return ok(templates=[{"name": k, **v} for k, v in sorted(templates.items())])
+
+    @guard
+    def record_finding(self, image: str, label: str, severity: str = "medium",
+                       note: str = "", bbox: list[float] | None = None,
+                       tags: list[str] | None = None) -> dict[str, Any]:
+        """Record an inspector's finding on one of the project's images.
+
+        This is the step that had no caller anywhere in the application: the cockpit's
+        Annotate tool only armed a cursor, so no report could ever contain a finding
+        a person had made. The finding is stored as an annotation, created_by "user",
+        which is how reports tell an inspector's finding from a model's proposal.
+
+        `image` is a path, or a file name in one of the project's datasets. `bbox` is
+        [x0, y0, x1, y1] in the image's pixels; without it the finding covers the frame.
+        """
+        from core.annotations import add_tags, create_annotation
+        from core.report_engine import resolve_image
+
+        root = self._session.project_root()
+        image_dirs = [Path(str(d.get("path", ""))) for d in self._session.list_datasets()]
+        if self._session.active_dataset_dir:
+            image_dirs.insert(0, Path(self._session.active_dataset_dir))
+        source = resolve_image(str(image or ""), [d for d in image_dirs if d.is_dir()])
+        if source is None:
+            return fail(f"Image not found in this project's datasets: {image!r}. "
+                        "Import the imagery folder first, or give the full path.")
+        from PIL import Image
+
+        with Image.open(source) as opened:
+            width, height = opened.size
+        if bbox:
+            x0, y0, x1, y1 = (float(v) for v in list(bbox)[:4])
+            if x1 <= x0 or y1 <= y0:
+                return fail("The box must have x1 > x0 and y1 > y0 (image pixels).")
+            if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+                return fail(f"The box lies outside the image ({width} x {height} pixels).")
+        else:
+            # No box drawn: the finding is about the photo as a whole, and its geometry
+            # says exactly that rather than pretending to a location.
+            x0, y0, x1, y1 = 0.0, 0.0, float(width), float(height)
+        geometry = {"type": "Polygon",
+                    "coordinates": [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]]}
+        kind = "rectangle"
         try:
-            built = desktop_ops.generate_report(
-                target, title=title, report_type=report_type, author=author, **findings)
-            gaps = self._engine_gaps(content)
-            if gaps:
-                built = {**built, "warnings": list(built.get("warnings") or []) + gaps}
-            return ok(**built)
-        except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
+            annotation = create_annotation(
+                root, str(self._session.project_id()), "image", str(source), kind, geometry,
+                str(label or "").strip(), str(severity).lower(), "open",
+                note=str(note or "") or None, created_by="user",
+            )
+        except ValueError as exc:
             return fail(str(exc))
+        if tags:
+            add_tags(root, [annotation.id], [str(t) for t in tags])
+        self._session.audit("finding_recorded", {
+            "id": annotation.id, "label": annotation.label, "severity": annotation.severity,
+            "image": source.name,
+        })
+        return ok(finding=annotation.to_dict())
+
+    @guard
+    def verify_provenance(self, folder: str = "") -> dict[str, Any]:
+        """Check every derived file in a folder against its recorded provenance.
+
+        Defaults to the project's reconstruction output. Files with no record are
+        listed as unattributed rather than passed as fine.
+        """
+        from core.provenance import audit
+
+        target = Path(folder) if folder else self._session.project_root() / "reconstruction"
+        if not target.is_dir():
+            return fail(f"No folder to verify at {target}. Run a reconstruction first.")
+        report = audit(target)
+        # audit() carries its own "ok" (every file verified); it must not be mistaken
+        # for the call failing, so it travels as all_verified.
+        report["all_verified"] = report.pop("ok")
+        return ok(**report)
+
+    @guard
+    def record_provenance(self, folder: str = "") -> dict[str, Any]:
+        """Record provenance for a reconstruction folder that has none yet.
+
+        Outputs produced before provenance was recorded automatically are unattributed.
+        This records them now, against the active dataset, and says so in the record:
+        what it certifies is that the files have not changed SINCE this moment.
+        """
+        from core.provenance import read, record_reconstruction_outputs
+
+        target = Path(folder) if folder else self._session.project_root() / "reconstruction"
+        if not target.is_dir():
+            return fail(f"No folder at {target}.")
+        images = self._session.active_dataset_dir
+        if not images:
+            return fail("Select the dataset these outputs were built from first.")
+        twin = target / "digital_twin.json"
+        meta: dict[str, Any] = {}
+        if twin.is_file():
+            try:
+                meta = json.loads(twin.read_text(encoding="utf-8"))
+            except ValueError:
+                meta = {}
+        already = [p.name for p in target.iterdir() if p.is_file() and read(p) is not None]
+        result = record_reconstruction_outputs(
+            target, engine=str(meta.get("engine") or "unknown"), image_dir=images,
+            crs_epsg=meta.get("crs_epsg"),
+            parameters={"profile": meta.get("profile"), "recorded_after_the_fact": True},
+        )
+        self._session.audit("provenance_recorded", {"folder": target.name,
+                                                    "artifacts": result["artifact_count"]})
+        return ok(**result, previously_recorded=already)
+
+    @guard
+    def export_audit_log(self, output_format: str = "csv", output_path: str = "") -> dict[str, Any]:
+        """Write the open project's audit trail to CSV or JSONL."""
+        import csv
+
+        fmt = str(output_format).lower()
+        if fmt not in ("csv", "jsonl"):
+            return fail("Use csv or jsonl.")
+        events = list(reversed(self._session.store.list_audit_events(
+            self._session.project_id(), 100000)))
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        target = Path(output_path) if output_path else (
+            self._session.project_root() / "reports" / f"audit_{stamp}.{fmt}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if fmt == "csv":
+            with target.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["created_at", "event_type", "payload"])
+                for e in events:
+                    writer.writerow([e.get("created_at"), e.get("event_type"), e.get("payload_json")])
+        else:
+            with target.open("w", encoding="utf-8") as handle:
+                for e in events:
+                    handle.write(json.dumps({
+                        "created_at": e.get("created_at"), "event_type": e.get("event_type"),
+                        "payload": json.loads(e.get("payload_json") or "{}"),
+                    }) + "\n")
+        return ok(path=str(target), events=len(events), format=fmt)
 
     @guard
     def thermal_palettes(self) -> dict[str, Any]:
@@ -2674,19 +2815,18 @@ class Api:
     @guard
     def export_report(self, output_format: str = "pdf", title: str = "Inspection report",
                       organization: str = "", client: str = "", author: str = "",
-                      output_path: str = "") -> dict[str, Any]:
+                      output_path: str = "", logo_path: str = "") -> dict[str, Any]:
         """Write the findings out as a PDF or Word deliverable.
 
-        core/report_formats.py has written both since that work landed, with severity
-        ordering, the measurement caveat and the unreviewed-findings caveat built in, and
-        nothing called either function. The report engine takes a different route
-        (HTML then weasyprint), so the Word output in particular was implemented, tested
-        and impossible to obtain.
-
         Findings come from this project's annotations, so the deliverable describes what
-        was actually recorded rather than a fixed example.
+        was actually recorded rather than a fixed example. Each finding carries its
+        source image, the photo position, a crop of the marked area and the reviewer's
+        decision; the summary, methodology and follow-up items are derived from the same
+        project data as the full report. Every export gets its own timestamped file --
+        the fixed reports/report.<fmt> name overwrote the previous deliverable.
         """
-        from core.annotations import list_annotations
+        from app import report_builder
+        from core.report_engine import build_blocks, deliverable_payload, prepare_assets
         from core.report_formats import ReportTemplate, write_docx, write_pdf
 
         root = self._session.project_root()
@@ -2697,64 +2837,51 @@ class Api:
         if fmt not in ("pdf", "docx"):
             return fail(f"Unknown report format {output_format!r}. Use pdf or docx.")
 
-        # Only what a reviewer has let into the report: a rejected finding, or a model
-        # pre-label nobody has accepted yet, is not a finding of this inspection.
-        annotations = [a for a in list_annotations(Path(root))
-                       if a.include_in_report and a.status != "dismissed"]
-        if not annotations:
+        try:
+            config = self._report_config(title, "standard", author, organization, client,
+                                         logo_path, [fmt])
+        except ValueError as exc:
+            return fail(str(exc))
+        context = report_builder.desktop_context(self._session, config)
+        findings = context.get("findings") or []
+        if not findings:
             return fail(
-                "No reportable findings yet, so there is nothing to report. Annotate the "
-                "imagery, or run an AI inspection and accept the findings you agree with."
+                "No findings recorded yet, so there is nothing to report. Record a finding "
+                "(Reports > Record Finding) or run an AI inspection first."
             )
 
-        layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
-        findings = []
-        for annotation in annotations:
-            finding: dict[str, Any] = {
-                "category": annotation.label,
-                "severity": annotation.severity,
-                # A finding a person drew and one a model proposed are different kinds of
-                # evidence, and the report says which.
-                "source": "model" if annotation.created_by != "user" else "human",
-                "review_state": annotation.status,
-            }
-            if annotation.tags:
-                finding["tags"] = list(annotation.tags)
-            if annotation.note:
-                finding["note"] = annotation.note
-            if annotation.model_key:
-                finding["model_key"] = annotation.model_key
-                finding["model_sha256"] = annotation.model_sha256
-                finding["confidence"] = annotation.confidence
-            findings.append(finding)
-
-        payload: dict[str, Any] = {
-            "project_name": Path(root).name,
-            "client": client,
-            "findings": findings,
-        }
-        if layers:
-            payload["crs_epsg"] = int(layers[0].crs_epsg)
-
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        target = (Path(output_path) if output_path
+                  else Path(root) / "reports" / f"findings_{stamp}.{fmt}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        assets = prepare_assets(context, target.parent / f"{target.stem}_assets")
+        blocks = build_blocks(context, assets)
+        payload = deliverable_payload(context, blocks, assets)
         template = ReportTemplate(
             title=str(title),
             organization=str(organization),
             client=str(client),
             author=str(author),
+            logo_path=str(logo_path or ""),
         )
-
-        reports_dir = Path(root) / "reports"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        target = Path(output_path) if output_path else reports_dir / f"report.{fmt}"
 
         writer = write_pdf if fmt == "pdf" else write_docx
         try:
             written = writer(target, payload, template)
         except Exception as exc:  # noqa: BLE001 - reportlab/docx raise their own types
             return fail(f"Could not write the {fmt.upper()}: {exc}")
+        try:
+            from core.provenance import record
+
+            record(written, engine="opendronekit.report_formats",
+                   sources=[f.get("image_source_path") for f in findings
+                            if f.get("image_source_path")],
+                   parameters={"format": fmt, "findings": len(findings)})
+        except Exception:  # noqa: BLE001 - provenance must never lose a written file
+            pass
 
         self._session.audit("report_exported",
-                            {"format": fmt, "findings": len(findings)})
+                            {"format": fmt, "findings": len(findings), "file": Path(written).name})
         return ok(path=str(written), format=fmt, findings=len(findings))
 
     @guard
@@ -4851,6 +4978,22 @@ class Api:
             # Reconstruction products become map layers immediately, which is the whole
             # point of doing this inside a GIS tool.
             _register_reconstruction_layers(session, payload)
+            # Every derived file gets a provenance sidecar (inputs, engine, CRS, sha256)
+            # the moment it exists. record_reconstruction_outputs had no caller, so every
+            # real output was "unattributed" and no report could say what built it.
+            try:
+                from core.provenance import record_reconstruction_outputs
+
+                payload["provenance"] = record_reconstruction_outputs(
+                    output,
+                    engine=str(payload.get("engine") or opts.get("engine", "auto")),
+                    image_dir=images,
+                    crs_epsg=payload.get("crs_epsg") or payload.get("epsg") or opts.get("epsg"),
+                    parameters={"profile": opts.get("profile", "standard"),
+                                "dense": opts.get("dense")},
+                )
+            except Exception as exc:  # noqa: BLE001 - never lose a finished reconstruction
+                payload["provenance_error"] = f"{type(exc).__name__}: {exc}"
             session.audit("reconstruction_complete", {"engine": payload.get("engine"), "output": str(output)})
             return payload
 
@@ -4921,7 +5064,12 @@ class Api:
                     "model to them, and this run used "
                     f"{type(pipeline.reconstructor).__name__}.")
             summary = json.loads(Path(payload["summary_json_path"]).read_text(encoding="utf-8"))
-            payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
+            # Model detections become findings the reviewer can accept or reject and the
+            # report can print; heuristic screening output stays in the run summary.
+            try:
+                payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
+            except Exception as exc:  # noqa: BLE001 - never lose a finished run
+                payload["findings_error"] = f"{type(exc).__name__}: {exc}"
             payload["reconstruction_status"] = summary.get("reconstruction", {}).get("status", "ok")
             # The pipeline reconstructs too; its ortho, DSM and camera track belong on the
             # map exactly as a standalone reconstruction's do. They used to be left on
@@ -4938,7 +5086,8 @@ class Api:
                               for r in summary.get("images", []) if isinstance(r, dict)})
                 for name in ("crack", "structural", "solar", "metal")}
             session.audit("pipeline_complete", {
-                "run_dir": payload.get("run_dir"),
+                "run_dir": Path(payload.get("run_dir", "")).name,
+                "report": Path(payload.get("report_markdown_path", "")).name,
                 "findings_created": payload.get("findings_created", 0),
             })
             return payload

@@ -77,12 +77,25 @@ function readout({ calls, isEmpty, empty, render, every }) {
   });
 }
 
+/* The report type and format picked in the Reports Template panel. The Readiness panel
+   used to judge "standard" whatever was selected, so a type that would be refused
+   (mission_summary without a mission) looked ready until Generate. */
+const reportChoice = { tpl: "standard", fmt: "PDF" };
+const REPORT_FORMATS = { PDF: ["html", "pdf"], DOCX: ["html", "docx"],
+                         "PDF+DOCX": ["html", "pdf", "docx"], HTML: ["html"] };
+
 /* Every editable field reports onto the same bus the trees and tables use.
  *
  * fields() has always accepted an onChange and no caller passed one, so editing an
  * altitude or an overlap changed the input element and nothing else -- the mission that
  * Plan then generated used the defaults, silently. */
-const settingChanged = (key, value) => selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+const settingChanged = (key, value) => {
+  selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+  if (key in reportChoice) {
+    reportChoice[key] = value;
+    window.dispatchEvent(new Event("odk:refresh"));
+  }
+};
 
 /* The drawing tools ask the shell to run the same action as the toolbar button, so the
    canvas icon and the toolbar cannot drift apart. They had no handler at all: clicking
@@ -1857,54 +1870,76 @@ const fleet = {
 const reports = {
   id: "reports",
   title: "Reports",
-  toolbar: ["New Report", "|", "Generate", "Export PDF", "Share", "Save Template"],
+  toolbar: ["New Report", "|", "Generate", "Export PDF", "Export Word", "Open Report", "|",
+            "Record Finding", "Share", "Save Template"],
   left: [
-    /* "Inspection Findings" carried a count of 6 written into the source, shown over
-       every project whatever it held. The count is now the project's own findings that
-       a report would include, and absent when the application cannot say. */
+    /* The sections each report type really contains, from the engine. This listed ten
+       sections with "6" findings hardcoded, including Thermal and Change Analysis, which
+       no report type renders. */
     { id: "rp.structure", title: "Report Structure", render: () => live({
-      calls: ["find_annotations"],
-      empty: "",
-      isEmpty: () => false,
-      render: ([found]) => {
-        const count = found && Array.isArray(found.annotations)
-          ? String(found.annotations.filter(
-            (a) => a.status !== "dismissed" && a.include_in_report !== false).length)
-          : undefined;
-        return tree([
-      { id: "r1", label: "Executive Summary", icon: "§" },
-      { id: "r2", label: "Project", icon: "§" },
-      { id: "r3", label: "Mission & Coverage", icon: "§" },
-      { id: "r4", label: "Processing", icon: "§" },
-      { id: "r5", label: "Inspection Findings", icon: "§", meta: count },
-      { id: "r6", label: "Measurements", icon: "§" },
-      { id: "r7", label: "Thermal", icon: "§" },
-      { id: "r8", label: "Change Analysis", icon: "§" },
-      { id: "r9", label: "Recommendations", icon: "§" },
-      { id: "r10", label: "Appendix", icon: "§" },
-        ], { selectKind: "section" });
+      calls: ["report_types", "find_annotations"],
+      empty: "The application did not report its report types.",
+      isEmpty: ([types]) => !(types && (types.types || []).length),
+      render: ([types, found]) => {
+        const count = found ? (found.annotations || []).filter(
+          (a) => a.status !== "dismissed" && a.include_in_report !== false).length : 0;
+        return tree((types.types || []).map((type) => ({
+          id: `type-${type.key}`,
+          label: type.key,
+          icon: "▸",
+          meta: `${type.sections.length}`,
+          expanded: type.key === "standard",
+          children: type.sections.map((section) => ({
+            id: `${type.key}-${section.key}`,
+            label: section.title,
+            icon: "§",
+            meta: section.key === "findings" ? String(count) : undefined,
+          })),
+        })), { selectKind: "section" });
       },
     }) },
   ],
-  canvas: () => canvas({ title: "Report preview", note: "Live preview of the generated document." }),
+  /* Said "Live preview of the generated document" over an empty canvas. It now lists
+     the reports this project has actually written; selecting one is what Open Report
+     opens. */
+  canvas: () => live({
+    calls: ["list_reports"],
+    empty: "No reports in this project yet. Generate writes one into the project's "
+      + "reports folder.",
+    isEmpty: ([listed]) => !(listed && (listed.reports || []).length),
+    render: ([listed]) => table(
+      [{ title: "Created", key: "when" }, { title: "Title", key: "title" },
+       { title: "Type", key: "type" }, { title: "Findings", key: "findings", num: true },
+       { title: "Files", key: "files" }],
+      (listed.reports || []).map((r) => ({
+        id: r.id,
+        label: r.title,
+        when: String(r.created_at || "").slice(0, 19).replace("T", " "),
+        title: r.title,
+        type: r.report_type,
+        findings: r.findings,
+        files: ["html", r.pdf_path ? "pdf" : "", r.docx_path ? "docx" : ""].filter(Boolean).join(", "),
+      })), { selectKind: "report" }),
+  }),
   right: [
-    { id: "rp.settings", title: "Template", render: () => fields([
-      /* The options are the report types core/report_engine.py actually builds. They
-         used to read Inspection / Survey / Progress / Thermal, none of which the engine
-         has ever produced -- picking one sent a name it did not recognise and got the
-         standard report regardless. Offering a choice that does not exist is worse than
-         offering none, because the operator believes they made one. */
+    { id: "rp.settings", title: "Template", render: () => Object.assign(reportChoice,
+      { tpl: "standard", fmt: "PDF" }) && fields([
+      /* The options are the report types core/report_engine.py actually builds, and
+         each one now has its own section list (see Report Structure). They used to
+         read Inspection / Survey / Progress / Thermal, none of which the engine has
+         ever produced. */
       { key: "tpl", label: "Report", value: "standard",
         options: ["standard", "engineering", "executive", "defect_only",
                   "dataset_quality", "mission_summary"] },
-      { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX"] },
+      { key: "fmt", label: "Format", value: "PDF", options: ["PDF", "DOCX", "PDF+DOCX", "HTML"] },
     ], settingChanged) },
-    /* Defaulted to "DEMO organisation" and "brand.png": an organisation nobody typed,
-       headed for the client's document, and a logo file that does not exist. Empty
-       until the operator fills them in. */
-    { id: "rp.branding", title: "Branding", height: 110, grow: false, render: () => fields([
+    /* Defaulted to "DEMO organisation" and "brand.png", and the organisation went
+       straight into the client's document. Empty until the operator types. */
+    { id: "rp.branding", title: "Branding", height: 170, grow: false, render: () => fields([
       { key: "org", label: "Organisation", value: "" },
-      { key: "logo", label: "Logo", value: "" },
+      { key: "client", label: "Client", value: "" },
+      { key: "author", label: "Prepared by", value: "" },
+      { key: "logo", label: "Logo file", value: "" },
     ], settingChanged) },
   ],
   bottom: [
@@ -1913,44 +1948,42 @@ const reports = {
        invented defect in front of a client. */
     { id: "rp.included", title: "Included Findings", flex: 3, render: () => live({
       calls: ["find_annotations"],
-      empty: "No findings to include yet.",
+      empty: "No findings recorded yet. Record Finding adds one from a project image.",
       isEmpty: ([found]) => !(found && (found.annotations || []).length),
       render: ([found]) => table(
-        [{ title: "Finding", key: "id" }, { title: "Class", key: "c" },
-         { title: "Severity", key: "s" }, { title: "Source", key: "src" }],
+        [{ title: "Finding", key: "short" }, { title: "Class", key: "c" },
+         { title: "Severity", key: "s" }, { title: "Source", key: "src" },
+         { title: "Review", key: "st" }],
         (found.annotations || []).slice(0, 100).map((a) => ({
-          id: String(a.id || "").slice(0, 8),
+          id: a.id,
+          label: a.label,
+          short: String(a.id || "").slice(0, 8),
           c: a.label || "—",
           s: a.severity || "—",
-          src: a.created_by === "user" ? "human" : "model",
-        }))),
+          src: a.created_by === "user" ? "inspector" : a.created_by,
+          st: a.status === "dismissed" ? "rejected (excluded)" : a.status,
+        })), { selectKind: "finding" }),
     }) },
-    /* "every figure carries its model digest and run id -- ok".
-       The application asserting its own provenance guarantee, marked as passed, with
-       nothing having been checked and no report having been generated. Of everything in
-       this cockpit this is the one claim that most needs to be earned rather than
-       printed, because it is the claim a reader would rely on when deciding to trust
-       every other number in the document.
-
-       report_readiness() answers what a report still needs before anyone presses
-       Generate, which is a real check with a real answer. */
+    /* report_readiness() judges the OPEN project: what is missing blocks Generate,
+       warnings are sections that will say something was not done. */
     { id: "rp.log", title: "Readiness", flex: 2, render: () => live({
-      calls: ["report_readiness"],
+      calls: [() => ["report_readiness", "", reportChoice.tpl,
+                     REPORT_FORMATS[reportChoice.fmt] || ["html", "pdf"]]],
       empty: "Open a project to check what a report still needs.",
       isEmpty: ([r]) => !r,
-      /* Said "Nothing missing. Generate writes the report and its provenance
-         together." over an empty project, and the engine writes no provenance. The
-         engine's warnings -- sections that will be empty -- were dropped before they
-         reached this panel; they are shown now. */
+      /* Said "Nothing missing" over an empty project, and promised provenance the
+         engine did not write. The engine's warnings -- sections that will
+         be empty -- were dropped before they reached this panel; they are shown now. */
       render: ([r]) => consoleView([
         ...(r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "error" })),
         ...(r.warnings || []).map((item) => ({ t: "warning", text: String(item), level: "warn" })),
-        ...(r.notes || []).map((item) => ({ t: "note", text: String(item), level: "info" })),
-        r.ready
-          ? { t: "ready", text: "Nothing blocks a report; Generate writes it into the project.",
-              level: "ok" }
-          : { t: "blocked", text: "Generate will refuse until the missing items exist.",
-              level: "error" },
+        ...(r.notes || []).map((item) => ({ t: "note", text: String(item), level: "" })),
+        (r.missing || []).length
+          ? { t: "blocked", text: "Generate will refuse until the missing items exist.",
+              level: "error" }
+          : { t: "ready", level: "ok",
+              text: "Generate writes the report in the chosen formats into the project's "
+                + "reports folder, with a provenance record for each HTML, PDF and Word file." },
       ]),
     }) },
   ],

@@ -12,6 +12,7 @@ These drive the real Api in a fresh process with its own data root.
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -79,11 +80,11 @@ def test_a_project_with_a_finding_is_ready_and_its_warnings_are_shown(tmp_path: 
     readiness = out["readiness"]
     assert readiness["ok"] is True and readiness["ready"] is True, readiness
     assert not any(item.startswith("content:") for item in readiness["missing"])
-    # The engine's warnings reach the caller instead of being dropped, including that
-    # its own report will not carry this project's findings (export_report does).
+    # The engine's warnings reach the caller instead of being dropped. The report is
+    # built from the open project, so the finding recorded above is one it will print:
+    # it must not warn that no findings were recorded.
     assert any("No dataset imported" in w for w in readiness["warnings"]), readiness
-    assert any("does not read this project's recorded findings" in w
-               for w in readiness["warnings"]), readiness
+    assert not any("No findings recorded" in w for w in readiness["warnings"]), readiness
     exported = out["exported"]
     assert exported["ok"] is True, exported
     assert Path(exported["path"]).is_file()
@@ -91,7 +92,9 @@ def test_a_project_with_a_finding_is_ready_and_its_warnings_are_shown(tmp_path: 
 
 def test_the_cockpit_reads_ready_not_ok() -> None:
     actions = (REPO_ROOT / "app" / "web" / "js" / "workspace" / "actions.js").read_text(encoding="utf-8")
-    assert 'call("report_readiness");\n      if (!readiness.ready)' in actions
+    # The readiness call is asked about the chosen type and formats, and the action
+    # branches on `ready`, not on the call's `ok`.
+    assert re.search(r'call\("report_readiness"[^;]*\);\n\s+if \(!readiness\.ready\)', actions)
     panel = (REPO_ROOT / "app" / "web" / "js" / "workspace" / "workspaces.js").read_text(encoding="utf-8")
     assert "provenance together" not in panel
     assert "r.warnings" in panel
