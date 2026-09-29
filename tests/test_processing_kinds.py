@@ -67,6 +67,15 @@ class TestDetectionJob:
         assert {d["source"] for d in defects} == {"heuristic"}
         assert {d["review_state"] for d in defects} == {"unreviewed"}
         assert all(d["model_key"] == "" for d in defects), "a heuristic must not claim a model"
+        # Nothing graded these findings, so none may carry a severity until a reviewer does.
+        assert {d["severity"] for d in defects} == {"unassessed"}
+        summary = client.get(f"/projects/{project_id}/defects/summary", headers=headers).json()
+        assert summary["by_severity"]["unassessed"] == len(defects)
+        assert summary["by_severity"]["medium"] == 0
+        graded = client.post(f"/defects/{defects[0]['id']}/review", headers=headers,
+                             json={"decision": "accepted", "severity": "high"})
+        assert graded.status_code == 200, graded.text
+        assert graded.json()["severity"] == "high"
 
         results = client.get(f"/jobs/{done['id']}/artifacts/{done['artifacts'][0]}", headers=headers)
         assert results.status_code == 200
@@ -241,7 +250,10 @@ def _aukerman() -> Path | None:
                     reason="pycolmap is not installed")
 def test_reconstruction_writes_into_its_own_job_folder_and_can_be_cancelled(client, site, tmp_path):
     headers, _, project_id, dataset_id = site
-    for image in sorted(_aukerman().glob("*.JPG"))[:8]:
+    # A gap-free run of the flight line (DSC00232-239): the first eight sorted files skip
+    # DSC00231 and registered only 6 of 8, close enough to COLMAP's floor that a loaded
+    # machine occasionally got no sparse model at all.
+    for image in sorted(_aukerman().glob("*.JPG"))[2:10]:
         upload(client, headers, dataset_id, image, chunk_size=4 * 1024 * 1024)
 
     job = client.post(f"/projects/{project_id}/jobs", headers=headers, json={
@@ -264,6 +276,10 @@ def test_reconstruction_writes_into_its_own_job_folder_and_can_be_cancelled(clie
     assert any(0 < p < 100 for p in seen), f"no intermediate progress was reported: {sorted(seen)}"
     dsm = next(r for r in body["artifacts"] if r.endswith("/dsm.tif"))
     assert client.get(f"/jobs/{job['id']}/artifacts/{dsm}", headers=headers).content[:2] in (b"II", b"MM")
+    summary_ref = next(r for r in body["artifacts"] if r.endswith("/reconstruction_result.json"))
+    summary = client.get(f"/jobs/{job['id']}/artifacts/{summary_ref}", headers=headers).text
+    assert str(tmp_path) not in summary and tmp_path.as_posix() not in summary,         "the downloadable result discloses server paths"
+    assert dsm in summary, "the result should name its files by their artifact references"
 
     second = client.post(f"/projects/{project_id}/jobs", headers=headers, json={
         "kind": "reconstruction", "dataset_id": dataset_id, "engine": "colmap",
@@ -272,3 +288,21 @@ def test_reconstruction_writes_into_its_own_job_folder_and_can_be_cancelled(clie
         time.sleep(0.1)
     assert client.post(f"/jobs/{second['id']}/cancel", headers=headers).status_code == 200
     assert wait(client, headers, f"/jobs/{second['id']}", timeout=600)["status"] == "cancelled"
+
+
+def test_a_result_document_names_files_by_reference_not_server_path(client, tmp_path):
+    from services.api.paths import storage_root
+    from services.api.routers.processing import _portable
+
+    root = storage_root().resolve()
+    inside = root / "runs" / "job_3" / "dsm.tif"
+    document = _portable({
+        "dsm_path": str(inside), "image_paths": [str(inside.with_name("a b.jpg"))],
+        "colmap_binary": str(tmp_path.parent / "bin" / "colmap.exe"),
+        "log": f"wrote {inside}", "points": 12, "crs_epsg": 32617,
+    })
+    assert document["dsm_path"] == "runs/job_3/dsm.tif"
+    assert document["image_paths"] == ["runs/job_3/a b.jpg"]
+    assert document["colmap_binary"] == "colmap.exe"
+    assert document["log"] == "wrote <storage>" + str(inside)[len(str(root)):]
+    assert document["points"] == 12 and document["crs_epsg"] == 32617

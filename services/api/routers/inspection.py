@@ -39,6 +39,9 @@ DEFAULT_CATEGORIES = [
 ]
 
 SEVERITIES = ["low", "medium", "high", "critical"]
+# What a detection model records: the model located and labelled the finding but
+# did not grade it. Only a reviewer turns it into one of SEVERITIES.
+UNASSESSED = "unassessed"
 REVIEW_STATES = ["unreviewed", "accepted", "rejected", "reclassified"]
 
 
@@ -119,7 +122,10 @@ def defect_categories() -> dict[str, Any]:
     return {
         "categories": DEFAULT_CATEGORIES,
         "severities": SEVERITIES,
-        "note": "Organisations may use any category string; this list is only the default.",
+        "unassessed": UNASSESSED,
+        "note": ("Organisations may use any category string; this list is only the default. "
+                 f"Findings recorded by a detection model carry severity {UNASSESSED!r} "
+                 "until a reviewer grades them."),
     }
 
 
@@ -285,7 +291,7 @@ def defect_summary(
         "human_confirmed": len(confirmed),
         "awaiting_review": by_review.get("unreviewed", 0),
         "by_category": dict(sorted(by_category.items())),
-        "by_severity": {s: by_severity.get(s, 0) for s in SEVERITIES},
+        "by_severity": {s: by_severity.get(s, 0) for s in [*SEVERITIES, UNASSESSED]},
         "by_review_state": {s: by_review.get(s, 0) for s in REVIEW_STATES},
         "total_area_m2": round(measured_area, 4),
         "total_length_m": round(measured_length, 3),

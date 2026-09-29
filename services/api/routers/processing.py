@@ -45,6 +45,7 @@ from ..models import Dataset, Defect, Job, Measurement, Project, Report, Role
 from ..paths import from_storage_ref, storage_root, to_storage_ref, within_root
 from ..security import CurrentUser, require_role
 from .events import emit
+from .inspection import UNASSESSED
 
 router = APIRouter(tags=["processing"])
 
@@ -223,6 +224,35 @@ def _refs(paths: list[str]) -> list[str]:
     return refs
 
 
+def _portable(value: Any) -> Any:
+    """A copy of a result document with server paths replaced by storage references.
+
+    A path inside the storage root becomes its reference (what ``/jobs/{id}/artifacts``
+    takes); any other absolute path is reduced to its file name; the storage root
+    quoted inside free text becomes ``<storage>``.
+    """
+    if isinstance(value, dict):
+        return {key: _portable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_portable(item) for item in value]
+    if isinstance(value, Path):
+        value = str(value)
+    if not isinstance(value, str) or not value:
+        return value
+    if "\n" not in value and len(value) < 1024:
+        try:
+            candidate = Path(value)
+            absolute = candidate.is_absolute()
+        except (OSError, ValueError):
+            absolute = False
+        if absolute:
+            return to_storage_ref(candidate) or candidate.name
+    root = storage_root().resolve()
+    for spelling in {str(root), root.as_posix()}:
+        value = value.replace(spelling, "<storage>")
+    return value
+
+
 def _options(job: Job) -> dict[str, Any]:
     try:
         options = json.loads(job.options_json or "{}")
@@ -267,7 +297,9 @@ def _run_reconstruction(db: Session, job: Job, progress) -> tuple[list[str], int
             if isinstance(item, str) and item:
                 paths.append(item)
     summary = output / "reconstruction_result.json"
-    summary.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    # This file is served as an artifact, so it names files the way the API does and
+    # does not disclose where the server keeps them.
+    summary.write_text(json.dumps(_portable(payload), indent=2, default=str), encoding="utf-8")
     paths.append(str(summary))
     return _refs(paths), payload.get("crs_epsg")
 
@@ -291,7 +323,8 @@ def _run_detection(db: Session, job: Job, progress) -> tuple[list[str], int | No
             created.append(Defect(
                 project_id=job.project_id, job_id=job.id,
                 category=str(hit["label"]).strip().lower().replace(" ", "_")[:80],
-                severity="medium",
+                # The model located and labelled the finding; it did not grade it.
+                severity=UNASSESSED,
                 description=(
                     f"{hit['label']} in {row['image']} at pixels ({x1},{y1})-({x2},{y2}), "
                     f"{hit['area_px']} px. Pixel geometry only: not georeferenced, "

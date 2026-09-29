@@ -365,7 +365,7 @@ def _render_section(section: str, context: dict[str, Any]) -> str:
                     f"<tr><td>{html.escape(Path(str(d.get('image_path', ''))).name)}</td>"
                     f"<td>{html.escape(str(d.get('defect_type', '')))}</td>"
                     f"<td>{float(d.get('confidence', 0) or 0):.2f}</td>"
-                    f"<td><span class='chip {'danger' if d.get('severity') in ('critical', 'high') else 'warn' if d.get('severity') == 'medium' else 'ok'}'>{html.escape(str(d.get('severity', '')))}</span></td>"
+                    f"<td><span class='chip {'danger' if d.get('severity') in ('critical', 'high') else 'warn' if d.get('severity') in ('medium', 'unassessed') else 'ok'}'>{html.escape(str(d.get('severity', '')))}</span></td>"
                     f"<td>{int(d.get('area_px', 0) or 0)}</td></tr>"
                 )
         body = "".join(rows[:200]) or "<tr><td colspan='5' class='muted'>No defects detected.</td></tr>"
