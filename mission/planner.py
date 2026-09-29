@@ -10,6 +10,7 @@ import json
 import math
 from math import cos, pi, radians, sin, sqrt
 from pathlib import Path
+import re
 from typing import Any, Iterable
 
 import numpy as np
@@ -247,6 +248,10 @@ class MissionPlan:
     # model, and exporters that can carry absolute altitude add it back.
     altitude_frame: str = "relative_to_home"
     home_elevation_amsl_m: float | None = None
+    # What the plan does not photograph, or photographs differently from what was
+    # asked, in words for the operator. A planner that quietly drops or moves captures
+    # leaves a gap nobody knows to fill.
+    coverage_notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -278,6 +283,10 @@ class _CapturePose:
     # structure). A pose the geofence or a no-fly zone moves is re-aimed at it, instead
     # of keeping a heading computed for a position it no longer occupies.
     look_at_xy: tuple[float, float] | None = None
+    # Set by a compiler that keeps its own poses clear of the structure (a dome's crown
+    # is right above the structure's centre); the generic push away from the centre
+    # would move such a pose off what it looks at.
+    clearance_planned: bool = False
 
 
 def _normalize_template(mode: str) -> str:
@@ -405,6 +414,8 @@ TEMPLATE_DEFAULT_GIMBAL_DEG: dict[str, float] = {
     "box_inspection": -30.0,
     "wind_turbine": 0.0,
     "lateral_capture": 0.0,
+    # Level, at every ring: each ring looks at the section of tower beside it.
+    "tower_mapping": 0.0,
 }
 
 # Stand-off used by the structure templates when neither the template argument nor the
@@ -467,6 +478,121 @@ STRUCTURE_RELATIVE_TEMPLATES = frozenset({
 GEOFENCE_EXPANSION_MARGIN_M = 10.0
 
 
+def _signed_area_xy(ring_xy) -> float:
+    """Shoelace area of an open or closed ring; positive when counter-clockwise."""
+    pts = [(float(p[0]), float(p[1])) for p in ring_xy]
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts = pts[:-1]
+    total = 0.0
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        total += x1 * y2 - x2 * y1
+    return 0.5 * total
+
+
+def _area_centroid_xy(ring_xy) -> np.ndarray:
+    """Area centroid of a simple polygon.
+
+    The vertex mean is not the middle of a building. For an L-shaped footprint it sits
+    on the inside corner, outside the building, and a camera aimed there looks past the
+    walls instead of at them.
+    """
+    pts = np.asarray([[float(p[0]), float(p[1])] for p in ring_xy], dtype=np.float64)
+    if len(pts) > 1 and np.allclose(pts[0], pts[-1]):
+        pts = pts[:-1]
+    if len(pts) < 3:
+        return pts.mean(axis=0) if len(pts) else np.zeros(2)
+    x, y = pts[:, 0], pts[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    area = 0.5 * float(cross.sum())
+    if abs(area) < 1e-9:
+        return pts.mean(axis=0)
+    return np.array([float(((x + xn) * cross).sum()) / (6.0 * area),
+                     float(((y + yn) * cross).sum()) / (6.0 * area)], dtype=np.float64)
+
+
+def _convex_hull_xy(points_xy) -> np.ndarray:
+    """Counter-clockwise convex hull (open ring), monotone chain."""
+    pts = sorted({(round(float(p[0]), 9), round(float(p[1]), 9)) for p in points_xy})
+    if len(pts) < 3:
+        return np.asarray(pts, dtype=np.float64)
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list = []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return np.asarray(lower[:-1] + upper[:-1], dtype=np.float64)
+
+
+def _offset_convex_ring_xy(hull_xy, distance_m: float, rounded: bool = True,
+                           arc_step_deg: float = 15.0) -> np.ndarray:
+    """A convex ring pushed outward so every point on it is `distance_m` from the hull.
+
+    `rounded` gives the exact Minkowski offset (an arc round each corner): every point
+    within `distance_m` of the hull lies inside it, which is what a fence needs. With
+    `rounded=False` the corners are mitred, so each wall is flown at exactly the
+    stand-off along its length; a corner sharper than 60 degrees is bevelled instead of
+    running out to a long spike.
+    """
+    hull = np.asarray(hull_xy, dtype=np.float64)
+    n = len(hull)
+    d = float(distance_m)
+    if n < 3 or d <= 0.0:
+        return hull.copy()
+    if _signed_area_xy(hull) < 0.0:
+        hull = hull[::-1]
+    out: list[np.ndarray] = []
+    for i in range(n):
+        prev_pt, pt, next_pt = hull[i - 1], hull[i], hull[(i + 1) % n]
+        e_in = pt - prev_pt
+        e_out = next_pt - pt
+        if np.linalg.norm(e_in) < 1e-9 or np.linalg.norm(e_out) < 1e-9:
+            continue
+        # Outward normal of a counter-clockwise ring is the edge turned clockwise.
+        n_in = np.array([e_in[1], -e_in[0]]) / np.linalg.norm(e_in)
+        n_out = np.array([e_out[1], -e_out[0]]) / np.linalg.norm(e_out)
+        a0 = math.atan2(n_in[1], n_in[0])
+        a1 = math.atan2(n_out[1], n_out[0])
+        sweep = (a1 - a0) % (2.0 * math.pi)
+        if sweep > math.pi:
+            sweep -= 2.0 * math.pi
+        if rounded:
+            steps = max(1, int(math.ceil(abs(math.degrees(sweep)) / arc_step_deg)))
+            for k in range(steps + 1):
+                a = a0 + sweep * k / steps
+                out.append(pt + d * np.array([math.cos(a), math.sin(a)]))
+            continue
+        bisector = n_in + n_out
+        half = 0.5 * abs(sweep)
+        if np.linalg.norm(bisector) < 1e-9 or math.cos(half) < 0.5:
+            out.append(pt + d * n_in)
+            out.append(pt + d * n_out)
+        else:
+            out.append(pt + bisector / np.linalg.norm(bisector) * (d / math.cos(half)))
+    return np.asarray(out, dtype=np.float64)
+
+
+def _distance_to_ring_xy(point_xy, ring_xy) -> float:
+    ring = np.asarray(ring_xy, dtype=np.float64)
+    if len(ring) > 1 and np.allclose(ring[0], ring[-1]):
+        ring = ring[:-1]
+    p = np.asarray(point_xy, dtype=np.float64)
+    best = float("inf")
+    for i in range(len(ring)):
+        q = _closest_point_on_segment(p, ring[i], ring[(i + 1) % len(ring)])
+        best = min(best, float(np.linalg.norm(q - p)))
+    return best
+
+
 def _expand_geofence_for_structure(
     geofence_lonlat: list[list[float]],
     standoff_m: float,
@@ -474,8 +600,11 @@ def _expand_geofence_for_structure(
 ) -> list[list[float]]:
     """Push a geofence outwards so a stand-off mission fits inside it.
 
-    The polygon is expanded radially from its centroid, matching how the facade
-    compiler offsets its capture points, so the fence clears every point it places.
+    The fence is the drawn outline's convex hull offset outward by the stand-off plus a
+    margin, so every point within that distance of the structure is inside it. The
+    earlier radial scaling from the vertex mean left an inside corner where it was: on
+    an L-shaped building the vertex mean IS that corner, so the fence touched the wall
+    and every loop and box point projected onto it was flown against the building.
     """
     if len(geofence_lonlat) < 3:
         return geofence_lonlat
@@ -484,31 +613,18 @@ def _expand_geofence_for_structure(
     if distance <= 0:
         return geofence_lonlat
 
-    # Degrees per metre at this latitude; longitude converges towards the poles.
-    lat_per_m = 1.0 / 110_540.0
-    lon_per_m = 1.0 / max(1.0, 111_320.0 * cos(radians(lat0)))
-
     ring = [pt for pt in geofence_lonlat]
     if len(ring) > 1 and ring[0] == ring[-1]:
         ring = ring[:-1]
-
-    cx = sum(p[0] for p in ring) / len(ring)
-    cy = sum(p[1] for p in ring) / len(ring)
-
-    expanded: list[list[float]] = []
-    for lon, lat in ring:
-        # Work in metres so the expansion is uniform on the ground rather than in
-        # degrees, which would be lopsided away from the equator.
-        dx = (lon - cx) / lon_per_m
-        dy = (lat - cy) / lat_per_m
-        norm = sqrt(dx * dx + dy * dy)
-        if norm < 1e-6:
-            expanded.append([lon, lat])
-            continue
-        scale = (norm + distance) / norm
-        expanded.append([cx + dx * scale * lon_per_m, cy + dy * scale * lat_per_m])
-
-    return _ensure_closed(expanded)
+    lon0 = sum(p[0] for p in ring) / len(ring)
+    lat_ref = sum(p[1] for p in ring) / len(ring)
+    local = _lonlat_to_xy(np.asarray(ring, dtype=np.float64), lon0=lon0, lat0=lat_ref)
+    hull = _convex_hull_xy(local)
+    if len(hull) < 3:
+        return geofence_lonlat
+    expanded = _offset_convex_ring_xy(hull, distance, rounded=True)
+    world = _xy_to_lonlat(expanded, lon0=lon0, lat0=lat_ref)
+    return _ensure_closed([[float(p[0]), float(p[1])] for p in world])
 
 
 def _normalize_facade_capture_profile(value: str | None) -> str:
@@ -2089,7 +2205,7 @@ class MissionPlanner:
     """Recipe-driven mission planner with repeatable asset-frame capture."""
 
     def __init__(self):
-        pass
+        self._coverage_notes: list[str] = []
 
     def line_buffer_geofence(
         self,
@@ -2230,6 +2346,8 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        turbine_rotor_facing_deg: float | None = None,
+        turbine_nacelle_length_m: float = 12.0,
         dome_radius_m: float | None = None,
         dome_base_altitude_m: float = 0.0,
         box_altitude_levels_m: list[float] | None = None,
@@ -2563,13 +2681,28 @@ class MissionPlanner:
             fence = [list(map(float, pt)) for pt in constraints_obj.geofence]
             drawn = [list(map(float, pt)) for pt in _ensure_closed(polygon)]
             if fence == drawn:
-                default_standoff = DEFAULT_BOX_STANDOFF_M if template == "box_inspection" else DEFAULT_STRUCTURE_STANDOFF_M
+                default_standoff = (
+                    DEFAULT_BOX_STANDOFF_M if template == "box_inspection"
+                    else DEFAULT_TURBINE_STANDOFF_M if template == "wind_turbine"
+                    else DEFAULT_STRUCTURE_STANDOFF_M)
                 standoff_for_fence = float(
                     facade_standoff_m if facade_standoff_m is not None
                     else (constraints_obj.standoff_m if constraints_obj.standoff_m > 0.0 else default_standoff)
                 )
                 lat_ref = sum(p[1] for p in drawn) / max(1, len(drawn))
-                if template == "dome_inspection":
+                if template == "wind_turbine":
+                    # The blades reach blade_length from the hub in every direction the
+                    # rotor may be parked or yawed to, so the fence is the circle that
+                    # holds them plus the stand-off. Pushing the drawn footprint out by
+                    # the stand-off alone projected blade-face points back towards the
+                    # rotor plane.
+                    centre = _polygon_centroid_lonlat(drawn)
+                    reach = max(float(turbine_blade_length_m), float(turbine_nacelle_length_m) + standoff_for_fence)
+                    new_fence = _tower_buffer_polygon(
+                        centre, radius_m=reach + 2.0 * standoff_for_fence + GEOFENCE_EXPANSION_MARGIN_M,
+                        points=48)
+                    standoff_for_fence = reach + 2.0 * standoff_for_fence
+                elif template == "dome_inspection":
                     # The rings are circles about the dome's centre, so the fence is the
                     # circle that contains the widest ring rather than the drawn outline
                     # pushed outward, which clipped every ring that crossed a corner.
@@ -2626,7 +2759,12 @@ class MissionPlanner:
                 tower_bottom_alt = max(constraints_obj.min_altitude_m, tower_top_alt - 0.5)
 
         if tower_flight_radius_m is None:
-            tower_flight_radius = max(tower_object_radius_m + constraints_obj.standoff_m, tower_object_radius_m + 4.0)
+            # Unset, the stand-off is the structure default (8 m), not 4 m: the old
+            # floor flew rings 4 m from a tower's surface, inside antenna and guy-wire
+            # reach, and shrank every frame to a 3 m strip.
+            tower_standoff = (constraints_obj.standoff_m if constraints_obj.standoff_m > 0.0
+                              else DEFAULT_STRUCTURE_STANDOFF_M)
+            tower_flight_radius = tower_object_radius_m + max(4.0, tower_standoff)
         else:
             tower_flight_radius = max(float(tower_flight_radius_m), tower_object_radius_m + 2.0)
         tower_safe_rth_altitude_m = max(float(constraints_obj.rth_altitude_m), tower_top_alt + 10.0)
@@ -2684,6 +2822,17 @@ class MissionPlanner:
             if tower_center_world is not None
             else [0.0, 0.0]
         )
+        # The rotor faces into the wind; the operator reads that off the nacelle on
+        # the day. Unset, the rotor is taken to face square to the first edge drawn,
+        # and the plan says so and says which compass heading that is.
+        if turbine_rotor_facing_deg is not None:
+            turbine_rotor_facing_compass = float(turbine_rotor_facing_deg) % 360.0
+            turbine_rotor_facing_source = "operator"
+        else:
+            turbine_rotor_facing_compass = _heading_from_math_deg(90.0 + float(frame.yaw_deg))
+            turbine_rotor_facing_source = "assumed_square_to_first_edge"
+        turbine_rotor_axis_local_deg = _wrap_deg(
+            _math_from_heading_deg(turbine_rotor_facing_compass) - float(frame.yaw_deg))
         solar_rows_local = [
             _world_to_local(row, frame).tolist()
             for row in solar_rows_world
@@ -2706,7 +2855,10 @@ class MissionPlanner:
         )
 
         effective_altitude_m = max(5.0, altitude_m + ground_offset_m)
-        if template in {"facade", "facade_mapping"}:
+        if template in {"facade", "facade_mapping", "multi_facade"}:
+            # A wall is photographed from the stand-off, not from the survey altitude:
+            # spacing multi-facade passes by the nadir footprint at 50 m left 20 m gaps
+            # between rows that each covered 7 m of wall.
             facade_range_m = max(2.0, facade_standoff)
             fp_w, fp_h = _estimate_footprint_m(facade_range_m, camera)
             line_spacing_m = max(0.5, fp_w * (1.0 - side_overlap_pct / 100.0))
@@ -2866,6 +3018,8 @@ class MissionPlanner:
             turbine_blade_angles_deg=turbine_blade_angles_deg,
             turbine_tower_levels=turbine_tower_levels,
             turbine_blade_stations=turbine_blade_stations,
+            turbine_rotor_axis_local_deg=turbine_rotor_axis_local_deg,
+            turbine_nacelle_length_m=turbine_nacelle_length_m,
             dome_radius_m=dome_radius_m,
             dome_base_altitude_m=dome_base_altitude_m,
             box_altitude_levels_m=box_altitude_levels_m,
@@ -3035,6 +3189,11 @@ class MissionPlanner:
             "tower_flight_radius_m": tower_flight_radius,
             "tower_resume_enabled": bool(tower_resume_enabled),
             "tower_safe_rth_altitude_m": float(tower_safe_rth_altitude_m),
+            "turbine_rotor_facing_deg": float(turbine_rotor_facing_compass),
+            "turbine_rotor_facing_source": turbine_rotor_facing_source,
+            "turbine_blade_length_m": float(turbine_blade_length_m),
+            "turbine_hub_height_m": float(turbine_hub_height_m if turbine_hub_height_m is not None else altitude_m),
+            "turbine_nacelle_length_m": float(turbine_nacelle_length_m),
             "solar_row_angle_deg": float(solar_row_angle_deg if solar_row_angle_deg is not None else flight_direction_deg),
             "solar_sensor_profile": solar_sensor_profile,
             "solar_orientation_mode": solar_orientation_mode,
@@ -3148,6 +3307,7 @@ class MissionPlanner:
             )
             recipe_obj = replace(recipe_obj, constraints=merged_constraints)
 
+        self._coverage_notes = []
         local_poses: list[_CapturePose] = []
         for primitive in recipe_obj.primitives:
             local_poses.extend(self._compile_primitive(primitive))
@@ -3159,6 +3319,10 @@ class MissionPlanner:
                 for p in local_poses
             ]
 
+        if not local_poses and self._coverage_notes:
+            # A template that planned nothing and said why must not be replaced by
+            # nadir shots at the fence corners that photograph none of it.
+            raise ValueError("Nothing can be planned: " + " ".join(dict.fromkeys(self._coverage_notes)))
         if not local_poses:
             geofence_local = _world_to_local(recipe_obj.constraints.geofence, recipe_obj.asset_frame)
             geofence_local = geofence_local[:-1] if len(geofence_local) > 1 else geofence_local
@@ -3182,6 +3346,7 @@ class MissionPlanner:
             # primitives floor altitude at 1 m, so ground far below the old reference
             # had already been clamped before any shift could correct it.
             local_poses = []
+            self._coverage_notes = []
             for primitive in recipe_obj.primitives:
                 local_poses.extend(self._compile_primitive(primitive))
             if bool(recipe_obj.metadata.get("inspection_dwell_requested", False)) and requested_dwell > 0.0:
@@ -3335,6 +3500,7 @@ class MissionPlanner:
             repeat_anchor=repeat_anchor,
             expected_coverage=coverage_report,
             safety_adjustments=safety_adjustments,
+            coverage_notes=list(dict.fromkeys(self._coverage_notes)),
             flight_direction_deg=float(mapping_config["flight_direction_deg"]),
             camera_direction_deg=float(mapping_config.get("camera_direction_deg", mapping_config["flight_direction_deg"])),
             camera_direction_locked=bool(mapping_config.get("camera_direction_locked", False)),
@@ -3545,6 +3711,8 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        turbine_rotor_facing_deg: float | None = None,
+        turbine_nacelle_length_m: float = 12.0,
         dome_radius_m: float | None = None,
         dome_base_altitude_m: float = 0.0,
         box_altitude_levels_m: list[float] | None = None,
@@ -3578,6 +3746,8 @@ class MissionPlanner:
             turbine_blade_angles_deg=turbine_blade_angles_deg,
             turbine_tower_levels=turbine_tower_levels,
             turbine_blade_stations=turbine_blade_stations,
+            turbine_rotor_facing_deg=turbine_rotor_facing_deg,
+            turbine_nacelle_length_m=turbine_nacelle_length_m,
             dome_radius_m=dome_radius_m,
             dome_base_altitude_m=dome_base_altitude_m,
             box_altitude_levels_m=box_altitude_levels_m,
@@ -4516,6 +4686,8 @@ class MissionPlanner:
         turbine_blade_angles_deg: list[float] | None = None,
         turbine_tower_levels: int = 6,
         turbine_blade_stations: int = 8,
+        turbine_rotor_axis_local_deg: float = 90.0,
+        turbine_nacelle_length_m: float = 12.0,
         dome_radius_m: float | None = None,
         dome_base_altitude_m: float = 0.0,
         box_altitude_levels_m: list[float] | None = None,
@@ -4920,7 +5092,8 @@ class MissionPlanner:
             flight_radius = float(
                 max(
                     object_radius + 2.0,
-                    tower_flight_radius_m if tower_flight_radius_m is not None else object_radius + constraints.standoff_m,
+                    tower_flight_radius_m if tower_flight_radius_m is not None else object_radius + max(
+                        4.0, constraints.standoff_m if constraints.standoff_m > 0.0 else DEFAULT_STRUCTURE_STANDOFF_M),
                 )
             )
             circum_step_m = max(0.75, line_step_m)
@@ -5039,8 +5212,13 @@ class MissionPlanner:
                             facade_bottom_altitude_m if facade_bottom_altitude_m is not None
                             else max(constraints.min_altitude_m, 5.0)
                         ),
-                        "horizontal_spacing_m": max(1.0, point_step_m),
-                        "vertical_spacing_m": max(1.0, line_step_m),
+                        # Columns by the frame width, rows by the frame height, as for
+                        # a single facade.
+                        "horizontal_spacing_m": max(1.0, line_step_m),
+                        # What one frame spans across the wall: an inside corner is
+                        # reached with turned shots, spaced by this.
+                        "horizontal_fov_deg": float(_horizontal_fov_deg(camera_name)),
+                        "vertical_spacing_m": max(1.0, point_step_m),
                         "gimbal_pitch_deg": float(gimbal_pitch_deg),
                         "inspection_dwell_s": float(inspection_dwell_s),
                         # Per-face overrides. A building is not four identical walls.
@@ -5097,6 +5275,8 @@ class MissionPlanner:
                         "object_radius_m": radius,
                         "standoff_m": float(standoff),
                         "base_altitude_m": float(dome_base_altitude_m),
+                        "min_altitude_m": float(constraints.min_altitude_m),
+                        "max_altitude_m": float(constraints.max_altitude_m),
                         "rings": rings,
                         "points_per_orbit": points_per_ring,
                         "ground_offset_m": float(ground_offset_m),
@@ -5151,7 +5331,10 @@ class MissionPlanner:
                         "blade_angles_deg": list(turbine_blade_angles_deg or []),
                         "tower_levels": int(turbine_tower_levels),
                         "blade_stations": int(turbine_blade_stations),
+                        "rotor_axis_local_deg": float(turbine_rotor_axis_local_deg),
+                        "nacelle_length_m": float(turbine_nacelle_length_m),
                         "min_altitude_m": float(constraints.min_altitude_m),
+                        "max_altitude_m": float(constraints.max_altitude_m),
                         "inspection_dwell_s": float(inspection_dwell_s),
                     },
                 )
@@ -5489,7 +5672,15 @@ class MissionPlanner:
         default_v = max(0.75, float(params.get("vertical_spacing_m", 4.0)))
         gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", 0.0)), -120.0, 30.0))
         dwell_s = float(max(0.0, params.get("inspection_dwell_s", 0.0)))
-        centroid = ring.mean(axis=0)
+        # Winding order decides which side of each edge is outside. Comparing with the
+        # centroid (as before) gets it wrong on a concave footprint: on an L-shape the
+        # centroid is the inside corner, so one wall's passes were planned inside the
+        # building.
+        counter_clockwise = _signed_area_xy(ring) > 0.0
+        closed_ring = np.vstack([ring, ring[:1]])
+        horizontal_fov = float(params.get("horizontal_fov_deg", 60.0))
+        blind_walls: list[tuple[int, float]] = []
+        unseen_lengths: list[tuple[int, float]] = []
 
         poses: list[_CapturePose] = []
         for index in range(len(ring)):
@@ -5512,30 +5703,105 @@ class MissionPlanner:
 
             # Outward normal: the side away from the building centre, so the aircraft
             # stands off outside the wall rather than inside the building.
-            normal = np.array([-direction[1], direction[0]], dtype=np.float64)
-            if float(np.dot(normal, start + edge / 2.0 - centroid)) < 0.0:
+            normal = np.array([direction[1], -direction[0]], dtype=np.float64)
+            if not counter_clockwise:
                 normal = -normal
 
             # The camera looks back at the wall, opposite the stand-off direction.
             yaw = _wrap_deg(math.degrees(math.atan2(-normal[1], -normal[0])))
 
-            columns = max(2, int(math.ceil(length / h_spacing)) + 1)
             levels = max(1, int(math.ceil(abs(top - bottom) / v_spacing)) + 1)
+
+            # Where along this wall a stand-off point is clear of the building. At an
+            # inside corner the end of one wall's pass lands on or near the adjacent
+            # wall: that point is not a stand-off, it is a collision, so it is left out.
+            def clear(t: float) -> bool:
+                point = start + direction * t + normal * standoff
+                return not (_point_in_polygon(point, closed_ring)
+                            or _distance_to_ring_xy(point, closed_ring) < 0.95 * standoff)
+
+            samples = np.linspace(0.0, length, max(2, int(math.ceil(length / 0.25)) + 1))
+            runs: list[list[float]] = []
+            was_clear = False
+            for t in samples:
+                is_clear = clear(float(t))
+                if is_clear and was_clear:
+                    runs[-1][1] = float(t)
+                elif is_clear:
+                    runs.append([float(t), float(t)])
+                was_clear = is_clear
+            if not runs:
+                blind_walls.append((index, length))
+                continue
+
+            # Columns: evenly over each clear stretch, always including its ends, so a
+            # square shot is taken as close to an inside corner as the stand-off allows.
+            half_fov = math.radians(max(5.0, 0.5 * horizontal_fov))
+            max_oblique = math.radians(75.0)
+            entries: list[tuple[float, float | None]] = []   # (along, wall point aimed at)
+            for run_index, (a, b) in enumerate(runs):
+                span = b - a
+                count = max(1, int(math.ceil(span / h_spacing)) + 1) if span > 1e-6 else 1
+                columns = [a + span * c / max(1, count - 1) for c in range(count)] if count > 1 else [a]
+                # The wall between this stretch and the next (or the wall's end) that a
+                # square shot does not reach is photographed obliquely from the stretch's
+                # end, turning towards it a half frame at a time.
+                before = 0.0 if run_index == 0 else 0.5 * (runs[run_index - 1][1] + a)
+                after = length if run_index == len(runs) - 1 else 0.5 * (b + runs[run_index + 1][0])
+
+                def sweep(origin: float, limit: float) -> list[tuple[float, float]]:
+                    reach = abs(limit - origin)
+                    shots: list[tuple[float, float]] = []
+                    if reach <= standoff * math.tan(half_fov) + 1e-6:
+                        return shots
+                    end_angle = math.atan2(reach, standoff)
+                    angle = 0.0
+                    while angle + half_fov < end_angle - 1e-6:
+                        angle = min(angle + half_fov, end_angle, max_oblique)
+                        sign = 1.0 if limit > origin else -1.0
+                        shots.append((origin, origin + sign * standoff * math.tan(angle)))
+                        if angle >= max_oblique - 1e-9:
+                            break
+                    seen_to = standoff * math.tan(min(angle + half_fov, math.radians(89.0)))
+                    if seen_to < reach - 1e-6:
+                        unseen_lengths.append((index, reach - seen_to))
+                    return shots
+
+                entries.extend(reversed(sweep(a, before)))
+                entries.extend((t, None) for t in columns)
+                entries.extend(sweep(b, after))
 
             for level in range(levels):
                 altitude = bottom + (top - bottom) * (level / max(1, levels - 1))
                 # Serpentine: alternate rows reverse, so the aircraft does not fly the
                 # length of the face twice for every level.
-                order = range(columns) if level % 2 == 0 else range(columns - 1, -1, -1)
-                for column in order:
-                    along = start + direction * (length * column / max(1, columns - 1))
-                    point = along + normal * standoff
+                row = entries if level % 2 == 0 else entries[::-1]
+                for t, aim in row:
+                    point = start + direction * t + normal * standoff
+                    if aim is None:
+                        pose_yaw, look_at, name = yaw, None, "facade_face_%d" % index
+                    else:
+                        target = start + direction * aim
+                        pose_yaw = _wrap_deg(math.degrees(math.atan2(target[1] - point[1],
+                                                                      target[0] - point[0])))
+                        look_at = (float(target[0]), float(target[1]))
+                        name = "facade_face_%d_corner" % index
                     poses.append(_CapturePose(
                         x_m=float(point[0]), y_m=float(point[1]), alt_m=float(altitude),
-                        yaw_deg=yaw, gimbal_pitch_deg=face_pitch,
-                        primitive="facade_face_%d" % index, dwell_s=dwell_s,
-                        camera_yaw_locked=True,
+                        yaw_deg=pose_yaw, gimbal_pitch_deg=face_pitch,
+                        primitive=name, dwell_s=dwell_s,
+                        camera_yaw_locked=True, look_at_xy=look_at,
                     ))
+        for wall, length in blind_walls:
+            self._coverage_notes.append(
+                f"Wall {wall + 1} ({length:.0f} m) is not photographed: no point at the "
+                "stand-off in front of it is clear of the rest of the building. Reduce "
+                "the stand-off for that face.")
+        for wall, gap in unseen_lengths:
+            self._coverage_notes.append(
+                f"About {gap:.1f} m of wall {wall + 1} next to an inside corner is not in "
+                "any frame: it could only be seen at a grazing angle from the stand-off. "
+                "Reduce the stand-off for that face to photograph it.")
         return poses
 
     def _compile_oblique_bands_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
@@ -5611,7 +5877,9 @@ class MissionPlanner:
         centre = params.get("center_local")
         if polygon_local and len(polygon_local) >= 3:
             ring = np.asarray(_ensure_closed_xy(polygon_local), dtype=np.float64)[:-1]
-            centre_xy = ring.mean(axis=0)
+            # Area centroid, not the vertex mean: on an L-shaped building the vertex
+            # mean is the inside corner, outside the walls the loop is meant to face.
+            centre_xy = _area_centroid_xy(ring)
             extent = float(np.linalg.norm(ring - centre_xy, axis=1).max())
         elif isinstance(centre, list) and len(centre) >= 2:
             centre_xy = np.asarray([float(centre[0]), float(centre[1])], dtype=np.float64)
@@ -5654,73 +5922,292 @@ class MissionPlanner:
         return poses
 
     def _compile_wind_turbine_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
-        """Tower, nacelle and per-blade capture for a wind turbine.
+        """Tower, nacelle and per-blade capture for a parked wind turbine.
 
         Blades are inspected at the parked rotor angles the operator reports, because a
         turbine cannot be asked to hold an arbitrary position. Each blade is captured
         from both faces: a crack on the trailing edge is invisible from the leading
         side.
+
+        Geometry: the rotor faces along `rotor_axis_local_deg` (upwind, where the hub
+        is) and the nacelle runs `nacelle_length_m` back from the hub the other way.
+        Every capture point keeps at least the stand-off from the tower, the blades and
+        the nacelle, and the path crosses the rotor plane once, beyond a blade tip. The
+        earlier path flew from the tip of one blade's front face straight to the root of
+        its back face, through the blade, and put two nacelle points in the rotor plane
+        6 m from a blade.
         """
         centre = params.get("center_local") or [0.0, 0.0]
-        centre_xy = np.asarray([float(centre[0]), float(centre[1])], dtype=np.float64)
+        hub = np.asarray([float(centre[0]), float(centre[1])], dtype=np.float64)
 
         hub_height = float(params.get("hub_height_m", 90.0))
-        blade_length = float(params.get("blade_length_m", 55.0))
+        blade_length = max(1.0, float(params.get("blade_length_m", 55.0)))
         standoff = max(2.0, float(params.get("standoff_m", 12.0)))
+        nacelle_length = max(0.0, float(params.get("nacelle_length_m", 12.0)))
         tower_levels = int(np.clip(int(params.get("tower_levels", 6)), 2, 40))
         blade_stations = int(np.clip(int(params.get("blade_stations", 8)), 2, 40))
-        # Parked rotor angles; the default is the common "Y" park position.
+        # Parked rotor angles in the rotor plane, 90 = straight up; the default is the
+        # common "Y" park position.
         blade_angles = [float(a) for a in (params.get("blade_angles_deg") or [90.0, 210.0, 330.0])]
         minimum_altitude = float(params.get("min_altitude_m", 5.0))
+        maximum_altitude = float(params.get("max_altitude_m", float("inf")))
         dwell_s = float(max(0.0, params.get("inspection_dwell_s", 1.5)))
+
+        axis = math.radians(float(params.get("rotor_axis_local_deg", 90.0)))
+        front = np.array([math.cos(axis), math.sin(axis)], dtype=np.float64)   # upwind
+        across = np.array([front[1], -front[0]], dtype=np.float64)             # in the rotor plane
+
+        def pose(xy, alt, at_xy, primitive, trigger=True) -> _CapturePose:
+            xy = np.asarray(xy, dtype=np.float64)
+            at_xy = np.asarray(at_xy, dtype=np.float64)
+            return _CapturePose(
+                x_m=float(xy[0]), y_m=float(xy[1]), alt_m=float(alt),
+                yaw_deg=_bearing_deg(xy, at_xy), gimbal_pitch_deg=0.0, primitive=primitive,
+                trigger=trigger, dwell_s=dwell_s if trigger else 0.0, camera_yaw_locked=True,
+                look_at_xy=(float(at_xy[0]), float(at_xy[1])),
+            )
+
+        def clear_of_nacelle(xy: np.ndarray, alt: float) -> bool:
+            # The nacelle as a segment at hub height from the hub back along -front.
+            nearest = _closest_point_on_segment(np.asarray(xy, dtype=np.float64), hub,
+                                                hub - front * nacelle_length)
+            return math.hypot(float(np.linalg.norm(np.asarray(xy) - nearest)),
+                              alt - hub_height) >= standoff - 1e-6
+
+        def leg_clearance(a, b) -> float:
+            # Closest approach of a straight leg to the nacelle, sampled every ~0.5 m.
+            (a_xy, a_alt), (b_xy, b_alt) = a, b
+            a3 = np.array([a_xy[0], a_xy[1], a_alt], dtype=np.float64)
+            b3 = np.array([b_xy[0], b_xy[1], b_alt], dtype=np.float64)
+            steps = max(2, int(np.linalg.norm(b3 - a3) / 0.5))
+            best = float("inf")
+            for k in range(steps + 1):
+                q = a3 + (b3 - a3) * (k / steps)
+                nearest = _closest_point_on_segment(q[:2], hub, hub - front * nacelle_length)
+                best = min(best, math.hypot(float(np.linalg.norm(q[:2] - nearest)), q[2] - hub_height))
+            return best
+
+        def station(angle_deg: float, distance: float) -> tuple[np.ndarray, float]:
+            r = math.radians(angle_deg)
+            return hub + across * (math.cos(r) * distance), hub_height + math.sin(r) * distance
+
+        # Behind the nacelle's tail by the stand-off nothing of the turbine is closer
+        # than the stand-off. A point behind the rotor plane that is clear of the
+        # nacelle stays clear flying straight back to that plane (its distance to the
+        # nacelle only grows), and any move inside that plane is clear, so
+        # "back, across, forward" joins any two such points safely.
+        tail_offset = nacelle_length + standoff
+
+        def to_tail_plane(xy: np.ndarray) -> np.ndarray:
+            xy = np.asarray(xy, dtype=np.float64)
+            return xy - front * (tail_offset + float(np.dot(xy - hub, front)))
+
+        def via_tail(a, b) -> list:
+            return [(to_tail_plane(a[0]), a[1]), (to_tail_plane(b[0]), b[1])]
+
+        def path_length(chain) -> float:
+            return sum(math.hypot(float(np.linalg.norm(np.asarray(v[0]) - np.asarray(u[0]))), v[1] - u[1])
+                       for u, v in zip(chain, chain[1:]))
+
+        def finish(planned: list[_CapturePose]) -> list[_CapturePose]:
+            # Anything outside the altitude band would be clamped later with the camera
+            # still aimed at what it no longer sees. Every leg here runs in the plane a
+            # stand-off in front of the rotor, behind it, behind the tail, or parallel
+            # to the nacelle at a stand-off or more from it, so moving a point up or
+            # down inside its plane keeps it clear; only the photograph is lost, and
+            # the plan says so instead of shooting at nothing.
+            lost: dict[str, int] = {}
+            for item in planned:
+                if minimum_altitude - 1e-6 <= item.alt_m <= maximum_altitude + 1e-6:
+                    continue
+                if item.trigger:
+                    lost[item.primitive] = lost.get(item.primitive, 0) + 1
+                item.alt_m = float(min(max(item.alt_m, minimum_altitude), maximum_altitude))
+                item.trigger = False
+                item.dwell_s = 0.0
+                item.primitive = "turbine_transit"
+            for name, count in lost.items():
+                part = {"turbine_nacelle": "nacelle", "turbine_tower": "tower"}.get(name, name)
+                self._coverage_notes.append(
+                    f"{count} {part} shot(s) at hub height ({hub_height:.0f} m) are outside the "
+                    f"{minimum_altitude:.0f}-{maximum_altitude:.0f} m altitude band and are not "
+                    "taken; the path passes there at the band's edge. Change the altitude band "
+                    "to include the hub.")
+            if not any(item.trigger for item in planned):
+                # Nothing of the turbine is inside the band: a flight that takes no
+                # photograph is not a plan; the notes say why.
+                return []
+            return planned
 
         poses: list[_CapturePose] = []
 
-        # Tower: a vertical stack on one side, camera level.
+        # Tower: a vertical stack on the upwind side, camera level on the tower. The
+        # nacelle is on the other side at the top.
+        tower_xy = hub + front * standoff
         for level in range(tower_levels):
             altitude = hub_height * (level + 1) / tower_levels
-            poses.append(_CapturePose(
-                x_m=float(centre_xy[0]), y_m=float(centre_xy[1] - standoff),
-                alt_m=float(altitude), yaw_deg=90.0, gimbal_pitch_deg=0.0,
-                primitive="turbine_tower", dwell_s=dwell_s, camera_yaw_locked=True,
-            ))
+            if minimum_altitude <= altitude <= maximum_altitude:
+                poses.append(pose(tower_xy, altitude, hub, "turbine_tower"))
 
-        # Nacelle: four aspects at hub height.
-        for bearing in (0.0, 90.0, 180.0, 270.0):
-            radians = math.radians(bearing)
-            point = centre_xy + np.array([math.sin(radians), math.cos(radians)]) * standoff
-            poses.append(_CapturePose(
-                x_m=float(point[0]), y_m=float(point[1]), alt_m=float(hub_height),
-                # The point sits at compass `bearing` from the hub; the camera looks
-                # back along it, expressed as a local math angle like every other pose.
-                yaw_deg=_wrap_deg(90.0 - (bearing + 180.0)), gimbal_pitch_deg=0.0,
-                primitive="turbine_nacelle", dwell_s=dwell_s, camera_yaw_locked=True,
-            ))
+        # Nacelle from the front: the hub and spinner.
+        poses.append(pose(hub + front * standoff, hub_height, hub, "turbine_nacelle"))
 
-        # Blades: stations along each blade, captured from both faces.
+        order = []
         for blade_index, blade_angle in enumerate(blade_angles):
-            radians = math.radians(blade_angle)
-            for face_sign in (1.0, -1.0):
-                face_label = "a" if face_sign > 0 else "b"
-                for station in range(blade_stations):
-                    distance = blade_length * (station + 1) / blade_stations
-                    x = centre_xy[0] + math.cos(radians) * distance
-                    altitude = hub_height + math.sin(radians) * distance
-                    if altitude < minimum_altitude:
-                        # Below a safe height a blade tip is not inspectable from the
-                        # air; skipping beats planning a point that cannot be flown.
+            points = []
+            low = high = 0
+            for k in range(blade_stations):
+                xy, alt = station(blade_angle, blade_length * (k + 1) / blade_stations)
+                # Below a safe height a blade tip is not inspectable from the air, and
+                # above the ceiling it may not be flown; skipping beats planning a point
+                # that cannot be flown, and the plan says which part is missed.
+                if alt < minimum_altitude:
+                    low += 1
+                elif alt > maximum_altitude:
+                    high += 1
+                else:
+                    points.append((xy, alt))
+            if low:
+                self._coverage_notes.append(
+                    f"Blade {blade_index + 1}: the outer {low} of {blade_stations} stations are below "
+                    f"the {minimum_altitude:.0f} m minimum altitude and are not inspected. "
+                    "Lower min_altitude_m, or have the rotor parked with that blade higher.")
+            if high:
+                self._coverage_notes.append(
+                    f"Blade {blade_index + 1}: the outer {high} of {blade_stations} stations are above "
+                    f"the {maximum_altitude:.0f} m maximum altitude and are not inspected. "
+                    "Raise max_altitude_m if the airspace allows it.")
+            if points:
+                order.append((blade_index, blade_angle, points))
+
+        # Front faces, serpentine over the blades (root to tip, tip to root, ...). Every
+        # point, and every leg between them, is in the plane `standoff` upwind of the
+        # rotor.
+        ended_at_tip = False
+        for n, (blade_index, _angle, points) in enumerate(order):
+            seq = points if n % 2 == 0 else points[::-1]
+            for xy, alt in seq:
+                poses.append(pose(xy + front * standoff, alt, xy, "turbine_blade_%da" % blade_index))
+            ended_at_tip = n % 2 == 0
+
+        if order:
+            # Cross to the downwind side once, a stand-off beyond the last blade's tip.
+            # If the serpentine ended at a root, go back out along that blade first,
+            # still in the upwind plane.
+            blade_index, blade_angle, points = order[-1]
+            if not ended_at_tip:
+                for xy, alt in points:
+                    poses.append(pose(xy + front * standoff, alt, xy, "turbine_transit", trigger=False))
+            # The crossing is on the circle a stand-off outside the blade tips, where
+            # nothing of the rotor is closer than the stand-off. It is beyond the last
+            # blade's tip unless that is outside the altitude band or beside the tower
+            # (a blade pointing down); then it moves round the circle to the nearest
+            # point that is not. Flooring the altitude instead (as before) pulled the
+            # crossing leg to within 7.6 m of a downward blade's tip.
+            crossing_radius = blade_length + standoff
+            crossing_angle = None
+            for offset in range(0, 181):
+                for candidate in ((blade_angle + offset, blade_angle - offset) if offset else (blade_angle,)):
+                    r = math.radians(candidate)
+                    alt = hub_height + math.sin(r) * crossing_radius
+                    if alt < minimum_altitude - 1e-6 or alt > maximum_altitude + 1e-6:
                         continue
-                    poses.append(_CapturePose(
-                        x_m=float(x), y_m=float(centre_xy[1] + face_sign * standoff),
-                        alt_m=float(altitude),
-                        # Face a stands on +y and looks back along -y at the blade;
-                        # face b the reverse.
-                        yaw_deg=-90.0 if face_sign > 0 else 90.0,
-                        gimbal_pitch_deg=0.0,
-                        primitive="turbine_blade_%d%s" % (blade_index, face_label),
-                        dwell_s=dwell_s, camera_yaw_locked=True,
-                    ))
-        return poses
+                    if alt < hub_height and abs(math.cos(r)) * crossing_radius < standoff:
+                        continue   # beside the tower
+                    crossing_angle = candidate
+                    break
+                if crossing_angle is not None:
+                    break
+            if crossing_angle is None:
+                # No point of the stand-off circle is inside the altitude band away
+                # from the tower: say so and stop upwind rather than cross through
+                # the rotor at a clamped altitude.
+                self._coverage_notes.append(
+                    "The back faces of the blades and the nacelle sides and tail are not "
+                    "planned: no point a stand-off outside the blade tips is inside the "
+                    "altitude band, so the rotor plane cannot be crossed clear of the blades. "
+                    "Widen min_altitude_m / max_altitude_m.")
+                return finish(poses)
+            tip_xy, _tip_alt = station(blade_angle, blade_length)
+            beyond_xy, beyond_alt = station(crossing_angle, crossing_radius)
+            # Getting there stays in the upwind plane, clear of the rotor by the stand-off.
+            poses.append(pose(beyond_xy + front * standoff, beyond_alt, tip_xy, "turbine_transit", trigger=False))
+            poses.append(pose(beyond_xy - front * standoff, beyond_alt, tip_xy, "turbine_transit", trigger=False))
+
+            # Back faces: the serpentine reversed, starting at that tip. A station whose
+            # back-face point would come within the stand-off of the nacelle is left out,
+            # and a leg that would pass the nacelle (going from one blade's root to the
+            # next) goes over or under it instead, whichever keeps more clearance.
+            previous = (np.array([poses[-1].x_m, poses[-1].y_m], dtype=np.float64), float(poses[-1].alt_m))
+            for n, (blade_index, _angle, points) in enumerate(reversed(order)):
+                seq = points[::-1] if n % 2 == 0 else points
+                for xy, alt in seq:
+                    point = xy - front * standoff
+                    if not clear_of_nacelle(point, alt):
+                        continue
+                    if leg_clearance(previous, (point, alt)) < standoff - 0.05:
+                        # Detours: over the nacelle, under it, or out to either side of
+                        # it; the one that stays furthest from it is flown.
+                        candidates = []
+                        for level in (max(previous[1], alt, hub_height + standoff),
+                                      min(previous[1], alt, hub_height - standoff)):
+                            if level >= minimum_altitude:
+                                candidates.append([(previous[0], level), (point, level)])
+                        for sign in (1.0, -1.0):
+                            shift_a = across * (sign * standoff - float(np.dot(previous[0] - hub, across)))
+                            shift_b = across * (sign * standoff - float(np.dot(point - hub, across)))
+                            candidates.append([(previous[0] + shift_a, previous[1]),
+                                               (point + shift_b, alt)])
+                        # The shortest detour that keeps the stand-off is flown; the
+                        # way round behind the tail always does, so no detour that
+                        # merely keeps "the most" clearance (possibly almost none) is
+                        # ever taken.
+                        best = None
+                        for via in candidates:
+                            chain = [previous, *via, (point, alt)]
+                            margin = min(leg_clearance(a, b) for a, b in zip(chain, chain[1:]))
+                            if margin >= standoff - 0.05 and (best is None or path_length(chain) < best[0]):
+                                best = (path_length(chain), via)
+                        if best is None:
+                            best = (0.0, via_tail(previous, (point, alt)))
+                        for via_xy, via_alt in best[1]:
+                            poses.append(pose(via_xy, via_alt, xy, "turbine_transit", trigger=False))
+                    poses.append(pose(point, alt, xy, "turbine_blade_%db" % blade_index))
+                    previous = (point, alt)
+
+        # Nacelle sides and tail, downwind of the rotor plane by at least the stand-off.
+        # The route climbs to a stand-off above the hub before moving across, then walks
+        # round the tail on the stand-off, so no leg passes closer to the nacelle than
+        # the points do.
+        side_back = max(standoff, 0.5 * nacelle_length)
+        tail_back = nacelle_length + standoff
+        middle = hub - front * (0.5 * nacelle_length)
+        right = hub - front * side_back + across * standoff
+        left = hub - front * side_back - across * standoff
+        # The route there goes straight back from the last back-face point to the plane
+        # behind the tail, across in that plane, and forward to the side point. Climbing
+        # straight up from a blade pointing down (as before) went through the nacelle.
+        last = poses[-1]
+        last_xy = np.array([last.x_m, last.y_m], dtype=np.float64)
+        if float(np.dot(last_xy - hub, front)) > 0.0:
+            # Still upwind: nothing was flown behind the rotor, so there was no crossing
+            # (no blade station in the altitude band). Crossing here would mean flying
+            # through the rotor disc, so the downwind nacelle shots are left out.
+            self._coverage_notes.append(
+                "The nacelle sides and tail are not planned: no blade station is inside the "
+                "altitude band, so there is no checked place to cross the rotor plane. "
+                "Adjust min_altitude_m / max_altitude_m to include the blades.")
+            return finish(poses)
+        for via_xy, via_alt in via_tail((last_xy, float(last.alt_m)), (right, hub_height)):
+            poses.append(pose(via_xy, via_alt, middle, "turbine_transit", trigger=False))
+        poses.append(pose(right, hub_height, middle, "turbine_nacelle"))
+        poses.append(pose(hub - front * tail_back + across * standoff, hub_height,
+                          hub - front * nacelle_length, "turbine_transit", trigger=False))
+        poses.append(pose(hub - front * tail_back, hub_height, hub - front * nacelle_length, "turbine_nacelle"))
+        poses.append(pose(hub - front * tail_back - across * standoff, hub_height,
+                          hub - front * nacelle_length, "turbine_transit", trigger=False))
+        poses.append(pose(left, hub_height, middle, "turbine_nacelle"))
+        return finish(poses)
 
     def _compile_smart_adaptive_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """Uniform coverage plus extra passes over regions that warrant a closer look.
@@ -6203,13 +6690,11 @@ class MissionPlanner:
         levels = params.get("altitude_levels_m", [60.0])
         if not isinstance(levels, list) or not levels:
             levels = [60.0]
-        target_alt = float(params.get("target_altitude_m", float(np.mean(levels))))
         gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -90.0)), -120.0, 30.0))
         ground_offset = float(params.get("ground_offset_m", 0.0))
         terrain_follow_enabled = bool(params.get("terrain_follow_enabled", False))
         terrain_model = params.get("terrain_model")
         resume_enabled = bool(params.get("tower_resume_enabled", True))
-        tower_range = max(2.0, radius - object_radius)
 
         poses: list[_CapturePose] = []
         for level_idx, level in enumerate(levels):
@@ -6218,11 +6703,11 @@ class MissionPlanner:
             orbit_indices = range(points_per_orbit - 1, -1, -1) if reverse else range(points_per_orbit)
             primitive_name = f"tower_mapping_level{level_idx + 1}" if resume_enabled else "tower_mapping"
 
-            if gimbal_pitch <= -89.0:
-                auto_pitch = float(np.degrees(np.arctan2(target_alt - float(level), tower_range)))
-                pitch = float(np.clip(auto_pitch, -120.0, 30.0))
-            else:
-                pitch = gimbal_pitch
+            # Each ring photographs the tower at its own height, so the camera is level
+            # unless the operator chose a pitch. Aiming every ring at the tower's
+            # mid-height (as before) tilted the top ring 79 degrees down and the bottom
+            # ones 30 degrees up, so the section beside the aircraft was never in frame.
+            pitch = gimbal_pitch
 
             for i in orbit_indices:
                 theta = 2.0 * pi * (i / points_per_orbit)
@@ -6278,8 +6763,153 @@ class MissionPlanner:
         terrain_follow_enabled = bool(params.get("terrain_follow_enabled", False))
         terrain_model = params.get("terrain_model")
 
-        poses: list[_CapturePose] = []
+        minimum_altitude = params.get("min_altitude_m")
+        minimum_altitude = None if minimum_altitude is None else float(minimum_altitude)
+        maximum_altitude = params.get("max_altitude_m")
+        maximum_altitude = None if maximum_altitude is None else float(maximum_altitude)
+        centre_alt = base_alt + ground_offset
+        offset_radius = dome_radius + standoff
+
+        if maximum_altitude is not None and maximum_altitude < centre_alt:
+            # Every ring would be clamped down onto (or into) the dome.
+            self._coverage_notes.append(
+                f"The dome starts at {centre_alt:.0f} m, above the {maximum_altitude:.0f} m "
+                "maximum altitude: nothing of it can be flown at the stand-off, so no dome "
+                "inspection is planned. Raise max_altitude_m.")
+            return []
+
+        # Rings whose flight height is outside the altitude band cannot be flown on the
+        # normal. Clamping them onto the band's edge with their original pitch (as
+        # before) stacked most of a low dome onto one flat layer looking past it, and
+        # pushed a high ring down onto -- or into -- the dome. Instead the bands below
+        # the floor are photographed from one ring at the minimum altitude, out at the
+        # dome radius plus the stand-off, and the bands above the ceiling from one ring
+        # at the maximum altitude on the stand-off sphere (so the aircraft still clears
+        # the dome by the stand-off), with the camera aimed at each band's own surface
+        # point. A band that cannot be seen from there within 75 deg of square on is
+        # left out, and the plan says which.
+        lift_alt = minimum_altitude if minimum_altitude is not None else 0.0
+        lift_radius = offset_radius
+        ceiling_h = (maximum_altitude - centre_alt) if maximum_altitude is not None else float("inf")
+        cap_radius = (float(np.sqrt(max(0.0, offset_radius ** 2 - ceiling_h ** 2)))
+                      if ceiling_h < offset_radius else 0.0)
+
+        def aim_from(viewer: np.ndarray, elevation: float) -> tuple[float, float] | None:
+            # Pitch and range to a band's surface point from `viewer` (horizontal radius,
+            # height above centre); None when it cannot be seen within 75 deg of square
+            # on, or only by looking outward past the vertical.
+            surface = np.array([dome_radius * np.cos(elevation), dome_radius * np.sin(elevation)])
+            sight = viewer - surface
+            normal = np.array([np.cos(elevation), np.sin(elevation)])
+            incidence = float(np.dot(sight, normal) / max(1e-9, float(np.linalg.norm(sight))))
+            if incidence < float(np.cos(np.radians(75.0))) or sight[0] < -1e-6:
+                return None
+            pitch = -float(np.degrees(np.arctan2(sight[1], max(0.0, float(sight[0])))))
+            return float(np.clip(pitch, -90.0, 30.0)), float(np.linalg.norm(sight))
+
+        low_bands: list[tuple[int, float]] = []
+        high_bands: list[tuple[int, float]] = []
+        normal_rings: list[int] = []
+        unseen_low: list[int] = []
+        unseen_high: list[int] = []
+        low_ranges: list[float] = []
+        high_ranges: list[float] = []
         for ring_idx in range(rings):
+            elevation = (pi / 2.0) * (ring_idx / max(1, rings - 1))
+            alt = centre_alt + offset_radius * float(np.sin(elevation))
+            if minimum_altitude is not None and alt < minimum_altitude - 1e-6:
+                aim = aim_from(np.array([lift_radius, lift_alt - centre_alt]), elevation)
+                if aim is None:
+                    unseen_low.append(ring_idx)
+                else:
+                    low_bands.append((ring_idx, aim[0]))
+                    low_ranges.append(aim[1])
+            elif maximum_altitude is not None and alt > maximum_altitude + 1e-6:
+                aim = aim_from(np.array([cap_radius, ceiling_h]), elevation)
+                if aim is None:
+                    unseen_high.append(ring_idx)
+                else:
+                    high_bands.append((ring_idx, aim[0]))
+                    high_ranges.append(aim[1])
+            else:
+                normal_rings.append(ring_idx)
+
+        def band_height(ring_idx: int) -> float:
+            return centre_alt + dome_radius * float(np.sin((pi / 2.0) * ring_idx / max(1, rings - 1)))
+
+        if low_bands or unseen_low:
+            below = band_height(max([r for r, _ in low_bands] + unseen_low))
+            if low_bands:
+                part = (f"The whole dome (to {centre_alt + dome_radius:.0f} m)"
+                        if not normal_rings and not high_bands and not unseen_high
+                        else f"The dome below about {below:.0f} m")
+                self._coverage_notes.append(
+                    f"{part} cannot be flown at the stand-off "
+                    f"under the {minimum_altitude:.0f} m minimum altitude: {len(low_bands)} "
+                    f"band(s) of it are photographed from {minimum_altitude:.0f} m, "
+                    f"{lift_radius:.0f} m from the centre, looking down at "
+                    f"{min(p for _, p in low_bands):.0f} to {max(p for _, p in low_bands):.0f} deg "
+                    f"from {min(low_ranges):.0f}-{max(low_ranges):.0f} m instead of {standoff:.0f} m, "
+                    "so detail there is coarser. Lower min_altitude_m to fly them square on.")
+            if unseen_low:
+                self._coverage_notes.append(
+                    f"{len(unseen_low)} low band(s) of the dome cannot be seen from the "
+                    f"{minimum_altitude:.0f} m minimum altitude and are not photographed. "
+                    "Lower min_altitude_m to cover the base of the dome.")
+        if high_bands or unseen_high:
+            above = band_height(min([r for r, _ in high_bands] + unseen_high))
+            if high_bands:
+                self._coverage_notes.append(
+                    f"The dome above about {above:.0f} m cannot be flown at the stand-off under "
+                    f"the {maximum_altitude:.0f} m maximum altitude: {len(high_bands)} band(s) "
+                    f"of it are photographed from {maximum_altitude:.0f} m, {cap_radius:.0f} m "
+                    f"from the centre, looking at {min(p for _, p in high_bands):.0f} to "
+                    f"{max(p for _, p in high_bands):.0f} deg from "
+                    f"{min(high_ranges):.0f}-{max(high_ranges):.0f} m, obliquely rather than "
+                    "square on. Raise max_altitude_m to fly them on the normal.")
+            if unseen_high:
+                self._coverage_notes.append(
+                    f"{len(unseen_high)} upper band(s) of the dome (above about "
+                    f"{band_height(min(unseen_high)):.0f} m, up to the crown) cannot be seen from "
+                    f"the {maximum_altitude:.0f} m maximum altitude without flying closer than "
+                    "the stand-off, and are not photographed. Raise max_altitude_m to cover them.")
+
+        def pose_at(x: float, y: float, alt: float, pitch: float, name: str, looks: bool,
+                    trigger: bool = True) -> _CapturePose:
+            pt = np.asarray([x, y], dtype=np.float64)
+            terrain_delta = (
+                _terrain_delta_m(pt, terrain_model if isinstance(terrain_model, dict) else None)
+                if terrain_follow_enabled else 0.0
+            )
+            yaw = (float(np.degrees(np.arctan2(float(center[1]) - y, float(center[0]) - x)))
+                   if looks else 0.0)
+            return _CapturePose(
+                x_m=x, y_m=y, alt_m=max(1.0, float(alt + terrain_delta)),
+                yaw_deg=yaw, gimbal_pitch_deg=pitch, primitive=name, trigger=trigger,
+                dwell_s=0.0, camera_yaw_locked=True,
+                look_at_xy=(float(center[0]), float(center[1])) if looks else None,
+                clearance_planned=True,
+            )
+
+        def tilt_ring(radius: float, alt: float, bands: list[tuple[int, float]], label: str) -> list[_CapturePose]:
+            # One ring; at each point the camera tilts through its bands, so the aircraft
+            # goes round once, not once a band.
+            out: list[_CapturePose] = []
+            count = 1 if radius < 0.5 else points_per_ring
+            for i in range(count):
+                theta = 2.0 * pi * (i / count)
+                x = float(center[0] + radius * np.cos(theta))
+                y = float(center[1] + radius * np.sin(theta))
+                tilts = bands if i % 2 == 0 else bands[::-1]
+                for ring_idx, pitch in tilts:
+                    out.append(pose_at(x, y, alt, pitch, f"dome_inspection_{label}_ring{ring_idx + 1}", count > 1))
+            return out
+
+        poses: list[_CapturePose] = []
+        if low_bands:
+            poses.extend(tilt_ring(lift_radius, lift_alt, low_bands, "low"))
+
+        for ring_idx in normal_rings:
             # Spaced in ANGLE, not height. Equal height steps bunch the rings toward the
             # crown, where the surface turns fastest and needs them least.
             elevation = (pi / 2.0) * (ring_idx / max(1, rings - 1))
@@ -6297,28 +6927,41 @@ class MissionPlanner:
                 theta = 2.0 * pi * (i / count) if count > 1 else 0.0
                 x = float(center[0] + flight_radius * np.cos(theta))
                 y = float(center[1] + flight_radius * np.sin(theta))
-                yaw = (float(np.degrees(np.arctan2(float(center[1]) - y, float(center[0]) - x)))
-                       if count > 1 else 0.0)
-                pt = np.asarray([x, y], dtype=np.float64)
-                terrain_delta = (
-                    _terrain_delta_m(pt, terrain_model if isinstance(terrain_model, dict) else None)
-                    if terrain_follow_enabled else 0.0
-                )
-                poses.append(
-                    _CapturePose(
-                        x_m=x,
-                        y_m=y,
-                        alt_m=max(1.0, float(alt + terrain_delta)),
-                        yaw_deg=yaw,
-                        gimbal_pitch_deg=pitch,
-                        primitive=f"dome_inspection_ring{ring_idx + 1}",
-                        trigger=True,
-                        dwell_s=0.0,
-                        camera_yaw_locked=True,
-                        look_at_xy=(float(center[0]), float(center[1])) if count > 1 else None,
-                    )
-                )
-        return poses
+                poses.append(pose_at(x, y, alt, pitch, f"dome_inspection_ring{ring_idx + 1}", count > 1))
+
+        if high_bands:
+            poses.extend(tilt_ring(cap_radius, float(maximum_altitude), high_bands, "high"))
+
+        # A straight leg between two points on (or outside) the stand-off sphere cuts
+        # inside it: between rings, or from the low ring to the cap, by up to metres on
+        # a big dome. Such legs are flown along the sphere instead, in steps of 5 deg.
+        dome_centre = np.array([float(center[0]), float(center[1]), centre_alt])
+        floor = minimum_altitude if minimum_altitude is not None else -float("inf")
+        ceiling = maximum_altitude if maximum_altitude is not None else float("inf")
+        routed: list[_CapturePose] = []
+        for item in poses:
+            if routed:
+                a = np.array([routed[-1].x_m, routed[-1].y_m, routed[-1].alt_m]) - dome_centre
+                b = np.array([item.x_m, item.y_m, item.alt_m]) - dome_centre
+                d = b - a
+                t = float(np.clip(-np.dot(a, d) / max(1e-9, float(np.dot(d, d))), 0.0, 1.0))
+                if float(np.linalg.norm(a + d * t)) < dome_radius + 0.98 * standoff:
+                    ra, rb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+                    ua, ub = a / max(1e-9, ra), b / max(1e-9, rb)
+                    angle = float(np.arccos(np.clip(np.dot(ua, ub), -1.0, 1.0)))
+                    steps = max(2, int(np.ceil(np.degrees(angle) / 5.0)))
+                    for k in range(1, steps):
+                        f = k / steps
+                        if angle > 1e-6:
+                            u = (np.sin((1 - f) * angle) * ua + np.sin(f * angle) * ub) / np.sin(angle)
+                        else:
+                            u = ua
+                        q = dome_centre + u * max(offset_radius, (1 - f) * ra + f * rb)
+                        routed.append(pose_at(float(q[0]), float(q[1]),
+                                              float(np.clip(q[2], floor, ceiling)), 0.0,
+                                              "dome_transit", True, trigger=False))
+            routed.append(item)
+        return routed
 
     def _compile_box_inspection_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """A rectangular circuit at stand-off, camera on the building centre throughout.
@@ -6328,9 +6971,10 @@ class MissionPlanner:
         holds the corners at the requested distance and leaves the middle of each wall
         much further away, so ground sample varies along every face.
 
-        The path here is the footprint offset outward by the stand-off, which keeps the
-        distance to each wall constant along that wall, and the camera stays on the
-        centre of the building so every frame looks inward at an oblique. That is what
+        The path here is the footprint's convex hull offset outward by the stand-off,
+        which keeps the distance to each wall constant along that wall, and the camera
+        stays on the centre of the building's area so every frame looks inward at an
+        oblique. That is what
         brings rooftop features, vertical edges and side elevations into the capture.
         """
         footprint = params.get("polygon_local", [])
@@ -6345,17 +6989,19 @@ class MissionPlanner:
         ground_offset = float(params.get("ground_offset_m", 0.0))
         gimbal_pitch = float(np.clip(float(params.get("gimbal_pitch_deg", -30.0)), -120.0, 30.0))
 
-        centre = poly[:-1].mean(axis=0)
-        # Offset each vertex outward along the ray from the centre. Correct for the
-        # convex rectangles this mission type is for; a footprint with inward corners is
-        # what plan_complex_facade exists to handle, and it says so rather than guessing.
-        offset_ring: list[np.ndarray] = []
-        for vertex in poly[:-1]:
-            direction = vertex - centre
-            norm = float(np.linalg.norm(direction))
-            if norm < 1e-6:
-                continue
-            offset_ring.append(vertex + (direction / norm) * standoff)
+        # The camera aims at the middle of the building's area, which for an L or a U
+        # is inside the building; the vertex mean can sit outside it.
+        centre = _area_centroid_xy(poly)
+        # The circuit is the footprint's convex hull pushed out by the stand-off with
+        # mitred corners, so every wall is flown at the stand-off along its whole length.
+        # Scaling each vertex away from the centre (as before) put the long walls of a
+        # 60 x 30 m building 8 m away when 15 m was asked for, and on an L-shaped
+        # footprint it dropped the inside corner and routed the circuit over the roof.
+        hull = _convex_hull_xy(poly[:-1])
+        if len(hull) < 3:
+            return []
+        offset_ring = [np.asarray(v, dtype=np.float64)
+                       for v in _offset_convex_ring_xy(hull, standoff, rounded=False)]
         if len(offset_ring) < 3:
             return []
         offset_ring.append(offset_ring[0])
@@ -7041,7 +7687,20 @@ class MissionPlanner:
             if top < bottom + 0.5:
                 top = bottom + 0.5
 
-            centroid = boundary.mean(axis=0)
+            centroid = _area_centroid_xy(boundary) if len(boundary) >= 3 else boundary.mean(axis=0)
+            closed_boundary = np.vstack([boundary, boundary[:1]]) if len(boundary) >= 3 else None
+
+            def outward(mid: np.ndarray, normal: np.ndarray) -> np.ndarray:
+                # Outside is where a step off the wall leaves the footprint. Deciding it
+                # by the centroid alone flips on a concave outline, whose centroid can
+                # lie on the far side of a wall's line.
+                if closed_boundary is not None:
+                    ahead = _point_in_polygon(mid + normal * 0.25, closed_boundary)
+                    behind = _point_in_polygon(mid - normal * 0.25, closed_boundary)
+                    if ahead != behind:
+                        return -normal if ahead else normal
+                return normal if float(np.dot(mid - centroid, normal)) >= 0.0 else -normal
+
             column_pairs: list[tuple[np.ndarray, np.ndarray]] = []
 
             if curvature_alignment and isinstance(baseline_curve_local, list) and len(baseline_curve_local) >= 2:
@@ -7060,8 +7719,7 @@ class MissionPlanner:
                         axis = seg_vec / seg_len
                         normal = np.array([-axis[1], axis[0]], dtype=np.float64)
                         mid = (a + b) * 0.5
-                        if float(np.dot(mid - centroid, normal)) < 0.0:
-                            normal = -normal
+                        normal = outward(mid, normal)
                         if rotate_points_180:
                             normal = -normal
                         sampled = _sample_segment(a, b, horizontal_spacing)
@@ -7080,8 +7738,7 @@ class MissionPlanner:
                 axis = axis / length
                 normal = np.array([-axis[1], axis[0]], dtype=np.float64)
                 mid = (start + end) * 0.5
-                if float(np.dot(mid - centroid, normal)) < 0.0:
-                    normal = -normal
+                normal = outward(mid, normal)
                 if rotate_points_180:
                     normal = -normal
                 column_points = _sample_segment(start, end, horizontal_spacing)
@@ -7228,6 +7885,7 @@ class MissionPlanner:
             str(terrain_model.get("type", "flat")).lower() != "flat")
 
         output: list[_CapturePose] = []
+        clamped_captures: dict[tuple[str, str], list] = {}
         for pose in poses:
             x = float(pose.x_m)
             y = float(pose.y_m)
@@ -7238,10 +7896,16 @@ class MissionPlanner:
             clamped_alt = float(np.clip(alt, constraints.min_altitude_m, constraints.max_altitude_m))
             if abs(clamped_alt - alt) > 1e-6:
                 adjustments["altitude_clamps"] += 1
+                if pose.trigger:
+                    family = re.sub(r"_?(ring|level|seg|r)?\d+[ab]?$", "", str(pose.primitive)) or "capture"
+                    side = "below" if alt < clamped_alt else "above"
+                    entry = clamped_captures.setdefault((family, side), [0, alt])
+                    entry[0] += 1
+                    entry[1] = min(entry[1], alt) if side == "below" else max(entry[1], alt)
             alt = clamped_alt
 
             radius = sqrt(x * x + y * y)
-            if constraints.standoff_m > 0.0 and radius < constraints.standoff_m:
+            if constraints.standoff_m > 0.0 and radius < constraints.standoff_m and not pose.clearance_planned:
                 if radius < 1e-6:
                     x = constraints.standoff_m
                     y = 0.0
@@ -7310,6 +7974,18 @@ class MissionPlanner:
                     gimbal_pitch_deg=float(gimbal_adj),
                 )
             )
+
+        # A capture moved to the altitude band's edge is no longer where it was planned
+        # to see its subject from; the count alone in the summary table did not say
+        # what was lost.
+        for (family, side), (count, extreme) in sorted(clamped_captures.items()):
+            limit = constraints.min_altitude_m if side == "below" else constraints.max_altitude_m
+            key = "min_altitude_m" if side == "below" else "max_altitude_m"
+            self._coverage_notes.append(
+                f"{count} {family} capture point(s) were planned {side} the {limit:.0f} m "
+                f"{'minimum' if side == 'below' else 'maximum'} altitude (to {extreme:.1f} m) "
+                f"and are flown at {limit:.0f} m instead: what they were aimed at is not "
+                f"photographed from the planned position. Change {key} to cover it.")
 
         if len(output) < 2 or not no_fly_local:
             return output, adjustments

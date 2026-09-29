@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 import time
 import os
 from pathlib import Path
@@ -2039,9 +2040,35 @@ class Api:
         except MissionTypeRefused as exc:
             return fail(str(exc))
         extra = {k: v for k, v in plan.items() if k != "plan"}
-        adopted = self._adopt_plan(plan["plan"], "multispectral", list(plan.get("limits") or []),
+        warnings = list(plan.get("limits") or [])
+        captures = list(extra.get("calibration_captures") or [])
+        # The panel shots are what makes this survey calibrated, but they are taken over
+        # the panel on the ground before take-off and after landing, not flown as survey
+        # waypoints. Say so on the plan, with the position, or nobody takes them.
+        for capture in captures:
+            lon, lat = capture["lonlat"][:2]
+            step = "before take-off" if capture.get("when") == "before" else "after landing"
+            warnings.append(
+                f"Calibration step {step}: photograph the reflectance panel at "
+                f"{lat:.6f}, {lon:.6f} from about {float(capture.get('altitude_m', 2.0)):g} m "
+                "directly above it, panel filling the frame and no shadow on it. This shot "
+                "is not in the flight file; without it the indices are not calibrated.")
+        adopted = self._adopt_plan(plan["plan"], "multispectral", warnings,
                                    extra={"multispectral": extra, "payload": plan.get("payload")},
                                    options=options)
+        panel_features = [{
+            "type": "Feature",
+            "properties": {"role": "calibration_panel", "when": c.get("when"),
+                           "note": c.get("note", "")},
+            "geometry": {"type": "Point", "coordinates": [float(c["lonlat"][0]), float(c["lonlat"][1])]},
+        } for c in captures]
+        if panel_features:
+            for geojson in (self._session.mission_plan_dict.get("geojson"), adopted.get("geojson")):
+                if isinstance(geojson, dict):
+                    features = geojson.setdefault("features", [])
+                    if not any((f.get("properties") or {}).get("role") == "calibration_panel"
+                               for f in features):
+                        features.extend(panel_features)
         self._session.audit("multispectral_planned", {"payload": payload_key})
         return ok(plan=extra, **adopted)
 
@@ -4564,6 +4591,91 @@ class Api:
             return False
         return True
 
+    def _structure_assumptions(self, template: str, opts: dict[str, Any],
+                               meta: dict[str, Any]) -> list[str]:
+        """What a structure plan assumed about the structure, said on the plan.
+
+        A turbine's rotor direction, blade length and hub height, a tower's height and a
+        wall's height are facts about the object, not the flight. When the operator did
+        not give one the planner still has to pick a value; the pilot needs to know which
+        value, before flying next to the thing.
+        """
+        notes: list[str] = []
+        # A height the operator gave that the altitude band would not allow is flown at
+        # the band's edge; the part of the structure outside it is not photographed.
+        prefix = {"tower_mapping": "tower", "facade": "facade", "facade_mapping": "facade",
+                  "multi_facade": "facade"}.get(template)
+        if prefix:
+            for end in ("bottom", "top"):
+                key = f"{prefix}_{end}_altitude_m"
+                if self._given(opts, key) and key in meta:
+                    asked, flown = float(opts[key]), float(meta[key])
+                    if abs(asked - flown) > 0.05:
+                        notes.append(
+                            f"The {'lowest' if end == 'bottom' else 'highest'} pass is flown at "
+                            f"{flown:.1f} m, not the {asked:.1f} m given: the mission's altitude "
+                            f"band ({'min_altitude_m' if end == 'bottom' else 'max_altitude_m'}) "
+                            "does not allow it. The structure "
+                            f"{'below' if end == 'bottom' else 'above'} that is not photographed; "
+                            "change the altitude band to cover it.")
+        if template == "wind_turbine":
+            if meta.get("turbine_rotor_facing_source") != "operator":
+                notes.append(
+                    "Rotor direction not given: the plan assumes the rotor faces "
+                    f"{float(meta.get('turbine_rotor_facing_deg', 0.0)):.0f} deg (square to the "
+                    "first edge drawn). Set turbine_rotor_facing_deg to the nacelle heading "
+                    "on the day; blade faces and the nacelle stand-off depend on it.")
+            assumed = []
+            if not self._given(opts, "turbine_hub_height_m"):
+                assumed.append(f"hub height {float(meta.get('turbine_hub_height_m', 0.0)):.0f} m "
+                               "(the mission altitude)")
+            if not self._given(opts, "turbine_blade_length_m"):
+                assumed.append(f"blade length {float(meta.get('turbine_blade_length_m', 0.0)):.0f} m")
+            if not self._given(opts, "turbine_nacelle_length_m"):
+                assumed.append(f"nacelle length {float(meta.get('turbine_nacelle_length_m', 0.0)):.0f} m")
+            if not opts.get("turbine_blade_angles_deg"):
+                assumed.append("blades parked in a Y (90, 210, 330 deg)")
+            if assumed:
+                notes.append("Turbine dimensions assumed, not given: " + ", ".join(assumed) +
+                             ". Enter the turbine's own values before flying.")
+            counts: dict[str, int] = {}
+            for feature in (self._session.mission_plan_dict.get("geojson") or {}).get("features", []):
+                name = str((feature.get("properties") or {}).get("primitive", ""))
+                if name.startswith("turbine_blade_"):
+                    counts[name] = counts.get(name, 0) + 1
+            dropped = sum(max(0, counts.get(name, 0) - counts.get(name[:-1] + "b", 0))
+                          for name in counts if name.endswith("a"))
+            if dropped:
+                notes.append(
+                    f"{dropped} back-face blade station(s) nearest the hub are not planned: "
+                    "from behind the rotor they would be closer than the stand-off to the "
+                    "nacelle. Those blade roots are covered from the front only.")
+        elif template == "tower_mapping":
+            if not (self._given(opts, "tower_top_altitude_m") and self._given(opts, "tower_bottom_altitude_m")):
+                notes.append(
+                    "Tower height not given: rings run from "
+                    f"{float(meta.get('tower_bottom_altitude_m', 0.0)):.0f} to "
+                    f"{float(meta.get('tower_top_altitude_m', 0.0)):.0f} m, derived from the "
+                    "mission altitude. Set tower_bottom_altitude_m / tower_top_altitude_m to the "
+                    "tower's own span.")
+        elif template in {"facade", "facade_mapping", "multi_facade"}:
+            if not (self._given(opts, "facade_top_altitude_m") and self._given(opts, "facade_bottom_altitude_m")):
+                notes.append(
+                    "Wall height not given: passes span the mission altitude +/- 20 m. Set "
+                    "facade_bottom_altitude_m / facade_top_altitude_m to the building's own "
+                    "height so the top rows are not flown over the roof edge.")
+            polygon = self._session.aoi_polygon
+            if template != "multi_facade" and len(polygon) >= 2 and not opts.get("path_lonlat"):
+                (lon1, lat1), (lon2, lat2) = polygon[0][:2], polygon[1][:2]
+                east = (lon2 - lon1) * math.cos(math.radians((lat1 + lat2) / 2)) * 111_320.0
+                north = (lat2 - lat1) * 110_540.0
+                notes.append(
+                    f"This facade mission photographs one wall: the first edge drawn "
+                    f"({math.hypot(east, north):.0f} m, running "
+                    f"{math.degrees(math.atan2(east, north)) % 360:.0f} deg). Use Multi-facade "
+                    "for every wall, or draw the wall line with the Route tool.")
+        return notes
+
     def _adopt_plan(self, plan: Any, template: str, warnings: list[str],
                     extra: dict[str, Any] | None = None,
                     options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4583,6 +4695,9 @@ class Api:
         self._session.preflight_acknowledged = set()
         self._session.audit("mission_planned", {"template": template, "waypoints": len(plan.waypoints)})
         # Extended in place: plan_mission keeps appending to this same list afterwards.
+        # What the planner could not photograph as asked is said on the plan, not left
+        # to a count in the summary table.
+        warnings.extend(n for n in (getattr(plan, "coverage_notes", None) or []) if n not in warnings)
         warnings.extend(self._endurance_warnings(plan, options or {}))
         return {
             "summary": {
@@ -4644,7 +4759,10 @@ class Api:
                 center = _centroid(self._session.aoi_polygon)
             elements = opts.get("pylon_elements") or []
             if isinstance(elements, str):
-                elements = _parse_pylon_elements(elements)
+                try:
+                    elements = _parse_pylon_elements(elements)
+                except ValueError as exc:
+                    return fail(str(exc))
             return self.plan_pylon_mission(
                 list(center), list(elements),
                 standoff_m=float(opts.get("standoff_m") or 12.0),
@@ -4668,7 +4786,11 @@ class Api:
             return fail("A multispectral survey needs the multispectral payload it will carry.")
         panel = opts.get("calibration_panel_lonlat")
         if isinstance(panel, str):
-            panel = [float(v) for v in panel.replace(";", ",").split(",") if v.strip()] or None
+            try:
+                panel = [float(v) for v in panel.replace(";", ",").split(",") if v.strip()] or None
+            except ValueError:
+                return fail(f"The calibration panel position '{panel}' is not a lon, lat pair "
+                            "of numbers, e.g. '0.1174, 52.2048'.")
         return self.plan_multispectral_survey(
             str(opts.get("payload_key") or opts.get("payload")),
             camera=str(opts.get("camera") or "mavic3e"),
@@ -4802,6 +4924,22 @@ class Api:
             if isinstance(levels, str):
                 levels = [v for v in levels.replace(";", ",").split(",") if v.strip()]
             kwargs["box_altitude_levels_m"] = [float(v) for v in levels]
+        # The structure itself: how tall a wall or tower is, where a turbine's rotor
+        # faces and how long its blades are. Without these the planner works from the
+        # survey altitude, and the plan says what it assumed.
+        for key in ("facade_top_altitude_m", "facade_bottom_altitude_m",
+                    "tower_top_altitude_m", "tower_bottom_altitude_m", "tower_object_radius_m",
+                    "turbine_hub_height_m", "turbine_blade_length_m",
+                    "turbine_rotor_facing_deg", "turbine_nacelle_length_m"):
+            if self._given(opts, key):
+                kwargs[key] = float(opts[key])
+        if template == "tower_mapping" and opts.get("tower_center_lonlat"):
+            kwargs["tower_center_lonlat"] = [float(v) for v in list(opts["tower_center_lonlat"])[:2]]
+        if opts.get("turbine_blade_angles_deg"):
+            angles = opts["turbine_blade_angles_deg"]
+            if isinstance(angles, str):
+                angles = [v for v in angles.replace(";", ",").split(",") if v.strip()]
+            kwargs["turbine_blade_angles_deg"] = [float(v) for v in angles]
 
         warnings: list[str] = []
         # A line the operator drew: the route for linear / lateral / waypoint missions,
@@ -4846,6 +4984,7 @@ class Api:
         # from the recipe root silently yielded None, so no terrain warning ever fired.
         recipe = self._session.mission_plan_dict.get("flight_recipe") or {}
         terrain = (recipe.get("metadata") or {}).get("terrain_model") or recipe.get("terrain_model") or {}
+        warnings.extend(self._structure_assumptions(template, opts, recipe.get("metadata") or {}))
         if self._session.terrain_source_path and terrain.get("source") == "missing_terrain_source":
             detail = ""
             if self._session.terrain_source_path.lower().endswith((".csv", ".tsv")):
@@ -5773,9 +5912,15 @@ def _parse_pylon_elements(text: str) -> list[dict[str, Any]]:
             continue
         name, _, rest = chunk.partition("@")
         height, _, radius = rest.partition(":")
-        entry: dict[str, Any] = {"name": name.strip(), "height_m": float(height) if height.strip() else 0.0}
-        if radius.strip():
-            entry["radius_m"] = float(radius)
+        try:
+            entry: dict[str, Any] = {"name": name.strip(),
+                                     "height_m": float(height) if height.strip() else 0.0}
+            if radius.strip():
+                entry["radius_m"] = float(radius)
+        except ValueError:
+            raise ValueError(
+                f"{name.strip() or chunk}: '{chunk}' is not name@height or name@height:radius "
+                "with numbers in metres, e.g. 'crossarm@32' or 'insulator@28:4'.") from None
         elements.append(entry)
     return elements
 

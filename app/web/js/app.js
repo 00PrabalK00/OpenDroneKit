@@ -317,6 +317,16 @@
       dome_radius_m: numberOrNull('#mission-dome-radius'),
       dome_base_altitude_m: numberOrNull('#mission-dome-base'),
       box_altitude_levels_m: $('#mission-box-levels').value.trim() || null,
+      facade_bottom_altitude_m: numberOrNull('#mission-facade-bottom'),
+      facade_top_altitude_m: numberOrNull('#mission-facade-top'),
+      tower_bottom_altitude_m: numberOrNull('#mission-tower-bottom'),
+      tower_top_altitude_m: numberOrNull('#mission-tower-top'),
+      tower_object_radius_m: numberOrNull('#mission-tower-radius'),
+      turbine_rotor_facing_deg: numberOrNull('#mission-turbine-facing'),
+      turbine_hub_height_m: numberOrNull('#mission-turbine-hub'),
+      turbine_blade_length_m: numberOrNull('#mission-turbine-blade'),
+      turbine_nacelle_length_m: numberOrNull('#mission-turbine-nacelle'),
+      turbine_blade_angles_deg: $('#mission-turbine-angles').value.trim() || null,
       linked_version_ids: $('#mission-linked-ids').value.trim() || null
     };
     return options;

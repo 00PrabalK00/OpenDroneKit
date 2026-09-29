@@ -13,6 +13,7 @@ Every test goes through the Api the UI calls.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +89,33 @@ class TestMultispectralWithoutAPanel:
         assert planned["plan"]["calibration_captures"] == []
         exported = api.export_mission(["qgc_plan"], str(tmp_path / "ms"))
         assert exported["ok"] and not str(exported["written"]["qgc_plan"]).startswith("failed")
+
+
+class TestMultispectralWithAPanel:
+    """The panel shots make the survey calibrated; the operator has to be told to take them."""
+
+    PANEL = [-81.7536, 41.3034]
+
+    def test_the_panel_steps_are_on_the_plan_and_in_the_geojson(self, api, tmp_path):
+        planned = api.plan_mission({"template": "multispectral", "payload_key": "mavic3m_multispectral",
+                                    "calibration_panel_lonlat": f"{self.PANEL[0]}, {self.PANEL[1]}"})
+        assert planned["ok"], planned.get("error")
+        assert planned["plan"]["capture_contract"]["calibrated"] is True
+        steps = [w for w in planned["warnings"] if w.startswith("Calibration step")]
+        assert len(steps) == 2
+        assert "before take-off" in steps[0] and "after landing" in steps[1]
+        assert all(f"{self.PANEL[1]:.6f}, {self.PANEL[0]:.6f}" in s for s in steps)
+
+        exported = api.export_mission(["geojson", "qgc_plan"], str(tmp_path / "ms"))
+        assert exported["ok"]
+        features = json.loads(Path(exported["written"]["geojson"]).read_text())["features"]
+        panels = [f for f in features if f["properties"].get("role") == "calibration_panel"]
+        assert [f["properties"]["when"] for f in panels] == ["before", "after"]
+        assert all(f["geometry"]["coordinates"][:2] == self.PANEL for f in panels)
+        # They are ground steps, not survey waypoints: the flight file does not fly to them.
+        items = json.loads(Path(exported["written"]["qgc_plan"]).read_text())["mission"]["items"]
+        assert not any(abs(i["params"][5] - self.PANEL[0]) < 1e-6 and abs(i["params"][4] - self.PANEL[1]) < 1e-6
+                       for i in items if i["command"] in (16, 19))
 
 
 class TestEnduranceIsWarnedAtPlanTime:

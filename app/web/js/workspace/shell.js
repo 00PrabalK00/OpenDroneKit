@@ -90,6 +90,16 @@ const MISSION_OPTION_KEYS = {
   pylon_elements: "pylon_elements",
   dome_radius_m: "dome_radius_m",
   box_altitude_levels_m: "box_altitude_levels_m",
+  facade_bottom_altitude_m: "facade_bottom_altitude_m",
+  facade_top_altitude_m: "facade_top_altitude_m",
+  tower_bottom_altitude_m: "tower_bottom_altitude_m",
+  tower_top_altitude_m: "tower_top_altitude_m",
+  tower_object_radius_m: "tower_object_radius_m",
+  turbine_rotor_facing_deg: "turbine_rotor_facing_deg",
+  turbine_hub_height_m: "turbine_hub_height_m",
+  turbine_blade_length_m: "turbine_blade_length_m",
+  turbine_nacelle_length_m: "turbine_nacelle_length_m",
+  turbine_blade_angles_deg: "turbine_blade_angles_deg",
   linked_version_ids: "linked_version_ids",
 };
 
