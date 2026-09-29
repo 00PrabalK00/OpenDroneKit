@@ -356,6 +356,14 @@ def _ai_job_out(row: Job) -> AIJobOut:
     )
 
 
+@router.get("/ai-models")
+def list_ai_models(user: CurrentUser) -> dict[str, Any]:
+    """The models an AI or detection job may name, per task, and whether each can run."""
+    from ..inference import model_catalogue  # noqa: PLC0415
+
+    return {"models": model_catalogue()}
+
+
 @router.get("/projects/{project_id}/ai-jobs", response_model=list[AIJobOut])
 def list_ai_jobs(
     project_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)],

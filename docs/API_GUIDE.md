@@ -111,7 +111,7 @@ sanitise paths — the server does not trust it either.
 | kind | needs | produces |
 |---|---|---|
 | `reconstruction` | `dataset_id` | rasters, mesh, point cloud under `runs/job_<id>/`, with `crs_epsg` |
-| `detection` | `dataset_id`, `options.model_key` (or `"heuristic"`) | unreviewed defects attributed to the model file |
+| `detection` | `dataset_id`, `options.model_key` (or `"heuristic"`) | unreviewed defects attributed to the model file, severity `unassessed` until a reviewer grades them |
 | `measurement` | `options.measurement`, `options.source_job_id` (a finished reconstruction), `polygon_xy` (volume) or `pixels` | a Measurement in the raster's projected CRS |
 | `report` | nothing | a PDF and JSON snapshot of accepted findings (`include_unreviewed` to add the rest) |
 
@@ -123,7 +123,15 @@ Artifacts are storage-relative references; fetch one with
 with the reason if the model is unknown, cannot answer the task, or its weights are
 not installed; nothing is substituted. `ODK_AI_WORKER=external` leaves jobs for
 `python -m services.worker.ai_worker`, and `ODK_JOB_BACKEND=celery` sends processing
-jobs to a Celery worker.
+jobs to a Celery worker. `GET /ai-models` lists each model a job may name, per task,
+with the reason when it cannot run on this server. A job that fails says why (for
+example, running out of memory) rather than reporting an empty result. Events from a
+worker in another process reach WebSocket clients too, because the live-event buffer
+is the shared database.
+
+In the browser Hub, the "Data and jobs" panel does the same: create a dataset, upload
+images (chunked and checksummed), submit any job kind or an AI job, then watch,
+cancel and download the results.
 
 Without `ODK_DATABASE_URL` and `ODK_STORAGE_PATH` the server keeps its database and
 files in a per-user directory (`ODK_HUB_HOME` overrides it), not the directory it was

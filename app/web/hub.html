@@ -38,6 +38,7 @@
       <button class="active" data-panel="overview">Overview</button>
       <button data-panel="projects">Projects</button>
       <button data-panel="assets">Assets</button>
+      <button data-panel="jobs">Data and jobs</button>
       <button data-panel="maps">Maps and layers</button>
       <button data-panel="offline">Offline tiles</button>
       <button data-panel="viewer2d">2D viewer</button>
@@ -95,6 +96,50 @@
           <div class="card"><h2>Asset register</h2><div id="asset-list" class="record-list empty">No assets loaded.</div></div>
         </div>
         <div class="card"><h2>Inspection timeline</h2><div id="asset-history" class="timeline-list empty">The current API does not link defects to asset IDs; this panel will not invent that relationship.</div></div>
+      </section>
+      <section class="hub-panel" id="panel-jobs">
+        <div class="panel-heading"><div><h1>Data and jobs</h1><p>Upload imagery into a dataset, then run reconstruction, detection, measurement, report and AI jobs on the server. Results come from the job itself; nothing is shown until it finishes.</p></div><button id="refresh-jobs">Refresh</button></div>
+        <p id="jobs-project-note" class="lede">Select a project under Projects first.</p>
+        <div class="three-column">
+          <form id="dataset-form" class="card form-card">
+            <h2>Dataset</h2>
+            <label>Dataset<select id="job-dataset" name="dataset_id"><option value="">No dataset</option></select></label>
+            <label>New dataset name<input id="new-dataset-name" name="name" placeholder="e.g. North facade, flight 2" /></label>
+            <button type="button" id="create-dataset">Create dataset</button>
+            <label>Images<input id="dataset-files" type="file" multiple accept="image/*,.tif,.tiff" /></label>
+            <button type="submit" id="upload-files">Upload to dataset</button>
+            <div id="upload-progress" class="record-list empty">No upload in this session.</div>
+          </form>
+          <form id="job-form" class="card form-card">
+            <h2>Processing job</h2>
+            <label>Kind<select id="job-kind" name="kind"><option value="reconstruction">Reconstruction</option><option value="detection">Detection</option><option value="measurement">Measurement</option><option value="report">Report</option></select></label>
+            <div class="job-fields" data-job-kind="reconstruction">
+              <label>Engine<select id="job-engine"><option value="auto">auto</option><option value="colmap">colmap</option><option value="custom">custom</option></select></label>
+              <label>Profile<select id="job-profile"><option value="fast_preview">fast_preview</option><option value="standard" selected>standard</option><option value="inspection_high_accuracy">inspection_high_accuracy</option></select></label>
+            </div>
+            <div class="job-fields" data-job-kind="detection" hidden>
+              <label>Model<select id="job-detection-model"></select></label>
+            </div>
+            <div class="job-fields" data-job-kind="measurement" hidden>
+              <label>Measurement<select id="job-measurement"><option value="distance">distance (m)</option><option value="perimeter">perimeter (m)</option><option value="area">area (m²)</option><option value="volume">volume (m³)</option></select></label>
+              <label>Source reconstruction<select id="job-source"></select></label>
+              <label>Points (JSON [[x, y], …]: raster column,row; volume uses world x,y in the DSM CRS)<textarea id="job-points" rows="3" placeholder="[[10, 10], [110, 10]]"></textarea></label>
+            </div>
+            <div class="job-fields" data-job-kind="report" hidden>
+              <label class="check"><input id="job-include-unreviewed" type="checkbox" /> Include unreviewed findings</label>
+            </div>
+            <button type="submit" id="submit-job">Submit job</button>
+          </form>
+          <form id="ai-job-form" class="card form-card">
+            <h2>AI job</h2>
+            <label>Task<select id="ai-task"><option value="detection">detection</option><option value="segmentation">segmentation</option><option value="classification">classification</option><option value="anomaly">anomaly</option></select></label>
+            <label>Model<select id="ai-model"></select></label>
+            <p id="ai-model-note" class="lede"></p>
+            <label>Image in dataset (blank for every image)<input id="ai-frame" placeholder="IMG_0001.JPG" /></label>
+            <button type="submit" id="submit-ai-job">Run model</button>
+          </form>
+        </div>
+        <div class="card"><h2>Jobs</h2><div id="job-list" class="record-list empty">Select a project to list its jobs.</div></div>
       </section>
       <section class="hub-panel viewer-panel" id="panel-maps">
         <div class="panel-heading"><div><h1>Maps and layers</h1><p>XYZ, WMS, WMTS, standard and local offline sources.</p></div></div>

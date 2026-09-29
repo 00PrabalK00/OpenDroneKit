@@ -205,3 +205,21 @@ def test_events_from_a_separate_worker_process_reach_the_api_live_stream(client,
                 break
     assert message["event"] == "ai.completed", message
     assert message["data"]["ai_job_id"] == created["id"] and message["data"]["status"] == "done"
+
+
+def test_the_model_catalogue_lists_every_candidate_with_a_reason_when_unusable(client, site):
+    headers, _, _ = site
+    assert client.get("/ai-models").status_code == 401
+    models = client.get("/ai-models", headers=headers).json()["models"]
+    assert {"task": "detection", "model_key": "heuristic"}.items() <= next(
+        m for m in models if m["model_key"] == "heuristic" and m["task"] == "detection").items()
+    assert not any(m["model_key"] == "heuristic" and m["task"] == "classification" for m in models)
+    from core.models import load_registry
+
+    listed = {m["model_key"] for m in models}
+    assert set(load_registry()["models"]) - listed <= {
+        key for key, row in load_registry()["models"].items()
+        if row.get("kind") not in {"onnx_yolo", "onnx_detection", "onnx_segmentation",
+                                   "onnx_segmentation_multiclass", "onnx_classification"}}
+    for model in models:
+        assert model["usable"] or model["reason"], model

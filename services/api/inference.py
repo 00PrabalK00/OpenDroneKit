@@ -156,6 +156,34 @@ def _registered_for(task: str) -> list[str]:
     )
 
 
+def model_catalogue() -> list[dict[str, Any]]:
+    """Every registered model per task it could answer, with whether it can run here.
+
+    Unusable models are listed with the reason rather than hidden, so a client can show
+    why a choice is unavailable instead of offering a list that silently shrinks.
+    """
+    from core.models import get_model_spec, load_registry
+
+    rows: list[dict[str, Any]] = []
+    for task in sorted(TASK_KINDS):
+        if task in HEURISTIC_TASKS:
+            rows.append({"task": task, "model_key": HEURISTIC, "kind": HEURISTIC,
+                         "description": "Classical image processing, not a trained model.",
+                         "usable": True, "reason": ""})
+        for key in sorted(load_registry().get("models", {})):
+            spec = get_model_spec(key)
+            if spec is None or spec.kind not in TASK_KINDS[task]:
+                continue
+            try:
+                choose_model(task, key, verify_digest=False)
+                usable, reason = True, ""
+            except InferenceRefused as exc:
+                usable, reason = False, str(exc)
+            rows.append({"task": task, "model_key": key, "kind": spec.kind,
+                         "description": spec.description, "usable": usable, "reason": reason})
+    return rows
+
+
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._ -]+$")
 
 

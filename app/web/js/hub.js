@@ -27,7 +27,10 @@
     thermalRgb: null,
     thermalScene: null,
     thermalModelViewer: null,
-    twin: null
+    twin: null,
+    jobs: [],
+    aiModels: [],
+    jobTimer: null
   };
 
   function escapeHtml(value) {
@@ -78,6 +81,7 @@
     if (name === 'thermal') initThermalViewers();
     if (name === 'pointcloud') initPointViewer();
     if (name === 'missions') initMissionSimulator();
+    if (name === 'jobs') loadJobsPanel();
     setTimeout(() => {
       if (state.layerMap) state.layerMap.resize();
       if (state.viewer2d) state.viewer2d.map.resize();
@@ -196,6 +200,232 @@
       ? activity.map((item) => timeline(item.when, item.text)).join('')
       : 'No project activity returned.';
     await loadAnnotations();
+    if ($('#panel-jobs').classList.contains('active')) await loadJobsPanel();
+  }
+
+  /* ---- Data and jobs --------------------------------------------------------- */
+
+  const TERMINAL_JOB_STATES = new Set(['done', 'failed', 'cancelled']);
+
+  function needProject() {
+    if (!state.api) { status('Connect to the API first.', 'warning'); return false; }
+    if (!state.projectId) { status('Select a project under Projects first.', 'warning'); return false; }
+    return true;
+  }
+
+  async function loadJobsPanel() {
+    const project = state.projects.find((item) => Number(item.id) === Number(state.projectId));
+    $('#jobs-project-note').textContent = project
+      ? `Project: ${project.name}` : 'Select a project under Projects first.';
+    if (!state.api || !state.projectId) return;
+    const [datasets, models] = await Promise.all([
+      apiAction('Load datasets', () => state.api.listDatasets(state.projectId)),
+      state.aiModels.length ? null : apiAction('Load models', () => state.api.aiModels())
+    ]);
+    if (models && models.models) state.aiModels = models.models;
+    if (datasets) renderDatasets(datasets);
+    renderModelChoices();
+    await refreshJobs();
+  }
+
+  function renderDatasets(datasets) {
+    const select = $('#job-dataset');
+    const current = select.value;
+    select.innerHTML = '<option value="">No dataset</option>' + datasets.map((row) =>
+      `<option value="${Number(row.id)}">${escapeHtml(row.name)} (${Number(row.file_count || 0)} files)</option>`).join('');
+    if (datasets.some((row) => String(row.id) === current)) select.value = current;
+    else if (datasets.length) select.value = String(datasets[datasets.length - 1].id);
+  }
+
+  function modelOptions(task) {
+    return state.aiModels.filter((row) => row.task === task).map((row) =>
+      `<option value="${escapeHtml(row.model_key)}"${row.usable ? '' : ' disabled'} title="${escapeHtml(row.reason || row.description)}">${escapeHtml(row.model_key)}${row.usable ? '' : ' (unavailable)'}</option>`).join('');
+  }
+
+  function preferredModel(task) {
+    const usable = state.aiModels.filter((row) => row.task === task && row.usable);
+    const trained = usable.find((row) => row.model_key !== 'heuristic');
+    return (trained || usable[0] || {}).model_key || '';
+  }
+
+  function renderModelChoices() {
+    const detection = $('#job-detection-model');
+    const current = detection.value;
+    detection.innerHTML = modelOptions('detection') || '<option value="">No models listed</option>';
+    detection.value = current && state.aiModels.some((row) => row.task === 'detection' && row.usable && row.model_key === current)
+      ? current : preferredModel('detection');
+    renderAiModelChoices();
+  }
+
+  function renderAiModelChoices() {
+    const task = $('#ai-task').value;
+    const select = $('#ai-model');
+    select.innerHTML = modelOptions(task) || '<option value="">No models listed</option>';
+    select.value = preferredModel(task);
+    const usable = state.aiModels.filter((row) => row.task === task && row.usable);
+    const blocked = state.aiModels.filter((row) => row.task === task && !row.usable);
+    $('#ai-model-note').textContent = !usable.length
+      ? `No model can run ${task} on this server. ${blocked.map((row) => row.reason).join(' ')}`
+      : blocked.length ? `${blocked.length} registered model(s) unavailable here; hover an entry for the reason.` : '';
+  }
+
+  function showJobKindFields() {
+    const kind = $('#job-kind').value;
+    $$('.job-fields').forEach((block) => { block.hidden = block.dataset.jobKind !== kind; });
+  }
+
+  async function createDataset() {
+    if (!needProject()) return;
+    const name = $('#new-dataset-name').value.trim();
+    if (!name) { status('Name the new dataset first.', 'warning'); return; }
+    const created = await apiAction('Create dataset', () => state.api.createDataset(state.projectId, { name }));
+    if (!created) return;
+    $('#new-dataset-name').value = '';
+    const datasets = await apiAction('Load datasets', () => state.api.listDatasets(state.projectId));
+    if (datasets) { renderDatasets(datasets); $('#job-dataset').value = String(created.id); }
+  }
+
+  async function uploadFiles(event) {
+    event.preventDefault();
+    if (!needProject()) return;
+    const datasetId = Number($('#job-dataset').value);
+    const files = Array.from($('#dataset-files').files || []);
+    if (!datasetId) { status('Choose or create a dataset to upload into.', 'warning'); return; }
+    if (!files.length) { status('Choose images to upload.', 'warning'); return; }
+    const holder = $('#upload-progress');
+    holder.classList.remove('empty');
+    const lines = files.map((file) => ({ name: file.name, text: 'waiting' }));
+    const paint = () => { holder.innerHTML = lines.map((line) => record(line.name, line.text)).join(''); };
+    paint();
+    let failures = 0;
+    for (const [index, file] of files.entries()) {
+      try {
+        const result = await state.api.uploadFile(datasetId, file, (sent, total) => {
+          lines[index].text = `chunk ${sent} of ${total}`; paint();
+        });
+        lines[index].text = `${result.bytes} bytes, checksum ${result.checksum_verified ? 'verified' : 'not verified (no Web Crypto on this origin)'}`;
+      } catch (error) {
+        failures += 1;
+        lines[index].text = `failed: ${error.message}`;
+      }
+      paint();
+    }
+    status(failures ? `${failures} of ${files.length} upload(s) failed.` : `Uploaded ${files.length} file(s).`,
+      failures ? 'error' : 'success');
+    const datasets = await apiAction('Load datasets', () => state.api.listDatasets(state.projectId));
+    if (datasets) { renderDatasets(datasets); $('#job-dataset').value = String(datasetId); }
+  }
+
+  function jobRequest() {
+    const kind = $('#job-kind').value;
+    const datasetId = Number($('#job-dataset').value) || null;
+    const request = { kind, dataset_id: datasetId, options: {} };
+    if (kind === 'reconstruction') {
+      if (!datasetId) throw new Error('A reconstruction needs a dataset of uploaded images.');
+      request.engine = $('#job-engine').value;
+      request.profile = $('#job-profile').value;
+    } else if (kind === 'detection') {
+      if (!datasetId) throw new Error('A detection job needs a dataset of uploaded images.');
+      request.options.model_key = $('#job-detection-model').value;
+    } else if (kind === 'measurement') {
+      const measurement = $('#job-measurement').value;
+      const source = Number($('#job-source').value);
+      if (!source) throw new Error('Choose a finished reconstruction to measure on.');
+      let points;
+      try { points = JSON.parse($('#job-points').value || 'null'); }
+      catch (error) { throw new Error(`Points are not valid JSON: ${error.message}`); }
+      request.options = { measurement, source_job_id: source };
+      request.options[measurement === 'volume' ? 'polygon_xy' : 'pixels'] = points;
+    } else if (kind === 'report') {
+      request.options.include_unreviewed = $('#job-include-unreviewed').checked;
+    }
+    return request;
+  }
+
+  async function submitProcessingJob(event) {
+    event.preventDefault();
+    if (!needProject()) return;
+    let request;
+    try { request = jobRequest(); } catch (error) { status(`Job: ${error.message}`, 'error'); return; }
+    const job = await apiAction(`Submit ${request.kind} job`, () => state.api.submitJob(state.projectId, request));
+    if (job) await refreshJobs();
+  }
+
+  async function submitAiJob(event) {
+    event.preventDefault();
+    if (!needProject()) return;
+    const datasetId = Number($('#job-dataset').value);
+    const modelKey = $('#ai-model').value;
+    if (!datasetId) { status('Choose the dataset holding the images.', 'warning'); return; }
+    if (!modelKey) { status('No usable model for this task.', 'warning'); return; }
+    const frame = $('#ai-frame').value.trim();
+    const job = await apiAction('Submit AI job', () => state.api.createAiJob(state.projectId, {
+      task: $('#ai-task').value, model_key: modelKey,
+      input_ref: frame ? `dataset:${datasetId}/frame:${frame}` : `dataset:${datasetId}`
+    }));
+    if (job) await refreshJobs();
+  }
+
+  function renderJobs() {
+    const holder = $('#job-list');
+    holder.classList.toggle('empty', !state.jobs.length);
+    const sources = state.jobs.filter((job) => job.kind === 'reconstruction' && job.status === 'done');
+    const source = $('#job-source');
+    const chosen = source.value;
+    source.innerHTML = sources.length
+      ? sources.map((job) => `<option value="${Number(job.id)}">Job ${Number(job.id)} (EPSG ${escapeHtml(job.crs_epsg || '?')})</option>`).join('')
+      : '<option value="">No finished reconstruction</option>';
+    if (sources.some((job) => String(job.id) === chosen)) source.value = chosen;
+    $('#metric-jobs').textContent = String(state.jobs.length);
+    if (!state.jobs.length) { holder.innerHTML = 'No jobs in this project yet.'; return; }
+    holder.innerHTML = state.jobs.map((job) => {
+      const ai = String(job.kind).startsWith('ai:');
+      const active = !TERMINAL_JOB_STATES.has(job.status);
+      const cancel = active && job.status !== 'cancelling'
+        ? `<button data-job-cancel="${Number(job.id)}" data-job-ai="${ai ? 1 : 0}">Cancel</button>` : '';
+      const artifacts = (job.artifacts || []).map((ref) =>
+        `<button type="button" data-job-artifact="${Number(job.id)}" data-ref="${escapeHtml(ref)}">${escapeHtml(String(ref).split('/').pop())}</button>`).join('');
+      const detail = [job.message, job.crs_epsg ? `EPSG ${job.crs_epsg}` : ''].filter(Boolean).join(' · ');
+      return `<article class="record" data-job-id="${Number(job.id)}"><header><strong>Job ${Number(job.id)}: ${escapeHtml(job.kind)} — ${escapeHtml(job.status)} ${Number(job.percent || 0)}%</strong>${cancel}</header>`
+        + `<small>${escapeHtml(detail || 'no message')}</small>`
+        + (job.error ? `<small class="job-error">${escapeHtml(job.error)}</small>` : '')
+        + (artifacts ? `<div class="job-artifacts">${artifacts}</div>` : '') + '</article>';
+    }).join('');
+  }
+
+  async function refreshJobs() {
+    if (!state.api || !state.projectId) return;
+    const jobs = await apiAction('Load project jobs', () => state.api.listJobs(state.projectId));
+    if (!jobs) return;
+    state.jobs = jobs;
+    renderJobs();
+    clearTimeout(state.jobTimer);
+    if (jobs.some((job) => !TERMINAL_JOB_STATES.has(job.status))) {
+      state.jobTimer = setTimeout(refreshJobs, 2000);
+    }
+  }
+
+  async function handleJobListClick(event) {
+    const cancel = event.target.closest('[data-job-cancel]');
+    if (cancel) {
+      const id = Number(cancel.dataset.jobCancel);
+      const done = await apiAction(`Cancel job ${id}`, () => (cancel.dataset.jobAi === '1'
+        ? state.api.cancelAiJob(id) : state.api.cancelJob(id)));
+      if (done) await refreshJobs();
+      return;
+    }
+    const artifact = event.target.closest('[data-job-artifact]');
+    if (artifact) {
+      const ref = artifact.dataset.ref;
+      const blob = await apiAction(`Download ${ref.split('/').pop()}`,
+        () => state.api.downloadArtifact(Number(artifact.dataset.jobArtifact), ref));
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = ref.split('/').pop();
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
   }
 
   async function renderOrganizationActivity() {
@@ -209,10 +439,11 @@
 
   async function createProject(event) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const payload = Object.fromEntries(data.entries());
+    // currentTarget is cleared once dispatch returns, so keep the form for after the await.
+    const form = event.currentTarget;
+    const payload = Object.fromEntries(new FormData(form).entries());
     const created = await apiAction('Create project', () => state.api.createProject(state.orgId, payload));
-    if (created) { event.currentTarget.reset(); await loadProjects(); await selectProject(created.id); }
+    if (created) { form.reset(); await loadProjects(); await selectProject(created.id); }
   }
 
   async function loadAssets() {
@@ -231,8 +462,8 @@
 
   async function createAsset(event) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const payload = Object.fromEntries(data.entries());
+    const form = event.currentTarget;
+    const payload = Object.fromEntries(new FormData(form).entries());
     for (const field of ['longitude', 'latitude']) payload[field] = payload[field] === '' ? null : Number(payload[field]);
     payload.crs_epsg = 4326;
     if (payload.geometry) {
@@ -240,7 +471,7 @@
       catch (error) { status(`Asset geometry: ${error.message}`, 'error'); return; }
     } else payload.geometry = null;
     const created = await apiAction('Create asset', () => state.api.createAsset(state.orgId, payload));
-    if (created) { event.currentTarget.reset(); await loadAssets(); }
+    if (created) { form.reset(); await loadAssets(); }
   }
 
   const STANDARD_PROVIDERS = {
@@ -750,6 +981,14 @@
     $('#refresh-assets').onclick = loadAssets;
     $('#project-form').onsubmit = createProject;
     $('#asset-form').onsubmit = createAsset;
+    $('#refresh-jobs').onclick = loadJobsPanel;
+    $('#create-dataset').onclick = createDataset;
+    $('#dataset-form').onsubmit = uploadFiles;
+    $('#job-kind').onchange = showJobKindFields;
+    $('#job-form').onsubmit = submitProcessingJob;
+    $('#ai-task').onchange = renderAiModelChoices;
+    $('#ai-job-form').onsubmit = submitAiJob;
+    $('#job-list').onclick = handleJobListClick;
     $('#hub-basemap').onchange = (event) => { initLayerMap(); state.layerMap.setStyle(styleForProvider(STANDARD_PROVIDERS[event.target.value])); };
     $('#add-map-provider').onclick = addMapProvider;
     $('#tile-cache-form').onsubmit = cacheTiles;

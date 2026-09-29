@@ -1411,15 +1411,19 @@ PLATFORM = [
                       "tests/test_rest_resources.py::TestRestContainment",
                       "tests/test_annotations.py::TestAnnotationApi",
                       "tests/test_processing_kinds.py",
-                      "tests/test_ai_job_worker.py"],
+                      "tests/test_ai_job_worker.py",
+                      "tests/test_hub_jobs_browser.py"],
       "Defects, source-attributed georeferenced measurements, immutable structured report "
       "snapshots, project annotations and AI jobs are documented in OpenAPI and enforce "
       "project containment. Every advertised processing kind (reconstruction, detection, "
       "measurement, report) has a worker; outputs are stored under runs/job_<id> and "
       "downloadable. AI jobs are claimed by an inline or standalone inference worker and "
       "refused at submission when the model is unknown, unsuited to the task or its "
-      "weights are absent -- no heuristic is substituted for a named model. Tests that "
-      "need installed weights skip without them; the heuristic path always runs."),
+      "weights are absent -- no heuristic is substituted for a named model. GET /ai-models "
+      "lists every candidate with the reason it cannot run here. The browser Hub's Data "
+      "and jobs panel uploads imagery and submits, watches, cancels and downloads jobs. "
+      "Detection-job findings carry severity 'unassessed' until a reviewer grades them. "
+      "Tests that need installed weights skip without them; the heuristic path always runs."),
     F("api.uploads", "Resumable dataset upload", "hub", "API",
       "A client declares a file with its size and sha256, sends chunks in any order, "
       "queries what is missing, and finalises; assembly is refused unless both the byte "

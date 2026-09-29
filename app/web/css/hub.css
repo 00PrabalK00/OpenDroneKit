@@ -103,3 +103,11 @@ footer { height: 30px; display: flex; justify-content: space-between; align-item
   #hub-connection-state { display: none; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.job-fields { display: grid; gap: 11px; }
+.job-fields[hidden] { display: none; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; }
+.job-artifacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.job-artifacts button { font-size: 12px; padding: 4px 8px; }
+.job-error { color: var(--danger, #ff8a8a); }
