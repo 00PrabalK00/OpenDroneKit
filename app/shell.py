@@ -11,11 +11,13 @@ single code path per action regardless of how the user triggered it.
 
 from __future__ import annotations
 
-import os
-
 import json
+import os
+import re
+import threading
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlsplit
 
 import webview
 from webview.menu import Menu, MenuAction, MenuSeparator
@@ -33,6 +35,8 @@ class Shell:
     def __init__(self, session: AppSession | None = None):
         self.api = Api(session)
         self.window: Any = None
+        # Served to the pages as odk-runtime.json (see _serve).
+        self.runtime: dict[str, Any] = {"hub_status": "not started", "hub_api": None, "hub_error": ""}
         # Reselect the dataset this project last imported. The field lives in memory, so
         # without this the application opened with nothing selected even when the project
         # obviously had a dataset, and every dataset-dependent action refused until the
@@ -147,7 +151,8 @@ class Shell:
                 MenuAction("Basemap: Satellite", act("view.basemap", {"basemap": "satellite"})),
                 MenuAction("Basemap: Street", act("view.basemap", {"basemap": "street"})),
                 MenuAction("Basemap: Topographic", act("view.basemap", {"basemap": "topo"})),
-                MenuAction("Basemap: Offline Grid", act("view.basemap", {"basemap": "offline"})),
+                MenuAction("Basemap: Offline Cache", act("view.basemap", {"basemap": "offline"})),
+                MenuAction("Cache Visible Map for Offline Use", act("view.cache_tiles")),
                 MenuSeparator(),
                 MenuAction("Zoom to Area of Interest", act("view.zoom_aoi")),
                 MenuAction("Zoom to Mission", act("view.zoom_mission")),
@@ -181,20 +186,9 @@ class Shell:
 
     # -- lifecycle -------------------------------------------------------
 
-    def run(self, *, debug: bool = False, width: int = 1600, height: int = 980) -> None:
-        # index.html is what opens, because it is the only one of the two that DOES
-        # anything: plan a mission, run a reconstruction, connect a vehicle, upload.
-        #
-        # The cockpit (workspace.html) is the interface the documentation describes, and
-        # it is a real shell -- fourteen workspaces, docks, panels, command palette. What
-        # it has no wiring for is actions: every toolbar button routes to runAction(),
-        # which writes "not wired to the API yet" into the status bar and does nothing.
-        # Making it the default shipped an application whose buttons do not work, which
-        # is a downgrade however much better it looks.
-        #
-        # ODK_UI=cockpit opens it, and it becomes the default when its actions reach the
-        # Api rather than when its layout is finished.
-        page = "workspace.html" if os.environ.get("ODK_UI") == "cockpit" else "index.html"
+    def run(self, *, debug: bool = False, width: int = 1600, height: int = 980,
+            ui: str | None = None) -> None:
+        page = UI_PAGES[resolve_ui(ui)]
         index = WEB_ROOT / page
         if not index.exists():
             raise FileNotFoundError(f"UI assets are missing: {index}")
@@ -209,7 +203,16 @@ class Shell:
         # absolute path, so the server is started here where the behaviour is explicit.
         # It binds 127.0.0.1 on an ephemeral port: nothing leaves the machine, which
         # this application guarantees elsewhere and must not quietly break here.
-        url = self._serve(WEB_ROOT, page)
+        url = self._serve(WEB_ROOT, page, runtime=self.runtime)
+
+        # The Hub page (linked from the toolbar) talks to the REST service. Nothing in
+        # the launch path used to start it, so the link opened a page that could only
+        # say "API unavailable". It runs in-process on loopback, in the background so
+        # the window does not wait for it.
+        if os.environ.get("ODK_HUB", "1") != "0":
+            start_hub_service(self.runtime, ui_origin=url.rsplit("/", 1)[0])
+        else:
+            self.runtime.update(hub_status="disabled", hub_error="Disabled with ODK_HUB=0.")
 
         self.window = webview.create_window(
             WINDOW_TITLE,
@@ -225,25 +228,160 @@ class Shell:
         webview.start(menu=self.build_menu(), debug=debug)
 
     @staticmethod
-    def _serve(root: Path, page: str) -> str:
+    def _serve(root: Path, page: str, runtime: dict[str, Any] | None = None) -> str:
         """Serve the UI directory on loopback and return the URL for `page`.
 
         A daemon thread on an ephemeral port. Bound to 127.0.0.1 explicitly rather than
         0.0.0.0: an offline-first inspection tool must not open a port to the network
         because its UI happens to need an origin.
+
+        Besides the static files it answers two things the pages need at runtime:
+
+        - `odk-runtime.json`: where the in-process Hub service is listening, if it is,
+          and why not when it is not.
+        - `tiles/{z}/{x}/{y}.png?provider=`: the offline basemap cache, read straight
+          from disk. The "Offline cache" basemap used to load from the Hub on port
+          8000, which the launcher never started, so with no network the map was blank.
         """
         import functools
-        import threading
         from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-        class QuietHandler(SimpleHTTPRequestHandler):
+        state = runtime if runtime is not None else {}
+
+        class Handler(SimpleHTTPRequestHandler):
             def log_message(self, *args: Any) -> None:
                 """Silent: a request line per asset would bury the application's own log."""
 
-        handler = functools.partial(QuietHandler, directory=str(root))
+            def do_GET(self) -> None:  # noqa: N802 - http.server naming
+                parts = urlsplit(self.path)
+                if parts.path == "/odk-runtime.json":
+                    body = json.dumps(state).encode("utf-8")
+                    self._send(200, "application/json", body, {"Cache-Control": "no-store"})
+                    return
+                match = _TILE_ROUTE.match(parts.path)
+                if match:
+                    from core.tile_cache import TRANSPARENT_PNG, read_tile
+
+                    provider = (parse_qs(parts.query).get("provider") or ["satellite"])[0]
+                    z, x, y = (int(value) for value in match.groups())
+                    tile = read_tile(provider, z, x, y)
+                    if tile is None:
+                        # A gap in coverage looks like a gap, not like terrain.
+                        self._send(404, "image/png", TRANSPARENT_PNG, {"X-ODK-Tile": "not-cached"})
+                    else:
+                        self._send(200, "image/png", tile, {"X-ODK-Tile": "cached"})
+                    return
+                super().do_GET()
+
+            def _send(self, code: int, kind: str, body: bytes, headers: dict[str, str]) -> None:
+                self.send_response(code)
+                self.send_header("Content-Type", kind)
+                self.send_header("Content-Length", str(len(body)))
+                for key, value in headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(body)
+
+        handler = functools.partial(Handler, directory=str(root))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{server.server_port}/{page}"
+
+
+_TILE_ROUTE = re.compile(r"^/tiles/(\d+)/(\d+)/(\d+)\.png$")
+
+HUB_DEFAULT_PORT = 8000
+
+
+def _free_port(preferred: int) -> int:
+    """`preferred` when nothing is listening there, otherwise any free loopback port."""
+    import socket
+
+    for candidate in (preferred, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return int(probe.getsockname()[1])
+    raise OSError("No free loopback port.")
+
+
+def start_hub_service(runtime: dict[str, Any], *, ui_origin: str,
+                      port: int | None = None) -> threading.Thread:
+    """Run the Hub REST API in this process, on loopback, in a daemon thread.
+
+    `runtime` is the dict served as odk-runtime.json: it records where the service is
+    listening, or exactly why it is not (a missing package is named, not hidden). The
+    UI origin is added to the allowed CORS origins because the pages are served from
+    the shell's own loopback port. Port 8000 -- the Hub page's documented default -- is
+    used when free, any free port otherwise.
+    """
+    runtime.update(hub_status="starting", hub_api=None, hub_error="")
+
+    def serve() -> None:
+        try:
+            import uvicorn
+
+            origins = [o.strip() for o in os.environ.get("ODK_CORS_ORIGINS", "").split(",") if o.strip()]
+            if ui_origin not in origins:
+                origins.append(ui_origin)
+            os.environ["ODK_CORS_ORIGINS"] = ",".join(origins)
+            from services.api.main import app as hub_app
+
+            chosen = port if port is not None else _free_port(HUB_DEFAULT_PORT)
+            server = uvicorn.Server(uvicorn.Config(
+                hub_app, host="127.0.0.1", port=chosen, log_level="warning",
+                lifespan="on", access_log=False,
+            ))
+            # Not the main thread: uvicorn must not install signal handlers here.
+            server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+
+            def mark_running() -> None:
+                import time
+
+                while runtime.get("hub_status") == "starting":
+                    if server.started:
+                        runtime.update(hub_status="running", hub_api=f"http://127.0.0.1:{chosen}")
+                        return
+                    time.sleep(0.05)
+
+            threading.Thread(target=mark_running, daemon=True).start()
+            server.run()
+            if runtime.get("hub_status") != "running":
+                runtime.update(hub_status="unavailable",
+                               hub_error=f"The Hub service could not listen on 127.0.0.1:{chosen}.")
+        except BaseException as exc:  # noqa: BLE001 - reported to the page, never raised
+            runtime.update(
+                hub_status="unavailable",
+                hub_error=(
+                    f"{type(exc).__name__}: {exc}. Install requirements.txt into this "
+                    "environment (python main.py --check-deps lists what is missing)."
+                ),
+            )
+
+    thread = threading.Thread(target=serve, name="odk-hub-service", daemon=True)
+    thread.start()
+    return thread
+
+
+UI_PAGES = {"classic": "index.html", "cockpit": "workspace.html"}
+DEFAULT_UI = "classic"
+
+
+def resolve_ui(choice: str | None = None) -> str:
+    """Which interface to open: --ui, else ODK_UI, else the classic shell.
+
+    The classic single-screen UI is the default: every control and all of the native
+    menu bar is wired and exercised there. The cockpit (fourteen workspaces) is bridged
+    to the same Api and opens with `--ui cockpit` or ODK_UI=cockpit. ODK_UI=classic was
+    documented and did nothing special, and an unknown value fell back silently; both
+    are explicit now.
+    """
+    raw = (choice or os.environ.get("ODK_UI") or DEFAULT_UI).strip().lower()
+    if raw not in UI_PAGES:
+        raise ValueError(f"Unknown UI {raw!r}: choose one of {', '.join(UI_PAGES)}.")
+    return raw
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -253,11 +391,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true", help="Open developer tools.")
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=980)
+    parser.add_argument("--ui", choices=sorted(UI_PAGES), default=None,
+                        help="Interface to open (default: ODK_UI, else classic).")
     args = parser.parse_args(argv)
 
-    Shell().run(debug=args.debug, width=args.width, height=args.height)
+    try:
+        ui = resolve_ui(args.ui)
+    except ValueError as exc:
+        parser.error(str(exc))
+    Shell().run(debug=args.debug, width=args.width, height=args.height, ui=ui)
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

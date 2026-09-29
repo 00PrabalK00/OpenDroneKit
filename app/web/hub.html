@@ -23,9 +23,21 @@
       <label>Token <input id="hub-token" type="password" autocomplete="off" /></label>
       <label>Organization <input id="hub-org-id" type="number" min="1" value="1" /></label>
       <button id="hub-connect">Connect</button>
+      <button id="hub-signin" type="button" title="Get a token by signing in, or create a local account">Sign in…</button>
       <span id="hub-connection-state" class="badge muted">not connected</span>
     </div>
   </header>
+  <dialog id="hub-signin-dialog">
+    <form id="hub-signin-form" method="dialog">
+      <h2>Sign in to the Hub</h2>
+      <label>Email <input name="email" type="email" required autocomplete="username" /></label>
+      <label>Password <input name="password" type="password" required minlength="8" autocomplete="current-password" /></label>
+      <label><input name="create" type="checkbox" /> Create a new account (and its organisation)</label>
+      <label>Organisation name <input name="organization_name" placeholder="optional, new accounts only" /></label>
+      <p id="hub-signin-error" class="error" role="alert"></p>
+      <menu><button value="cancel" formnovalidate>Cancel</button><button id="hub-signin-submit" value="ok">Sign in</button></menu>
+    </form>
+  </dialog>
   <div class="hub-shell">
     <nav class="hub-nav" aria-label="Hub sections">
       <button class="active" data-panel="overview">Overview</button>

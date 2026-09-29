@@ -771,4 +771,66 @@
   const savedApi = localStorage.getItem('odk-hub-api'); if (savedApi) $('#hub-api-url').value = savedApi;
   const savedOrg = localStorage.getItem('odk-hub-org'); if (savedOrg) $('#hub-org-id').value = savedOrg;
   wire();
+  wireSignIn();
+  followDesktopService();
+
+  /* A token used to be something you fetched with curl before this page was any use:
+     there was a Token field and no way to obtain one here. Sign in (or create an
+     account on a fresh local Hub) against /auth, then pick the first organisation the
+     account belongs to and connect. */
+  function wireSignIn() {
+    const dialog = $('#hub-signin-dialog');
+    const form = $('#hub-signin-form');
+    if (!dialog || !form) return;
+    $('#hub-signin').onclick = () => { $('#hub-signin-error').textContent = ''; dialog.showModal(); };
+    form.addEventListener('submit', async (event) => {
+      if (event.submitter && event.submitter.value === 'cancel') return;
+      event.preventDefault();
+      const data = new FormData(form);
+      const create = data.get('create') === 'on';
+      try {
+        const anonymous = new ODKHubApi.HubApi($('#hub-api-url').value, '');
+        const payload = { email: String(data.get('email') || ''), password: String(data.get('password') || '') };
+        if (create) payload.organization_name = String(data.get('organization_name') || '');
+        const session = await anonymous.request('POST', create ? '/auth/register' : '/auth/login', payload);
+        $('#hub-token').value = session.access_token;
+        const signedIn = new ODKHubApi.HubApi($('#hub-api-url').value, session.access_token);
+        const organisations = await signedIn.request('GET', '/organizations');
+        if (Array.isArray(organisations) && organisations.length) $('#hub-org-id').value = String(organisations[0].id);
+        dialog.close();
+        status(`Signed in as ${payload.email}.`, 'success');
+        await connect();
+      } catch (error) {
+        $('#hub-signin-error').textContent = error.message || String(error);
+      }
+    });
+  }
+
+  /* Inside the desktop app the Hub service runs in-process on loopback, on whichever
+     port was free. The shell publishes where in odk-runtime.json; use it, and when the
+     service could not start say exactly why instead of failing at Connect with a bare
+     "API is unavailable". Outside the desktop app the file does not exist and nothing
+     changes. */
+  async function followDesktopService() {
+    let runtime = null;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      try {
+        const response = await fetch('odk-runtime.json', { cache: 'no-store' });
+        if (!response.ok) return;
+        runtime = await response.json();
+      } catch (_) {
+        return;
+      }
+      if (runtime.hub_status !== 'starting') break;
+      if (attempt === 0) status('Starting the local Hub service…');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (!runtime) return;
+    if (runtime.hub_status === 'running' && runtime.hub_api) {
+      $('#hub-api-url').value = runtime.hub_api;
+      status(`Local Hub service running at ${runtime.hub_api}. Sign in or paste a token, then Connect.`, 'ok');
+    } else if (runtime.hub_status === 'unavailable' || runtime.hub_status === 'disabled') {
+      status(`The local Hub service is not running: ${runtime.hub_error || runtime.hub_status}`, 'error');
+    }
+  }
 })();

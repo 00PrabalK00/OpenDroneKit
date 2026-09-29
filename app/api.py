@@ -45,6 +45,13 @@ def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _data_paths() -> dict[str, str]:
+    """Where this install keeps its state (core/paths.py), for the UI to show."""
+    from core.paths import describe
+
+    return describe()
+
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -163,7 +170,13 @@ class Api:
         This replaces the hardcoded survey polygon the previous UI used for every
         mission: planning now uses whatever the operator actually drew.
         """
-        ring = [[float(p[0]), float(p[1])] for p in polygon_lonlat if len(p) >= 2]
+        ring = [[float(p[0]), float(p[1])] for p in (polygon_lonlat or []) if len(p) >= 2]
+        if not ring:
+            # Clear. The menu's "Clear Area of Interest" sends an empty list, and this
+            # used to refuse it as a 0-vertex polygon -- the map cleared, the session
+            # kept the old area, and the next Plan flew it.
+            self._session.aoi_polygon = []
+            return ok(vertices=0, cleared=True)
         if len(ring) < 3:
             return fail("An area of interest needs at least 3 vertices.")
         if ring[0] == ring[-1]:
@@ -283,6 +296,61 @@ class Api:
         self._session.geocoding_provider = name
         return ok(provider=name, note=build_provider(name).describe())
 
+    # -- offline basemap ----------------------------------------------------
+
+    @guard
+    def basemap_cache_status(self) -> dict[str, Any]:
+        """What the offline basemap can actually show: tiles on disk per provider.
+
+        The desktop shell serves these itself (tiles/{z}/{x}/{y}.png on its loopback
+        origin), so the "Offline cache" basemap works with no Hub and no network.
+        """
+        from core.tile_cache import MAX_TILES_PER_REQUEST, PROVIDERS, summary
+
+        return ok(
+            **summary(),
+            available_providers={k: {"max_zoom": v["max_zoom"], "attribution": v["attribution"]}
+                                 for k, v in PROVIDERS.items()},
+            max_tiles_per_request=MAX_TILES_PER_REQUEST,
+        )
+
+    @guard
+    def cache_basemap_area(self, west: float, south: float, east: float, north: float,
+                           min_zoom: int = 12, max_zoom: int = 17,
+                           provider: str = "satellite") -> dict[str, Any]:
+        """Download basemap tiles for an area so the map works on a site with no signal.
+
+        Explicit only: panning never downloads anything. The request is validated (zoom
+        ceiling, tile budget) before anything is fetched, and runs as a job reporting
+        how many tiles arrived, were already cached, or failed -- a partial cache is
+        reported as partial.
+        """
+        from core.tile_cache import Area, TileCacheRefused, fetch_area, validate
+
+        area = Area(provider=str(provider or "satellite"), west=float(west), south=float(south),
+                    east=float(east), north=float(north), min_zoom=int(min_zoom),
+                    max_zoom=int(max_zoom))
+        try:
+            total = validate(area)
+        except TileCacheRefused as exc:
+            return fail(str(exc))
+
+        session = self._session
+
+        def work(progress: Callable[..., None], should_cancel: Callable[[], bool]) -> dict[str, Any]:
+            seen = {"n": 0}
+
+            def on_tile(_success: bool) -> None:
+                seen["n"] += 1
+                if seen["n"] % 10 == 0 or seen["n"] == total:
+                    progress(int(100 * seen["n"] / max(1, total)), f"{seen['n']}/{total} tiles")
+
+            counts = fetch_area(area, on_tile=on_tile, should_cancel=should_cancel)
+            session.audit("basemap_cached", {"provider": area.provider, "tiles": total, **counts})
+            return {"provider": area.provider, "requested": total, **counts}
+
+        return ok(job_id=self._jobs.submit("basemap_cache", work), tiles=total, provider=area.provider)
+
     @guard
     def get_state(self) -> dict[str, Any]:
         """Everything the UI needs for a full refresh in one call."""
@@ -296,6 +364,8 @@ class Api:
             has_mission=bool(self._session.mission_plan_dict),
             active_dataset=self._session.active_dataset_dir,
             jobs=self._jobs.active(),
+            display_epsg=self._session.display_epsg,
+            data_paths=_data_paths(),
         )
 
     # -- layers ----------------------------------------------------------
