@@ -825,7 +825,7 @@ export class Shell {
         return;
       }
       const message = (result && result.message) || `${action} done.`;
-      this.toast(message, "ok");
+      this.toast(message, (result && result.level) || "ok");
       if (result && result.job) this.watchJob(result.job);
       if (result && result.refresh) {
         await this.refreshState();

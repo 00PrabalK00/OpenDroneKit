@@ -144,6 +144,9 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("set_clip_visible", "Clip"),
         ("remove_clip", "Clip"),
         ("export_clipped_model", "Clip"),
+        # Declared "no thermal product is selectable" until it took a radiometric frame
+        # from disk; tests/test_cockpit_thermal_range.py drives it.
+        ("scale_thermal", "Temperature Range"),
     ]
 
     @pytest.mark.parametrize("method,button", REACHABLE, ids=[m for m, _ in REACHABLE])
@@ -155,34 +158,6 @@ class TestTheFeaturesBuiltHereAreReachable:
         assert f'"{method}"' in action_body(actions, button), (
             f"{button!r} does not call {method}()"
         )
-
-
-class TestWhatCannotBeReachedSaysWhy:
-    """A capability with no way to drive it from this interface is declared, not wired.
-
-    A button that always answers "no camera pose yet" would be the same dead control
-    this audit exists to remove -- but silently dropping it would lose the fact that the
-    capability exists and is tested. Save View, Clip and Measure in 3D left this list
-    when the Digital Twin gained its 3D viewer.
-    """
-
-    DECLARED = ["Temperature Range"]
-
-    @pytest.mark.parametrize("button", DECLARED)
-    def test_it_names_the_missing_capability(self, actions, button) -> None:
-        body = action_body(actions, button)
-        assert "skipped" in body, f"{button!r} does not decline honestly"
-        assert "implemented" in body, (
-            f"{button!r} does not say the capability exists, only that it did nothing"
-        )
-
-    @pytest.mark.parametrize("button", DECLARED)
-    def test_the_api_really_does_implement_it(self, button) -> None:
-        """The declaration has to be true in both directions: the button says the
-        capability is implemented, so it had better be."""
-        api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
-        method = {"Temperature Range": "scale_thermal"}[button]
-        assert f"def {method}(" in api
 
 
 def test_measure_in_3d_reaches_the_model_measurement() -> None:

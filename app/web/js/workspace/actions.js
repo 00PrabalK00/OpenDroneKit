@@ -859,11 +859,39 @@ export const ACTIONS = {
       return { message: `${verb === "toggle" ? "Toggled" : "Removed"} “${name}”.` };
     },
   },
+  /* Answered "scale_thermal is implemented, but ... no thermal product is selectable in
+     this build" and did nothing. The frame is now chosen from disk: a radiometric sidecar
+     (raw counts plus the camera's Planck constants) is what core/thermal reads; a thermal
+     JPEG is refused by the Api with the reason, since its pixels are a palette. */
   "Temperature Range": {
-    describe: "Set the palette range. Needs a selected radiometric raster.",
-    async run() {
-      return { skipped: "scale_thermal is implemented, but it takes a radiometric raster "
-                        + "and no thermal product is selectable in this build." };
+    describe: "Choose the temperature range a radiometric frame is drawn in.",
+    async run(ctx) {
+      const picked = await call("pick_file", ["json"]);
+      if (!picked.path) return { skipped: "No radiometric frame chosen." };
+      const modes = {
+        "Automatic (1st to 99th percentile)": "auto",
+        "Manual (enter min and max)": "manual",
+        "Anomaly (mean ± 2σ)": "anomaly",
+      };
+      const choice = await ctx.choose("Temperature range", Object.keys(modes));
+      if (!choice) return { skipped: "No range mode chosen." };
+      const mode = modes[choice];
+      let low = null;
+      let high = null;
+      if (mode === "manual") {
+        low = Number.parseFloat(await ctx.prompt("Lowest temperature °C", "") || "");
+        high = Number.parseFloat(await ctx.prompt("Highest temperature °C", "") || "");
+        if (!Number.isFinite(low) || !Number.isFinite(high)) {
+          return { skipped: "A manual range needs a number for both ends; nothing was changed." };
+        }
+      }
+      const result = await call("scale_thermal", picked.path, mode, low, high);
+      const s = result.scale;
+      const text = `${s.min_c.toFixed(1)} to ${s.max_c.toFixed(1)} °C (${s.method}, ${s.palette}); `
+        + `the frame spans ${s.data_min_c.toFixed(1)} to ${s.data_max_c.toFixed(1)} °C`;
+      return result.warning
+        ? { message: `Range ${text}. ${result.warning}`, level: "warn" }
+        : { message: `Range ${text}; no pixel falls outside it.` };
     },
   },
 
