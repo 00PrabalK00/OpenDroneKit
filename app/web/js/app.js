@@ -706,13 +706,31 @@
   }
 
   async function listReportsDialog() {
-    const result = await tryCall('list_reports');
+    const [result, pipeline] = await Promise.all([tryCall('list_reports'), tryCall('pipeline_reports')]);
     if (!result) return;
     const rows = result.reports.map((r) =>
       `<div><span>${esc(r.created_at.slice(0, 19))} · ${esc(r.title)} (${esc(r.report_type)})</span>
        <b>${reportLinks(r)}</b></div>`).join('');
-    modal('Generated Reports', `<div class="info">${rows || 'No reports generated in this project yet.'}</div>`);
+    // Run Pipeline's markdown inspection reports, one per run, listed beside them.
+    const runs = ((pipeline && pipeline.reports) || []).map((r) =>
+      `<div><span>${esc(String(r.created_at || '').slice(0, 19))} · Pipeline inspection report (${esc(r.id)})</span>
+       <b><button data-pipeline-report="${esc(r.id)}">View</button></b></div>`).join('');
+    modal('Generated Reports', `<div class="info">${rows || 'No reports generated in this project yet.'}</div>`
+      + (runs ? `<div class="info">${runs}</div>` : ''));
     wireReportLinks();
+    $$('#modal-body button[data-pipeline-report]').forEach((button) => {
+      button.onclick = () => pipelineReportDialog(button.dataset.pipelineReport);
+    });
+  }
+
+  async function pipelineReportDialog(runId) {
+    const report = await tryCall('read_pipeline_report', runId || '');
+    if (!report) return;
+    modal(`Inspection Report: ${report.id}`,
+      `<pre class="md-report" style="white-space:pre-wrap;max-height:60vh;overflow:auto;margin:0">${esc(report.markdown)}</pre>`,
+      [{ label: 'Close' },
+       { label: 'Open Folder', onClick: async () => { await tryCall('open_path', report.run_dir); return true; } }]);
+    status(`Inspection report: ${report.markdown_path}`);
   }
 
   async function exportFindings(format) {
@@ -931,6 +949,8 @@
           }
           if (r.reconstruction_status === 'failed') parts.push('reconstruction failed (detection results kept)');
           status(`Pipeline done: ${parts.join('; ')}.`);
+          // The run's markdown inspection report was written and never shown.
+          if (r.run_dir) pipelineReportDialog(String(r.run_dir).split(/[\\/]/).pop());
         });
       }
     },
@@ -997,6 +1017,7 @@
     'report.generate': () => generateReportDialog(),
     'report.export': (payload) => exportFindings(payload.format || 'pdf'),
     'report.list': () => listReportsDialog(),
+    'report.pipeline': () => pipelineReportDialog(''),
     'report.finding': () => recordFindingDialog(),
     'report.review': () => reviewDialog(),
     'report.provenance': () => provenanceDialog(),

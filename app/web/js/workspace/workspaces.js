@@ -1916,7 +1916,8 @@ const fleet = {
 const reports = {
   id: "reports",
   title: "Reports",
-  toolbar: ["New Report", "|", "Generate", "Export PDF", "Export Word", "Open Report", "|",
+  toolbar: ["New Report", "|", "Generate", "Export PDF", "Export Word", "Open Report",
+            "Inspection Report", "|",
             "Record Finding", "Share", "Save Template"],
   left: [
     /* The sections each report type really contains, from the engine. This listed ten

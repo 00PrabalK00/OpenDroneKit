@@ -1538,11 +1538,17 @@ PLATFORM = [
                       "tests/test_a_refused_report_says_why.py::TestReadinessThroughTheApi",
                       "tests/test_a_refused_report_says_why.py::TestTheDefaultWindowSaysWhatIsMissing",
                       "tests/test_a_refused_report_says_why.py::TestTheCockpitSaysWhatIsMissing",
-                      "tests/test_a_refused_report_says_why.py::TestThePipelineReportDoesNotGradeAStructure"],
+                      "tests/test_a_refused_report_says_why.py::TestThePipelineReportDoesNotGradeAStructure",
+                      "tests/test_the_pipeline_report_is_reachable.py::TestTheMarkdownSaysOnlyWhatHappened",
+                      "tests/test_the_pipeline_report_is_reachable.py::TestTheApiFindsTheReport",
+                      "tests/test_the_pipeline_report_is_reachable.py::TestTheHtmlReportSaysTheReconstructionFailed",
+                      "tests/test_the_pipeline_report_is_reachable.py::TestBothWindowsShowIt"],
       "core/report_engine.py + app/report_builder.py: built from the open desktop project "
       "(store datasets, mission versions, audit; folder findings, reconstruction, pipeline "
       "runs), written to <project>/reports/<time>_<title>_<id>/ with a manifest and "
-      "provenance sidecars; reachable from the default window and the cockpit."),
+      "provenance sidecars; reachable from the default window and the cockpit. Run "
+      "Pipeline's markdown inspection report (core/reporting.py) is listed and shown in "
+      "both windows (Generated Reports > View; Reports > Inspection Report)."),
     F("rp.formats", "Report formats", "hub", "Reporting",
       "PDF and DOCX generated directly from the report payload, each verified by "
       "opening the result with its own reader rather than checking it is non-empty.",

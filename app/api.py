@@ -2798,6 +2798,59 @@ class Api:
 
         return ok(reports=report_builder.list_reports(self._session))
 
+    # Run Pipeline writes <project>/analysis/run_*/inspection_report.md (core/reporting.py).
+    # It used to be reachable only by knowing the folder: neither window named it, listed
+    # it or opened it, and os.startfile on a .md fails on a stock Windows install with no
+    # program associated. These list it and return its text so both windows can show it.
+
+    def _pipeline_report_rows(self) -> list[dict[str, Any]]:
+        analysis = Path(self._session.project_root()) / "analysis"
+        rows: list[dict[str, Any]] = []
+        if not analysis.is_dir():
+            return rows
+        for run in analysis.glob("run_*"):
+            report = run / "inspection_report.md"
+            if not report.is_file():
+                continue
+            summary: Any = {}
+            try:
+                summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
+            if not isinstance(summary, dict):
+                summary = {}
+            recon = summary.get("reconstruction") or {}
+            rows.append({
+                "id": run.name,
+                "title": "Pipeline inspection report",
+                "created_at": str(summary.get("run_utc") or ""),
+                "image_count": len(summary.get("images") or []),
+                "reconstruction_status": str(recon.get("status") or ("ok" if recon else "")),
+                "markdown_path": str(report),
+                "run_dir": str(run),
+            })
+        rows.sort(key=lambda r: (r["created_at"], r["id"]), reverse=True)
+        return rows
+
+    @guard
+    def pipeline_reports(self) -> dict[str, Any]:
+        """The markdown inspection reports Run Pipeline wrote into this project, newest first."""
+        return ok(reports=self._pipeline_report_rows())
+
+    @guard
+    def read_pipeline_report(self, run_id: str = "") -> dict[str, Any]:
+        """The text of one pipeline run's inspection_report.md (the newest when no id)."""
+        rows = self._pipeline_report_rows()
+        if not rows:
+            return fail("No pipeline inspection report in this project yet. Run Pipeline "
+                        "(Start / Run AI) writes one for each run.")
+        wanted = str(run_id or "").strip()
+        row = next((r for r in rows if r["id"] == wanted), None) if wanted else rows[0]
+        if row is None:
+            return fail(f"No pipeline run {run_id!r} with an inspection report in this project.")
+        text = Path(row["markdown_path"]).read_text(encoding="utf-8")
+        return ok(markdown=text, **row)
+
     @guard
     def open_report(self, report_id: str, kind: str = "html") -> dict[str, Any]:
         """Open a generated report (html, pdf, docx) or its folder in the OS."""

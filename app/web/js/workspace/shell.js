@@ -39,6 +39,8 @@ function jobOutcome(result) {
     if (count) parts.push(`${name} ran as a heuristic on ${count} image(s), not scored`);
   }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
+  /* The pipeline's markdown report was written and never mentioned. */
+  if (result.report_markdown_path) parts.push("inspection report written (Reports > Inspection Report)");
   if (result.metrics && typeof result.metrics.map50 === "number") {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
   }
@@ -859,6 +861,10 @@ export class Shell {
         this.open("reports");
         await this.runAction("Open Report");
         return;
+      case "report.pipeline":
+        this.open("reports");
+        await this.runAction("Inspection Report");
+        return;
       case "report.finding":
         this.open("reports");
         await this.runAction("Record Finding");
@@ -1407,6 +1413,8 @@ export class Shell {
       // seconds, which is not long enough to copy a token, so this blocks until the
       // user dismisses it.
       reveal: (text, title) => reveal(title || "Copy this now — it is not stored", text),
+      /* A document to read, not a secret to copy: a taller box. */
+      showText: (title, text) => reveal(title, text, 28),
     };
   }
 

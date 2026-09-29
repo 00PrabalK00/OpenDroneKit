@@ -29,7 +29,8 @@ const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
   "Process", "New Job", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
   "Change", "Volume", "Cut & Fill", "Stockpile", "Slope", "Ponding", "Generate Report",
-  "Export Report", "Export PDF", "Export Word", "Open Report", "Record Finding", "Annotate",
+  "Export Report", "Export PDF", "Export Word", "Open Report", "Inspection Report",
+  "Record Finding", "Annotate",
   "New Report", "Share", "Revoke Links", "Archive",
 ]);
 
@@ -1811,6 +1812,31 @@ export const ACTIONS = {
       const kind = report.pdf_path ? "pdf" : "html";
       const opened = await call("open_report", report.id, kind);
       return { message: `Opened ${opened.opened}.` };
+    },
+  },
+  /* Run Pipeline (Start / Run AI) writes a markdown inspection report into each run
+     folder. No screen listed or opened it. This shows the chosen run's report in the
+     window -- a .md often has no program associated to open it with. */
+  "Inspection Report": {
+    describe: "Read the inspection report a Run Pipeline run wrote.",
+    async run(ctx) {
+      const listed = await call("pipeline_reports");
+      const runs = (listed && listed.reports) || [];
+      if (!runs.length) {
+        return { skipped: "No pipeline run in this project yet. Start / Run AI writes an inspection report for each run." };
+      }
+      let id = runs[0].id;
+      if (runs.length > 1) {
+        id = await ctx.choose("Which pipeline run?", runs.map((r) => ({
+          label: `${r.id} (${r.image_count} image(s))`,
+          value: r.id,
+          hint: r.reconstruction_status === "failed" ? "reconstruction failed" : String(r.created_at || "").slice(0, 19),
+        })));
+        if (!id) return { skipped: "No run chosen." };
+      }
+      const report = await call("read_pipeline_report", id);
+      await ctx.showText(`Inspection report: ${report.id}`, report.markdown);
+      return { message: `Inspection report: ${report.markdown_path}` };
     },
   },
   /* The Annotate tool armed a cursor nothing read, so no finding could ever be made
