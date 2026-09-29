@@ -5249,16 +5249,29 @@ class Api:
         return ok(items=len(items), result=report["mission"], upload=report)
 
     @guard
-    def vehicle_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
+    def vehicle_command(self, command: str, options: dict[str, Any] | None = None,
+                        **kwargs: Any) -> dict[str, Any]:
         """Arm / start / pause / resume / RTL / abort against the connected vehicle.
 
         Reports what the vehicle answered: ok only when it acknowledged the command.
         Every command used to return ok with "Command sent." inside, so a denied RTL
         looked exactly like an accepted one.
+
+        "start" is held to the preflight checklist: it is refused while a check blocks
+        or a manual check is unconfirmed, naming them. The pilot in command can still
+        start with ``override_preflight=True`` (from the page, ``{"override_preflight":
+        true}`` as `options`), and that override is written to the audit log with the
+        checks it overrode. Before this the checklist was advisory: Start Mission armed
+        and flew with the battery check blocking.
         """
+        kwargs = {**(options or {}), **kwargs}
         client = self._session._drone_client
         if client is None:
             return fail("No vehicle connected.")
+        if str(command).lower() == "start":
+            held = self._preflight_hold(bool(kwargs.get("override_preflight")))
+            if held is not None:
+                return held
         # The command set a ground station is expected to offer. Anything the
         # connected driver does not implement is reported as unsupported rather than
         # failing silently, because a pilot pressing a button needs to know whether
@@ -5323,6 +5336,36 @@ class Api:
             return fail(payload.get("message") or f"The vehicle did not accept {command!r}.",
                         result=payload)
         return ok(result=payload)
+
+    def _preflight_hold(self, override: bool) -> dict[str, Any] | None:
+        """The refusal that keeps Start Mission behind the checklist, or None to go."""
+        report = self.run_preflight()
+        if not report.get("ok"):
+            # The checklist itself could not be computed; that is not a pass.
+            blocking, pending = [f"the checklist could not run: {report.get('error')}"], []
+        elif report.get("can_start"):
+            return None
+        else:
+            checks = report.get("checks") or []
+            blocking = [f"{c.get('name') or c.get('id')}: {c.get('message', '')}".rstrip(": ")
+                        for c in checks if c.get("severity") == "blocking"
+                        and not c.get("confirmed") and not c.get("requires_manual")]
+            pending = [str(c.get("name") or c.get("id")) for c in checks
+                       if c.get("requires_manual") and not c.get("confirmed")]
+        if override:
+            self._session.audit("preflight_override", {
+                "command": "start", "blocking": blocking, "unconfirmed": pending})
+            return None
+        parts = []
+        if blocking:
+            parts.append("blocking -- " + "; ".join(blocking))
+        if pending:
+            parts.append("not confirmed -- " + ", ".join(pending))
+        return fail(
+            "Preflight is not ready, so the mission was not started ("
+            + " | ".join(parts or ["not ready"]) + "). Fix or confirm these in Preflight, "
+            "or start anyway as pilot in command (recorded as an override).",
+            preflight_blocked=True, blocking=blocking, unconfirmed=pending)
 
     @guard
     def flight_session(self) -> dict[str, Any]:

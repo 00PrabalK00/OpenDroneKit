@@ -48,8 +48,11 @@ export async function call(method, ...args) {
   // A refusal that explains itself in `summary` or `reason` rather than `error` -- as
   // verify_site does -- surfaced as "Unknown error", hiding the only useful sentence.
   if (result && result.ok === false) {
-    throw new Error(result.error || result.reason || result.summary || result.message
+    const error = new Error(result.error || result.reason || result.summary || result.message
       || `${method} refused without giving a reason.`);
+    // The refusal's own fields (e.g. preflight_blocked) for a caller that can act on them.
+    error.result = result;
+    throw error;
   }
   return result;
 }

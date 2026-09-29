@@ -95,7 +95,8 @@ def test_the_cockpit_handles_every_item(messages) -> None:
     assert to_action["analysis.models"] == "Verify Models"
     assert to_action["mission.history"] == "History"
     assert "tools.capabilities" not in to_action  # it is not Preflight
-    assert 'call("vehicle_command", command)' in bridge
+    # Through the helper that holds Start to the preflight checklist (and asks).
+    assert "this.sendVehicleCommand(command)" in bridge
 
 
 def test_the_cockpit_vehicle_verbs_are_ones_the_api_accepts(messages) -> None:

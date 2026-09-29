@@ -38,7 +38,11 @@
     const fn = window.pywebview.api[method];
     if (!fn) throw new Error(`Unknown API method: ${method}`);
     const result = await fn(...args);
-    if (result && result.ok === false) throw new Error(result.error || 'Unknown error');
+    if (result && result.ok === false) {
+      const error = new Error(result.error || 'Unknown error');
+      error.result = result;
+      throw error;
+    }
     return result;
   }
 
@@ -483,7 +487,10 @@
     const result = await tryCall('run_preflight', acknowledged || []);
     const list = $('#preflight-list');
     if (!result) return;
-    const mark = (c) => (c.confirmed || c.severity === 'pass') ? '<b class="yes">pass</b>'
+    // A manual check the operator ticked is their word, not a measurement: it reads
+    // "confirmed", not "pass".
+    const mark = (c) => c.confirmed ? '<b class="yes">confirmed</b>'
+      : c.severity === 'pass' ? '<b class="yes">pass</b>'
       : c.severity === 'blocking' ? '<b class="no">BLOCKS</b>' : '<b>check</b>';
     list.innerHTML =
       `<div><span>${result.simulated ? 'SIMULATED vehicle — ' : ''}Ready to start</span>${flag(result.can_start)}</div>` +
@@ -934,7 +941,28 @@
       status(`Vehicle accepted ${result.items} mission items${extras.length ? ` and ${extras.join(', ')} items` : ''}.`);
     },
     'fly.command': async (payload) => {
-      const result = await tryCall('vehicle_command', payload.command);
+      // Start is held to the preflight checklist; the pilot may override, on the record.
+      let result = null;
+      try {
+        result = await call('vehicle_command', payload.command);
+      } catch (err) {
+        if (!(err.result && err.result.preflight_blocked)) {
+          status(`vehicle_command: ${err.message}`);
+          return;
+        }
+        // The app's own dialog: WebView2 under pywebview does not show window.confirm.
+        const go = await new Promise((resolve) => modal('Preflight is not ready',
+          `<p>${esc(err.message)}</p><p>Start the mission anyway? This is recorded as ` +
+          'your preflight override.</p>', [
+            { label: 'Do not start', onClick: () => resolve(false) },
+            { label: 'Start anyway', primary: true, onClick: () => resolve(true) },
+          ]));
+        if (!go) {
+          status(`Not started: ${err.message}`);
+          return;
+        }
+        result = await tryCall('vehicle_command', payload.command, { override_preflight: true });
+      }
       if (result) status(`Command ${payload.command}: ${(result.result && result.result.message) || 'accepted'}`);
     },
 

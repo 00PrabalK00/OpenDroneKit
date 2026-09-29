@@ -765,9 +765,23 @@ const flight = {
         const meta = (c) => (c.confirmed ? "confirmed by you"
           : c.severity === "blocking" ? "blocks start"
             : c.requires_manual ? "check yourself" : c.severity === "warning" ? "warning" : "");
-        return tree(r.checks.map((c, i) => ({
-          id: `c${i}`, label: `${c.name} \u2014 ${c.message}`, icon: icon(c), meta: meta(c),
-        })));
+        // A simulated vehicle's "RTK fix, 14 sats" is the simulator's, and a tick
+        // beside it with nothing saying so reads as a real aircraft's reading.
+        const rows = r.checks.map((c, i) => ({
+          id: `c${i}`, label: `${c.name} \u2014 ${c.message}`, icon: icon(c),
+          meta: r.simulated && !c.confirmed && c.severity === "pass" ? "SIMULATED" : meta(c),
+        }));
+        if (r.simulated) {
+          rows.unshift({ id: "sim", icon: "!", meta: "SIMULATED",
+            label: "SIMULATED vehicle \u2014 these readings come from the simulator, not an aircraft" });
+        }
+        // Start Mission is held to this list; say so at the top rather than leave
+        // the pilot to find out from the button.
+        if (!r.can_start) {
+          rows.unshift({ id: "gate", icon: "\u2717", meta: "Start Mission will ask",
+            label: "Not ready to start" });
+        }
+        return tree(rows);
       },
     }) },
     /* Two missions that do not exist, one of them marked active. */

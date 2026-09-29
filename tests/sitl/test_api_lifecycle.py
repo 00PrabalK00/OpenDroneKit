@@ -63,6 +63,9 @@ def test_connect_upload_fly_override_and_return_through_the_api(
         assert lifted["ok"], lifted
         _wait(api, "takeoff altitude", lambda t: t.get("altitude_rel_m", 0) >= 8.0, 60.0)
 
+        # Start is held to the checklist; the manual checks are the pilot's to confirm.
+        confirmed = api.run_preflight(acknowledged=preflight["pending_confirmation"])
+        assert confirmed["can_start"], confirmed
         started = api.vehicle_command("start")
         assert started["ok"], started
         _wait(api, "AUTO", lambda t: t.get("flight_mode") == "AUTO", 20.0)

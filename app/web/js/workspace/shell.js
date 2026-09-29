@@ -799,7 +799,8 @@ export class Shell {
         if (!this.confirmAll && !(await confirmAsk(question))) return;
         /* What the vehicle answered, not that something was sent: call() throws on a
            denial or on silence, and an acceptance says so. */
-        const result = await call("vehicle_command", command);
+        const result = await this.sendVehicleCommand(command);
+        if (!result) { this.toast(`${command}: not started; preflight is not ready.`, "warn"); return; }
         const detail = result && result.result;
         this.toast(`${command}: ${(detail && detail.message) || "accepted by the vehicle."}`, "ok");
         await this.refreshState();
@@ -1227,10 +1228,28 @@ export class Shell {
     return null;
   }
 
+  /* Start is held to the preflight checklist by the Api. When it refuses for that
+     reason the pilot is shown what is not ready and may start anyway; that choice goes
+     back as an explicit override, which the Api records in the audit log. Returns null
+     when the pilot declines. */
+  async sendVehicleCommand(command) {
+    try {
+      return await call("vehicle_command", command);
+    } catch (error) {
+      if (!(error.result && error.result.preflight_blocked)) throw error;
+      const question = `${error.message} Start the mission anyway? `
+        + "This is recorded as your preflight override.";
+      // confirmAll is the click harness's; a real session always gets the question.
+      if (!this.confirmAll && !(await confirmAsk(question))) return null;
+      return await call("vehicle_command", command, { override_preflight: true });
+    }
+  }
+
   async runVehicle(command, action) {
     /* What the vehicle answered, not that something was sent: call() throws on a
        denial or on silence, and an acceptance says so. */
-    const result = await call("vehicle_command", command);
+    const result = await this.sendVehicleCommand(command);
+    if (!result) return { skipped: "not started; preflight is not ready.", level: "warn" };
     const answer = (result && result.result && result.result.message) || "accepted by the vehicle.";
     return { message: `${action}: ${answer}`, refresh: true };
   }
