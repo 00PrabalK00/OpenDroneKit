@@ -175,6 +175,17 @@ class RemoteReconstructor:
 
     # ------------------------------------------------------------------ run
 
+    def verify_access(self) -> dict[str, Any]:
+        """Authenticate and confirm the project exists, before any local work.
+
+        The pipeline analyses every image before it reaches reconstruction, so a wrong
+        token or project id used to surface as a failed reconstruction minutes later.
+        Called first, it fails in under a second with the step that went wrong.
+        """
+        self._call("GET", "/auth/me", step="Authenticating")
+        return self._call("GET", f"/projects/{self.project_id}",
+                          step=f"Opening project {self.project_id}")
+
     def reconstruct(
         self,
         image_dir: str | Path,

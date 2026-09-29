@@ -18,7 +18,7 @@ if __package__ in (None, ""):
 from core.multisensor import build_capture_bundle_from_folders
 from core.pipeline import PipelineConfig, run_pipeline
 from core.reconstruction import available_reconstruction_profiles
-from core.reconstruction_remote import TOKEN_ENV, check_cloud_request
+from core.reconstruction_remote import TOKEN_ENV, RemoteReconstructionError, check_cloud_request
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -330,12 +330,18 @@ def main() -> None:
         structure_type=str(args.structure_type or "generic"),
         material_type=str(args.material_type or "concrete"),
     )
-    result = run_pipeline(
-        image_dir=args.images,
-        output_dir=args.output,
-        config=config,
-        progress_callback=None if args.quiet else stderr_progress(),
-    )
+    try:
+        result = run_pipeline(
+            image_dir=args.images,
+            output_dir=args.output,
+            config=config,
+            progress_callback=None if args.quiet else stderr_progress(),
+        )
+    except RemoteReconstructionError as exc:
+        # The cloud server refused before any analysis (bad token, unknown project, or
+        # unreachable). One line naming the step, not a traceback.
+        print(f"run_pipeline.py: error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
     print(json.dumps(result.to_dict(), indent=2))
 
     report_path = Path(result.report_markdown_path)

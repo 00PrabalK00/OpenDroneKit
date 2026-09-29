@@ -5346,6 +5346,29 @@ class Api:
     def list_datasets(self) -> dict[str, Any]:
         return ok(datasets=self._session.list_datasets())
 
+    @staticmethod
+    def _cloud_options(opts: dict[str, Any]) -> tuple[str, str, str, str]:
+        """(mode, endpoint, token, refusal) for a run's execution_mode option.
+
+        execution_mode used to be ignored here, so a caller asking for a cloud run got a
+        local one. "cloud" now goes to the named OpenDroneKit server through the remote
+        engine, or is refused before a job starts; anything else is refused by name.
+        """
+        mode = str(opts.get("execution_mode") or "local").strip().lower()
+        endpoint = str(opts.get("cloud_endpoint") or "").strip()
+        token = str(opts.get("cloud_token") or "").strip()
+        if mode not in ("local", "cloud"):
+            return mode, endpoint, token, (
+                f"Unknown execution_mode {mode!r}: use 'local' or 'cloud'.")
+        if mode == "cloud":
+            from core.reconstruction_remote import check_cloud_request
+
+            try:
+                check_cloud_request(mode, endpoint, token)
+            except ValueError as exc:
+                return mode, endpoint, token, str(exc)
+        return mode, endpoint, token, ""
+
     @guard
     def run_reconstruction(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start a COLMAP reconstruction as a background job."""
@@ -5355,6 +5378,10 @@ class Api:
             return fail("Select a dataset before running reconstruction.")
         if not Path(images).exists():
             return fail(f"Image folder not found: {images}")
+
+        mode, cloud_endpoint, cloud_token, refusal = self._cloud_options(opts)
+        if refusal:
+            return fail(refusal)
 
         output = Path(opts.get("output_dir") or (self._session.project_root() / "reconstruction"))
         busy = self._job_writing_to(output)
@@ -5378,6 +5405,9 @@ class Api:
                 max_image_size=opts.get("max_image_size"),
                 target_epsg=opts.get("epsg") or chosen_epsg,
                 ground_control=control,
+                execution_mode=mode,
+                cloud_endpoint=cloud_endpoint,
+                cloud_token=cloud_token,
             )
             result = reconstructor.reconstruct(
                 image_dir=images, output_dir=str(output), progress_callback=progress,
@@ -5451,6 +5481,9 @@ class Api:
             return fail("Select a dataset before running the pipeline.")
         if not Path(images).exists():
             return fail(f"Image folder not found: {images}")
+        mode, cloud_endpoint, cloud_token, refusal = self._cloud_options(opts)
+        if refusal:
+            return fail(refusal)
         root = self._session.project_root()
         output = str(opts.get("output_dir") or (root / "analysis"))
         project_id = str(self._session.project_id())
@@ -5469,6 +5502,9 @@ class Api:
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
+            config.reconstruction_execution_mode = mode
+            config.reconstruction_cloud_endpoint = cloud_endpoint
+            config.reconstruction_cloud_token = cloud_token
             config.reconstruction_target_epsg = int(opts["epsg"]) if opts.get("epsg") else chosen_epsg
             # Coverage QA sizes each image's footprint from its height above ground.
             config.coverage_flight_height_agl_m = float(opts.get("flight_height_agl_m") or 0.0)

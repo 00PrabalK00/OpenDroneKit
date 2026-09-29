@@ -301,6 +301,11 @@ class StructuralFaultPipeline:
             self.config.reconstruction_cloud_endpoint,
             self.config.reconstruction_cloud_token,
         )
+        # A cloud run also has to reach the server with a token it accepts; checking
+        # that now costs a second, checking it after the analysis cost minutes.
+        verify_access = getattr(self.reconstructor, "verify_access", None)
+        if callable(verify_access):
+            verify_access()
         _emit_progress(1, "Preparing model layout")
         ensure_model_layout()
         model_migration = migrate_legacy_models()
