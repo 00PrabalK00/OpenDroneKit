@@ -200,13 +200,22 @@ def test_the_compose_object_store_boots_and_the_storage_layer_round_trips(tmp_pa
         encoding="utf-8")
     project = "odkcompose" + secrets.token_hex(3)
     base = ["docker", "compose", "-p", project, "-f", str(COMPOSE_PATH), "--env-file", str(env_file)]
+    # Compose prefers the shell's variables over --env-file, so a developer's exported
+    # ODK_S3_* would silently become the gateway's keys. Only the file speaks here.
+    compose_env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(("ODK_", "POSTGRES_"))}
+
+    def compose(*args):
+        return subprocess.run(base + list(args), capture_output=True, text=True, timeout=300,
+                              env=compose_env)
+
     try:
-        up = subprocess.run(base + ["up", "-d", "--wait", "seaweedfs"], capture_output=True, text=True, timeout=300)
+        up = compose("up", "-d", "--wait", "seaweedfs")
         assert up.returncode == 0, up.stderr
-        init = subprocess.run(base + ["run", "--rm", "seaweedfs-init"], capture_output=True, text=True, timeout=300)
+        init = compose("run", "--rm", "seaweedfs-init")
         assert init.returncode == 0 and "bucket ready" in init.stdout, (init.stdout, init.stderr)
         # A second run finds the bucket already there, and that is success too.
-        again = subprocess.run(base + ["run", "--rm", "seaweedfs-init"], capture_output=True, text=True, timeout=300)
+        again = compose("run", "--rm", "seaweedfs-init")
         assert again.returncode == 0 and "bucket ready" in again.stdout, (again.stdout, again.stderr)
 
         monkeypatch.setenv("ODK_STORAGE_BACKEND", "s3")
@@ -228,4 +237,4 @@ def test_the_compose_object_store_boots_and_the_storage_layer_round_trips(tmp_pa
         with pytest.raises(Exception):
             build_storage().put("survey/two.bin", b"x")
     finally:
-        subprocess.run(base + ["down", "-v"], capture_output=True, text=True, timeout=300)
+        compose("down", "-v")

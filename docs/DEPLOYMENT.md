@@ -49,6 +49,17 @@ upload. On later starts the answer is `BucketAlreadyOwnedByYou`, which counts as
 The host port is `ODK_S3_PORT` (default 8333). There is no web console; use any S3
 client (`aws --endpoint-url http://localhost:8333 s3 ls`).
 
+### A worker outside the containers
+
+`python -m services.worker.tasks` is the worker container's command and runs the same
+anywhere that can reach the database, Redis and the shared storage path. On Windows it
+uses Celery's `solo` pool: the default `prefork` pool fails every task there ("not
+enough values to unpack (expected 3, got 0)") while the worker looks healthy, so jobs
+sat queued forever. `ODK_WORKER_POOL` overrides the choice on any platform.
+`tests/test_live_stack.py` drives a job through PostGIS, Redis, that worker process and
+the S3 gateway together when `ODK_TEST_POSTGIS`, `ODK_BROKER_URL` and
+`ODK_TEST_S3_ENDPOINT` are set.
+
 ## Kubernetes (Helm)
 
 ```bash

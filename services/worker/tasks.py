@@ -177,6 +177,24 @@ def register(app: Any) -> Any:
     return run_processing
 
 
+def worker_pool() -> str:
+    """The Celery execution pool this host can actually run.
+
+    Celery's default, prefork, does not work on Windows: every task fails inside the
+    pool with "ValueError: not enough values to unpack (expected 3, got 0)" and the
+    job stays queued forever while the worker looks healthy. A worker started on a
+    Windows machine (a site laptop, a workstation joining the queue) never ran a job.
+    `solo` runs tasks in the worker process itself, which at the default concurrency
+    of 1 is the same thing prefork was doing. ODK_WORKER_POOL overrides either way.
+    """
+    import sys
+
+    override = os.environ.get("ODK_WORKER_POOL", "").strip()
+    if override:
+        return override
+    return "solo" if sys.platform == "win32" else "prefork"
+
+
 def worker_main() -> int:
     """Entry point for the worker container."""
     from services.worker.celery_app import build_app
@@ -187,7 +205,8 @@ def worker_main() -> int:
     # Concurrency 1 by default. Reconstruction is memory-bound, so two workers on one
     # host is usually slower than one and occasionally fatal -- the second job arrives
     # while the first holds the memory, and the OOM killer picks whichever it likes.
-    app.worker_main(["worker", "--loglevel=INFO", f"--concurrency={concurrency}"])
+    app.worker_main(["worker", "--loglevel=INFO", f"--concurrency={concurrency}",
+                     f"--pool={worker_pool()}"])
     return 0
 
 
