@@ -17,13 +17,17 @@
  */
 
 import { call, tryCall, lastError, connected } from "./api.js";
+import { demoEnabled } from "./demo.js";
+
+/* Where the REST service listens when started with its documented command. */
+const REST_BASE = "http://127.0.0.1:8000";
 
 /** Actions that need an open project before they mean anything. */
 const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
   "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
   "Change", "Volume", "Cut & Fill", "Stockpile", "Generate Report", "Export Report",
-  "Export PDF", "New Report", "Share", "Archive",
+  "Export PDF", "New Report", "Share", "Revoke Links",
 ]);
 
 /** Actions that need images on disk. */
@@ -76,7 +80,22 @@ export const ACTIONS = {
       if (!folder || !folder.path) return { skipped: "No folder chosen." };
       const result = await call("import_dataset", folder.path);
       await call("set_active_dataset", folder.path);
-      return { message: `Imported ${result.image_count ?? "?"} images.`, refresh: true };
+      // The Api answers ok(dataset={... metadata_json}), so result.image_count was always
+      // undefined and every import reported "Imported ? images".
+      let meta = {};
+      try {
+        meta = JSON.parse((result.dataset && result.dataset.metadata_json) || "{}");
+      } catch {
+        meta = {};
+      }
+      const count = meta.image_count ?? result.image_count;
+      const tagged = meta.geotagged_count;
+      return {
+        message: count == null
+          ? `Imported ${folder.path}.`
+          : `Imported ${count} image(s)${tagged != null ? `, ${tagged} geotagged` : ""}.`,
+        refresh: true,
+      };
     },
   },
 
@@ -85,13 +104,26 @@ export const ACTIONS = {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
       const result = await call("plan_mission", ctx.missionOptions());
-      return { message: `Planned ${result.waypoint_count ?? result.waypoints?.length ?? "?"} waypoints.`, refresh: true };
+      // The Api answers ok(summary={waypoints, distance_m, ...}); reading
+      // result.waypoint_count printed "Planned ? waypoints" after every successful plan.
+      const summary = result.summary || {};
+      const warnings = result.warnings || [];
+      return {
+        message: `Planned ${summary.waypoints ?? "?"} waypoints, `
+          + `${((summary.distance_m || 0) / 1000).toFixed(2)} km, ${summary.duration_min ?? "?"} min`
+          + (summary.gsd_cm ? `, GSD ${summary.gsd_cm} cm` : "")
+          + (warnings.length ? `. ${warnings[0]}` : "."),
+        refresh: true,
+      };
     },
   },
   "New Mission": { alias: "Plan" },
   Save: {
     describe: "Save the planned mission into the project.",
     async run(ctx) {
+      // Asked for a name and THEN learned there was nothing to save.
+      const state = await call("get_state");
+      if (!state.has_mission) return { skipped: "No mission has been planned yet. Plan one first." };
       const name = await ctx.prompt("Mission name", "Mission");
       if (!name) return { skipped: "No name given." };
       await call("save_mission", name);
@@ -106,9 +138,17 @@ export const ACTIONS = {
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
       const result = await tryCall("export_mission");
-      const files = (result && (result.files || result.exported)) || [];
-      if (files.length) {
-        return { message: `Exported ${files.length} mission file(s).`, files };
+      // export_mission answers ok(written={format: path | "failed: ..."}, directory).
+      // Reading result.files found nothing, so a successful export of five mission files
+      // fell through to revealing the reconstruction products and said so instead.
+      const written = Object.entries((result && result.written) || {});
+      if (written.length) {
+        const failed = written.filter(([, v]) => String(v).startsWith("failed"));
+        const good = written.length - failed.length;
+        return {
+          message: `Exported ${good} mission file(s) to ${result.directory}`
+            + (failed.length ? `; ${failed.map(([k, v]) => `${k} ${v}`).join("; ")}` : ".")
+        };
       }
 
       // Export sits on Projects, Digital Twin, Thermal, Fleet and Settings as well as
@@ -272,11 +312,22 @@ export const ACTIONS = {
       return { message: "Camera triggered." };
     },
   },
+  /* Sat on the Verification toolbar and called check_interrupted_flight, which answers
+     whether the software stopped mid-flight -- nothing to do with loading the flight to
+     verify. Loading a flight here means choosing which imported image set is the flown
+     one, which is what Match Captures then checks against the plan. */
   "Load Flight": {
-    describe: "Resume a flight that was interrupted.",
-    async run() {
-      const result = await call("check_interrupted_flight");
-      return { message: result.interrupted ? "Interrupted flight found." : "No interrupted flight." };
+    describe: "Choose which imported flight's images to verify.",
+    async run(ctx) {
+      const listed = await call("list_datasets");
+      const sets = listed.datasets || [];
+      if (!sets.length) return { skipped: "No flights imported yet. Use Import on Home or Projects." };
+      const path = await ctx.choose("Verify which flight?", sets.map((d) => ({
+        label: d.name || d.path, value: d.path, hint: d.path,
+      })));
+      if (!path) return { skipped: "No flight chosen." };
+      await call("set_active_dataset", path);
+      return { message: `Loaded ${path}. Match Captures compares it with the plan.`, refresh: true };
     },
   },
 
@@ -301,11 +352,29 @@ export const ACTIONS = {
       return { message: `Imported ${result.count ?? "?"} control points.`, refresh: true };
     },
   },
+  /* Called check_spatial_reference with no images at all -- "missing 1 required
+     positional argument: image_paths" -- and, had it worked, set nothing. It now takes
+     the output EPSG for the next reconstruction (run_reconstruction reads `epsg`),
+     checks what the selected images can support in that frame, and keeps the choice. */
   "Set CRS": {
-    describe: "Report the coordinate reference system in use.",
-    async run() {
-      const result = await call("check_spatial_reference");
-      return { message: result.epsg ? `CRS ${result.epsg}` : "No CRS resolved." };
+    describe: "Choose the output CRS for the next reconstruction.",
+    async run(ctx) {
+      const listed = await call("list_dataset_images");
+      const sep = listed.folder.includes("\\") ? "\\" : "/";
+      const paths = (listed.images || []).map((name) => `${listed.folder}${sep}${name}`);
+      const epsgText = await ctx.prompt("Output EPSG code (blank = automatic UTM from the geotags)", "");
+      if (epsgText === null) return { skipped: "Cancelled." };
+      const epsg = epsgText.trim() ? Number(epsgText) : null;
+      if (epsgText.trim() && !Number.isInteger(epsg)) return { skipped: `Not an EPSG code: ${epsgText}` };
+      const gcps = await tryCall("gcp_accuracy_report");
+      const gcpCount = (gcps && gcps.report && gcps.report.point_count) || 0;
+      const result = await call("check_spatial_reference", paths, gcpCount, epsg);
+      ctx.setSetting("epsg", epsg || "");
+      return {
+        message: `${epsg ? `Output CRS EPSG:${epsg}` : "Output CRS: automatic UTM"} for the next `
+          + `reconstruction. ${result.geotagged_count}/${result.image_count} images geotagged, `
+          + `${result.gcp_count} control point(s): ${result.note}`,
+      };
     },
   },
 
@@ -739,7 +808,8 @@ export const ACTIONS = {
   },
 
   /* -- layers ------------------------------------------------------------- */
-  "New Folder": {
+  /* Was labelled "New Folder", which is not what it has ever done. */
+  "Add Layer": {
     describe: "Add a raster or vector layer from a file.",
     async run() {
       const file = await call("pick_file", ["tif", "tiff", "geojson", "json", "shp"]);
@@ -767,34 +837,21 @@ export const ACTIONS = {
     },
   },
 
+  /* Counted saved mission versions and diffed two of them -- a comparison of plans,
+     under a button on the screen whose job is to compare the FLIGHT with its plan.
+     match_captures pairs each flown image with the capture point it satisfied. */
   "Match Captures": {
     describe: "Compare what was captured against what was planned.",
-    async run() {
-      // compare_survey_specifications takes the two mission versions to difference.
-      // This called it with none, so the button's only possible outcome was
-      // "TypeError: Api.compare_survey_specifications() missing 2 required positional
-      // arguments" shown to the user as the result. The versions are fetched here and
-      // the honest refusal is given when there are not two of them to compare.
-      const listed = await tryCall("list_mission_versions");
-      const versions = ((listed && (listed.versions || listed)) || [])
-        .map((v) => Number(v.version_num ?? v.version ?? 0))
-        .filter((n) => n > 0)
-        .sort((a, b) => a - b);
-
-      if (versions.length < 2) {
-        return {
-          message:
-            `Match Captures compares two saved survey versions; this project has ` +
-            `${versions.length}. Save the mission again after the next flight to ` +
-            `difference them.`,
-        };
-      }
-
-      const [previous, latest] = versions.slice(-2);
-      const result = await call("compare_survey_specifications", previous, latest);
+    async run(ctx) {
+      const radius = await ctx.prompt("Match radius (metres)", "15");
+      if (radius === null || radius === "") return { skipped: "No match radius given." };
+      const result = await call("match_captures", Number(radius));
+      const missed = (result.missed || []).length;
       return {
-        message:
-          result.summary || `Compared survey version ${previous} against ${latest}.`,
+        message: `${result.matched} of ${result.planned_total} planned captures matched `
+          + `(${result.coverage_pct}%), ${missed} missed, ${(result.unplanned || []).length} `
+          + `unplanned image(s).${missed ? " Request Reflight turns the missed points into a layer." : ""}`,
+        refresh: true,
       };
     },
   },
@@ -881,7 +938,9 @@ export const ACTIONS = {
       return { message: `Link ${result.prefix}… issued.`, refresh: true };
     },
   },
-  Archive: {
+  /* Was labelled "Archive" beside an Archived panel, and archived nothing: it revokes
+     the project's share links, and is named for that. */
+  "Revoke Links": {
     confirm: "Revoke every share link for this project?",
     describe: "Close a project down by revoking its outstanding links.",
     async run(ctx) {
@@ -913,24 +972,34 @@ export const ACTIONS = {
       return { message: `Token ${result.prefix}… issued.`, refresh: true };
     },
   },
+  /* Built its command from the first registered WEBHOOK -- a POST to someone else's
+     URL -- under a button beside the endpoint list. It is the endpoint picked in the
+     Endpoints panel, as a request to the REST service. */
   "Copy cURL": {
-    describe: "A ready-to-run request against the local service.",
+    describe: "The selected endpoint as a curl command against the REST service.",
     async run(ctx) {
-      const hooks = await call("list_webhooks", ctx.organizationId());
-      const first = (hooks.webhooks || [])[0];
-      const command = first
-        ? `curl -X POST ${first.url} -H "Content-Type: application/json" -d '{"event":"test"}'`
-        : `curl http://127.0.0.1:8000/health`;
-      await ctx.reveal(command);
-      return { message: "Command shown; copy it from the dialog." };
+      const endpoint = ctx.selectedEndpoint() || { method: "GET", path: "/health" };
+      const url = `${REST_BASE}${endpoint.path}`;
+      const open = endpoint.path.startsWith("/health") || endpoint.path.startsWith("/auth/");
+      const auth = open ? "" : ' -H "Authorization: Bearer $ODK_TOKEN"';
+      const body = ["POST", "PUT", "PATCH"].includes(endpoint.method)
+        ? ' -H "Content-Type: application/json" -d \'{}\'' : "";
+      await ctx.reveal(`curl -X ${endpoint.method} "${url}"${auth}${body}`, "curl command");
+      return { message: `curl for ${endpoint.method} ${endpoint.path} shown; copy it from the dialog.` };
     },
   },
+  /* Called capabilities() and reported how many fields the BRIDGE returned -- a request
+     to this process, labelled as one to the service. */
   "Send Request": {
-    describe: "Check the local service is answering.",
-    async run() {
-      const result = await call("capabilities");
-      const count = Object.keys(result.capabilities || result || {}).length;
-      return { message: `Bridge answered with ${count} capability field(s).` };
+    describe: "Send the selected GET to the REST service and show what it answered.",
+    async run(ctx) {
+      const endpoint = ctx.selectedEndpoint() || { method: "GET", path: "/health" };
+      if (endpoint.method !== "GET" || endpoint.path.includes("{")) {
+        return { skipped: `${endpoint.method} ${endpoint.path} needs parameters or a body; `
+          + "use Copy cURL. Send Request sends plain GETs only." };
+      }
+      const result = await call("rest_request", endpoint.path, REST_BASE);
+      return { message: `${endpoint.path}: HTTP ${result.status} — ${String(result.body).slice(0, 200)}` };
     },
   },
 
@@ -1031,15 +1100,17 @@ export const ACTIONS = {
       };
     },
   },
+  /* Logged a maintenance record against aircraft 1 -- not a reflight, and an error on
+     any install without that aircraft. A reflight is the planned points that produced
+     no image; they become a layer on the map and an entry in the audit log. */
   "Request Reflight": {
-    describe: "Record that a capture needs flying again.",
+    describe: "Put the missed capture points on the map as a reflight layer.",
     async run(ctx) {
-      const id = parseInt(await ctx.prompt("Aircraft id to task", "1") || "0", 10);
-      if (!id) return { skipped: "No aircraft chosen." };
-      const reason = await ctx.prompt("Why does it need reflying?", "captures out of tolerance");
-      if (!reason) return { skipped: "A reflight request needs a reason." };
-      await call("log_maintenance", id, "reflight-request", reason, "operator");
-      return { message: "Reflight requested and recorded.", refresh: true };
+      const reason = await ctx.prompt("Why does it need reflying?", "captures missed");
+      if (reason === null) return { skipped: "Cancelled." };
+      const result = await call("request_reflight", reason || "");
+      return { message: `${result.points} point(s) to refly, written to ${result.path} `
+        + "and shown on the map as Reflight points.", refresh: true };
     },
   },
   "Save Template": {
@@ -1094,6 +1165,12 @@ export function resolve(action) {
  * prerequisite the same way, and so the check cannot be forgotten when one is added.
  */
 export function prerequisite(action, state) {
+  // Demo mode answers reads from the bundled example and changes nothing, so an action
+  // is refused before it can look like it worked on the example.
+  if (demoEnabled()) {
+    return "Demo mode shows the bundled example and cannot change anything. "
+      + "Open the cockpit without ?demo=1 to act on a real project.";
+  }
   if (!connected()) return "Not connected to the application.";
   if (NEEDS_PROJECT.has(action) && !state.projectOpen) return "Open a project first.";
   if (NEEDS_DATASET.has(action) && !state.datasetSelected) return "Select a dataset first.";

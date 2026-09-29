@@ -18,7 +18,17 @@
  */
 
 import { el } from "./primitives.js";
-import { tryCall } from "./api.js";
+import { connected, tryCall, whenReady } from "./api.js";
+import { demoEnabled } from "./demo.js";
+
+/* Said instead of a panel's own empty message when there is no application to ask.
+ *
+ * "No projects yet. Use New Project" is a statement about the machine's projects. With
+ * no bridge nobody has asked, and the cockpit in a plain browser was telling people their
+ * machine was empty. */
+export const NOT_CONNECTED =
+  "Not connected to the application. Start OpenDroneKit to see this project's data, "
+  + "or open the cockpit with ?demo=1 for the bundled example.";
 
 /**
  * A panel backed by one or more API calls.
@@ -40,6 +50,18 @@ export function live({ calls, render, empty, isEmpty }) {
   host.appendChild(el("div", { class: "live-wait", text: "Reading…" }));
 
   const settle = async () => {
+    /* The panels render before pywebview has injected its bridge. Asking straight away
+       raced it: every call failed with "bridge is not ready" and the panel settled on
+       its EMPTY state -- "No projects yet" over a machine with projects -- and nothing
+       re-asked once the bridge arrived. Waiting costs nothing when it is already up. */
+    if (!demoEnabled()) {
+      await whenReady();
+      if (!connected()) {
+        host.innerHTML = "";
+        host.appendChild(emptyState(NOT_CONNECTED));
+        return;
+      }
+    }
     let results;
     try {
       results = await Promise.all(calls.map((name) => tryCall(name)));
@@ -65,6 +87,8 @@ export function live({ calls, render, empty, isEmpty }) {
     }
   };
 
+  host._settle = settle;
+  HOSTS.add(host);
   settle();
   return host;
 }
@@ -98,4 +122,21 @@ export function reported(pairs) {
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value, unit]) =>
       unit ? { label, value: String(value), unit } : { label, value: String(value) });
+}
+
+/* Every live panel on screen, so it can be asked again.
+ *
+ * A panel asked once, when its workspace opened. Pressing Import, Plan or New Project
+ * changed what the application held and left every panel describing the state from before
+ * the button was pressed -- "Nothing imported" beside a toast saying 24 images had been.
+ * Forms are deliberately not re-rendered: only answers are re-asked, so nothing the
+ * operator typed is reset. */
+const HOSTS = new Set();
+
+export function refreshLive() {
+  for (const host of [...HOSTS]) {
+    if (!host.isConnected) { HOSTS.delete(host); continue; }
+    host._settle();
+  }
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("odk:refresh"));
 }

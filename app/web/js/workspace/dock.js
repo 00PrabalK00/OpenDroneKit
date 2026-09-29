@@ -343,4 +343,12 @@ export class Dock {
     this.root.querySelectorAll(".splitter").forEach((s) => s.classList.toggle("hidden", hide));
     return hide;
   }
+
+  /** Collapse or restore the left and right regions only, keeping the bottom dock. */
+  toggleSidePanels() {
+    const sides = ["left", "right"].map((side) => this.regions[side]).filter(Boolean);
+    const hide = !sides.every((region) => region.classList.contains("collapsed"));
+    sides.forEach((region) => region.classList.toggle("collapsed", hide));
+    return hide;
+  }
 }

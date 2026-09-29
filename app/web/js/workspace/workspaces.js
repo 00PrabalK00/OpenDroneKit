@@ -19,9 +19,9 @@
 
 import {
   canvas, chip, consoleView, el, fields, meter, properties,
-  readouts, selection, splitCanvas, table, tree,
+  readouts, reference, selection, splitCanvas, table, tree,
 } from "./primitives.js";
-import { DATA, DEMO, demoCoords } from "./demo.js";
+import { DATA, DEMO } from "./demo.js";
 import { emptyState, live, reported } from "./live.js";
 /* The layer panel writes as well as reads: toggling visibility calls the application.
    tryCall returns null rather than throwing, which is what lets the checkbox revert
@@ -74,7 +74,8 @@ const MAP_TOOLS = [
   { icon: "⤡", title: "Fit view" },
 ];
 
-const COORD = demoCoords();
+/* The corner readout was demoCoords() -- "0.0000 N 0.0000 E" -- printed over every map in
+   every mode, beside the live cursor readout the map already draws in the same corner. */
 
 /* The example project, and every model installed against it.
  *
@@ -172,6 +173,34 @@ const layerTree = (kinds = []) => live({
   },
 });
 
+/* One audit event as a console line.
+ *
+ * Both activity panels read e.at, e.message and e.action. The store has never written
+ * any of those: an audit row is {created_at, event_type, payload_json}. So every line
+ * rendered as a dash beside a dash, and the log looked empty on a project with dozens of
+ * recorded events. The payload is shown compactly because it is what says WHICH mission
+ * was planned or which folder was imported. */
+function auditLine(e) {
+  const when = String(e.created_at || "");
+  let detail = "";
+  try {
+    const payload = JSON.parse(e.payload_json || "{}");
+    detail = Object.entries(payload)
+      .filter(([, v]) => v !== null && v !== undefined && v !== "")
+      .slice(0, 4)
+      .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v).slice(0, 60) : v}`)
+      .join(" ");
+  } catch {
+    detail = String(e.payload_json || "");
+  }
+  const kind = String(e.event_type || "event");
+  return {
+    t: when.slice(11, 19) || "—",
+    text: detail ? `${kind.replace(/_/g, " ")} — ${detail}` : kind.replace(/_/g, " "),
+    level: /fail|error|refus/i.test(kind) ? "error" : /warn/i.test(kind) ? "warn" : "",
+  };
+}
+
 /* --------------------------------------------------------------------- HOME */
 
 const home = {
@@ -202,7 +231,6 @@ const home = {
     overlays: [
       /* Was "4 projects, 1 flying, 2 processing" on every machine. Nothing flies from
          a desk, and the real counts are in the Library panel. */
-      { at: "br", html: COORD },
     ],
   }),
   right: [
@@ -238,12 +266,7 @@ const home = {
       calls: ["audit_log"],
       empty: "Nothing has happened in this workspace yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 12).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || e.event || "—",
-        level: /fail|error|refus/i.test(e.message || e.action || "") ? "error"
-          : /warn/i.test(e.message || e.action || "") ? "warn" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 12).map(auditLine)),
     }) },
     /* Reported three workers, a redis broker and postgis. This build is local-first and
        runs none of them; it was describing a deployment that does not exist here. */
@@ -270,11 +293,7 @@ const home = {
       calls: ["audit_log"],
       empty: "No activity recorded yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 20).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || "—",
-        level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 20).map(auditLine)),
     }) },
     /* Three jobs at 34, 72 and 95 per cent on workers w-01 to w-03. This build runs
        jobs on threads in this process; there are no workers, and a Worker column
@@ -321,7 +340,7 @@ const home = {
 const projects = {
   id: "projects",
   title: "Projects",
-  toolbar: ["New Project", "New Folder", "Import", "|", "Archive", "Export", "Share"],
+  toolbar: ["New Project", "Add Layer", "Import", "|", "Revoke Links", "Export", "Share"],
   left: [
     { id: "proj.tree", title: "Projects", render: projectTree },
     /* One archived project that was never created. Nothing in this build archives a
@@ -329,7 +348,7 @@ const projects = {
     { id: "proj.archived", title: "Archived", height: 110, grow: false,
       render: () => emptyState("No archived projects.") },
   ],
-  canvas: () => canvas({ map: true, title: "Project extent", note: "Boundary, survey history and asset locations.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
+  canvas: () => canvas({ map: true, title: "Project extent", note: "Boundary, survey history and asset locations.", tools: MAP_TOOLS }),
   right: [
     { id: "proj.props", title: "Project Properties", tabs: [
       /* Read straight from the bundled example, so every project showed the same
@@ -435,7 +454,9 @@ const missionTypes = [
 const planning = {
   id: "planning",
   title: "Mission Planning",
-  toolbar: ["New Mission", "Open", "History", "Compare Versions", "|", "Plan", "Validate", "Simulate", "|",
+  /* No Save: a planned mission could only be kept through the native menu, and Ctrl+S
+     was listed in the palette and bound to nothing. */
+  toolbar: ["New Mission", "Open", "History", "Compare Versions", "|", "Plan", "Save", "Validate", "Simulate", "|",
             "Import Boundary", "Cache Terrain", "Cameras", "Payloads", "|",
             "Add Marker", "Check Hazards", "Import CAD", "|",
             "Repeat Survey", "Upload", "Export", "Share"],
@@ -467,8 +488,8 @@ const planning = {
         })), { selectKind: "mission" });
       },
     }) },
-    { id: "plan.templates", title: "Mission Types", render: () => tree(
-      missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })), { selectKind: "template" }) },
+    { id: "plan.templates", title: "Mission Types", render: () => reference(tree(
+      missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })), { selectKind: "template" })) },
     /* Appended "Obstacles" and "No-fly regions" as layer rows. Both are real concepts
        -- set_no_fly_zones stores them -- but they are session geometry rather than
        registered layers, so the rows toggled nothing and implied the project held
@@ -501,7 +522,6 @@ const planning = {
         },
       }) },
       { at: "bl", html: `Terrain: <span class="chip warn">flat plane — no DEM loaded</span>` },
-      { at: "br", html: COORD },
     ],
   }),
   right: [
@@ -775,7 +795,6 @@ const flight = {
          folder of captured images the operator has to point at. Until then this says so,
          rather than claiming a sortie is on the first of four segments. */
       { at: "bl", html: "Segment progress is reported once captured images are linked to the plan." },
-      { at: "br", html: COORD },
     ],
   }),
   right: [
@@ -916,7 +935,6 @@ const verification = {
           ];
         },
       }) },
-      { at: "br", html: COORD },
     ],
   }),
   right: [
@@ -928,9 +946,23 @@ const verification = {
        Comparing a capture to its planned position needs the plan and the image's EXIF
        together, which is what Match Captures does. Until it has run there is nothing to
        compare, and saying so is the whole content of the panel. */
-    { id: "ver.capture", title: "Capture Properties", render: () =>
-      emptyState("Select a capture after running Match Captures to compare it against "
-                 + "the planned position, altitude and GSD.") },
+    { id: "ver.capture", title: "Capture Properties", render: () => live({
+      calls: ["capture_report"],
+      empty: "Run Match Captures to compare the flown images with the planned capture points.",
+      render: ([r]) => properties([
+        { group: "Last capture match" },
+        ...reported([
+          ["Planned captures", r.planned_total],
+          ["Images", r.image_total],
+          ["Matched", r.matched],
+          ["Coverage", r.coverage_pct, "%"],
+          ["Match radius", r.match_radius_m, "m"],
+          ["Mean deviation", (r.deviation || {}).mean_m, "m"],
+          ["Max deviation", (r.deviation || {}).max_m, "m"],
+          ["Ungeotagged", (r.ungeotagged || []).length],
+        ]),
+      ]),
+    }) },
   ],
   bottom: [
     /* Reported 1,842 planned against 1,836 matched with 98.4% coverage, on projects
@@ -960,10 +992,28 @@ const verification = {
     }) },
     /* Named three specific captures as missing -- C-1094, C-1095, C-1782 -- for a flight
        that was never flown. A missing capture is a finding; inventing one is not. */
-    { id: "ver.missing", title: "Missing Captures", flex: 2, render: () =>
-      emptyState("No comparison run. Use Match Captures once a flight is imported.") },
-    { id: "ver.qc", title: "QC Log", flex: 1, render: () =>
-      emptyState("No QC findings.") },
+    { id: "ver.missing", title: "Missing Captures", flex: 2, render: () => live({
+      calls: ["capture_report"],
+      empty: "No comparison run. Use Match Captures once a flight is imported.",
+      render: ([r]) => ((r.missed || []).length
+        ? table(
+          [{ title: "Planned #", key: "index", num: true }, { title: "Longitude", key: "lon" },
+           { title: "Latitude", key: "lat" }, { title: "Alt (m)", key: "alt_m", num: true }],
+          r.missed.slice(0, 200).map((m) => ({
+            index: m.index, lon: Number(m.lon).toFixed(6), lat: Number(m.lat).toFixed(6),
+            alt_m: m.alt_m == null ? null : Number(m.alt_m).toFixed(1),
+          })), { selectKind: "capture-point" })
+        : emptyState(`Every one of the ${r.planned_total} planned captures was matched.`)),
+    }) },
+    /* The capture matcher's own recommendations: missed points, ungeotagged images and
+       loose flying, in the words it reports them. */
+    { id: "ver.qc", title: "QC Log", flex: 1, render: () => live({
+      calls: ["capture_report"],
+      empty: "No QC findings: no capture match has been run.",
+      render: ([r]) => ((r.recommendations || []).length
+        ? consoleView(r.recommendations.map((text) => ({ t: "QC", text, level: "warn" })))
+        : emptyState("The capture match raised nothing to act on.")),
+    }) },
   ],
 };
 
@@ -1127,20 +1177,15 @@ const twin = {
   left: [
     /* A building with a roof, a facade and a stockpile volume, none of which existed.
        build_asset_inventory reports what was actually derived from the reconstruction. */
+    /* Called build_asset_inventory with no arguments on every render. It inventories
+       DETECTED instances and requires them, so each Digital Twin view raised "missing 1
+       required positional argument: instances" in the log and fell through to the layer
+       list anyway. The scene is the reconstruction's products; that is what is listed. */
     { id: "twin.hierarchy", title: "Scene Hierarchy", render: () => live({
-      calls: ["build_asset_inventory", "list_layers"],
-      empty: "No assets derived yet. Reconstruct a survey, then run asset extraction.",
-      isEmpty: ([inv, layers]) => !(inv && (inv.assets || []).length)
-        && !(layers && (layers.layers || []).length),
-      render: ([inv, layers]) => {
-        const assets = (inv && inv.assets) || [];
-        if (assets.length) {
-          return tree(assets.slice(0, 50).map((a, i) => ({
-            id: a.id || `s${i}`, label: a.name || a.kind || `Asset ${i + 1}`,
-            icon: "▢", meta: a.area_m2 ? `${Math.round(a.area_m2)} m²` : "",
-          })), { selectKind: "asset" });
-        }
-        // No asset extraction, but the reconstruction products are real scene content.
+      calls: ["list_layers"],
+      empty: "No reconstruction products yet. Import a dataset and run Process.",
+      isEmpty: ([layers]) => !(layers && (layers.layers || []).length),
+      render: ([layers]) => {
         return tree(((layers && layers.layers) || []).map((l, i) => ({
           id: l.id || `s${i}`, label: l.name || l.id, icon: "▦",
           meta: l.crs_epsg ? `EPSG:${l.crs_epsg}` : "",
@@ -1474,15 +1519,15 @@ const measurements = {
   toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
             "Measure in 3D", "|", "Compare Dates", "Export"],
   left: [
-    { id: "ms.tools", title: "Tools", render: () => tree([
-      { id: "t1", label: "Distance", icon: "↔" },
-      { id: "t2", label: "Area", icon: "▭" },
-      { id: "t3", label: "Volume", icon: "◙" },
-      { id: "t4", label: "Stockpile", icon: "▲" },
-      { id: "t5", label: "Cut & Fill", icon: "⇅" },
-      { id: "t6", label: "Slope", icon: "◺" },
-      { id: "t7", label: "Profile line", icon: "∿" },
-    ], { selectKind: "tool" }) },
+    { id: "ms.tools", title: "Tools", render: () => reference(tree([
+      { id: "t1", label: "Distance", icon: "↔", action: "Distance" },
+      { id: "t2", label: "Area", icon: "▭", action: "Area" },
+      { id: "t3", label: "Volume", icon: "◙", action: "Volume" },
+      { id: "t4", label: "Stockpile", icon: "▲", action: "Stockpile" },
+      { id: "t5", label: "Cut & Fill", icon: "⇅", action: "Cut & Fill" },
+      { id: "t6", label: "Slope", icon: "◺", action: "Slope" },
+      { id: "t7", label: "Profile line", icon: "∿", action: "Profile" },
+    ], { selectKind: "tool" })) },
     /* Measurement works on rasters -- orthomosaic, DSM, DTM -- so this filters rather
        than listing every layer in the project. */
     { id: "ms.layers", title: "Layers", render: () => layerTree(["raster"]) },
@@ -1498,7 +1543,6 @@ const measurements = {
          accuracy and the registration residual between them. */
       { at: "tr", html: "Detection floor is computed per comparison, from each survey's "
         + "accuracy and the registration residual between them." },
-      { at: "br", html: COORD },
     ],
   }),
   right: [
@@ -1565,7 +1609,7 @@ const fleet = {
       })), { selectKind: "pilot" }),
     }) },
   ],
-  canvas: () => canvas({ map: true, title: "Fleet map", note: "Aircraft locations, assignments and operational state.", tools: MAP_TOOLS, overlays: [{ at: "br", html: COORD }] }),
+  canvas: () => canvas({ map: true, title: "Fleet map", note: "Aircraft locations, assignments and operational state.", tools: MAP_TOOLS }),
   right: [
     /* A serial number, a firmware version and a service interval for an airframe
        that does not exist. "Next service in 7.4 h" is an airworthiness statement. */
@@ -1643,18 +1687,21 @@ const reports = {
   title: "Reports",
   toolbar: ["New Report", "|", "Generate", "Export PDF", "Share", "Save Template"],
   left: [
-    { id: "rp.structure", title: "Report Structure", render: () => tree([
+    /* "Inspection Findings 6" was a count written into the source, shown on every
+       project. The section list is the report's outline and says nothing about how many
+       findings this project has. */
+    { id: "rp.structure", title: "Report Structure", render: () => reference(tree([
       { id: "r1", label: "Executive Summary", icon: "§" },
       { id: "r2", label: "Project", icon: "§" },
       { id: "r3", label: "Mission & Coverage", icon: "§" },
       { id: "r4", label: "Processing", icon: "§" },
-      { id: "r5", label: "Inspection Findings", icon: "§", meta: "6" },
+      { id: "r5", label: "Inspection Findings", icon: "§" },
       { id: "r6", label: "Measurements", icon: "§" },
       { id: "r7", label: "Thermal", icon: "§" },
       { id: "r8", label: "Change Analysis", icon: "§" },
       { id: "r9", label: "Recommendations", icon: "§" },
       { id: "r10", label: "Appendix", icon: "§" },
-    ], { selectKind: "section" }) },
+    ], { selectKind: "section" })) },
   ],
   canvas: () => canvas({ title: "Report preview", note: "Live preview of the generated document." }),
   right: [
@@ -1721,17 +1768,28 @@ const developers = {
   title: "Developers",
   toolbar: ["New Key", "|", "Send Request", "Copy cURL", "|", "Add Webhook", "Install Plugin"],
   left: [
-    { id: "dev.endpoints", title: "Endpoints", render: () => tree([
-      { id: "e1", label: "GET /projects", icon: "▸" },
-      { id: "e2", label: "GET /assets", icon: "▸" },
-      { id: "e3", label: "POST /missions", icon: "▸" },
-      { id: "e4", label: "GET /missions/{id}", icon: "▸" },
-      { id: "e5", label: "POST /datasets", icon: "▸" },
-      { id: "e6", label: "GET /processing/jobs", icon: "▸" },
-      { id: "e7", label: "GET /findings", icon: "▸" },
-      { id: "e8", label: "GET /measurements", icon: "▸" },
-      { id: "e9", label: "GET /reports", icon: "▸" },
-    ], { selectKind: "endpoint" }) },
+    /* Nine endpoints written by hand, most of which the service does not have: there is
+       no GET /projects, /findings or /processing/jobs. rest_endpoints() reads the route
+       decorators out of services/api, so this lists what the service really serves. */
+    { id: "dev.endpoints", title: "Endpoints", render: () => live({
+      calls: ["rest_endpoints"],
+      empty: "The REST service is not part of this installation.",
+      isEmpty: ([r]) => !(r && (r.endpoints || []).length),
+      render: ([r]) => {
+        const groups = new Map();
+        for (const e of r.endpoints) {
+          if (!groups.has(e.router)) groups.set(e.router, []);
+          groups.get(e.router).push(e);
+        }
+        return tree([...groups.entries()].map(([router, list], g) => ({
+          id: `g${g}`, label: router, icon: "▦", meta: String(list.length), expanded: false,
+          children: list.map((e, i) => ({
+            id: `e${g}-${i}`, label: `${e.method} ${e.path}`, icon: "▸",
+            method: e.method, path: e.path, summary: e.summary,
+          })),
+        })), { selectKind: "endpoint" });
+      },
+    }) },
     /* Two plugins reported enabled that were never installed. list_plugins() reports
        what the registry has really loaded. */
     { id: "dev.plugins", title: "Plugins", render: () => live({
@@ -1757,11 +1815,11 @@ const developers = {
        The desktop application does not issue or hold API keys. Keys belong to the REST
        service, which is a separate process this app does not start. Saying so is the
        whole content of this panel. */
-    { id: "dev.auth", title: "Authentication", render: () => properties([
+    { id: "dev.auth", title: "Authentication", render: () => reference(properties([
       { label: "This application", value: "runs locally; no API key is used or issued" },
       { label: "Keys", value: "issued by the REST service, which this app does not run" },
       { label: "Storage", value: "a key is shown once at creation and stored only as a hash" },
-    ]) },
+    ])) },
     /* Four webhooks reported active, subscribing nobody. A webhook that looks
        registered and is not means an integration silently never fires. */
     { id: "dev.webhooks", title: "Webhooks", render: () => live({
@@ -1852,7 +1910,10 @@ const settings = {
      have done something else's job. */
   toolbar: ["Verify Models"],
   left: [
-    { id: "set.sections", title: "Settings", render: () => tree([
+    /* selectKind was "setting", the kind the mission form publishes its field edits
+       under -- so clicking "General" stored settings[undefined] = undefined and toasted
+       "undefined = undefined". A section is not a field. */
+    { id: "set.sections", title: "Settings", render: () => reference(tree([
       { id: "s1", label: "General", icon: "⚙" },
       { id: "s2", label: "Units & CRS", icon: "⚙" },
       { id: "s3", label: "Map & Offline", icon: "⚙" },
@@ -1860,7 +1921,7 @@ const settings = {
       { id: "s5", label: "Models", icon: "⚙" },
       { id: "s6", label: "Keyboard", icon: "⚙" },
       { id: "s7", label: "Workspaces", icon: "⚙" },
-    ], { selectKind: "setting" }) },
+    ], { selectKind: "settings-section" })) },
   ],
   canvas: () => canvas({ title: "Settings", note: "Select a section." }),
   right: [

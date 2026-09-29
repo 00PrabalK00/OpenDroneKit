@@ -95,6 +95,46 @@ class TestEveryRowPrimitiveMarksItself:
         assert "data-live" in live_js
 
 
+class TestReferenceContentCannotHideAFigure:
+    """reference() takes a panel out of the banner's count, so it must not become the
+    way a fabricated figure gets back on screen unlabelled.
+
+    It exists because static menus -- Mission Types, the Measurements tool list, the
+    Settings sections, the report outline -- raised EXAMPLE DATA over real projects on
+    five screens. A reference panel is a list of names: no meta counts, no numbers
+    beyond those that are part of a name ("2D mapping").
+    """
+
+    @staticmethod
+    def reference_blocks(source: str) -> list[str]:
+        blocks = []
+        for start in [i for i in range(len(source)) if source.startswith("reference(", i)]:
+            depth, end = 0, start
+            for end in range(start + len("reference"), len(source)):
+                if source[end] == "(":
+                    depth += 1
+                elif source[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            blocks.append(source[start:end + 1])
+        return blocks
+
+    def test_the_banner_skips_only_reference_panels(self, shell) -> None:
+        body = shell.split("showingSampleContent()")[1].split("\n  }")[0]
+        assert '!node.closest("[data-reference]")' in body
+
+    def test_every_reference_panel_is_labels_only(self) -> None:
+        source = code_of("workspaces.js")
+        blocks = [b for b in self.reference_blocks(source) if "export function" not in b]
+        assert len(blocks) >= 5, "the reference panels were not found"
+        for block in blocks:
+            assert "meta:" not in block, f"a reference panel carries a figure: {block[:120]}"
+            assert "live(" not in block and "tryCall" not in block, block[:120]
+            # Numbers inside labels are allowed ("2D mapping"); numbers as values are not.
+            assert not re.search(r"value:\s*[\d\"'`][\d.,]*\d", block), block[:120]
+
+
 class TestTheMechanismCannotBeSatisfiedByAComment:
     def test_the_guard_strips_comments(self) -> None:
         """This file's own helper, checked against itself.
