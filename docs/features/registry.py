@@ -1086,7 +1086,11 @@ INDIA_FIRST = [
     F("pack.construction.progress", "Progress against approved design", "core",
       "India pack: Construction",
       "Measured percentage and location of progress against an explicit approved design model.",
-      "implemented", ["tests/test_india_construction_pack.py::test_approved_design_progress_measures_observed_surface_not_contract_completion"]),
+      "implemented", ["tests/test_india_construction_pack.py::test_approved_design_progress_measures_observed_surface_not_contract_completion",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_design_progress",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_a_design_in_utm_without_a_crs_is_refused_in_words"],
+      "Reached from the app: Api.india_design_progress, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. A design in projected coordinates with no CRS "
+      "member is refused in words instead of a raw PROJ error."),
 
     # Mining and quarry
     F("pack.mining.stockpile", "Stockpile selection and measurement", "core",
@@ -1151,11 +1155,18 @@ INDIA_FIRST = [
       "Georeferenced building, road/path, water and vegetation polygons extracted from "
       "an orthomosaic.",
       "implemented", ["tests/test_india_land_pack.py::test_land_gis_extracts_real_georeferenced_semantic_classes",
-                      "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster"]),
+                      "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_land_gis",
+                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit"],
+      "Reached from the app: Api.india_land_gis, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. With no raster named it reads the project's latest "
+      "semantic map (Semantic Map runs the installed shared_semantic model, whose only "
+      "validated classes are vegetation and building, and says so)."),
     F("pack.land.encroachment", "Property and encroachment change", "core",
       "India pack: Land",
       "New buildings, boundary encroachment, new roads and structure expansion between surveys.",
-      "implemented", ["tests/test_india_land_pack.py::test_encroachment_uses_imported_boundary_and_aligned_previous_survey"]),
+      "implemented", ["tests/test_india_land_pack.py::test_encroachment_uses_imported_boundary_and_aligned_previous_survey",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_encroachment_against_a_boundary"],
+      "Reached from the app: Api.india_land_gis(cadastral_geojson=...), cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
 
     # Agriculture
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
@@ -1165,7 +1176,9 @@ INDIA_FIRST = [
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration"],
+      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
@@ -1179,7 +1192,9 @@ INDIA_FIRST = [
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
       "Road/edge segmentation plus geolocated pothole, crack, waterlogging and debris "
       "counts, severity and surveyed distance.",
-      "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance"]),
+      "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_road_condition"],
+      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
     F("pack.power.inspection", "Power-line asset inspection", "vision",
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "

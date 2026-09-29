@@ -245,6 +245,14 @@ def _epsg_from_geojson(payload: Mapping[str, Any]) -> int:
     return 4326
 
 
+def _iter_positions(coordinates: Any) -> Iterable[Sequence[float]]:
+    if isinstance(coordinates, (list, tuple)) and coordinates and isinstance(coordinates[0], (int, float)):
+        yield coordinates
+    elif isinstance(coordinates, (list, tuple)):
+        for item in coordinates:
+            yield from _iter_positions(item)
+
+
 def read_geojson_features(
     path: str | Path,
     *,
@@ -279,8 +287,25 @@ def read_geojson_features(
                 f"{sorted(allowed_geometry_types)}."
             )
         converted = dict(feature)
+        if source_epsg == 4326:
+            # Unqualified GeoJSON is longitude/latitude by the standard. A design exported
+            # in UTM without saying so has eastings in the millions; reprojecting those as
+            # degrees used to surface as a raw PROJ error ("utm: Invalid latitude").
+            lonlat = [c for c in _iter_positions(geometry.get("coordinates"))]
+            if any(abs(c[0]) > 180.0 or abs(c[1]) > 90.0 for c in lonlat):
+                raise IndiaPackRefused(
+                    f"{source_path.name} has coordinates that are not longitude/latitude "
+                    "but declares no CRS. GeoJSON without a CRS is WGS84 by definition; "
+                    "export it in EPSG:4326, or add its CRS (a 'crs' member naming "
+                    "EPSG:<code>, or properties.epsg)."
+                )
         if source_crs != destination:
-            converted["geometry"] = transform_geom(source_crs, destination, geometry, precision=9)
+            try:
+                converted["geometry"] = transform_geom(source_crs, destination, geometry, precision=9)
+            except Exception as exc:  # noqa: BLE001 - PROJ errors are the file's to fix
+                raise IndiaPackRefused(
+                    f"{source_path.name} cannot be placed in EPSG:{destination.to_epsg()}: {exc}"
+                ) from exc
         converted["properties"] = dict(feature.get("properties") or {})
         features.append(converted)
     destination_epsg = destination.to_epsg()

@@ -986,7 +986,8 @@ const processing = {
      reconstruction was running. There is no pause_job in the Api either -- a job can be
      cancelled and nothing else -- so the button had nothing behind it in both directions. */
   toolbar: ["New Job", "Size Job", "|", "Process", "Cancel", "|",
-            "Add GCPs", "Mark GCP", "GCP Report", "Set CRS", "Check PPK", "Export Products"],
+            "Add GCPs", "Mark GCP", "GCP Report", "Set CRS", "Check PPK", "|",
+            "Semantic Map", "Survey Packs", "Export Products"],
   left: [
     { id: "proc.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets", "list_dataset_images"],
@@ -1485,7 +1486,7 @@ const measurements = {
   id: "measurements",
   title: "Measurements",
   toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
-            "Ponding", "Measure in 3D", "|", "Compare Dates", "Export"],
+            "Ponding", "Measure in 3D", "|", "Compare Dates", "Survey Packs", "Export"],
   left: [
     { id: "ms.tools", title: "Tools", render: () => tree([
       { id: "t1", label: "Distance", icon: "↔" },

@@ -3198,6 +3198,326 @@ class Api:
                 {**measurement, "points_xyz": points})
         return ok(measurement=measurement, model_path=str(mesh), measurement_id=measurement_id)
 
+    # ------------------------------------------------------------ survey packs
+    #
+    # The India-first packs (land GIS, design progress, agriculture, road/power/rail/
+    # solar assets, thermal module temperatures, anomaly candidates) were library code
+    # that nothing in the application could reach. Each entry below runs one pack on
+    # files the operator names -- or, for the semantic ones, on this project's latest
+    # semantic map -- writes into the project folder, and adds what it produced to the
+    # layer tree. Every refusal the packs raise is passed through as written.
+
+    def _pack_dir(self, pack: str) -> Path:
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        target = self._session.project_root() / "survey_packs" / pack / stamp
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _latest_semantic(self) -> tuple[str, str]:
+        """This project's most recent semantic class map and the manifest beside it."""
+        root = self._session.project_root() / "semantic"
+        runs = sorted((p for p in root.glob("*/semantic_manifest.json")), key=lambda p: p.stat().st_mtime) \
+            if root.is_dir() else []
+        if not runs:
+            return "", ""
+        manifest = runs[-1]
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        class_map = (payload.get("artifacts") or {}).get("class_map") or ""
+        return str(class_map), str(manifest)
+
+    def _semantic_inputs(self, semantic_raster: str, schema: str) -> tuple[str, str]:
+        if semantic_raster:
+            if not schema:
+                beside = Path(semantic_raster).parent / "semantic_manifest.json"
+                if beside.is_file():
+                    schema = str(beside)
+            if not schema:
+                raise ValueError(
+                    "Name the class schema (a semantic manifest or schema JSON) for this "
+                    "raster: class ids mean nothing without it.")
+            return semantic_raster, schema
+        raster, manifest = self._latest_semantic()
+        if not raster:
+            raise ValueError(
+                "This project has no semantic map yet. Run Semantic Map on the "
+                "orthomosaic, or name a semantic class raster.")
+        return raster, schema or manifest
+
+    def _finish_pack(self, pack: str, result: Any) -> dict[str, Any]:
+        """Read the pack's summary and put its GeoJSON and GeoTIFF outputs on the map."""
+        summary_path = getattr(result, "summary_path", "")
+        artifacts = (result.artifact_paths() if callable(getattr(result, "artifact_paths", None))
+                     else list(getattr(result, "artifact_paths", ())))
+        summary = {}
+        if summary_path and Path(summary_path).is_file():
+            summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+        layers = []
+        for path in artifacts:
+            target = Path(path)
+            if not target.is_file():
+                continue
+            label = f"{pack}: {target.stem}"
+            try:
+                if target.suffix.lower() in (".geojson", ".json") and target != Path(summary_path):
+                    payload = json.loads(target.read_text(encoding="utf-8"))
+                    if payload.get("type") == "FeatureCollection":
+                        layers.append(self._session.register_vector_layer(target, name=label)["id"])
+                elif target.suffix.lower() in (".tif", ".tiff"):
+                    layers.append(self._session.register_raster_layer(target, name=label)["id"])
+            except Exception:  # noqa: BLE001 - a layer that will not register is still on disk
+                continue
+        self._session.audit("survey_pack_run", {"pack": pack, "summary": str(summary_path)})
+        return ok(pack=pack, summary=summary, summary_path=str(summary_path),
+                  artifacts=[str(p) for p in artifacts], layer_ids=layers)
+
+    def _pack(self, pack: str, run: Callable[[Path], Any]) -> dict[str, Any]:
+        from core.india_geospatial import IndiaPackRefused
+
+        try:
+            result = run(self._pack_dir(pack))
+        except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
+            return fail(str(exc))
+        return self._finish_pack(pack, result)
+
+    @guard
+    def semantic_map(self, orthomosaic_path: str = "", model_path: str = "",
+                     manifest_path: str = "", device: str = "auto") -> dict[str, Any]:
+        """Run the installed semantic model over an orthomosaic, as a background job.
+
+        The model's own registry entry says which classes hold up (vegetation and
+        building for shared_semantic v4) and which do not; that is returned with the
+        map, because a road or water polygon from it looks exactly as confident as a
+        building one.
+        """
+        from core.models import resolve_model_path
+
+        model = Path(model_path) if model_path else resolve_model_path("shared_semantic_landcover")
+        if model is None or not Path(model).is_file():
+            return fail("No semantic model is installed (shared_semantic_landcover). Install "
+                        "its ONNX package into models/, or name one.")
+        manifest = Path(manifest_path) if manifest_path else Path(
+            str(model).replace(".onnx", ".manifest.json"))
+        if not manifest.is_file():
+            return fail(f"The semantic model's manifest is missing: {manifest}")
+        source = orthomosaic_path
+        if not source:
+            ortho = next((l for l in self._session.layers.values()
+                          if l.kind == "raster" and "ortho" in (l.name or "").lower()), None)
+            source = ortho.path if ortho else ""
+        if not source or not Path(source).is_file():
+            return fail("Name a georeferenced orthomosaic, or run Process to produce one.")
+        from datetime import datetime, timezone
+
+        from core.models import load_registry
+
+        entry = (load_registry().get("models") or {}).get("shared_semantic_landcover") or {}
+        usable = list(entry.get("usable_labels") or [])
+        output = (self._session.project_root() / "semantic"
+                  / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            import onnxruntime as ort
+
+            from core.semantic_engine import (ONNXSemanticPredictor, SemanticInferenceConfig,
+                                              load_semantic_manifest, run_semantic_inference)
+
+            schema, metadata, defaults = load_semantic_manifest(manifest)
+            chosen = device
+            if chosen == "auto":
+                chosen = "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
+            progress(5, f"Semantic inference on {chosen}")
+            predictor = ONNXSemanticPredictor(model, device=chosen,
+                                              mean=defaults.get("mean", (0.485, 0.456, 0.406)),
+                                              std=defaults.get("std", (0.229, 0.224, 0.225)))
+            package = run_semantic_inference(
+                source, output, schema=schema, model=metadata, predictor=predictor,
+                config=SemanticInferenceConfig(
+                    tile_size=int(defaults.get("tile_size", 518)),
+                    overlap=int(defaults.get("overlap", 126)),
+                    device=chosen,
+                    allow_cpu=chosen == "cpu",
+                    max_cpu_pixels=int(defaults.get("max_cpu_pixels", 4_000_000)),
+                    min_polygon_area_m2=float(defaults.get("min_polygon_area_m2", 1.0)),
+                ))
+            session.register_raster_layer(package.class_map_path, name="Semantic classes")
+            session.register_vector_layer(package.polygons_path, name="Semantic polygons")
+            return {"class_map": package.class_map_path, "polygons": package.polygons_path,
+                    "manifest": package.manifest_path, "usable_labels": usable,
+                    "caveat": ("Only " + ", ".join(usable) + " are measured to hold up for this "
+                               "model; treat every other class as unvalidated.") if usable else
+                              "This model has no validated classes recorded."}
+
+        return ok(job_id=self._jobs.submit("semantic_map", work), usable_labels=usable)
+
+    @guard
+    def india_land_gis(self, semantic_raster: str = "", schema: str = "",
+                       cadastral_geojson: str = "", previous_semantic_raster: str = "",
+                       boundary_tolerance_m: float = 0.0) -> dict[str, Any]:
+        """Land-cover vectors from a semantic map; encroachment when a boundary is given."""
+        from core.india_land import detect_cadastral_encroachment, extract_land_gis
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        if cadastral_geojson:
+            return self._pack("land_encroachment", lambda out: detect_cadastral_encroachment(
+                raster, classes, cadastral_geojson, out,
+                previous_semantic_class_raster=previous_semantic_raster or None,
+                boundary_tolerance_m=float(boundary_tolerance_m)))
+        return self._pack("land_gis", lambda out: extract_land_gis(raster, classes, out))
+
+    @guard
+    def india_design_progress(self, design_geojson: str, semantic_raster: str = "",
+                              schema: str = "", complete_at_percent: float = 95.0) -> dict[str, Any]:
+        """Observed coverage inside each approved design element (not contract completion)."""
+        from core.india_construction import measure_approved_design_progress
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("design_progress", lambda out: measure_approved_design_progress(
+            raster, classes, design_geojson, out, complete_at_percent=float(complete_at_percent)))
+
+    @guard
+    def india_canopy_cover(self, semantic_raster: str = "", schema: str = "") -> dict[str, Any]:
+        """Canopy and bare/missing regions from explicit semantic classes."""
+        from core.india_agriculture import analyse_canopy_cover
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("canopy", lambda out: analyse_canopy_cover(raster, classes, out))
+
+    @guard
+    def india_vegetation_indices(self, multispectral_raster: str,
+                                 calibrations: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """NDVI/NDRE/GNDVI from explicitly calibrated reflectance bands only.
+
+        ``calibrations`` maps a band role (red, green, red_edge, nir) to {band, scale,
+        offset, source}; a role with no calibration leaves its indices unavailable.
+        """
+        from core.india_agriculture import ReflectanceBandCalibration, compute_vegetation_indices
+
+        try:
+            parsed = {str(role): ReflectanceBandCalibration(
+                band=int(c["band"]), scale=float(c["scale"]), offset=float(c.get("offset", 0.0)),
+                source=str(c.get("source", ""))) for role, c in (calibrations or {}).items()}
+        except (KeyError, TypeError, ValueError) as exc:
+            return fail(f"Calibration not usable: {exc}")
+        return self._pack("vegetation_indices", lambda out: compute_vegetation_indices(
+            multispectral_raster, parsed, out))
+
+    @guard
+    def india_stress_zones(self, index_raster: str, severe_below: float, moderate_below: float,
+                           validation_scope: str, canopy_mask_raster: str = "") -> dict[str, Any]:
+        """Stress zones from a calibrated index, with thresholds the operator states."""
+        from core.india_agriculture import create_stress_zones
+
+        return self._pack("stress_zones", lambda out: create_stress_zones(
+            index_raster, out, severe_below=float(severe_below),
+            moderate_below=float(moderate_below), validation_scope=str(validation_scope),
+            canopy_mask_raster=canopy_mask_raster or None))
+
+    @guard
+    def india_plant_count(self, instance_raster: str, validation_scope: str,
+                          instance_encoding: str = "binary") -> dict[str, Any]:
+        """Geolocated plant/tree instances from a validated instance mask."""
+        from core.india_agriculture import count_plant_instances
+
+        return self._pack("plant_count", lambda out: count_plant_instances(
+            instance_raster, out, validation_scope=str(validation_scope),
+            instance_encoding=str(instance_encoding)))
+
+    @guard
+    def india_road_condition(self, road_centerline_geojson: str, defect_findings_geojson: str,
+                             semantic_raster: str = "", schema: str = "") -> dict[str, Any]:
+        """Road surface, surveyed distance and validated findings along a centreline."""
+        from core.india_assets import create_road_condition_package
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("road_condition", lambda out: create_road_condition_package(
+            raster, classes, road_centerline_geojson, defect_findings_geojson, out))
+
+    @guard
+    def india_corridor_inspection(self, kind: str, detections_geojson: str,
+                                  corridor_centerline_geojson: str, capture_geometry: str,
+                                  validation_scope: str) -> dict[str, Any]:
+        """Power-line or railway corridor findings mapped along the corridor."""
+        from core.india_assets import create_power_inspection_package, create_rail_inspection_package
+
+        builder = {"power": create_power_inspection_package,
+                   "rail": create_rail_inspection_package}.get(str(kind))
+        if builder is None:
+            return fail("Corridor kind must be 'power' or 'rail'.")
+        return self._pack(f"{kind}_corridor", lambda out: builder(
+            detections_geojson, corridor_centerline_geojson, out,
+            capture_geometry=str(capture_geometry), validation_scope=str(validation_scope)))
+
+    @guard
+    def india_solar_inventory(self, module_instance_raster: str, validation_scope: str,
+                              approved_layout_geojson: str = "",
+                              findings_geojson: str = "") -> dict[str, Any]:
+        """Module inventory from instances, compared with an approved layout if given."""
+        from core.india_assets import create_solar_module_inventory
+
+        return self._pack("solar_inventory", lambda out: create_solar_module_inventory(
+            module_instance_raster, out, validation_scope=str(validation_scope),
+            approved_layout_geojson=approved_layout_geojson or None,
+            findings_geojson=findings_geojson or None))
+
+    @guard
+    def india_module_temperatures(self, thermal_path: str, rgb_path: str,
+                                  control_points_path: str, modules_path: str, *,
+                                  validated_by: str, warning_delta_c: float,
+                                  critical_delta_c: float, hot_cell_delta_c: float,
+                                  threshold_basis: str) -> dict[str, Any]:
+        """Measured module temperatures, after the RGB/thermal tie points are checked."""
+        from core.india_thermal import associate_module_temperatures, score_rgb_thermal_registration
+
+        def run(out: Path):
+            registration = score_rgb_thermal_registration(
+                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by))
+            return associate_module_temperatures(
+                thermal_path, registration, modules_path, out,
+                warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
+                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis))
+
+        return self._pack("module_temperatures", run)
+
+    @guard
+    def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,
+                               validation_scope: str) -> dict[str, Any]:
+        """Fit a normal baseline from rasters someone has confirmed to be normal."""
+        from core.india_anomaly import fit_validated_baseline
+        from core.india_geospatial import IndiaPackRefused
+
+        target = self._pack_dir("anomaly_baseline") / "baseline.json"
+        try:
+            baseline = fit_validated_baseline(list(raster_paths), target,
+                                              validated_by=str(validated_by),
+                                              validation_scope=str(validation_scope))
+        except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
+            return fail(str(exc))
+        return ok(pack="anomaly_baseline", baseline_path=str(target), baseline=baseline.to_dict())
+
+    @guard
+    def india_find_anomalies(self, feature_raster: str, baseline_path: str,
+                             threshold_sigma: float = 3.5) -> dict[str, Any]:
+        """Deviation candidates against a validated baseline (never named as defects)."""
+        from core.india_anomaly import detect_anomaly_candidates
+
+        return self._pack("anomalies", lambda out: detect_anomaly_candidates(
+            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma)))
+
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:
         """Load an area of interest from a KML, KMZ, GeoJSON, GPX or CSV file.

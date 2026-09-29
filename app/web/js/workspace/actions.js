@@ -27,6 +27,145 @@ const NEEDS_PROJECT = new Set([
   "Export PDF", "New Report", "Share", "Archive",
 ]);
 
+/* -- survey packs ---------------------------------------------------------- */
+
+async function pickPath(extensions, what) {
+  const picked = await call("pick_file", extensions);
+  if (!picked || !picked.path) throw new Error(`No ${what} chosen.`);
+  return picked.path;
+}
+
+/** "" for this project's latest semantic map, or a picked class raster and its schema. */
+async function semanticSource(ctx) {
+  const source = await ctx.choose("Semantic class map", [
+    "This project's latest semantic map", "Choose a class raster"]);
+  if (!source) throw new Error("No semantic map chosen.");
+  if (source.startsWith("This project")) return ["", ""];
+  const raster = await pickPath(["tif", "tiff"], "class raster");
+  const schema = await call("pick_file", ["json"]);
+  return [raster, (schema && schema.path) || ""];
+}
+
+async function required(ctx, label, fallback = "") {
+  const value = await ctx.prompt(label, fallback);
+  if (value === null || String(value).trim() === "") throw new Error(`${label} is required.`);
+  return String(value).trim();
+}
+
+async function number(ctx, label, fallback = "") {
+  const value = Number(await required(ctx, label, fallback));
+  if (!Number.isFinite(value)) throw new Error(`${label} must be a number.`);
+  return value;
+}
+
+const SURVEY_PACKS = {
+  "Land GIS / encroachment": async (ctx) => {
+    const [raster, schema] = await semanticSource(ctx);
+    const mode = await ctx.choose("Land analysis", ["Land cover vectors", "Encroachment against a boundary"]);
+    if (!mode) return { skipped: "Nothing chosen." };
+    const boundary = mode.startsWith("Encroachment") ? await pickPath(["geojson", "json"], "cadastral boundary") : "";
+    return call("india_land_gis", raster, schema, boundary);
+  },
+  "Design progress": async (ctx) => {
+    const design = await pickPath(["geojson", "json"], "approved design");
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_design_progress", design, raster, schema);
+  },
+  "Canopy cover": async (ctx) => {
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_canopy_cover", raster, schema);
+  },
+  "Vegetation indices": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "multispectral raster");
+    const source = await required(ctx, "Reflectance calibration source (panel / sensor record)");
+    const calibrations = {};
+    for (const role of ["red", "green", "red_edge", "nir"]) {
+      const band = await ctx.prompt(`Band number for ${role} (blank if absent)`, "");
+      if (!band) continue;
+      const scale = await number(ctx, `Reflectance scale for ${role}`, "");
+      const offset = await number(ctx, `Reflectance offset for ${role}`, "0");
+      calibrations[role] = { band: Number(band), scale, offset, source };
+    }
+    return call("india_vegetation_indices", raster, calibrations);
+  },
+  "Stress zones": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "vegetation index raster");
+    const severe = await number(ctx, "Severe below (index value)");
+    const moderate = await number(ctx, "Moderate below (index value)");
+    const scope = await required(ctx, "Who validated these thresholds, for which crop and stage");
+    return call("india_stress_zones", raster, severe, moderate, scope);
+  },
+  "Plant count": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "instance mask");
+    const scope = await required(ctx, "Validation scope of the instance model");
+    return call("india_plant_count", raster, scope);
+  },
+  "Road condition": async (ctx) => {
+    const centreline = await pickPath(["geojson", "json"], "road centreline");
+    const findings = await pickPath(["geojson", "json"], "validated road findings");
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_road_condition", centreline, findings, raster, schema);
+  },
+  "Power corridor": (ctx) => corridor(ctx, "power"),
+  "Rail corridor": (ctx) => corridor(ctx, "rail"),
+  "Solar module inventory": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "module instance raster");
+    const scope = await required(ctx, "Validation scope of the module model");
+    const layout = await call("pick_file", ["geojson", "json"]);
+    return call("india_solar_inventory", raster, scope, (layout && layout.path) || "");
+  },
+  "Module temperatures": async (ctx) => {
+    const thermal = await pickPath(["tif", "tiff"], "radiometric thermal raster");
+    const rgb = await pickPath(["tif", "tiff", "jpg", "png"], "RGB image");
+    const points = await pickPath(["json", "csv"], "RGB/thermal tie points");
+    const modules = await pickPath(["geojson", "json"], "module polygons");
+    const by = await required(ctx, "Tie points validated by");
+    const warning = await number(ctx, "Warning above module median (°C)");
+    const critical = await number(ctx, "Critical above module median (°C)");
+    const hot = await number(ctx, "Hot cell above module median (°C)");
+    const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
+    return call("india_module_temperatures", thermal, rgb, points, modules, by, warning, critical, hot, basis);
+  },
+  "Anomaly baseline": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "raster confirmed normal");
+    const by = await required(ctx, "Confirmed normal by");
+    const scope = await required(ctx, "Where and when this baseline applies");
+    return call("india_anomaly_baseline", [raster], by, scope);
+  },
+  "Find anomalies": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "feature raster");
+    const baseline = await pickPath(["json"], "validated baseline");
+    const sigma = await number(ctx, "Threshold (robust sigma)", "3.5");
+    return call("india_find_anomalies", raster, baseline, sigma);
+  },
+};
+
+async function corridor(ctx, kind) {
+  const detections = await pickPath(["geojson", "json"], `${kind} detections`);
+  const centreline = await pickPath(["geojson", "json"], "corridor centreline");
+  const geometry = await required(ctx, "Capture geometry (for example oblique_close_range)");
+  const scope = await required(ctx, "Validation scope of the detector");
+  return call("india_corridor_inspection", kind, detections, centreline, geometry, scope);
+}
+
+/** A line about what a pack produced: its own status and headline numbers. */
+function summarisePack(result) {
+  const summary = result.summary || {};
+  const parts = [];
+  if (result.baseline_path) return `baseline written to ${result.baseline_path}.`;
+  for (const key of ["observed_surface_coverage_percent", "surveyed_distance_m",
+    "road_surface_area_m2", "module_count", "instance_count", "candidate_count", "status"]) {
+    if (summary[key] !== undefined && typeof summary[key] !== "object") parts.push(`${key.replace(/_/g, " ")} ${summary[key]}`);
+  }
+  if (summary.categories) {
+    parts.push(Object.entries(summary.categories)
+      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`).join(", "));
+  }
+  if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
+  const layers = (result.layer_ids || []).length;
+  return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
+}
+
 /** The 3D view, opened on the mesh if it is not already showing. */
 async function openModel(ctx) {
   const { currentModelViewer, whenModelReady } = await import("./model3d.js");
@@ -823,6 +962,31 @@ export const ACTIONS = {
       return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`
                  + (result.warning ? ` ${result.warning}` : ""),
                refresh: true };
+    },
+  },
+  /* -- survey packs -------------------------------------------------------
+     The India-first packs were library code nothing could reach. One button offers
+     them; each asks for exactly the inputs its pack refuses to guess (a boundary, a
+     design, a calibration, a validation scope) and puts what it produced on the map. */
+  "Semantic Map": {
+    describe: "Classify the orthomosaic with the installed semantic model (background job).",
+    async run() {
+      const started = await call("semantic_map");
+      const usable = (started.usable_labels || []).join(" and ");
+      return { message: "Semantic map started."
+                 + (usable ? ` Only ${usable} are validated for this model; treat other classes as unvalidated.` : ""),
+               job: started.job_id, refresh: true };
+    },
+  },
+  "Survey Packs": {
+    describe: "Land GIS, design progress, agriculture, road/power/rail/solar and anomaly packs.",
+    async run(ctx) {
+      const packs = Object.keys(SURVEY_PACKS);
+      const pack = await ctx.choose("Survey pack", packs);
+      if (!pack) return { skipped: "No pack chosen." };
+      const result = await SURVEY_PACKS[pack](ctx);
+      if (!result || result.skipped) return result || { skipped: "Cancelled." };
+      return { message: `${pack}: ${summarisePack(result)}`, refresh: true };
     },
   },
   "Check Hazards": {
