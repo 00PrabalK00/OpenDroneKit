@@ -78,6 +78,79 @@ def _data_paths() -> dict[str, str]:
     return describe()
 
 
+def _coverage_summary(result: dict[str, Any]) -> str:
+    """One line for the operator: what the coverage check measured, or why it could not."""
+    layout = result.get("layout") or {}
+    total = len(result.get("images") or [])
+    placed = layout.get("images_placed", 0)
+    if not layout.get("available"):
+        reason = layout.get("reason") or "coverage could not be computed"
+        terrain = layout.get("terrain_error")
+        return (f"coverage not computed ({placed} of {total} image(s) placed): {reason}"
+                + (f" Terrain refused: {terrain[0]}" if terrain else ""))
+    suggestions = result.get("gap_suggestions") or []
+    gaps = [g for g in suggestions if g.get("kind") in ("coverage_gap", "overlap_gap")]
+    retakes = [g for g in suggestions if g.get("kind") == "quality_retake"]
+    extent = ("drawn area" if result.get("coverage_extent") == "area_of_interest"
+              else "flown block")
+    parts = [f"{placed} of {total} image(s) placed",
+             f"{result.get('coverage_completion_pct')}% of the {extent} seen, "
+             f"{result.get('stereo_coverage_pct')}% by two or more images",
+             f"{len(gaps)} re-fly point(s)", f"{len(retakes)} image(s) to retake"]
+    if result.get("unassessed_gaps"):
+        parts.append(f"{len(result['unassessed_gaps'])} area(s) not assessed "
+                     "(images there could not be placed)")
+    return "; ".join(parts)
+
+
+def _coverage_layers(session: Any, result: dict[str, Any], out: Path) -> list[str]:
+    """Footprints and re-fly points from a coverage check, as map layers."""
+    import math
+
+    from core import geo
+
+    epsg = (result.get("layout") or {}).get("epsg")
+    features = []
+    for row in result.get("images") or []:
+        fp = row.get("footprint")
+        if not fp or not epsg:
+            continue
+        # The JSON keeps centre, size and heading; the rectangle is rebuilt exactly as
+        # the validator drew it (a short-side square when the heading is unknown).
+        w, length = float(fp["width_m"]), float(fp["length_m"])
+        if fp.get("yaw_deg") is None:
+            half = min(w, length) / 2.0
+            local = [(-half, -half), (half, -half), (half, half), (-half, half)]
+        else:
+            t = math.radians(float(fp["yaw_deg"]))
+            across = (math.cos(t), -math.sin(t))
+            along = (math.sin(t), math.cos(t))
+            local = [(sx * w / 2 * across[0] + sy * length / 2 * along[0],
+                      sx * w / 2 * across[1] + sy * length / 2 * along[1])
+                     for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+        xs = [float(fp["easting"]) + dx for dx, _ in local]
+        ys = [float(fp["northing"]) + dy for _, dy in local]
+        lon, lat = geo.projected_to_wgs84(xs, ys, int(epsg))
+        features.append(geo.polygon_feature(
+            [[float(a), float(b)] for a, b in zip(lon, lat)],
+            {"image": row["image"], "height_agl_m": fp["height_agl_m"],
+             "height_source": fp["height_source"], "overlap_best": row.get("overlap_best"),
+             "quality_flags": row.get("quality_flags") or []}))
+    layers: list[str] = []
+    if features:
+        path = geo.write_geojson(out / "footprints.geojson", features)
+        layers.append(session.register_vector_layer(path, name="Coverage footprints")["id"])
+    points = [geo.point_feature(g["lonlat"][0], g["lonlat"][1],
+                                {"kind": g["kind"], "reasons": g.get("reasons") or [],
+                                 "related_images": g.get("related_images") or [],
+                                 "area_m2": g.get("area_m2")})
+              for g in result.get("gap_suggestions") or [] if g.get("lonlat")]
+    if points:
+        path = geo.write_geojson(out / "refly_points.geojson", points)
+        layers.append(session.register_vector_layer(path, name="Coverage re-fly points")["id"])
+    return layers
+
+
 def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> list[str]:
     """Add a reconstruction's georeferenced products to the layer tree.
 
@@ -408,6 +481,13 @@ class Api:
         source = Path(path)
         if path and not source.exists():
             return fail(f"Terrain file not found: {path}")
+        if path:
+            from core.terrain_cache import TerrainCacheError, check_terrain_file
+
+            try:
+                check_terrain_file(source)
+            except TerrainCacheError as exc:
+                return fail(str(exc))
         self._session.terrain_source_path = str(source) if path else ""
 
         # Selecting a terrain file says nothing about whether it covers the site, and a
@@ -1029,6 +1109,113 @@ class Api:
             "planned": report["planned_total"], "matched": report["matched"],
             "missed": len(report["missed"]), "folder": str(folder)})
         return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def check_coverage(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Coverage QA on the flown images alone, as a background job.
+
+        Places every image on the ground from its GPS tag, camera geometry and height
+        above ground, measures the overlap between consecutive shots and the ground
+        seen once and twice, and puts the footprints and any re-fly points on the map.
+        It used to run only inside the full pipeline, after reconstruction -- far too
+        late to send the aircraft back while it is still on site.
+
+        ``options``: flight_height_agl_m, ground_elevation_m, terrain_path (defaults to
+        the chosen terrain source), image_dir (defaults to the active dataset). With
+        no way to know the height above ground, coverage is reported as not computed.
+        """
+        from app.session import SUPPORTED_IMAGE_EXTENSIONS
+
+        opts = dict(options or {})
+        folder = str(opts.get("image_dir") or self._session.active_dataset_dir or "")
+        if not folder:
+            return fail("Select the flight's images first: Load Flight, or Import.")
+        if not Path(folder).is_dir():
+            return fail(f"Image folder not found: {folder}")
+        images = sorted(p for p in Path(folder).iterdir()
+                        if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
+        if not images:
+            return fail(f"No supported images in {folder}.")
+        parsed: dict[str, float | None] = {}
+        for key, label in (("flight_height_agl_m", "flight height above ground"),
+                           ("ground_elevation_m", "ground elevation")):
+            try:
+                value = _optional_float(opts.get(key))
+            except (TypeError, ValueError):
+                return fail(f"The {label} must be a number of metres, not "
+                            f"{opts.get(key)!r}.")
+            if value is not None and not math.isfinite(value):
+                return fail(f"The {label} must be a finite number of metres.")
+            parsed[key] = value
+        agl, ground = parsed["flight_height_agl_m"], parsed["ground_elevation_m"]
+        if agl is not None and agl <= 0:
+            return fail("The flight height above ground must be more than 0 m.")
+        terrain = str(opts.get("terrain_path") or self._session.terrain_source_path or "")
+        if terrain:
+            from core.terrain_cache import TerrainCacheError, check_terrain_file
+
+            if not Path(terrain).is_file():
+                return fail(f"Terrain file not found: {terrain}")
+            try:
+                check_terrain_file(terrain)
+            except TerrainCacheError as exc:
+                return fail(str(exc))
+        aoi = list(self._session.aoi_polygon or [])
+        from datetime import datetime, timezone
+
+        out = (self._session.project_root() / "verification" / "coverage"
+               / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ"))
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], **_: Any) -> dict[str, Any]:
+            from core.coverage_validation import CoverageValidationConfig, CoverageValidator
+
+            progress(5, f"Placing {len(images)} image(s) on the ground")
+            config = CoverageValidationConfig(flight_height_agl_m=agl,
+                                              ground_elevation_m=ground,
+                                              terrain_path=terrain)
+            result = CoverageValidator(config).validate(images, out,
+                                                        aoi_lonlat=aoi or None)
+            progress(90, "Writing coverage layers")
+            layers = _coverage_layers(session, result, out)
+            return {"coverage_summary": _coverage_summary(result),
+                    "coverage_json_path": result.get("coverage_json_path"),
+                    "layer_ids": layers}
+
+        return ok(job_id=self._jobs.submit("coverage_qa", work), image_count=len(images),
+                  terrain_path=terrain or None)
+
+    @guard
+    def coverage_qa_report(self) -> dict[str, Any]:
+        """The latest Coverage QA result in this project, read from disk."""
+        root = self._session.project_root() / "verification" / "coverage"
+        runs = sorted(root.glob("*/coverage_validation.json")) if root.is_dir() else []
+        if not runs:
+            return fail("No coverage check has been run. Use Coverage QA.")
+        result = json.loads(runs[-1].read_text(encoding="utf-8"))
+        layout = result.get("layout") or {}
+        suggestions = result.get("gap_suggestions") or []
+        return ok(
+            path=str(runs[-1]),
+            summary=_coverage_summary(result),
+            available=bool(layout.get("available")),
+            reason=layout.get("reason") or None,
+            images=len(result.get("images") or []),
+            images_placed=layout.get("images_placed"),
+            images_not_placed=sum(len(v) for v in (layout.get("images_not_placed") or {}).values()),
+            terrain_error=layout.get("terrain_error"),
+            completion_pct=result.get("coverage_completion_pct"),
+            stereo_pct=result.get("stereo_coverage_pct"),
+            area_m2=result.get("coverage_area_m2"),
+            extent=result.get("coverage_extent"),
+            low_overlap_pairs=len(result.get("missing_pairs") or []),
+            pairs_not_assessed=len(result.get("pairs_not_assessed") or []),
+            refly_points=len([g for g in suggestions
+                              if g.get("kind") in ("coverage_gap", "overlap_gap")]),
+            retakes=len([g for g in suggestions if g.get("kind") == "quality_retake"]),
+            unassessed_gaps=len(result.get("unassessed_gaps") or []),
+            not_assessed_note=layout.get("not_assessed_note"),
+        )
 
     @guard
     def capture_report(self) -> dict[str, Any]:
@@ -5054,7 +5241,13 @@ class Api:
         warnings.extend(self._structure_assumptions(template, opts, recipe.get("metadata") or {}))
         if self._session.terrain_source_path and terrain.get("source") == "missing_terrain_source":
             detail = ""
-            if self._session.terrain_source_path.lower().endswith((".csv", ".tsv")):
+            from core.terrain_cache import TerrainCacheError, check_terrain_file
+
+            try:
+                check_terrain_file(self._session.terrain_source_path)
+            except TerrainCacheError as exc:
+                detail = f" {exc}"
+            if not detail and self._session.terrain_source_path.lower().endswith((".csv", ".tsv")):
                 from mission.planner import TERRAIN_CSV_ELEVATION_COLUMNS, terrain_csv_columns
 
                 columns = terrain_csv_columns(self._session.terrain_source_path)

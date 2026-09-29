@@ -1437,12 +1437,36 @@ def read_terrain_csv_points(path: str) -> tuple[list[list[float]], list[list[flo
     return world_pts, local_samples
 
 
+# x/y terrain samples are metres from the mission origin. No drone mission reaches
+# anywhere near this far, so samples beyond it are projected coordinates (UTM eastings
+# and northings, State Plane feet) read under the wrong heading.
+LOCAL_TERRAIN_MAX_OFFSET_M = 50_000.0
+
+
+def local_terrain_samples_problem(local_samples: list[list[float]], name: str) -> str | None:
+    """Why x/y terrain samples cannot be mission-local metres, or None if they can be."""
+    if not local_samples:
+        return None
+    furthest = max(max(abs(p[0]), abs(p[1])) for p in local_samples)
+    if furthest <= LOCAL_TERRAIN_MAX_OFFSET_M:
+        return None
+    return (
+        f"{name} gives its samples as x/y, which are read as metres from the mission "
+        f"origin, but they reach {furthest:,.0f} m from it -- far beyond any flight. "
+        "They look like projected coordinates (UTM eastings/northings or State Plane), "
+        "which would put the terrain nowhere near the site. Give the samples as lon/lat "
+        "columns, or export the DEM as a GeoTIFF with its CRS."
+    )
+
+
 def _load_terrain_samples_from_csv(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
     src = Path(path)
     points = read_terrain_csv_points(path)
     if points is None:
         return None
     world_pts, local_samples = points
+    if len(world_pts) < 3 and local_terrain_samples_problem(local_samples, src.name):
+        return None
 
     if len(world_pts) >= 3:
         world_xy = [[p[0], p[1]] for p in world_pts]
@@ -1564,9 +1588,27 @@ def _load_terrain_samples_from_ascii_grid(path: str, frame: AssetReferenceFrame)
     return _terrain_model_from_samples_local(samples_local, source=f"terrain_ascii:{src.name}")
 
 
+def _raster_crs_or_none(path: str):
+    try:
+        import rasterio
+
+        with rasterio.open(path) as ds:
+            return ds.crs
+    except Exception:  # noqa: BLE001 - not a raster rasterio reads
+        return None
+
+
 def _load_terrain_samples_from_raster(path: str, frame: AssetReferenceFrame) -> dict[str, Any] | None:
     src = Path(path)
     if not src.exists():
+        return None
+    from core.terrain_cache import TerrainCacheError, refuse_non_metre_heights
+
+    try:
+        # Heights are read as metres below; a feet DEM would put the ground 3.28x
+        # too high. None here surfaces as "terrain source could not be read".
+        refuse_non_metre_heights(_raster_crs_or_none(str(src)), src.name)
+    except TerrainCacheError:
         return None
     try:
         import rasterio
@@ -1671,6 +1713,11 @@ def _load_terrain_model_from_path(path: str, frame: AssetReferenceFrame) -> dict
             return model
 
     if ext in {".asc", ".grd"}:
+        # A grid with a .prj is georeferenced: its x/y are in that CRS (often a UTM
+        # zone), not the mission's local frame, and it must be reprojected -- and
+        # refused if it is in feet -- exactly like a GeoTIFF.
+        if _raster_crs_or_none(source) is not None:
+            return _load_terrain_samples_from_raster(source, frame=frame)
         model = _load_terrain_samples_from_ascii_grid(source, frame=frame)
         if isinstance(model, dict):
             return model

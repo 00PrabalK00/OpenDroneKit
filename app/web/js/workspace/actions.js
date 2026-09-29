@@ -99,12 +99,20 @@ const SURVEY_PACKS = {
     const severe = await number(ctx, "Severe below (index value)");
     const moderate = await number(ctx, "Moderate below (index value)");
     const scope = await required(ctx, "Who validated these thresholds, for which crop and stage");
-    return call("india_stress_zones", raster, severe, moderate, scope);
+    // The pack can restrict zones to canopy pixels; the button never offered it.
+    const masked = await ctx.choose("Restrict the zones to canopy?", [
+      "No canopy mask", "Choose a canopy mask raster"]);
+    const mask = masked && masked.startsWith("Choose") ? await pickPath(["tif", "tiff"], "canopy mask") : "";
+    return call("india_stress_zones", raster, severe, moderate, scope, mask);
   },
   "Plant count": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "instance mask");
     const scope = await required(ctx, "Validation scope of the instance model");
-    return call("india_plant_count", raster, scope);
+    // A label-id mask keeps touching crowns apart; read as binary they merge into one.
+    const encoding = await ctx.choose("How the mask marks plants", [
+      "binary (every non-zero pixel is plant)", "label_ids (one id per plant)"]);
+    if (!encoding) throw new Error("No mask encoding chosen.");
+    return call("india_plant_count", raster, scope, encoding.split(" ")[0]);
   },
   "Road condition": async (ctx) => {
     const centreline = await pickPath(["geojson", "json"], "road centreline");
@@ -117,8 +125,16 @@ const SURVEY_PACKS = {
   "Solar module inventory": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "module instance raster");
     const scope = await required(ctx, "Validation scope of the module model");
-    const layout = await call("pick_file", ["geojson", "json"]);
-    return call("india_solar_inventory", raster, scope, (layout && layout.path) || "");
+    const withLayout = await ctx.choose("Compare with an approved layout?", [
+      "No approved layout", "Choose an approved layout"]);
+    const layout = withLayout && withLayout.startsWith("Choose")
+      ? await pickPath(["geojson", "json"], "approved layout") : "";
+    // Validated findings per module were accepted by the pack but never offered here.
+    const withFindings = await ctx.choose("Attach validated module findings?", [
+      "No findings", "Choose validated findings"]);
+    const findings = withFindings && withFindings.startsWith("Choose")
+      ? await pickPath(["geojson", "json"], "validated module findings") : "";
+    return call("india_solar_inventory", raster, scope, layout, findings);
   },
   "Module temperatures": async (ctx) => {
     // The pack reads a radiometric sidecar (raw counts + calibration + georeferencing,
@@ -178,9 +194,19 @@ function summarisePack(result) {
   const summary = result.summary || {};
   const parts = [];
   if (result.baseline_path) return `baseline written to ${result.baseline_path}.`;
-  for (const key of ["observed_surface_coverage_percent", "surveyed_distance_m",
-    "road_surface_area_m2", "module_count", "instance_count", "candidate_count", "status"]) {
+  for (const key of ["observed_surface_coverage_percent", "canopy_cover_percent",
+    "canopy_area_m2", "surveyed_distance_m", "road_surface_area_m2", "module_count",
+    "instance_count", "count", "candidate_count", "status"]) {
     if (summary[key] !== undefined && typeof summary[key] !== "object") parts.push(`${key.replace(/_/g, " ")} ${summary[key]}`);
+  }
+  // Stress zones and vegetation indices had only "done" to show for themselves.
+  if (summary.zones) {
+    parts.push(Object.entries(summary.zones)
+      .map(([name, zone]) => `${name.replace(/_/g, " ")} ${zone && zone.area_m2 !== undefined ? `${zone.area_m2} m²` : ""}`).join(", "));
+  }
+  if (summary.indices) {
+    parts.push(Object.entries(summary.indices)
+      .map(([name, index]) => `${name} ${index && index.status ? index.status : ""}`).join(", "));
   }
   if (summary.categories) {
     parts.push(Object.entries(summary.categories)
@@ -214,6 +240,7 @@ async function pickAircraft(ctx) {
 }
 
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
+                               "Coverage QA",
                                "Open in 3D", "Label"]);
 
 /**
@@ -1618,6 +1645,34 @@ export const ACTIONS = {
           + `unplanned image(s).${missed ? " Request Reflight turns the missed points into a layer." : ""}`,
         refresh: true,
       };
+    },
+  },
+
+  /* Coverage QA ran only inside the full pipeline, after reconstruction: far too late
+     to send the aircraft back. It needs the height the photographs were taken above the
+     ground; the images may record it (DJI), or the terrain source may give it, and
+     otherwise the operator states it -- it is never assumed. */
+  "Coverage QA": {
+    describe: "Place the flown images on the ground and find coverage and overlap gaps.",
+    async run(ctx) {
+      const options = {};
+      const agl = await ctx.prompt(
+        "Flight height above ground (m). Leave blank if the images record it (DJI) or a "
+        + "terrain model is set, or to give the ground elevation instead.", "");
+      if (agl === null) return { skipped: "Coverage QA cancelled." };
+      if (String(agl).trim() !== "") {
+        options.flight_height_agl_m = Number(agl);
+      } else {
+        const ground = await ctx.prompt(
+          "Ground elevation above sea level at the site (m). Leave blank to use only "
+          + "the images' own height and the terrain source.", "");
+        if (ground === null) return { skipped: "Coverage QA cancelled." };
+        if (String(ground).trim() !== "") options.ground_elevation_m = Number(ground);
+      }
+      const started = await call("check_coverage", options);
+      return { message: `Coverage QA started on ${started.image_count} image(s)`
+                 + (started.terrain_path ? `, heights from ${started.terrain_path}.` : "."),
+               job: started.job_id, refresh: true };
     },
   },
 

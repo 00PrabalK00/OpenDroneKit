@@ -152,6 +152,7 @@ def raster_bounds(path: str | Path) -> tuple[tuple[float, float, float, float], 
                 f"{source.name} has no coordinate reference system, so the ground it "
                 "covers is unknown and it cannot be cached against an area."
             )
+        refuse_non_metre_heights(raster.crs, source.name)
         epsg = raster.crs.to_epsg()
         bounds = transform_bounds(raster.crs, "EPSG:4326", *raster.bounds, densify_pts=21)
 
@@ -167,10 +168,125 @@ def raster_bounds(path: str | Path) -> tuple[tuple[float, float, float, float], 
     return bounds, epsg, cell
 
 
+def refuse_non_metre_heights(crs, name: str) -> None:
+    """Refuse a terrain raster whose horizontal CRS is in feet.
+
+    Heights are read as metres everywhere terrain is used (terrain following, coverage
+    height above ground). A DEM in a State Plane feet CRS almost always carries heights
+    in feet too, and a GeoTIFF does not record the vertical unit, so its 770 "m" of
+    ground would plan a flight -- or place an image -- as if the ground were 535 m
+    higher than it is. Refused, in words.
+    """
+    if crs is None or not crs.is_projected:
+        return
+    try:
+        unit, factor = crs.linear_units_factor
+    except Exception:  # noqa: BLE001 - an unknown unit is as unusable as feet
+        unit, factor = "an unknown unit", float("nan")
+    if not (float(factor) == 1.0):
+        raise TerrainCacheError(
+            f"{name} is in {crs.to_string()} ({unit} horizontally). Its heights are "
+            "probably in the same unit, and the raster does not record which, but "
+            "terrain here is read in metres. Export the DEM with heights in metres in a "
+            "metric or lon/lat CRS (a UTM zone or EPSG:4326) first."
+        )
+
+
+# Terrain given as a table of points rather than a raster; their columns are checked
+# where they are read (mission.planner.terrain_csv_columns).
+TERRAIN_SAMPLE_TABLE_SUFFIXES = {".csv", ".tsv", ".txt", ".xyz", ".json"}
+
+
+def check_terrain_file(path: str | Path) -> None:
+    """Refuse a terrain raster that cannot be placed or whose heights are not metres.
+
+    Every raster format is checked, not only GeoTIFF: the Import Terrain picker offers
+    ESRI ASCII grids (.asc, with the CRS in a sidecar .prj), and a feet .asc was accepted
+    while the same DEM as a GeoTIFF was refused.
+    """
+    source = Path(path)
+    if source.suffix.lower() in TERRAIN_SAMPLE_TABLE_SUFFIXES:
+        if source.suffix.lower() == ".json":
+            return
+        from mission.planner import local_terrain_samples_problem, read_terrain_csv_points
+
+        points = read_terrain_csv_points(str(source))
+        if points is not None:
+            world, local = points
+            problem = (local_terrain_samples_problem(local, source.name)
+                       if len(world) < 3 else None)
+            if problem:
+                raise TerrainCacheError(problem)
+        return
+    import rasterio
+
+    try:
+        raster = rasterio.open(source)
+    except Exception as exc:  # noqa: BLE001 - any unreadable raster is refused in words
+        raise TerrainCacheError(
+            f"{source.name} cannot be read as a terrain raster ({exc}). Use a GeoTIFF, "
+            "an ESRI ASCII grid with its .prj, or a CSV of lon/lat/elevation points."
+        ) from exc
+    with raster:
+        if raster.crs is None:
+            sidecar = (" An ESRI ASCII grid keeps its CRS in a .prj file of the same "
+                       "name next to it; none was found."
+                       if source.suffix.lower() in {".asc", ".grd"} else "")
+            raise TerrainCacheError(
+                f"{source.name} has no coordinate reference system, so the ground it "
+                "covers is unknown and its heights cannot be matched to a position."
+                + sidecar
+            )
+        refuse_non_metre_heights(raster.crs, source.name)
+
+
+def _raster_files(origin: Path) -> list[Path]:
+    """The raster and every sidecar GDAL reads with it (.prj, .aux.xml, .hdr ...)."""
+    import rasterio
+
+    try:
+        with rasterio.open(origin) as raster:
+            files = [Path(f) for f in (raster.files or [])]
+    except Exception:  # noqa: BLE001 - check_terrain_file has already refused these
+        files = []
+    if not any(f.resolve() == origin.resolve() for f in files if f.exists()):
+        files.insert(0, origin)
+    return [f for f in files if f.exists() and f.is_file()]
+
+
+def _copy_raster_with_sidecars(origin: Path, target_dir: Path, tile_name: str) -> list[Path]:
+    """Copy a raster and its sidecars under the tile's name; return what was written."""
+    written: list[Path] = []
+    stem = origin.stem
+    for src in _raster_files(origin):
+        # g.asc -> tile.asc, g.prj -> tile.prj, g.asc.aux.xml -> tile.asc.aux.xml
+        rest = src.name[len(stem):] if src.name.startswith(stem) else src.name
+        dest = target_dir / f"{tile_name}{rest}"
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        written.append(dest)
+    return written
+
+
+def tile_problem(tile: "TerrainTile") -> str | None:
+    """Why a cached tile's file cannot be used, or None when it can."""
+    path = Path(tile.path)
+    if not path.exists():
+        return None  # reported separately as missing
+    try:
+        check_terrain_file(path)
+    except TerrainCacheError as exc:
+        return str(exc)
+    return None
+
+
 def cache_terrain(source: str | Path, project_root: str | Path,
                   name: str = "") -> TerrainTile:
     """Copy a terrain raster into the project so it is available with no connectivity."""
     origin = Path(source)
+    if not origin.exists():
+        raise TerrainCacheError(f"{origin} does not exist.")
+    check_terrain_file(origin)
     bounds, epsg, cell = raster_bounds(origin)
 
     target_dir = cache_dir(project_root)
@@ -178,7 +294,19 @@ def cache_terrain(source: str | Path, project_root: str | Path,
     tile_name = name or origin.stem
     target = target_dir / f"{tile_name}{origin.suffix}"
     if origin.resolve() != target.resolve():
-        shutil.copy2(origin, target)
+        copied = _copy_raster_with_sidecars(origin, target_dir, tile_name)
+        # The cached copy is what gets flown, so it is the one that must place itself.
+        # An ESRI ASCII grid keeps its CRS in a .prj beside it; a copy that lost it
+        # would be indexed as covering the site while being unusable.
+        try:
+            check_terrain_file(target)
+        except TerrainCacheError as exc:
+            for path in copied:
+                path.unlink(missing_ok=True)
+            raise TerrainCacheError(
+                f"{origin.name} was readable, but the copy in the terrain cache is not "
+                f"({exc}) Nothing was cached."
+            ) from exc
 
     tile = TerrainTile(
         name=tile_name, path=str(target),
@@ -207,7 +335,7 @@ def terrain_for_area(polygon: Sequence[Sequence[float]],
     """The cached tile covering this area, or None when nothing does."""
     bounds = polygon_bounds(polygon)
     for tile in load_index(project_root):
-        if tile.covers(bounds) and Path(tile.path).exists():
+        if tile.covers(bounds) and Path(tile.path).exists() and tile_problem(tile) is None:
             return tile
     return None
 
@@ -249,7 +377,27 @@ def coverage_report(polygon: Sequence[Sequence[float]],
         }
 
     missing = [t for t in tiles if not Path(t.path).exists()]
-    usable = [t for t in tiles if Path(t.path).exists()]
+    present = [t for t in tiles if Path(t.path).exists()]
+    problems = {t.name: tile_problem(t) for t in present}
+    usable = [t for t in present if problems[t.name] is None]
+    broken = [t for t in present if problems[t.name] is not None]
+
+    # A tile whose file is there but cannot place itself (an ESRI grid whose .prj was
+    # left behind, a feet DEM) covers nothing, however its index entry reads.
+    broken_cover = [t for t in broken if t.covers(bounds)]
+    if broken_cover and not any(t.covers(bounds) for t in usable):
+        return {
+            "covered": False,
+            "reason": "unusable_file",
+            "bounds": list(bounds),
+            "cached_tiles": [t.to_dict() for t in usable],
+            "unusable_files": {t.name: problems[t.name] for t in broken},
+            "missing_files": [t.name for t in missing],
+            "detail": " ".join(
+                f"{t.name} is indexed as covering this area, but its cached file cannot "
+                f"be used: {problems[t.name]} Re-cache that DEM."
+                for t in broken_cover),
+        }
 
     # A tile that covers this ground but whose file has gone is a different problem from
     # having cached the wrong area, and the operator can act on it: the extent is still
@@ -314,6 +462,7 @@ def describe_cache(project_root: str | Path) -> dict[str, Any]:
     tiles, state = read_index(project_root)
     present = [t for t in tiles if Path(t.path).exists()]
     missing = [t for t in tiles if not Path(t.path).exists()]
+    unusable = {t.name: p for t in present if (p := tile_problem(t)) is not None}
 
     total_bytes = sum(Path(t.path).stat().st_size for t in present)
     if state == "unreadable":
@@ -325,13 +474,17 @@ def describe_cache(project_root: str | Path) -> dict[str, Any]:
     elif missing:
         note = ("Terrain listed as missing was cached but its file has since gone. Those "
                 "areas cannot be flown terrain-following offline.")
+    elif unusable:
+        note = ("Cached tile(s) " + ", ".join(sorted(unusable)) + " are present but "
+                "cannot be used: " + " ".join(unusable.values()) + " Re-cache them.")
     else:
-        note = "Every cached tile is present."
+        note = "Every cached tile is present and readable."
 
     return {
         "tile_count": len(tiles),
         "index_state": state,
-        "present": [t.to_dict() for t in present],
+        "present": [t.to_dict() for t in present if t.name not in unusable],
+        "unusable": unusable,
         "missing": [t.name for t in missing],
         "total_mb": round(total_bytes / 1_000_000, 1),
         "note": note,

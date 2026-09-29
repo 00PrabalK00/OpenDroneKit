@@ -253,6 +253,10 @@ def _terrain_sampler(terrain_path: str):
     import rasterio
     from pyproj import Transformer
 
+    from .terrain_cache import check_terrain_file
+
+    # A feet DEM would put the ground ~2.3x too high and every image below it.
+    check_terrain_file(terrain_path)
     dataset = rasterio.open(terrain_path)
     to_raster = Transformer.from_crs("EPSG:4326", dataset.crs, always_xy=True)
     band = dataset.read(1, masked=True)
@@ -775,6 +779,13 @@ class CoverageValidator:
             a, b = by_name.get(miss["image_prev"]), by_name.get(miss["image_curr"])
             if a is None or b is None:
                 continue
+            if self._stereo_between(a, b, coverage):
+                # Consecutive frames meet little at every line change of a serpentine
+                # survey: a complete 3x3 grid at 100% stereo coverage was told to re-fly
+                # both turns. Ground other images photographed twice is not a gap.
+                miss["ground_between_stereo_covered"] = True
+                continue
+            miss["ground_between_stereo_covered"] = False
             suggestions.append({
                 "kind": "overlap_gap",
                 "priority": (1.0 - float(miss["overlap"])) * float(coverage.get("mean_footprint_m2", 1.0)),
@@ -798,6 +809,25 @@ class CoverageValidator:
 
         suggestions.sort(key=lambda s: float(s.get("priority", 0.0)), reverse=True)
         return suggestions[: self.config.max_gap_suggestions], unassessed
+
+    @staticmethod
+    def _stereo_between(a: ImageFootprint, b: ImageFootprint, coverage: dict) -> bool:
+        """Whether every ground cell between two image centres is seen by 2+ images."""
+        if not coverage.get("available"):
+            return False
+        counts, cell = coverage["counts"], float(coverage["cell_m"])
+        min_x, max_y = coverage["origin"]
+        length = float(np.hypot(b.easting - a.easting, b.northing - a.northing))
+        steps = max(2, int(np.ceil(length / cell)) + 1)
+        t = np.linspace(0.0, 1.0, steps)
+        xs = a.easting + t * (b.easting - a.easting)
+        ys = a.northing + t * (b.northing - a.northing)
+        cols = np.floor((xs - min_x) / cell).astype(int)
+        rows = np.floor((max_y - ys) / cell).astype(int)
+        inside = (rows >= 0) & (rows < counts.shape[0]) & (cols >= 0) & (cols < counts.shape[1])
+        if not inside.all():
+            return False
+        return bool((counts[rows, cols] >= 2).all())
 
     def _build_gap_mission(
         self,
