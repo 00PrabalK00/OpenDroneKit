@@ -219,6 +219,7 @@ function summarisePack(result) {
 
 /** Actions that need images on disk. */
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
+                               "Coverage QA",
                                "Open in 3D", "Label"]);
 
 /**
@@ -1623,6 +1624,34 @@ export const ACTIONS = {
           + `unplanned image(s).${missed ? " Request Reflight turns the missed points into a layer." : ""}`,
         refresh: true,
       };
+    },
+  },
+
+  /* Coverage QA ran only inside the full pipeline, after reconstruction: far too late
+     to send the aircraft back. It needs the height the photographs were taken above the
+     ground; the images may record it (DJI), or the terrain source may give it, and
+     otherwise the operator states it -- it is never assumed. */
+  "Coverage QA": {
+    describe: "Place the flown images on the ground and find coverage and overlap gaps.",
+    async run(ctx) {
+      const options = {};
+      const agl = await ctx.prompt(
+        "Flight height above ground (m). Leave blank if the images record it (DJI) or a "
+        + "terrain model is set, or to give the ground elevation instead.", "");
+      if (agl === null) return { skipped: "Coverage QA cancelled." };
+      if (String(agl).trim() !== "") {
+        options.flight_height_agl_m = Number(agl);
+      } else {
+        const ground = await ctx.prompt(
+          "Ground elevation above sea level at the site (m). Leave blank to use only "
+          + "the images' own height and the terrain source.", "");
+        if (ground === null) return { skipped: "Coverage QA cancelled." };
+        if (String(ground).trim() !== "") options.ground_elevation_m = Number(ground);
+      }
+      const started = await call("check_coverage", options);
+      return { message: `Coverage QA started on ${started.image_count} image(s)`
+                 + (started.terrain_path ? `, heights from ${started.terrain_path}.` : "."),
+               job: started.job_id, refresh: true };
     },
   },
 

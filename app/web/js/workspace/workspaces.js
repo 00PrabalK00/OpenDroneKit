@@ -918,7 +918,7 @@ const flight = {
 const verification = {
   id: "verification",
   title: "Verification",
-  toolbar: ["Load Flight", "Match Captures", "|", "Accept", "Flag", "Request Reflight", "|", "Export Report"],
+  toolbar: ["Load Flight", "Match Captures", "Coverage QA", "|", "Accept", "Flag", "Request Reflight", "|", "Export Report"],
   left: [
     { id: "ver.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets"],
@@ -998,6 +998,31 @@ const verification = {
           ["Max deviation", (r.deviation || {}).max_m, "m"],
           ["Ungeotagged", (r.ungeotagged || []).length],
         ]),
+      ]),
+    }) },
+    /* Coverage QA: where each photograph lies on the ground and how much of the flown
+       block was seen once and twice, from the images alone -- the check an operator
+       needs before leaving site, not after reconstruction. */
+    { id: "ver.coverage", title: "Coverage QA", render: () => live({
+      calls: ["coverage_qa_report"],
+      empty: "Run Coverage QA to place the flown images on the ground and find gaps.",
+      render: ([r]) => properties([
+        { group: "Last coverage check" },
+        { label: "Result", value: r.available ? chip("measured", "ok") : chip("not computed", "warn") },
+        ...reported([
+          ["Images", r.images],
+          ["Placed on the ground", r.images_placed],
+          ["Not placed", r.images_not_placed || undefined],
+          ["Seen at least once", r.completion_pct, "%"],
+          ["Seen by two or more", r.stereo_pct, "%"],
+          ["Area", r.area_m2, "m²"],
+          ["Re-fly points", r.available ? r.refly_points : undefined],
+          ["Images to retake", r.retakes],
+          ["Areas not assessed", r.unassessed_gaps || undefined],
+        ]),
+        ...(r.reason ? [{ label: "Why", value: r.reason }] : []),
+        ...(r.terrain_error ? [{ label: "Terrain", value: String(r.terrain_error[0]) }] : []),
+        ...(r.not_assessed_note ? [{ label: "Note", value: r.not_assessed_note }] : []),
       ]),
     }) },
   ],

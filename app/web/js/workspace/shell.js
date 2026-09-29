@@ -43,6 +43,7 @@ function jobOutcome(result) {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
   }
   if (result.parity_ok === true && result.key) parts.push(`installed as ${result.key}`);
+  if (result.coverage_summary) parts.push(String(result.coverage_summary));
   return parts.length ? `: ${parts.join("; ")}` : "";
 }
 
