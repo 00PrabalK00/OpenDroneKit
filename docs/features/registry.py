@@ -695,8 +695,11 @@ PROCESSING = [
       "implemented", ["tests/test_provenance.py::TestRecording",
                       "tests/test_provenance.py::TestVerification",
                       "tests/test_provenance.py::TestReconstructionOutputs",
-                      "tests/test_provenance.py::TestAudit"],
-      "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run."),
+                      "tests/test_provenance.py::TestAudit",
+                      "tests/test_report_from_the_open_project.py::TestReconstructionAndProvenance"],
+      "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run. "
+      "Reconstructions run from the app and every report file now record provenance; "
+      "Api.verify_provenance / record_provenance and Reports > Verify Provenance expose it."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1357,14 +1360,25 @@ PLATFORM = [
       "as zero defects found.",
       "implemented", ["tests/test_report_engine.py::TestReadiness",
                       "tests/test_report_engine.py::TestGeneration",
-                      "tests/test_report_engine.py::TestContent"],
-      "core/report_engine.py; each report gets its own directory and a manifest."),
+                      "tests/test_report_engine.py::TestContent",
+                      "tests/test_report_from_the_open_project.py::TestTheReportIsAboutTheOpenProject",
+                      "tests/test_report_from_the_open_project.py::TestReportTypesAreDifferentDocuments",
+                      "tests/test_report_from_the_open_project.py::TestNothingIsWrittenOnTheProjectsBehalf",
+                      "tests/test_reports_in_the_desktop_window.py::TestTheWindowProducesAReport",
+                      "tests/test_reports_in_the_cockpit.py::TestTheReportsWorkspace"],
+      "core/report_engine.py + app/report_builder.py: built from the open desktop project "
+      "(store datasets, mission versions, audit; folder findings, reconstruction, pipeline "
+      "runs), written to <project>/reports/<time>_<title>_<id>/ with a manifest and "
+      "provenance sidecars; reachable from the default window and the cockpit."),
     F("rp.formats", "Report formats", "hub", "Reporting",
       "PDF and DOCX generated directly from the report payload, each verified by "
       "opening the result with its own reader rather than checking it is non-empty.",
       "implemented", ["tests/test_report_formats.py::TestPdf",
-                      "tests/test_report_formats.py::TestDocx"],
-      "PDF, DOCX, HTML and Markdown done; CSV and JSON exports still to come."),
+                      "tests/test_report_formats.py::TestDocx",
+                      "tests/test_report_from_the_open_project.py::TestEveryFormatIsWritten",
+                      "tests/test_report_from_the_open_project.py::TestReviewReachesTheDeliverable"],
+      "PDF, DOCX, HTML and Markdown done; the engine's PDF is drawn by reportlab from "
+      "the same sections as the HTML (no weasyprint). CSV and JSON exports still to come."),
     F("rp.templates", "Report templates", "hub", "Reporting",
       "Reusable organisation templates controlling title, organisation, client, "
       "section selection, severity ordering and whether unreviewed findings appear.",
