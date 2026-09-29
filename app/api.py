@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import math
 import time
 import os
 from pathlib import Path
@@ -1135,8 +1136,18 @@ class Api:
                         if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
         if not images:
             return fail(f"No supported images in {folder}.")
-        agl = _optional_float(opts.get("flight_height_agl_m"))
-        ground = _optional_float(opts.get("ground_elevation_m"))
+        parsed: dict[str, float | None] = {}
+        for key, label in (("flight_height_agl_m", "flight height above ground"),
+                           ("ground_elevation_m", "ground elevation")):
+            try:
+                value = _optional_float(opts.get(key))
+            except (TypeError, ValueError):
+                return fail(f"The {label} must be a number of metres, not "
+                            f"{opts.get(key)!r}.")
+            if value is not None and not math.isfinite(value):
+                return fail(f"The {label} must be a finite number of metres.")
+            parsed[key] = value
+        agl, ground = parsed["flight_height_agl_m"], parsed["ground_elevation_m"]
         if agl is not None and agl <= 0:
             return fail("The flight height above ground must be more than 0 m.")
         terrain = str(opts.get("terrain_path") or self._session.terrain_source_path or "")

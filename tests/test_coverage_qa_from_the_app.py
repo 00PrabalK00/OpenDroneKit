@@ -115,6 +115,12 @@ class TestCoverageQaThroughTheApi:
         folder = _flight(tmp_path)
         bad = api.check_coverage({"image_dir": str(folder), "flight_height_agl_m": -5})
         assert bad["ok"] is False and "more than 0 m" in bad["error"]
+        # A typed-in word is refused in words, not as a raw ValueError.
+        word = api.check_coverage({"image_dir": str(folder), "flight_height_agl_m": "abc"})
+        assert word["ok"] is False and "number of metres" in word["error"], word
+        assert "ValueError" not in word["error"]
+        nan = api.check_coverage({"image_dir": str(folder), "ground_elevation_m": "nan"})
+        assert nan["ok"] is False and "finite" in nan["error"], nan
         from test_wrong_scale_and_terrain_units_are_refused import OHIO_NORTH_US_FT, _warp
 
         feet = _warp(surface_pair["dtm"], tmp_path / "dtm_ft.tif", OHIO_NORTH_US_FT)
