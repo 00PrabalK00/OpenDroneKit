@@ -219,12 +219,18 @@ class TestTheReportPanelReachesTheEngine:
         body = actions_js.split('"Generate Report": {')[1].split("\n  },")[0]
         assert "reportOptions" in body
 
-    def test_a_word_request_does_not_go_to_the_pdf_engine(self, actions_js) -> None:
-        """The report engine renders HTML then PDF. Sending it a Word request would
-        produce a PDF named correctly -- wrong in the one way nobody checks."""
+    def test_a_word_request_reaches_the_word_writer(self, actions_js, shell_js) -> None:
+        """A Word request must produce Word, not a PDF named correctly.
+
+        The engine used to render HTML then PDF only, so DOCX had to be routed around it
+        through export_report. It now writes each requested format itself, DOCX through
+        core/report_formats.write_docx (tests/test_report_from_the_open_project.py opens
+        the file), so the action passes the chosen formats and the panel maps DOCX to
+        "docx"."""
         body = actions_js.split('"Generate Report": {')[1].split("\n  },")[0]
-        assert 'export_report' in body
-        assert 'docx' in body
+        assert "formats" in body
+        options = shell_js.split("reportOptions: () => {")[1].split("\n      },")[0]
+        assert 'docx: ["html", "docx"]' in options
 
     def test_the_shell_exposes_the_panel_settings(self, shell_js) -> None:
         assert "reportOptions:" in shell_js

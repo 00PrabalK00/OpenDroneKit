@@ -72,27 +72,38 @@ window.__finish = (value) => {
 """
 
 
+CLASSIC_READY = ("document.querySelector('#status-message').textContent"
+                 " === 'OpenDroneKit ready.'")
+
+
 def run_page(api: Any, driver_js: str, profile_dir: Path, *, budget_ms: int = 120000,
-             timeout_s: int = 240) -> dict[str, Any]:
-    """Serve the page with `api` behind the bridge, run `driver_js`, return its result."""
+             timeout_s: int = 240, page_name: str = "index.html",
+             ready_js: str = CLASSIC_READY, before_js: str = "") -> dict[str, Any]:
+    """Serve a page with `api` behind the bridge, run `driver_js`, return its result.
+
+    index.html (the default window) and workspace.html (the cockpit) are both served as
+    shipped, with the bridge injected ahead of the application's own module code.
+    """
     lock = threading.Lock()
-    page = (WEB / "index.html").read_text(encoding="utf-8")
-    # The map scripts are dropped (see module docstring); app.js is kept as shipped.
-    page = re.sub(r'<script src="vendor/maplibre/[^"]+"></script>\s*', "", page)
-    page = page.replace('<script src="js/map.js"></script>', "")
-    page = page.replace(
-        '<script src="js/app.js"></script>',
-        '<script src="js/app.js"></script>\n<script src="/__bridge.js"></script>\n'
-        '<script src="/__helpers.js"></script>\n<script src="/__driver.js"></script>',
-    )
+    page = (WEB / page_name).read_text(encoding="utf-8")
+    injected = ('<script src="/__bridge.js"></script>\n<script src="/__helpers.js"></script>\n'
+                + (f"<script>{before_js}</script>\n" if before_js else ""))
+    if page_name == "index.html":
+        # The map scripts are dropped (see module docstring); app.js is kept as shipped.
+        page = re.sub(r'<script src="vendor/maplibre/[^"]+"></script>\s*', "", page)
+        page = page.replace('<script src="js/map.js"></script>', "")
+        page = page.replace('<script src="js/app.js"></script>',
+                            '<script src="js/app.js"></script>\n' + injected)
+    else:
+        page = page.replace("<body>", "<body>\n" + injected, 1)
+    page = page.replace("</body>", '<script src="/__driver.js"></script>\n</body>', 1)
     driver = (
         "window.addEventListener('load', async () => {\n"
         "  window.dispatchEvent(new Event('pywebviewready'));\n"
-        "  await window.__waitFor(() => document.querySelector('#status-message').textContent"
-        " === 'OpenDroneKit ready.');\n"
+        f"  await window.__waitFor(() => {ready_js});\n"
         "  try {\n" + driver_js + "\n  } catch (err) {\n"
         "    window.__finish({ error: String(err && err.stack || err),"
-        " status: document.querySelector('#status-message').textContent });\n"
+        " text: document.body.innerText.slice(0, 3000) });\n"
         "  }\n});\n"
     )
     served = {"/__page.html": ("text/html", page), "/__bridge.js": ("text/javascript", BRIDGE_JS),

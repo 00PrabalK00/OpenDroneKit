@@ -66,8 +66,22 @@ export function live({ calls, render, empty, isEmpty }) {
   };
 
   settle();
+  // Re-read after an action changes the project (a finding recorded, a report written).
+  // Without this a panel showed what was true when the workspace opened, so the list of
+  // reports stayed empty after Generate had written one.
+  const onRefresh = () => {
+    if (!host.isConnected) {
+      window.removeEventListener(REFRESH_EVENT, onRefresh);
+      return;
+    }
+    settle();
+  };
+  if (typeof window !== "undefined") window.addEventListener(REFRESH_EVENT, onRefresh);
   return host;
 }
+
+/** Dispatched on window after an action that changed what the panels read. */
+export const REFRESH_EVENT = "odk:refresh";
 
 /**
  * What a panel shows when the application has nothing for it.

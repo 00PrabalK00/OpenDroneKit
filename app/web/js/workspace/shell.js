@@ -305,6 +305,12 @@ export class Shell {
         }
         return;
       }
+      case "report": {
+        // Open Report acts on the report picked in the list.
+        this.selectedReportId = value.id || null;
+        this.toast(`${name} selected. Open Report opens it.`, "ok");
+        return;
+      }
       case "aircraft":
       case "battery":
       case "pilot": {
@@ -725,7 +731,10 @@ export class Shell {
       const message = (result && result.message) || `${action} done.`;
       this.toast(message, "ok");
       if (result && result.job) this.watchJob(result.job);
-      if (result && result.refresh) await this.refreshState();
+      if (result && result.refresh) {
+        await this.refreshState();
+        window.dispatchEvent(new Event("odk:refresh"));
+      }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
       // application produces and it used to vanish into a rejected promise.
@@ -820,12 +829,21 @@ export class Shell {
        * read by nobody -- the third panel in this shell with that fault. */
       reportOptions: () => {
         const raw = this.settings || {};
+        const format = String(raw.fmt || "PDF").toLowerCase();
+        const formats = { pdf: ["html", "pdf"], docx: ["html", "docx"],
+                          "pdf+docx": ["html", "pdf", "docx"], html: ["html"] }[format]
+          || ["html", "pdf"];
         return {
           reportType: String(raw.tpl || "standard"),
-          format: String(raw.fmt || "PDF").toLowerCase(),
+          format,
+          formats,
           organization: String(raw.org || ""),
+          client: String(raw.client || ""),
+          author: String(raw.author || ""),
+          logo: String(raw.logo || ""),
         };
       },
+      selectedReport: () => this.selectedReportId || null,
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
