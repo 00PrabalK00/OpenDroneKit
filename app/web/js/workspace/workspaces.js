@@ -652,7 +652,7 @@ const flight = {
   toolbar: ["Connect", "Disconnect", "|", "Preflight", "Confirm Checks", "Clear Alerts",
             "|", "Upload", "Start Mission", "Pause", "Resume", "Capture Now",
             "|", "Mark Corner", "Close Boundary", "Clear Corners",
-            "|", "Export Log", "Linked Progress",
+            "|", "Export Log", "Load Flight", "Linked Progress",
             "|", "Manual Override", "RTL", "Land", "Abort"],
   left: [
     /* An M350 RTK, linked, in AUTO, armed -- with nothing connected. "Armed" is a

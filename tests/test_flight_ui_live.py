@@ -69,8 +69,10 @@ true
 """
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def browser():
+    # One browser per test: a renderer that stalls under memory pressure then fails only
+    # the test it stalled in, instead of every test after it.
     executable = chromium_path()
     if executable is None:
         pytest.skip("No Chromium-family browser is installed to drive the UI.")
@@ -129,6 +131,11 @@ class TestTheCockpitFliesTheAircraft:
         assert "fence" in uploaded
         assert len(vehicle.stored[1]) == len(AOI)
 
+        # Load Flight, on the Flight toolbar, reads the record the upload just wrote.
+        summary = api.check_interrupted_flight()["summary"]
+        browser.js("__click('Load Flight')")
+        assert toast_matching(browser, summary[:24]).startswith(summary[:24])
+
         # RTL sent 'rtl', which the Api did not know.
         browser.js("__click('RTL')")
         browser.wait_for("__yes()")
@@ -182,6 +189,14 @@ class TestTheCockpitFliesTheAircraft:
         vehicle.go_silent()
         browser.wait_for("document.querySelector('.nav-right').innerText.includes('link lost')", 20)
         browser.wait_for("document.querySelector('.workspace').innerText.includes('LOST')", 20)
+        # The Preflight panel ticked GPS, battery and home from the last values heard
+        # while the top bar said the link was lost.
+        browser.wait_for("document.querySelector('.workspace').innerText"
+                         ".includes('Drone Connection — Link lost')", 20)
+        panel = browser.js("document.querySelector('.workspace').innerText")
+        for name in ("GPS Lock", "Home Position", "Battery"):
+            assert f"{name} — Not readable" in panel, panel
+        assert "Drone connected and reachable" not in panel
 
     def test_the_top_bar_reports_state_not_literals(self, browser, stack):
         """'API', '3 workers', a 'PK' avatar and the demo organisation were constants."""
