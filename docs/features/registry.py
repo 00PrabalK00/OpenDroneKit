@@ -654,7 +654,8 @@ PROCESSING = [
       "cancellation and honest failure reporting.",
       "verified", ["tests/test_jobs.py", "tests/test_processing.py",
                    "tests/test_job_queue.py", "tests/test_celery_broker.py",
-                   "tests/test_worker_tasks.py"],
+                   "tests/test_worker_tasks.py",
+                   "tests/test_platform_dispatch_and_defaults.py"],
       "Three layers. core/job_queue.py bounds concurrency in one process with strict "
       "priority and retries that keep every attempt's own error. "
       "services/worker/celery_app.py puts the queue in Redis so it outlives the process "
@@ -1316,8 +1317,10 @@ PLATFORM = [
     F("hub.auth", "Authentication", "hub", "Security",
       "Local auth with bcrypt, JWT sessions, and long-lived API tokens stored only as "
       "hashes with the secret shown once.",
-      "implemented", ["tests/test_api.py::TestAuthentication", "tests/test_api.py::TestApiTokens"],
-      "MFA and OAuth/OIDC still outstanding."),
+      "implemented", ["tests/test_api.py::TestAuthentication", "tests/test_api.py::TestApiTokens",
+                      "tests/test_hub_login_browser.py"],
+      "The browser Hub signs in and creates accounts against /auth from a loopback "
+      "origin on any port. MFA and OAuth/OIDC still outstanding."),
     F("hub.viewer_2d", "2D viewer", "hub", "Hub",
       "Tiled imagery with layers, measurements, annotations and comparison mode.",
       "implemented", [
@@ -1406,11 +1409,17 @@ PLATFORM = [
                       "tests/test_rest_resources.py::TestRestReports",
                       "tests/test_rest_resources.py::TestRestAIJobs",
                       "tests/test_rest_resources.py::TestRestContainment",
-                      "tests/test_annotations.py::TestAnnotationApi"],
+                      "tests/test_annotations.py::TestAnnotationApi",
+                      "tests/test_processing_kinds.py",
+                      "tests/test_ai_job_worker.py"],
       "Defects, source-attributed georeferenced measurements, immutable structured report "
-      "snapshots, project annotations and persistent AI-job submissions are documented in "
-      "OpenAPI and enforce project containment. AI jobs remain pending_worker until a real "
-      "inference worker produces attributed output; submission does not claim inference."),
+      "snapshots, project annotations and AI jobs are documented in OpenAPI and enforce "
+      "project containment. Every advertised processing kind (reconstruction, detection, "
+      "measurement, report) has a worker; outputs are stored under runs/job_<id> and "
+      "downloadable. AI jobs are claimed by an inline or standalone inference worker and "
+      "refused at submission when the model is unknown, unsuited to the task or its "
+      "weights are absent -- no heuristic is substituted for a named model. Tests that "
+      "need installed weights skip without them; the heuristic path always runs."),
     F("api.uploads", "Resumable dataset upload", "hub", "API",
       "A client declares a file with its size and sha256, sends chunks in any order, "
       "queries what is missing, and finalises; assembly is refused unless both the byte "
@@ -1425,14 +1434,18 @@ PLATFORM = [
       "failures. Best-effort delivery is declared rather than implied otherwise.",
       "implemented", ["tests/test_events.py::TestSubscription",
                       "tests/test_events.py::TestDelivery",
-                      "tests/test_events.py::TestHonestyAboutGuarantees"]),
+                      "tests/test_events.py::TestHonestyAboutGuarantees",
+                      "tests/test_webhook_emission.py"],
+      "Every subscribable event is emitted by the router or worker that performs the "
+      "action, after its commit, and delivered to a real loopback receiver in the tests."),
     F("api.realtime", "Real time communication", "hub", "API",
       "Per-organization WebSocket stream with the token verified as a normal request "
       "would be, with organization-scoped telemetry delivered through a broker shared "
       "by workers using the same database.",
       "implemented", ["tests/test_events.py::TestLiveStream",
                       "tests/test_realtime.py::TestSharedBroker",
-                      "tests/test_realtime.py::TestTelemetryStream"],
+                      "tests/test_realtime.py::TestTelemetryStream",
+                      "tests/test_webhook_emission.py::test_domain_events_reach_the_live_stream"],
       "The shared database buffer supports multi-worker fan-out. Delivery remains "
       "best effort: there are no client acknowledgements, durable offline cursors or "
       "exactly-once guarantee."),
@@ -1467,8 +1480,12 @@ PLATFORM = [
       "docker compose up brings PostGIS, MinIO, the API and a worker online, with "
       "healthchecks so the API waits for a database that actually accepts connections, "
       "and no credential committed to the repository.",
-      "implemented", ["tests/test_compose.py"],
-      "Definition verified as data; booting the stack needs a Docker daemon."),
+      "implemented", ["tests/test_compose.py",
+                      "tests/test_platform_dispatch_and_defaults.py::test_the_worker_image_runs_a_consumer_not_a_sleep"],
+      "Definition verified as data; booting the stack needs a Docker daemon. The API "
+      "enqueues processing jobs to the Celery worker and leaves AI jobs to the ai-worker "
+      "service, both sharing the api_storage volume. Uploads are written to that volume, "
+      "not to MinIO, whatever ODK_STORAGE_BACKEND says."),
     F("inf.k8s", "Kubernetes and Helm", "infra", "Deployment",
       "Helm chart deploys the API, workers and PostGIS to a cluster, using the same "
       "images the compose stack runs.",
@@ -1480,7 +1497,10 @@ PLATFORM = [
       "restarting it would not help. PostGIS is a StatefulSet with a claim because "
       "survey data is the one thing that cannot be regenerated by re-running a job, and "
       "the worker carries a memory limit because photogrammetry is memory-bound and an "
-      "unlimited worker is OOM-killed mid-reconstruction. The tests are STRUCTURAL "
+      "unlimited worker is OOM-killed mid-reconstruction. The chart ships no Redis and "
+      "no shared volume, so it runs one API replica that executes jobs itself and zero "
+      "workers by default; workers need worker.brokerUrl plus a ReadWriteMany volume you "
+      "provide. The tests are STRUCTURAL "
       "only: no helm binary is available here, so nothing has rendered the templates. "
       "Reaching verified needs helm lint and helm template against a real cluster."),
     F("inf.postgis", "PostgreSQL and PostGIS", "infra", "Deployment",
@@ -1528,8 +1548,10 @@ PLATFORM = [
       "Versioned direct, manifest and opt-in entry-point registration cover all nine documented plugin kinds."),
     F("sdk.libraries", "Developer SDK", "sdk", "SDK",
       "Libraries for mission generation, drone adapters, telemetry and job APIs.",
-      "implemented", ["tests/test_sdk.py::TestDeveloperLibraries"],
-      "The SDK delegates planning to the shared core, validates real drone adapters and provides authenticated REST job helpers."),
+      "implemented", ["tests/test_sdk.py::TestDeveloperLibraries",
+                      "tests/test_sdk_against_live_api.py"],
+      "The SDK delegates planning to the shared core, validates real drone adapters and provides authenticated REST job helpers. "
+      "Job waiting is tested against the real API under uvicorn, whose terminal statuses are done/failed/cancelled."),
     F("doc.guides", "Documentation set", "infra", "Docs",
       "Installation, architecture, user, pilot, plugin, API and deployment guides.",
       "verified", ["tests/test_documentation_set.py::TestTheSetIsComplete",

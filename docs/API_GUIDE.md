@@ -104,8 +104,37 @@ Dataset uploads are resumable, and upload paths are contained: a key that would 
 the storage root is rejected rather than normalised. Do not rely on the client to
 sanitise paths — the server does not trust it either.
 
+### Processing jobs and AI jobs
+
+`POST /projects/{id}/jobs` accepts four kinds, each with a worker behind it:
+
+| kind | needs | produces |
+|---|---|---|
+| `reconstruction` | `dataset_id` | rasters, mesh, point cloud under `runs/job_<id>/`, with `crs_epsg` |
+| `detection` | `dataset_id`, `options.model_key` (or `"heuristic"`) | unreviewed defects attributed to the model file |
+| `measurement` | `options.measurement`, `options.source_job_id` (a finished reconstruction), `polygon_xy` (volume) or `pixels` | a Measurement in the raster's projected CRS |
+| `report` | nothing | a PDF and JSON snapshot of accepted findings (`include_unreviewed` to add the rest) |
+
+Artifacts are storage-relative references; fetch one with
+`GET /jobs/{id}/artifacts/{ref}`. A job finishes as `done`, `failed` or `cancelled`.
+
+`POST /projects/{id}/ai-jobs` runs one registered model over uploaded images:
+`input_ref` is `dataset:<id>` or `dataset:<id>/frame:<file>`. The request is refused
+with the reason if the model is unknown, cannot answer the task, or its weights are
+not installed; nothing is substituted. `ODK_AI_WORKER=external` leaves jobs for
+`python -m services.worker.ai_worker`, and `ODK_JOB_BACKEND=celery` sends processing
+jobs to a Celery worker.
+
+Without `ODK_DATABASE_URL` and `ODK_STORAGE_PATH` the server keeps its database and
+files in a per-user directory (`ODK_HUB_HOME` overrides it), not the directory it was
+started from. Browser pages on `127.0.0.1`/`localhost` may call the API from any port;
+set `ODK_CORS_LOOPBACK=0` to turn that off.
+
 ## Webhooks and realtime
 
-Webhooks carry a secret; only its prefix is ever returned after creation. Realtime
-updates are available for processing progress. Neither is required — the toolkit is
+Webhooks carry a secret; only its prefix is ever returned after creation. Each
+subscribable event is sent by the action it names (a defect created or reviewed, an
+upload completed, a job or AI job finished, a report generated, a share or mission
+created, a flight logged, telemetry published), after that action commits. The same
+events go to the organisation's WebSocket stream. Neither is required — the toolkit is
 offline-first, and nothing calls out unless you configure it to.
