@@ -28,7 +28,15 @@
     pre.scrollTop = pre.scrollHeight;
   }
 
-  function status(message) {
+  /* Counts status-bar writes that carry news: a refusal from a click made while the
+     window was still loading, a failed call, job progress. Ambient messages ('Map ready',
+     'OpenDroneKit ready.') are shown only while nothing newer has been said since
+     startup, so they never cover such a message; otherwise they go to the log only. */
+  let statusSeq = 0;
+  let ambientBase = 0;
+  function status(message, { ambient = false } = {}) {
+    if (ambient && statusSeq !== ambientBase) { log(message); return; }
+    if (!ambient) statusSeq += 1;
     $('#status-message').textContent = message;
     log(message);
   }
@@ -236,6 +244,7 @@
         refreshReportInfo();
         if (job.status === 'done' && onDone) onDone(job);
       } else {
+        statusSeq += 1;
         $('#status-message').textContent = `${job.name} ${job.percent}% — ${job.message}`;
       }
     }, 900);
@@ -1304,13 +1313,13 @@
 
   function initMap() {
     state.map = new OdkMap('map', {
-      onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.'); },
+      onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.', { ambient: true }); },
       onBasemapFallback: (message) => { $('#basemap-select').value = 'offline'; status(message); reportOfflineCache(); },
       onCursor: (lon, lat) => {
         $('#status-coords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;
       },
-      onMeasure: (text) => { $('#status-message').textContent = `${text} (map estimate; double-click to measure on the survey)`; },
+      onMeasure: (text) => { statusSeq += 1; $('#status-message').textContent = `${text} (map estimate; double-click to measure on the survey)`; },
       /* The running figure above is a spherical estimate from the basemap. On
          double-click the shape goes to the application, which measures it on the
          project's own orthomosaic/DSM -- with the over-the-ground length for a line --
@@ -1362,12 +1371,16 @@
     initMap();
     wireEvents();
     setTool('pan');
+    ambientBase = statusSeq;
     await refreshProject();
     await loadMissionTemplates();
     await showCapabilities(false);
     await refreshLayers();
     await renderJobs();
-    status('OpenDroneKit ready.');
+    // A message shown while starting (a refusal, a failed call) is newer and more
+    // useful than 'ready'; keep it on screen and only log that startup finished.
+    status('OpenDroneKit ready.', { ambient: true });
+    window.odk.ready = true;
   }
   window.addEventListener('pywebviewready', start);
   start();

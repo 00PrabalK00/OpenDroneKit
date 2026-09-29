@@ -38,6 +38,12 @@ def _images(root: Path) -> Path:
     return images
 
 
+# start() sets window.odk.ready once refreshProject, the capabilities probe (which runs
+# COLMAP, ~20 s here), the layer list and the job list are done. Clicking before that
+# races the startup, which is what a user does -- see the test below -- but the tests
+# that check a refusal's wording wait for it so they measure the refusal, not the race.
+STARTED = "!!(window.odk && window.odk.ready)"
+
 CLASSIC_STATUS = ("T.until(() => { const s = document.querySelector('#status-message').textContent;"
                   " return /%s/.test(s) && s; }, 60000, 'status %s')")
 
@@ -47,8 +53,9 @@ def test_the_classic_window_refuses_a_server_run_without_url_or_token(tmp_path, 
 
     monkeypatch.delenv("ODK_CLOUD_TOKEN", raising=False)
     api = _desktop_api(tmp_path, _images(tmp_path))
-    ui = LiveUI(api, "home", page="index.html", ready="!!window.odk")
+    ui = LiveUI(api, "home", page="index.html", ready=STARTED)
     try:
+        started = ui.js("document.querySelector('#status-message').textContent")
         hidden = ui.js("document.querySelector('#recon-cloud-fields').hidden")
         ui.js("const s = document.querySelector('#recon-run-on'); s.value = 'cloud';"
               " s.dispatchEvent(new Event('change')); true")
@@ -61,6 +68,7 @@ def test_the_classic_window_refuses_a_server_run_without_url_or_token(tmp_path, 
         token_type = ui.js("document.querySelector('#recon-cloud-token').type")
     finally:
         ui.close()
+    assert "ready" in started.lower(), f"startup ends on a ready message: {started!r}"
     assert hidden is True and shown is True, "the server fields follow the Run on choice"
     assert "needs the server project URL" in no_url
     assert "needs an API token for http://127.0.0.1:9/projects/1" in no_token
@@ -104,7 +112,7 @@ def test_the_classic_window_reconstructs_on_the_server(server, tmp_path):  # noq
 
     images = _survey_copy(tmp_path)
     api = _desktop_api(tmp_path, images)
-    ui = LiveUI(api, "home", page="index.html", ready="!!window.odk")
+    ui = LiveUI(api, "home", page="index.html", ready=STARTED)
     try:
         ui.js("document.querySelector('#recon-profile').value = 'fast_preview';"
               " const s = document.querySelector('#recon-run-on'); s.value = 'cloud';"
@@ -127,3 +135,48 @@ def test_the_classic_window_reconstructs_on_the_server(server, tmp_path):  # noq
     assert jobs and jobs[0]["result"]["execution_mode_used"] == "cloud"
     names = [layer.get("name", "") for layer in api.list_layers()["layers"]]
     assert any("rtho" in name for name in names), names
+
+
+def test_a_refusal_clicked_during_startup_is_not_covered_by_ready(tmp_path, monkeypatch):
+    """A click while start() is still probing must keep its refusal on screen.
+
+    start() used to end with status('OpenDroneKit ready.') unconditionally, so a refusal
+    shown during the ~20 s capabilities probe was replaced a moment later. The probe is
+    held open here (the real one runs once released) so the click always lands mid-startup.
+    """
+    import threading
+
+    from live_ui import LiveUI
+
+    monkeypatch.delenv("ODK_CLOUD_TOKEN", raising=False)
+    api = _desktop_api(tmp_path, _images(tmp_path))
+    release = threading.Event()
+    real_capabilities = api.capabilities
+
+    def held_capabilities(*args, **kwargs):
+        release.wait(120)
+        return real_capabilities(*args, **kwargs)
+
+    api.capabilities = held_capabilities
+    ui = LiveUI(api, "home", page="index.html",
+                ready="!!window.odk && !!document.querySelector('#btn-recon').onclick")
+    try:
+        ui.js("const s = document.querySelector('#recon-run-on'); s.value = 'cloud';"
+              " s.dispatchEvent(new Event('change'));"
+              " document.querySelector('#btn-recon').click(); true")
+        during = ui.js(CLASSIC_STATUS % ("server project URL", "url"))
+        still_starting = ui.js("!window.odk.ready")
+        release.set()
+        # Startup logs 'OpenDroneKit ready.' in both the old and the fixed start().
+        ui.js("T.until(() => document.querySelector('#console-log').textContent"
+              ".includes('OpenDroneKit ready.'), 120000, 'startup finished')")
+        ready_flag = ui.js("window.odk.ready === true")
+        after = ui.js("document.querySelector('#status-message').textContent")
+    finally:
+        release.set()
+        ui.close()
+    assert still_starting, "the refusal must have been shown before startup finished"
+    assert "needs the server project URL" in during
+    assert "needs the server project URL" in after, f"startup covered the refusal: {after!r}"
+    assert ready_flag, "start() marks window.odk.ready when it has finished"
+    assert not api.list_jobs().get("jobs"), "a refused request must not start a job"
