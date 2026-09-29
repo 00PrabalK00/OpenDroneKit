@@ -151,24 +151,33 @@ class CrackPropagationForecaster:
 
     @staticmethod
     def _tip_directions(skeleton: np.ndarray, tips: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
-        points = np.argwhere(skeleton == 1)
-        if points.size == 0:
-            return []
+        """Outward direction at each tip, away from its nearest skeleton neighbour.
 
+        A tip has exactly one skeleton neighbour in its 3x3 window (that is what makes it
+        a tip), so the nearest other skeleton pixel is always found there. This used to
+        sort the distance from every tip to every skeleton pixel; on a full-resolution
+        drone frame (tens of thousands of tips, hundreds of thousands of skeleton pixels)
+        that ran for hours and stalled the pipeline before reconstruction.
+        """
+        if tips.size == 0 or not np.any(skeleton == 1):
+            return []
+        height, width = skeleton.shape[:2]
+        padded = np.pad((skeleton == 1).astype(np.uint8), 1)
+        # Orthogonal neighbours before diagonal ones: the nearest wins, as before.
+        offsets = [(-1, 0), (0, -1), (0, 1), (1, 0), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        rows = tips[:, 0].astype(np.int64)
+        cols = tips[:, 1].astype(np.int64)
+        direction = np.zeros((len(tips), 2), dtype=np.float32)
+        found = np.zeros(len(tips), dtype=bool)
+        for dr, dc in offsets:
+            hit = (~found) & (padded[rows + 1 + dr, cols + 1 + dc] == 1)
+            direction[hit] = (-float(dr), -float(dc))
+            found |= hit
         tip_dirs: list[tuple[np.ndarray, np.ndarray]] = []
-        for tip in tips:
-            diffs = points - tip
-            d2 = np.sum(diffs * diffs, axis=1)
-            order = np.argsort(d2)
-            direction = np.array([0.0, 0.0], dtype=np.float32)
-            for idx in order:
-                if d2[idx] > 0:
-                    # Outward extension from nearest inner skeleton direction.
-                    direction = (tip - points[idx]).astype(np.float32)
-                    break
-            norm = float(np.linalg.norm(direction))
-            if norm > 1e-6:
-                tip_dirs.append((tip.astype(np.float32), direction / norm))
+        for tip, vector, ok in zip(tips, direction, found):
+            norm = float(np.linalg.norm(vector))
+            if ok and norm > 1e-6:
+                tip_dirs.append((tip.astype(np.float32), vector / norm))
         return tip_dirs
 
     @staticmethod
