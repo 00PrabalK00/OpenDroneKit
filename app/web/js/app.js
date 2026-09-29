@@ -175,6 +175,16 @@
     }
     if (state.map.rasterLayers.has(layer.id)) return;
     if (!layer.crs_epsg) return;
+    // Full-resolution tiles when the page has a server to fetch them from (the desktop
+    // shell); the single preview image otherwise, e.g. a page opened from a file.
+    if (/^https?:$/.test(location.protocol)) {
+      let tiles = null;
+      try { tiles = await call('raster_tiles', layer.id); } catch (_err) { tiles = null; }
+      if (tiles && typeof tiles.url === 'string' && tiles.url.includes('{z}')) {
+        state.map.addRasterTiles(layer.id, tiles, layer.opacity);
+        return;
+      }
+    }
     const result = await tryCall('raster_preview', layer.id);
     if (result) state.map.addRaster(layer.id, result.data_uri, result.coordinates, layer.opacity);
   }
