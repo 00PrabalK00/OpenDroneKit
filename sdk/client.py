@@ -7,7 +7,7 @@ import json
 import time
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -155,7 +155,8 @@ class OpenDroneKitClient:
     def download_artifact(self, job_id: int, ref: str) -> bytes:
         """Bytes of one file a job listed in its ``artifacts``."""
         request = Request(
-            f"{self.base_url}/jobs/{int(job_id)}/artifacts/{ref}",
+            # Refs are storage paths: keep the slashes, escape spaces and the rest.
+            f"{self.base_url}/jobs/{int(job_id)}/artifacts/{quote(ref, safe='/')}",
             headers={"User-Agent": "OpenDroneKit-SDK/1",
                      **({"Authorization": f"Bearer {self.token}"} if self.token else {})},
         )

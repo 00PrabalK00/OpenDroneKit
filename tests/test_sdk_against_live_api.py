@@ -73,3 +73,20 @@ def test_ai_jobs_run_to_completion_through_the_sdk(api, tmp_path):
     finished = client.wait_for_ai_job(job.id, timeout_s=60, poll_interval_s=0.2)
     assert finished.status == "done"
     assert finished.payload["result"]["model_used"] == "heuristic"
+
+
+def test_an_artifact_whose_name_has_a_space_downloads(api, tmp_path):
+    """Refs are file paths; one from an upload such as 'crack photo 1.jpg' must still download."""
+    client, org = _session(api)
+    project = client.create_project(org, name="Spaces")
+    dataset = client.request("POST", f"/projects/{project['id']}/datasets", payload={"name": "d"})
+    target = tmp_path / "storage" / "datasets" / str(dataset["id"])
+    target.mkdir(parents=True)
+    target.joinpath("crack photo 1.jpg").write_bytes(FIXTURE_IMAGE.read_bytes())
+
+    job = client.submit_ai_job(project["id"], task="segmentation", model_key="heuristic",
+                               input_ref=f"dataset:{dataset['id']}")
+    finished = client.wait_for_ai_job(job.id, timeout_s=60, poll_interval_s=0.2)
+    assert finished.status == "done"
+    mask = next(ref for ref in finished.payload["artifacts"] if ref.endswith("crack photo 1_mask.png"))
+    assert client.download_artifact(job.id, mask).startswith(b"\x89PNG")
