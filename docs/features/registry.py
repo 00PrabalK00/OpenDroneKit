@@ -1234,10 +1234,17 @@ INSPECTION = [
                       "tests/test_model_measurement.py::TestArea",
                       "tests/test_model_measurement.py::TestVolume",
                       "tests/test_model_measurement.py::TestThroughTheApi",
-                      "tests/test_model_measurement.py::TestMeshReading"],
-      "core/model_measurement.py; Api.measure_in_model. Volume is the divergence "
-      "theorem over a closed mesh, so it is origin-independent; an open exterior with "
-      "no floor is refused instead of summed."),
+                      "tests/test_model_measurement.py::TestMeshReading",
+                      "tests/test_model_view_in_a_browser.py"],
+      "core/model_measurement.py; Api.measure_in_model, model_scene, pick_model_point; "
+      "cockpit Textured Mesh view (model3d.js), Measure in 3D, Save View, Open View. "
+      "The reconstruction's mesh is in the SfM frame, so it is measured on a copy "
+      "transformed with the run's geo_anchor.json (sidecar coordinate_frame=crs); a CRS "
+      "recorded against the raw mesh is refused, not trusted. Volume is the divergence "
+      "theorem over a closed mesh, summed about the centroid (about the CRS origin the "
+      "terms cancel to float noise); an open exterior with no floor is refused instead "
+      "of summed. The view draws a thinned mesh; picks use the full one. Absolute "
+      "accuracy is that of the georeferencing fit, which the sidecar records."),
     F("me.volume", "Volume and stockpile", "core", "Measurement",
       "Cut/fill against DTM, plane and lowest-point references, exact on a known surface.",
       "verified", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",

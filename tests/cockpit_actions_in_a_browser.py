@@ -85,6 +85,16 @@ try {
       const clientY = box.top + (box.height - nh * fit) / 2 + ((sy - cy) * nh / ch) * fit;
       image.dispatchEvent(new MouseEvent("click", { clientX, clientY, bubbles: true }));
     }
+    // Real click events on the 3D model's canvas, at the screen point where the viewer
+    // draws each absolute CRS point.
+    for (let k = 0; k < (step.modelClicks || []).length; k += 1) {
+      await until(() => log.slice(before).filter((t) => /^Click /.test(t.text)).length > k);
+      await settle(50);
+      const { currentModelViewer } = await import("./js/workspace/model3d.js");
+      const viewer = currentModelViewer();
+      const at = viewer.project(step.modelClicks[k]);
+      viewer.canvas.dispatchEvent(new MouseEvent("click", { clientX: at.x, clientY: at.y, bubbles: true }));
+    }
     if (step.click) {
       await until(() => canDraw());
       await until(() => log.slice(before).some((t) => /^Click /.test(t.text)));
@@ -99,6 +109,8 @@ try {
     await until(() => final(before).length > 0);
     await settle(50);
     results[step.name] = final(before).map((t) => `[${t.kind}] ${t.text}`).join(" ");
+    // A read-back after the step, in the page (the test's own expression).
+    if (step.after) results[`${step.name}:after`] = await (new Function(`return (async () => { ${step.after} })();`))();
   }
   document.getElementById("out").textContent = JSON.stringify(results);
   document.body.dataset.result = "done";
@@ -166,6 +178,8 @@ def run_actions(api: Any, tmp_path: Path, plan: list[dict], *, picks: list[str] 
         thread.join(timeout=2)
     dom = completed.stdout
     if 'data-result="done"' not in dom:
-        raise AssertionError(f"harness did not finish: {dom[-2000:]} {completed.stderr[-1000:]}")
+        state = re.search(r'data-result="([^"]*)"', dom)
+        raise AssertionError(f"harness did not finish ({state.group(1) if state else 'no page'}): "
+                             f"{dom[-1500:]} {completed.stderr[-800:]}")
     raw = re.search(r'<pre id="out">(.*?)</pre>', dom, re.S).group(1)
     return json.loads(html.unescape(raw))

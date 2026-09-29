@@ -240,7 +240,8 @@ const VIEW_LAYERS = {
   hillshade: ["hillshade"],
   semantic: ["semantic", "classification"],
   thermal: ["thermal"],
-  // Deliberately absent: mesh, pointcloud, profile, fused, radiometric, thermal3d.
+  // Deliberately absent: pointcloud, profile, fused, radiometric, thermal3d. (mesh is
+  // drawn by model3d.js rather than as a raster.)
   // Those are produced as files rather than registered layers, or need a viewer this
   // canvas does not have, so they report "no <view> product yet" -- which is true.
 };
@@ -338,6 +339,13 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     }
 
     const view = currentView();
+    // The reconstructed mesh is drawn by a 3D viewer, not rendered to a picture: it is
+    // what Measure in 3D and saved views act on.
+    if (view === "mesh") {
+      const { mountModel } = await import("./model3d.js");
+      mountModel(root);
+      return;
+    }
     // A map canvas keeps its map ONLY while the view is the map. Returning early for
     // every map canvas meant the thermal workspace -- which is a map -- ignored its own
     // RGB, Thermal and Fused buttons entirely.

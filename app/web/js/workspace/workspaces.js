@@ -1135,7 +1135,7 @@ const twin = {
   id: "twin",
   title: "Digital Twin",
   toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|",
-            "Save View", "Clip", "|",
+            "Save View", "Open View", "Measure in 3D", "Clip", "|",
             "Compare Dates", "Measure", "Annotate", "Export"],
   left: [
     /* A building with a roof, a facade and a stockpile volume, none of which existed.

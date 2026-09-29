@@ -40,6 +40,10 @@ import numpy as np
 from .provenance import sidecar_path
 
 
+# The model-frame -> CRS transform a reconstruction writes beside its outputs.
+ANCHOR_FILE = "geo_anchor.json"
+
+
 class NotMetric(ValueError):
     """The model has no recorded scale, so measurements on it are not in metres."""
 
@@ -79,6 +83,18 @@ def model_scale(model_path: str | Path) -> ModelScale:
             "unknown. That is not the same as the model being unscaled -- check the "
             "sidecar rather than assuming either way."
         ) from exc
+
+    frame = (payload.get("parameters") or {}).get("coordinate_frame")
+    if frame == "model" or (frame != "crs" and (path.parent / ANCHOR_FILE).is_file()):
+        # A reconstruction writes its mesh in the structure-from-motion frame and the
+        # transform to the CRS beside it. A sidecar recording the run's CRS against that
+        # mesh is true of the run and false of the vertices: measured as they stand,
+        # they are model units. georeference_model() writes the copy that is in metres.
+        raise NotMetric(
+            f"{path.name} is in the reconstruction's model frame; its CRS is recorded in "
+            f"{ANCHOR_FILE} beside it, not applied to its vertices. Measure the "
+            "georeferenced copy (georeference_model) instead."
+        )
 
     epsg = payload.get("crs_epsg")
     if not epsg:
@@ -284,9 +300,13 @@ def measure_volume(model_path: str | Path) -> dict[str, Any]:
             "mesh, or measure against a DSM with a stated reference surface."
         )
 
-    a = vertices[faces[:, 0]]
-    b = vertices[faces[:, 1]]
-    c = vertices[faces[:, 2]]
+    # About the centroid: in a projected CRS the vertices sit ~5e6 m from the origin,
+    # and the signed tetrahedra summed about that far-away origin cancel to float noise
+    # of the order of the answer itself.
+    centred = vertices - vertices.mean(axis=0)
+    a = centred[faces[:, 0]]
+    b = centred[faces[:, 1]]
+    c = centred[faces[:, 2]]
     signed = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
     volume = float(abs(signed.sum()))
 
@@ -305,3 +325,100 @@ def measure_volume(model_path: str | Path) -> dict[str, Any]:
             "bridges gaps it could not see.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# A copy of the reconstruction's mesh in the CRS
+# ---------------------------------------------------------------------------
+
+
+def write_obj(path: str | Path, vertices: np.ndarray, faces: np.ndarray) -> Path:
+    target = Path(path)
+    with target.open("w", encoding="utf-8") as handle:
+        for x, y, z in vertices:
+            handle.write(f"v {x:.4f} {y:.4f} {z:.4f}\n")
+        for a, b, c in faces:
+            handle.write(f"f {a + 1} {b + 1} {c + 1}\n")
+    return target
+
+
+def georeferenced_path(mesh_path: str | Path, epsg: int) -> Path:
+    mesh = Path(mesh_path)
+    return mesh.with_name(f"{mesh.stem}.epsg{int(epsg)}.obj")
+
+
+def georeference_model(mesh_path: str | Path) -> Path:
+    """Write the reconstruction's mesh in its CRS, with a sidecar that says so.
+
+    The reconstruction keeps its mesh in the structure-from-motion frame and writes the
+    7-parameter transform to the CRS beside it (geo_anchor.json). Applying it gives a
+    mesh whose vertices are metres in that CRS -- the licence model_scale() asks for,
+    and the only honest one: a sidecar that merely named a CRS against the raw mesh
+    would let SfM units pass as metres. Reused while the source mesh is unchanged.
+    """
+    from core import geo
+    from core.provenance import read as read_provenance
+    from core.provenance import record, sha256_of
+
+    mesh = Path(mesh_path)
+    if mesh.suffix.lower() != ".obj":
+        sibling = mesh.with_suffix(".obj")
+        if not sibling.is_file():
+            raise ValueError(f"{mesh.name}: only Wavefront OBJ meshes are read here.")
+        mesh = sibling
+    anchor_file = mesh.parent / ANCHOR_FILE
+    if not anchor_file.is_file():
+        raise NotMetric(
+            f"{mesh.name} has no {ANCHOR_FILE} beside it: the reconstruction was not "
+            "georeferenced, so the model is in structure-from-motion units of unknown "
+            "size. Add geotagged imagery or ground control and reconstruct again."
+        )
+    anchor = geo.GeoAnchor(**json.loads(anchor_file.read_text(encoding="utf-8")))
+    target = georeferenced_path(mesh, anchor.epsg)
+    source_sha = sha256_of(mesh)
+    existing = read_provenance(target) if target.is_file() else None
+    if existing is not None and existing.parameters.get("source_sha256") == source_sha:
+        return target
+
+    vertices, faces = read_mesh(mesh)
+    write_obj(target, anchor.apply(vertices, absolute=True), faces)
+    record(target, engine="odk-georeference", sources=[mesh.name, ANCHOR_FILE],
+           crs_epsg=int(anchor.epsg),
+           parameters={"coordinate_frame": "crs", "source_sha256": source_sha,
+                       "anchor_method": anchor.method,
+                       "anchor_rmse_m": anchor.rmse_m,
+                       "anchor_scale": anchor.scale},
+           notes=("Vertices transformed from the reconstruction's model frame with the "
+                  f"{anchor.method} georeferencing (RMSE {anchor.rmse_m:.3f} m); "
+                  "absolute accuracy is no better than that fit."))
+    return target
+
+
+def pick_on_mesh(vertices: np.ndarray, faces: np.ndarray,
+                 origin: Sequence[float], direction: Sequence[float]) -> np.ndarray | None:
+    """Nearest intersection of a ray with a triangle mesh (Moller-Trumbore), or None."""
+    o = np.asarray(origin, dtype=np.float64).reshape(3)
+    d = np.asarray(direction, dtype=np.float64).reshape(3)
+    length = float(np.linalg.norm(d))
+    if not length or not np.all(np.isfinite(d)) or not np.all(np.isfinite(o)):
+        raise ValueError("A pick needs a finite ray.")
+    d = d / length
+    # Relative to the ray origin, for the same far-from-origin reason as the volume.
+    v0 = vertices[faces[:, 0]] - o
+    e1 = vertices[faces[:, 1]] - o - v0
+    e2 = vertices[faces[:, 2]] - o - v0
+    p = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, p)
+    ok = np.abs(det) > 1e-12
+    inv = np.zeros_like(det)
+    inv[ok] = 1.0 / det[ok]
+    t_vec = -v0
+    u = np.einsum("ij,ij->i", t_vec, p) * inv
+    q = np.cross(t_vec, e1)
+    v = (q @ d) * inv
+    t = np.einsum("ij,ij->i", e2, q) * inv
+    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 0)
+    if not hit.any():
+        return None
+    nearest = float(t[hit].min())
+    return o + nearest * d

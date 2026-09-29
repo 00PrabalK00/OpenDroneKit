@@ -27,6 +27,15 @@ const NEEDS_PROJECT = new Set([
   "Export PDF", "New Report", "Share", "Archive",
 ]);
 
+/** The 3D view, opened on the mesh if it is not already showing. */
+async function openModel(ctx) {
+  const { currentModelViewer, whenModelReady } = await import("./model3d.js");
+  const shown = currentModelViewer();
+  if (shown && shown.ready) return shown;
+  if (!shown) ctx.showView("mesh");
+  return whenModelReady();
+}
+
 /** Actions that need images on disk. */
 const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D"]);
 
@@ -184,7 +193,7 @@ export const ACTIONS = {
     confirm: "Run the full pipeline? Reconstruction plus analysis.",
     describe: "Reconstruction followed by defect analysis.",
     async run(ctx) {
-      const result = await call("run_pipeline", ctx.reconstructionOptions());
+      const result = await call("run_pipeline", ctx.pipelineOptions());
       return { message: "Pipeline started.", job: result.job_id, refresh: true };
     },
   },
@@ -460,7 +469,9 @@ export const ACTIONS = {
   Radiometric: { view: "radiometric", describe: "Calibrated Celsius values." },
   Semantic: { view: "semantic", describe: "Semantic classes." },
   "Point Cloud": { view: "pointcloud", describe: "Show the point cloud." },
-  "Textured Mesh": { view: "mesh", describe: "Show the textured mesh." },
+  // The Poisson mesh carries no texture; it is shaded by height. The label is the
+  // toolbar's, the description says what is drawn.
+  "Textured Mesh": { view: "mesh", describe: "Show the reconstructed 3D mesh (shaded by height)." },
   // A line drawn on the map, sampled from the DSM. It used to be a view toggle with
   // nothing behind it: no code anywhere computed a profile.
   Profile: { tool: "profile", draw: "line", measure: "profile",
@@ -556,13 +567,27 @@ export const ACTIONS = {
     },
   },
 
-  /* measure_in_model joins Save View and Clip: implemented, tested, and it needs points
-     picked on a mesh that is on screen. */
+  /* Two points picked on the mesh in the 3D view. The picks are made by the application
+     on the full-resolution mesh in its CRS; the model is measured only when its
+     georeferencing is recorded. */
   "Measure in 3D": {
-    describe: "Measure between two points on the model. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "measure_in_model is implemented, but a 3D measurement is two "
-                        + "points picked on a mesh, and the interactive viewer is not built." };
+    describe: "Measure a length or a height between two points picked on the 3D model.",
+    async run(ctx) {
+      const viewer = await openModel(ctx);
+      const kind = await ctx.choose("Measure", ["length", "height"]);
+      if (!kind) return { skipped: "Nothing chosen." };
+      viewer.clearPins();
+      ctx.toast("Click the first point on the model.");
+      const first = await viewer.pickNext();
+      ctx.toast("Click the second point on the model.");
+      const second = await viewer.pickNext();
+      const result = await call("measure_in_model", viewer.scene.model_path, kind, [first, second]);
+      const m = result.measurement;
+      const text = kind === "height"
+        ? `height ${m.height_m.toFixed(3)} m`
+        : `length ${m.slope_distance_m.toFixed(3)} m (horizontal ${m.horizontal_distance_m.toFixed(3)} m, `
+          + `vertical ${m.vertical_distance_m.toFixed(3)} m)`;
+      return { message: `Model ${text}, EPSG:${m.crs_epsg}. Kept in the measurement history.` };
     },
   },
 
@@ -887,10 +912,28 @@ export const ACTIONS = {
      raster to scale. Declaring that is the honest state -- a button that always answers
      "no camera pose yet" would be the same dead control this audit exists to remove. */
   "Save View": {
-    describe: "Remember a camera position. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "save_view is implemented, but the cockpit has no interactive "
-                        + "3D camera to read a position from yet." };
+    describe: "Remember the 3D camera: where it stands and what it looks at.",
+    async run(ctx) {
+      const viewer = await openModel(ctx);
+      const name = await ctx.prompt("View name", "");
+      if (!name) return { skipped: "A view needs a name to be opened again." };
+      const camera = viewer.getCamera();
+      const saved = await call("save_view", name, camera.position, camera.target, camera.fov_deg);
+      return { message: `Saved view "${name}". ${(saved.views || []).length} view(s) in this project.` };
+    },
+  },
+  "Open View": {
+    describe: "Put the 3D camera back where a saved view left it.",
+    async run(ctx) {
+      const listed = await call("list_views");
+      const views = listed.views || [];
+      if (!views.length) return { skipped: "No saved views yet. Use Save View first." };
+      const name = await ctx.choose("Saved view", views.map((v) => v.name));
+      if (!name) return { skipped: "No view chosen." };
+      const opened = await call("open_view", name);
+      const viewer = await openModel(ctx);
+      viewer.setCamera(opened.view.position, opened.view.target, opened.view.fov_deg);
+      return { message: `Opened view "${name}".` + (opened.warning ? ` ${opened.warning}` : "") };
     },
   },
   Clip: {

@@ -933,6 +933,13 @@ export class Shell {
         if (raw.dense !== undefined && raw.dense !== "") {
           options.dense = String(raw.dense).toLowerCase() === "yes";
         }
+        return options;
+      },
+      // The pipeline also runs coverage QA, which sizes each photograph's footprint from
+      // its height above ground. Reconstruction alone does not read it.
+      pipelineOptions: () => {
+        const raw = this.settings || {};
+        const options = this.actionContext().reconstructionOptions();
         const agl = Number(raw.agl);
         if (raw.agl !== undefined && raw.agl !== "" && Number.isFinite(agl) && agl > 0) {
           options.flight_height_agl_m = agl;
@@ -969,6 +976,15 @@ export class Shell {
           armDrawing("point", (geometry) => resolve(geometry.coordinates), () => resolve(null));
         });
       },
+      // Switch the canvas to a view (the mesh, say), as the view buttons do.
+      showView: (view) => {
+        this.canvasView = view;
+        this.workspaceEl.dataset.view = view;
+        setImage(null);
+        setView(view);
+        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+      },
+      toast: (text, kind) => this.toast(text, kind || "ok"),
       // Put one dataset photograph on the canvas.
       showImage: (name, crop) => this.showImage(name, crop),
       // One click on the photograph on the canvas, in the photograph's own full-

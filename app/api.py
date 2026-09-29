@@ -3050,15 +3050,106 @@ class Api:
         })
         return ok(**{k: v for k, v in report.items() if k != "ok"})
 
+    def _project_mesh(self, model_path: str = "") -> Path:
+        """The mesh to show or measure: the one named, or this project's reconstruction."""
+        if model_path:
+            return Path(model_path)
+        recon = self._session.project_root() / "reconstruction"
+        for name in ("mesh.obj", "mesh.ply"):
+            if (recon / name).is_file():
+                return recon / name
+        raise FileNotFoundError(
+            "This project has no reconstructed mesh yet. Run Process with a dataset; "
+            "the mesh needs Open3D (`pip install open3d`)."
+        )
+
+    def _metric_mesh(self, model_path: str = "") -> Path:
+        """The mesh in metres: the reconstruction's own, georeferenced when it needs it."""
+        from core.model_measurement import NotMetric, georeference_model, model_scale
+
+        mesh = self._project_mesh(model_path)
+        try:
+            model_scale(mesh)
+            return mesh
+        except NotMetric:
+            if not (mesh.parent / "geo_anchor.json").is_file():
+                raise
+        return georeference_model(mesh)
+
+    def _mesh_arrays(self, path: Path):
+        """Vertices and faces, cached while the file is unchanged (a pick per click)."""
+        from core.model_measurement import read_mesh
+
+        key = (str(path), path.stat().st_mtime_ns)
+        cache = getattr(self, "_mesh_cache", None)
+        if cache is None or cache[0] != key:
+            self._mesh_cache = (key, read_mesh(path))
+        return self._mesh_cache[1]
+
     @guard
-    def measure_in_model(self, model_path: str, kind: str = "length",
+    def model_scene(self, model_path: str = "", max_faces: int = 120000) -> dict[str, Any]:
+        """The project's mesh, in its CRS, for the 3D view.
+
+        Coordinates are sent relative to ``origin`` so a WebGL float32 buffer keeps
+        centimetres (UTM eastings do not fit in one). Large meshes are thinned by taking
+        every n-th triangle for display only; picking and measuring use the full mesh.
+        """
+        import numpy as np
+
+        from core.model_measurement import NotMetric, model_scale
+
+        try:
+            mesh = self._metric_mesh(model_path)
+        except (NotMetric, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        vertices, faces = self._mesh_arrays(mesh)
+        total = int(len(faces))
+        step = max(1, int(np.ceil(total / max(1, int(max_faces)))))
+        shown = faces[::step]
+        used, remapped = np.unique(shown.reshape(-1), return_inverse=True)
+        local = vertices[used]
+        origin = local.mean(axis=0) if len(local) else np.zeros(3)
+        scale = model_scale(mesh)
+        return ok(
+            model_path=str(mesh),
+            epsg=scale.epsg,
+            origin=[float(v) for v in origin],
+            positions=[round(float(v), 4) for v in (local - origin).reshape(-1)],
+            indices=[int(v) for v in remapped],
+            face_count=total,
+            shown_face_count=int(len(shown)),
+            bounds=[[float(v) for v in vertices.min(axis=0)],
+                    [float(v) for v in vertices.max(axis=0)]],
+        )
+
+    @guard
+    def pick_model_point(self, model_path: str, origin_xyz: list[float],
+                         direction_xyz: list[float]) -> dict[str, Any]:
+        """Where a ray from the 3D view first meets the full-resolution mesh."""
+        from core.model_measurement import NotMetric, pick_on_mesh
+
+        try:
+            mesh = self._metric_mesh(model_path)
+            vertices, faces = self._mesh_arrays(mesh)
+            hit = pick_on_mesh(vertices, faces, origin_xyz, direction_xyz)
+        except (NotMetric, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        if hit is None:
+            return fail("That click is not on the model.")
+        return ok(point=[float(v) for v in hit], model_path=str(mesh))
+
+    @guard
+    def measure_in_model(self, model_path: str = "", kind: str = "length",
                          points_xyz: list[list[float]] | None = None) -> dict[str, Any]:
         """Length, height, area or volume inside a reconstructed 3D model.
 
-        Refused unless the model's provenance records the CRS it was aligned to, since
-        an ungeoreferenced reconstruction is in structure-from-motion units that read
-        exactly like metres.
+        Refused unless the model's vertices are in a recorded CRS. The reconstruction's
+        own mesh is in the structure-from-motion frame with the transform beside it, so
+        it is measured on its georeferenced copy; a model with no georeferencing is
+        refused, since SfM units read exactly like metres. The result is kept in the
+        project's measurement history.
         """
+        from core import geo
         from core.model_measurement import (
             NotClosed,
             NotMetric,
@@ -3070,15 +3161,21 @@ class Api:
 
         points = [[float(v) for v in p[:3]] for p in (points_xyz or []) if len(p) >= 3]
         try:
+            mesh = self._metric_mesh(model_path)
             if kind == "volume":
-                measurement = measure_volume(model_path)
+                measurement = measure_volume(mesh)
+                value, unit = measurement["volume_m3"], "m3"
             elif kind == "area":
-                measurement = measure_area(model_path, points)
+                measurement = measure_area(mesh, points)
+                value, unit = measurement.get("surface_area_m2"), "m2"
             elif kind in {"length", "height"}:
                 if len(points) < 2:
                     return fail(f"A {kind} needs two picked points.")
                 handler = measure_length if kind == "length" else measure_height
-                measurement = handler(model_path, points[0], points[1])
+                measurement = handler(mesh, points[0], points[1])
+                value = (measurement.get("slope_distance_m") if kind == "length"
+                         else measurement.get("height_m"))
+                unit = "m"
             else:
                 return fail(
                     f"Unknown measurement kind {kind!r}. Use length, height, area or volume."
@@ -3089,7 +3186,17 @@ class Api:
         except (FileNotFoundError, ValueError) as exc:
             return fail(str(exc))
 
-        return ok(measurement=measurement)
+        lonlat = []
+        if points:
+            lon, lat = geo.projected_to_wgs84([p[0] for p in points], [p[1] for p in points],
+                                              int(measurement["crs_epsg"]))
+            lonlat = [[float(a), float(b)] for a, b in zip(lon, lat)]
+        measurement_id = None
+        if value is not None:
+            measurement_id = self._record_measurement(
+                f"model_{kind}", float(value), unit, lonlat, str(mesh),
+                {**measurement, "points_xyz": points})
+        return ok(measurement=measurement, model_path=str(mesh), measurement_id=measurement_id)
 
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:

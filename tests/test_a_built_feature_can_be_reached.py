@@ -135,6 +135,15 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("mark_boundary_corner", "Mark Corner"),
         ("boundary_from_marks", "Close Boundary"),
         ("clear_boundary_marks", "Clear Corners"),
+        # The 3D view (app/web/js/workspace/model3d.js) gave these a camera and a
+        # surface to pick on; tests/test_model_view_in_a_browser.py drives them.
+        ("save_view", "Save View"),
+        ("open_view", "Open View"),
+        ("list_views", "Open View"),
+        ("measure_in_model", "Measure in 3D"),
+        ("import_gcps", "Add GCPs"),
+        ("mark_gcp", "Mark GCP"),
+        ("gcp_accuracy_report", "GCP Report"),
         ("diff_mission_versions", "Compare Versions"),
     ]
 
@@ -150,14 +159,15 @@ class TestTheFeaturesBuiltHereAreReachable:
 
 
 class TestWhatCannotBeReachedSaysWhy:
-    """Three capabilities need the interactive 3D viewer, which is not built.
+    """Two capabilities still need what the cockpit does not have: a plane placed
+    against the model on screen, and a selectable radiometric raster.
 
     They are declared rather than wired. A button that always answers "no camera pose
     yet" would be the same dead control this audit exists to remove -- but silently
     dropping them would lose the fact that the capability exists and is tested.
     """
 
-    DECLARED = ["Save View", "Clip", "Temperature Range", "Measure in 3D"]
+    DECLARED = ["Clip", "Temperature Range"]
 
     @pytest.mark.parametrize("button", DECLARED)
     def test_it_names_the_missing_capability(self, actions, button) -> None:
@@ -190,8 +200,10 @@ class TestTheContextHelpersExist:
         # "actionContext()" appears at its call site before its definition, so splitting
         # on the first occurrence returned 800 characters of an unrelated method and
         # reported every helper as missing -- including ones plainly in use.
-        block = shell.split("actionContext() {")[1]
-        provided = set(re.findall(r"^      (\w+):", block[:6000], re.M))
+        # The whole method, to its closing brace: a fixed 6000-character window stopped
+        # reading half way through once the context grew.
+        block = shell.split("actionContext() {")[1].split("\n  }\n")[0]
+        provided = set(re.findall(r"^      (\w+):", block, re.M))
         assert "prompt" in provided, "the action context could not be parsed"
         used = set(re.findall(r"ctx\.(\w+)\(", actions))
         missing = sorted(used - provided)
