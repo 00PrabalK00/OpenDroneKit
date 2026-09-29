@@ -379,13 +379,7 @@ def save_control(project_root: str | Path, points: Sequence[GroundControlPoint])
     """
     target = Path(project_root) / CONTROL_FILE
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "points": [
-            {**{k: v for k, v in p.to_dict().items() if k not in ("mark_count", "usable")},
-             "marks": [m.to_dict() for m in p.marks]}
-            for p in points
-        ],
-    }
+    payload = {"points": control_to_payload(points)}
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target
 
@@ -399,15 +393,41 @@ def load_control(project_root: str | Path) -> list[GroundControlPoint]:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except ValueError as exc:
         raise GcpError(f"{source} cannot be read: {exc}") from exc
+    return control_from_payload(payload.get("points", []))
+
+
+def control_to_payload(points: Sequence[GroundControlPoint]) -> list[dict[str, Any]]:
+    """Control points with every image mark, as JSON-ready dicts.
+
+    The same shape is written to the project folder and sent to an OpenDroneKit server
+    with a cloud reconstruction, so the server fits the model to the marks the operator
+    made instead of silently dropping them.
+    """
+    return [
+        {**{k: v for k, v in p.to_dict().items() if k not in ("mark_count", "usable")},
+         "marks": [m.to_dict() for m in p.marks]}
+        for p in points
+    ]
+
+
+def control_from_payload(raw_points: Any) -> list[GroundControlPoint]:
+    """Inverse of control_to_payload; a malformed entry raises GcpError naming it."""
+    if not isinstance(raw_points, list):
+        raise GcpError("Ground control must be a list of points.")
     points: list[GroundControlPoint] = []
-    for raw in payload.get("points", []):
-        point = GroundControlPoint(
-            name=str(raw["name"]), x=float(raw["x"]), y=float(raw["y"]), z=float(raw["z"]),
-            epsg=int(raw["epsg"]), accuracy_m=float(raw.get("accuracy_m", 0.02)),
-        )
-        for mark in raw.get("marks", []):
-            add_mark(point, str(mark["image"]), float(mark["pixel_x"]), float(mark["pixel_y"]),
-                     int(mark.get("image_width") or 0), int(mark.get("image_height") or 0))
+    for index, raw in enumerate(raw_points):
+        try:
+            point = GroundControlPoint(
+                name=str(raw["name"]), x=float(raw["x"]), y=float(raw["y"]), z=float(raw["z"]),
+                epsg=int(raw["epsg"]), accuracy_m=float(raw.get("accuracy_m", 0.02)),
+            )
+            for mark in raw.get("marks", []):
+                add_mark(point, str(mark["image"]), float(mark["pixel_x"]), float(mark["pixel_y"]),
+                         int(mark.get("image_width") or 0), int(mark.get("image_height") or 0))
+        except GcpError:
+            raise
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise GcpError(f"Ground control point {index + 1} is malformed: {exc!r}") from exc
         points.append(point)
     return points
 
