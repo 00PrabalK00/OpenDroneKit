@@ -413,13 +413,32 @@ class Api:
         only when the operator searches, and the response carries a note stating where
         the query went. A typed coordinate is resolved locally either way.
         """
-        from core.geocoding import search_places as run_search
+        from core.geocoding import Place, search_places as run_search
+
+        # What the open project already puts on the map is searchable with no network:
+        # a layer by its name, the area of interest as "Area of interest".
+        local: list[Place] = []
+        for layer in self._session.layer_list():
+            b = layer.get("bounds_lonlat") or []
+            if len(b) == 4:
+                local.append(Place(name=str(layer.get("name") or layer.get("id")),
+                                   longitude=(b[0] + b[2]) / 2, latitude=(b[1] + b[3]) / 2,
+                                   kind=f"{layer.get('kind', 'layer')} layer",
+                                   bounds=(b[0], b[1], b[2], b[3]), source="project"))
+        ring = self._session.aoi_polygon or []
+        if len(ring) >= 3:
+            lons, lats = [p[0] for p in ring], [p[1] for p in ring]
+            local.append(Place(name="Area of interest", longitude=sum(lons) / len(lons),
+                               latitude=sum(lats) / len(lats), kind="area of interest",
+                               bounds=(min(lons), min(lats), max(lons), max(lats)),
+                               source="project"))
 
         selected = provider or getattr(self._session, "geocoding_provider", "") or "nominatim"
         result = run_search(
             query,
             provider=selected,
             gazetteer_path=self._session.project_root() / "places.json",
+            local_places=local,
         )
         if result.get("results"):
             self._session.audit("place_searched", {"query": query, "provider": result.get("provider")})

@@ -569,7 +569,18 @@
     const picked = await tryCall('pick_file', filters);
     if (!picked || !picked.path) return;
     const result = await tryCall('add_layer_from_file', picked.path);
-    if (result) { await refreshLayers(); status(`Layer added: ${result.layer.name}`); }
+    if (!result) return;
+    await refreshLayers();
+    // Frame what was just imported. The map stayed at the world view, so an imported
+    // raster was a dot nobody could find -- and an area of interest drawn at that zoom
+    // covered a continent.
+    const added = (state.layers || []).find((l) => l.id === result.layer.id) || result.layer;
+    if (added.bounds_lonlat && added.bounds_lonlat.length === 4) {
+      state.map.fitTo(added.bounds_lonlat);
+      status(`Layer added and framed: ${added.name}`);
+    } else {
+      status(`Layer added: ${added.name}. It has no usable extent${added.crs_epsg ? '' : ' (no CRS)'}, so the map did not move.`);
+    }
   }
 
   async function pickDataset() {
@@ -601,6 +612,9 @@
     status('Reconstruction started. Progress is in the Jobs tab.');
     pollJob(result.job_id, async (job) => {
       await refreshLayers();
+      // Frame the new orthomosaic, which is what the operator ran this to see.
+      const ortho = (state.layers || []).find((l) => /ortho/i.test(l.name) && l.bounds_lonlat && l.bounds_lonlat.length === 4);
+      if (ortho) state.map.fitTo(ortho.bounds_lonlat);
       const payload = job.result || {};
       const warnings = (payload.warnings || []).map((w) => `<div><span>warning</span><b>${w}</b></div>`).join('');
       modal('Reconstruction Complete', `<div class="info">${kv([
@@ -633,17 +647,21 @@
 
     function render(result) {
       const places = result.results || [];
+      const esc = (text) => String(text == null ? '' : text).replace(/[&<>"]/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
       if (!places.length) {
-        list.innerHTML = `<li class="search-empty">${result.error || 'No matching place found.'}</li>`;
+        list.innerHTML = `<li class="search-empty">${esc(result.error || 'No matching place found.')}</li>`;
         list.hidden = false;
         return;
       }
-      list.innerHTML = places.map((place, index) => `
-        <li data-index="${index}" title="${place.name}">
-          <b>${place.name}</b>
-          <span>${place.kind || place.source || ''} · ${place.lat.toFixed(5)}, ${place.lon.toFixed(5)}</span>
+      // Offline, the remote search did not happen; say so above what was found locally.
+      const warning = result.error ? `<li class="search-empty">${esc(result.error)}</li>` : '';
+      list.innerHTML = warning + places.map((place, index) => `
+        <li data-index="${index}" title="${esc(place.name)}">
+          <b>${esc(place.name)}</b>
+          <span>${esc(place.kind || place.source || '')} · ${place.lat.toFixed(5)}, ${place.lon.toFixed(5)}</span>
         </li>`).join('') +
-        `<li class="search-note">${result.provider_note || ''}</li>`;
+        `<li class="search-note">${esc(result.provider_note || '')}</li>`;
       list.hidden = false;
 
       list.querySelectorAll('li[data-index]').forEach((row) => {
@@ -761,6 +779,9 @@
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;
       },
       onMeasure: (text) => { $('#status-message').textContent = text; },
+      // The zoom readout changed only when the cursor moved, so after "zoom to layer"
+      // it still said z2 over a map at z17.
+      onMove: (zoom) => { $('#status-scale').textContent = `z${zoom.toFixed(1)}`; },
       onGeometryChange: async (geometry) => {
         if (geometry.aoi) {
           const result = await tryCall('set_aoi', geometry.aoi);

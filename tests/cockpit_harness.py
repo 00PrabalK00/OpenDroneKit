@@ -138,6 +138,11 @@ class Cockpit:
     opened: list[str] = field(default_factory=list)
     ready_delay_ms: int = 0
     bridge: bool = True
+    #: The page under test: the cockpit, or "index.html" for the classic window.
+    page: str = "workspace.html"
+    #: Browser window size, e.g. "1600,900". Headless defaults to a window small enough
+    #: that the classic window's map is 21 px tall and cannot frame anything.
+    window_size: str = ""
 
     def __post_init__(self) -> None:
         api = self.api
@@ -221,7 +226,7 @@ class Cockpit:
         return f"http://127.0.0.1:{self.server.server_port}"
 
     def _page(self) -> str:
-        html = (WEB / "workspace.html").read_text(encoding="utf-8")
+        html = (WEB / self.page).read_text(encoding="utf-8")
         shim = ""
         if self.bridge:
             shim = (
@@ -259,6 +264,8 @@ class Cockpit:
         # Every host but this loopback fails to resolve at once, so the satellite basemap
         # cannot hold the virtual clock waiting on a network this test must not use.
         argv.insert(-1, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1")
+        if self.window_size:
+            argv.insert(-1, f"--window-size={self.window_size}")
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=240,
                                    encoding="utf-8", errors="replace")
         found = re.search(r'<pre id="odk-result">(.*?)</pre>', completed.stdout, re.DOTALL)
