@@ -76,7 +76,8 @@ class TestReadiness:
     def test_a_project_that_does_not_exist_is_not_ready(self, workspace):
         readiness = validate_report_readiness(ReportConfig(project_id="no-such-project"))
         assert readiness.ok is False
-        assert "project" in readiness.missing
+        assert any(item.startswith("project:") and "no-such-project" in item
+                   for item in readiness.missing), readiness.missing
 
     def test_an_empty_project_is_refused_with_the_reason(self, empty_project):
         """A fresh project with nothing in it used to be declared ready, and a report of

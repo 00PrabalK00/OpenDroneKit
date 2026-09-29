@@ -46,6 +46,8 @@ function jobOutcome(result) {
     for (const r of reasons) parts.push(`${name} refused on ${r.images} image(s): ${r.reason}`);
   }
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
+  /* The pipeline's markdown report was written and never mentioned. */
+  if (result.report_markdown_path) parts.push("inspection report written (reopen it from Reports > Inspection Report)");
   if (result.metrics && typeof result.metrics.map50 === "number") {
     parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
   }
@@ -889,6 +891,10 @@ export class Shell {
         this.open("reports");
         await this.runAction("Open Report");
         return;
+      case "report.pipeline":
+        this.open("reports");
+        await this.runAction("Inspection Report");
+        return;
       case "report.finding":
         this.open("reports");
         await this.runAction("Record Finding");
@@ -1133,6 +1139,14 @@ export class Shell {
       return;
     }
 
+    if (this.mode === "connected" && !(this.state && this.state.project)
+        && prerequisite(action, this.stateSummary())) {
+      // "No project open" is only as true as the last get_state that answered. At
+      // startup that read can fail (a busy machine, a locked store) and the shell was
+      // left refusing every project action for the session while a project WAS open.
+      // Ask again before refusing.
+      await this.refreshState();
+    }
     const blocked = prerequisite(action, this.stateSummary());
     if (blocked) {
       this.toast(`${action}: ${blocked}`, "warn");
@@ -1468,6 +1482,8 @@ export class Shell {
       // seconds, which is not long enough to copy a token, so this blocks until the
       // user dismisses it.
       reveal: (text, title) => reveal(title || "Copy this now — it is not stored", text),
+      /* A document to read, not a secret to copy: a taller box. */
+      showText: (title, text) => reveal(title, text, 28),
     };
   }
 
@@ -1553,6 +1569,10 @@ export class Shell {
   /** Ask the application what is open, so prerequisites are real rather than assumed. */
   async refreshState() {
     const state = await tryCall("get_state");
+    // A failed read is not "no project": keep asking until the application answers,
+    // rather than showing "no project open" for the whole session.
+    this.stateUnread = !state && this.mode === "connected";
+    if (this.stateUnread) this.retryStateRead();
     if (state) {
       this.state = {
         project: state.project || state.active_project || null,
@@ -1571,6 +1591,18 @@ export class Shell {
     this.vehicle = (telemetry && telemetry.telemetry) || null;
     this.applyMode();
     this.renderIndicators();
+  }
+
+  /** Read the state again shortly, while get_state keeps failing. */
+  retryStateRead() {
+    if (this.stateRetryTimer) return;
+    this.stateRetryTimer = setTimeout(async () => {
+      this.stateRetryTimer = null;
+      if (this.mode !== "connected" || !this.stateUnread) return;
+      await this.refreshState();
+      // Panels drawn from the failed read showed their empty state; draw them again.
+      if (!this.stateUnread) this.open(this.workspaceId);
+    }, 1000);
   }
 
   /** The top and status bar indicators, from the state just read.
@@ -1599,6 +1631,20 @@ export class Shell {
     }
   }
 
+  /**
+   * A Run Pipeline job that wrote an inspection report opens it, as the default window
+   * does. The cockpit used to leave it behind a toast naming a menu.
+   */
+  async showFinishedPipelineReport(result) {
+    const path = result && result.report_markdown_path;
+    if (!path) return;
+    const runId = String(path).split(/[\\/]/).slice(-2)[0];
+    const report = await tryCall("read_pipeline_report", runId);
+    if (report && typeof report.markdown === "string") {
+      reveal(`Inspection report: ${report.id}`, report.markdown, 28);
+    }
+  }
+
   /** Follow a background job to completion, reporting progress as it goes. */
   watchJob(jobId) {
     this.selectedJobId = jobId;
@@ -1617,6 +1663,7 @@ export class Shell {
         await this.refreshState();
         this.dock.refreshLive();
         refreshLive();
+        this.showFinishedPipelineReport(status.result);
         return;
       }
       if (state === "failed" || state === "error") {

@@ -173,7 +173,36 @@ NOTHING_TO_REPORT = ("content: this project has no imported images, recorded fin
 # project with none of them is refused whichever path asks (desktop Api, the engine's own
 # workspace, a processing run's report stage).
 CONTENT_KEYS = ("datasets", "missions", "findings", "defect_runs", "pipeline_runs",
-                "crack_runs", "reconstructions", "measurements")
+                "crack_runs", "reconstructions", "reconstruction_failures", "measurements")
+
+
+def _failed_reconstructions(context: dict[str, Any]) -> list[tuple[str, str]]:
+    """(run name, error) for pipeline runs whose reconstruction was attempted and failed.
+
+    "No reconstruction was run" is false for these: one was run, and it failed.
+    """
+    # "reconstruction_failures" is collected whatever include_defects says: leaving the
+    # defect section out must not turn a failed reconstruction into "none was run".
+    failures = context.get("reconstruction_failures")
+    if failures is not None:
+        return [(str(f.get("name", "")), str(f.get("error", ""))) for f in failures]
+    return [(str(run.get("name", "")), str(run["reconstruction_error"]))
+            for run in context.get("pipeline_runs") or [] if run.get("reconstruction_error")]
+
+
+def reconstruction_failures(runs: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """{name, error} for each pipeline run whose reconstruction was attempted and failed."""
+    return [{"name": str(run.get("name", "")), "error": str(run["reconstruction_error"])}
+            for run in runs if run.get("reconstruction_error")]
+
+
+def _no_reconstruction_text(context: dict[str, Any]) -> str:
+    failed = _failed_reconstructions(context)
+    if not failed:
+        return "No reconstruction was run."
+    runs = "; ".join(f"pipeline run {name}: {error}" for name, error in failed)
+    return (f"Reconstruction was attempted {len(failed)} time(s) and failed ({runs}). "
+            "No 3D output was produced.")
 
 
 def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> ReportReadiness:
@@ -212,6 +241,11 @@ def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> Rep
     if not datasets and config.include_images and (
             "dataset_summary" in sections or "key_photos" in sections):
         warnings.append("No dataset imported — report will not include image gallery.")
+    for dataset in datasets:
+        if dataset.get("folder_missing") and config.include_images:
+            warnings.append(f"Dataset {dataset.get('name', '')!r}: its image folder "
+                            f"{dataset['folder_missing']} no longer exists, so the report "
+                            "cannot show or read any of its images.")
     if config.include_defects and not defect_runs and not pipeline_runs and (
             "defect_summary" in sections or "findings" in sections):
         warnings.append("No defect run found — the automated detection section will say "
@@ -225,7 +259,11 @@ def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> Rep
         warnings.append(f"{len(unreviewed)} model-proposed finding(s) are not reviewed; "
                         "the report will say so.")
     if not reconstructions and "reconstruction" in sections:
-        notes.append("No reconstruction output — the 3D section will say none was run.")
+        if _failed_reconstructions(context):
+            notes.append("No reconstruction output — the 3D section will say the pipeline's "
+                         "reconstruction was attempted and failed, and why.")
+        else:
+            notes.append("No reconstruction output — the 3D section will say none was run.")
     if not missions and "mission_map" in sections:
         notes.append("No mission saved — site map section will be sparse.")
 
@@ -252,10 +290,13 @@ def validate_report_readiness(config: ReportConfig) -> ReportReadiness:
     try:
         meta = mgr.load_project(config.project_id)
     except Exception:
-        return ReportReadiness(False, ["project"], [], [])
+        # A bare "project" code reached the checklist as the whole explanation.
+        return ReportReadiness(False, [f"project: no project {config.project_id!r} exists "
+                                       "in this workspace."], [], [])
     root = Path(str(meta.get("root_dir", "")))
     if not root.exists():
-        return ReportReadiness(False, ["project_folder"], [], [])
+        return ReportReadiness(False, [f"project_folder: the project folder {root} does not "
+                                       "exist; it was moved or deleted."], [], [])
     return readiness_from_context(build_report_context(config), config)
 
 
@@ -475,8 +516,19 @@ def find_pipeline_runs(root: Path) -> list[dict[str, Any]]:
             "report_markdown": str(run / "inspection_report.md")
             if (run / "inspection_report.md").is_file() else "",
             "coverage": summary.get("coverage_validation") or {},
+            "forecast": _pipeline_forecast(summary.get("forecast")),
         })
     return runs
+
+
+def _pipeline_forecast(forecast: Any) -> dict[str, Any]:
+    """What the pipeline's crack-growth forecast was, if it made one: image and basis."""
+    if not isinstance(forecast, dict) or not forecast.get("target_image"):
+        return {}
+    return {"target_image": str(forecast.get("target_image")),
+            "mode": str(forecast.get("mode") or "geometric"),
+            "steps": forecast.get("steps"),
+            "what_if": forecast.get("basis") == "what_if_simulation"}
 
 
 def _engine_defect_runs(root: Path) -> list[dict[str, Any]]:
@@ -584,6 +636,7 @@ def build_report_context(config: ReportConfig) -> dict[str, Any]:
                           "event_type": e.get("event_type", ""),
                           "detail": e.get("detail", "")})
 
+    all_pipeline_runs = find_pipeline_runs(root)
     return {
         "config": config.to_dict(),
         "project": {
@@ -599,7 +652,8 @@ def build_report_context(config: ReportConfig) -> dict[str, Any]:
         "image_dirs": [str(p) for p in image_dirs],
         "findings": findings,
         "defect_runs": _engine_defect_runs(root) if config.include_defects else [],
-        "pipeline_runs": find_pipeline_runs(root) if config.include_defects else [],
+        "pipeline_runs": all_pipeline_runs if config.include_defects else [],
+        "reconstruction_failures": reconstruction_failures(all_pipeline_runs),
         "crack_runs": _engine_crack_runs(root),
         "reconstructions": find_reconstructions(root),
         "measurements": measurements,
@@ -780,7 +834,7 @@ def derive_summary(context: dict[str, Any]) -> str:
     missions = context.get("missions") or []
     parts.append(f"{len(missions)} saved mission(s)." if missions else "No mission was saved.")
     recons = context.get("reconstructions") or []
-    parts.append(f"{len(recons)} reconstruction(s)." if recons else "No reconstruction was run.")
+    parts.append(f"{len(recons)} reconstruction(s)." if recons else _no_reconstruction_text(context))
     if findings:
         severity_text = ", ".join(
             f"{count} {sev}" for sev, count in sorted(
@@ -823,9 +877,8 @@ def derive_follow_up(context: dict[str, Any]) -> list[str]:
         if bad:
             items.append(f"Pipeline run {run['name']}: {len(bad)} image(s) failed the quality "
                          "check and may need re-flying.")
-        if run.get("reconstruction_error"):
-            items.append(f"Pipeline run {run['name']}: reconstruction failed "
-                         f"({run['reconstruction_error']}).")
+    for name, error in _failed_reconstructions(context):
+        items.append(f"Pipeline run {name}: reconstruction failed ({error}).")
     for recon in context.get("reconstructions") or []:
         prov = recon.get("provenance") or {}
         if prov.get("modified"):
@@ -979,14 +1032,25 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
             "No automated detector was run on this project."]}
 
     crack_runs = context.get("crack_runs") or []
-    if crack_runs:
-        blocks["crack_propagation"] = {"paragraphs": [
-            f"Run {r.get('id', '')}: {r.get('summary', '')} Illustrative risk level (from the "
-            f"assumed stresses and toughness, not measured): {r.get('risk_level', '')}. "
-            f"Assumptions: {'; '.join(str(a) for a in r.get('assumptions', []))}"
-            for r in crack_runs]}
-    else:
-        blocks["crack_propagation"] = {"paragraphs": ["No crack propagation analysis was run."]}
+    paragraphs = [
+        f"Run {r.get('id', '')}: {r.get('summary', '')} Illustrative risk level (from the "
+        f"assumed stresses and toughness, not measured): {r.get('risk_level', '')}. "
+        f"Assumptions: {'; '.join(str(a) for a in r.get('assumptions', []))}"
+        for r in crack_runs]
+    # The pipeline's own growth forecast. The HTML said "No crack propagation analysis
+    # was run" while the same run's markdown carried one.
+    for run in context.get("pipeline_runs") or []:
+        forecast = run.get("forecast") or {}
+        if forecast.get("target_image"):
+            paragraphs.append(
+                f"Pipeline run {run.get('name', '')}: a {forecast.get('mode', 'geometric')} "
+                f"growth forecast of the detected crack mask on {forecast['target_image']}"
+                + (f" over {forecast['steps']} step(s)" if forecast.get("steps") else "")
+                + ". It is a " + ("what-if simulation from assumed inputs"
+                                   if forecast.get("what_if") else "geometric extrapolation")
+                + ", not a measurement; see the run's inspection_report.md for its inputs.")
+    blocks["crack_propagation"] = {"paragraphs": paragraphs or [
+        "No crack propagation analysis was run."]}
 
     recons = context.get("reconstructions") or []
     if recons:
@@ -1003,7 +1067,7 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
                        for name, path in (assets.get("orthomosaics") or {}).items()],
         }
     else:
-        blocks["reconstruction"] = {"paragraphs": ["No reconstruction was run."]}
+        blocks["reconstruction"] = {"paragraphs": [_no_reconstruction_text(context)]}
 
     prov_rows = []
     for recon in recons:

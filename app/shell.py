@@ -151,6 +151,7 @@ class Shell:
                 MenuAction("Export Findings as PDF", act("report.export", {"format": "pdf"})),
                 MenuAction("Export Findings as Word", act("report.export", {"format": "docx"})),
                 MenuAction("Generated Reports...", act("report.list")),
+                MenuAction("Pipeline Inspection Report...", act("report.pipeline")),
                 MenuSeparator(),
                 MenuAction("Record Finding...", act("report.finding")),
                 MenuAction("Findings and Review...", act("report.review")),

@@ -24,6 +24,7 @@ from core.report_engine import (
     ReportReadiness,
     ReportResult,
     find_pipeline_runs,
+    reconstruction_failures,
     find_reconstructions,
     findings_from_annotations,
     list_reports_in,
@@ -104,6 +105,10 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
         folder = Path(str(row.get("path", "")))
         if folder.is_dir() and folder not in image_dirs:
             image_dirs.append(folder)
+        elif str(row.get("path", "")) and not folder.is_dir():
+            # Imported, then moved or deleted: readiness says so rather than letting the
+            # gallery and key photos come out silently empty.
+            datasets[-1]["folder_missing"] = str(folder)
         bounds = meta.get("bounds_lonlat")
         if isinstance(bounds, list) and len(bounds) == 4:
             lons += [float(bounds[0]), float(bounds[2])]
@@ -139,6 +144,7 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
 
     cfg = config.to_dict()
     cfg["sections"] = sections_for(config.report_type, config.sections)
+    all_pipeline_runs = find_pipeline_runs(root)
     return {
         "config": cfg,
         "project": {
@@ -154,7 +160,8 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
         "image_dirs": [str(p) for p in image_dirs],
         "findings": findings,
         "defect_runs": [],
-        "pipeline_runs": find_pipeline_runs(root) if config.include_defects else [],
+        "pipeline_runs": all_pipeline_runs if config.include_defects else [],
+        "reconstruction_failures": reconstruction_failures(all_pipeline_runs),
         "crack_runs": [],
         "reconstructions": reconstructions,
         "measurements": measurements,

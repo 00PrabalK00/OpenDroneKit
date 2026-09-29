@@ -207,14 +207,14 @@ export function confirmAsk(question) {
  * hash, so if it is not copied out of this box it is gone. A toast would disappear
  * before it could be read.
  */
-export function reveal(title, body) {
+export function reveal(title, body, maxRows = 8) {
   return new Promise((resolve) => {
     const box = panel(title);
     const area = document.createElement("textarea");
     area.className = "modal-reveal";
     area.readOnly = true;
     area.value = body;
-    area.rows = Math.min(8, String(body).split("\n").length + 2);
+    area.rows = Math.min(maxRows, String(body).split("\n").length + 2);
     box.appendChild(area);
 
     let close = () => {};

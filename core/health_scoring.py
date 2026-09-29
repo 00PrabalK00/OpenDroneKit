@@ -323,6 +323,10 @@ def _build_timeline_trend(
 
     slope_per_day = 0.0
     monthly_change = 0.0
+    span_days = 0.0
+    if len(entries) >= 2:
+        span_days = float(max(0.0, (_parse_utc(entries[-1]["run_utc"])
+                                    - _parse_utc(entries[0]["run_utc"])).total_seconds() / 86400.0))
     projected_6m = float(current_integrity)
     projected_12m = float(current_integrity)
     if len(entries) >= 2:
@@ -387,6 +391,10 @@ def _build_timeline_trend(
         "projected_integrity_6m": float(projected_6m),
         "projected_integrity_12m": float(projected_12m),
         "trend_direction": trend_direction,
+        # A direction needs a slope, and a slope needs two runs at least a week apart.
+        # Otherwise "stable" above is the default, not something that was observed.
+        "span_days": span_days,
+        "trend_computed": bool(len(entries) >= 2 and span_days >= 7.0),
         "summary": summary,
     }
 

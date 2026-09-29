@@ -109,5 +109,8 @@ export function whenReady(timeoutMs = 4000) {
     setTimeout(() => done(connected()), timeoutMs);
   });
   PENDING.set(key, promise);
+  // A "not ready" answer is not kept: a bridge that arrives late must be seen by the
+  // next caller, not answered "no bridge" from the cache for the rest of the session.
+  promise.then((ready) => { if (!ready) PENDING.delete(key); });
   return promise;
 }

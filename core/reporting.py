@@ -76,7 +76,12 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append(f"- Input image directory: `{payload.get('input_image_dir', '')}`")
     lines.append(f"- Images processed: `{len(images)}`")
     lines.append("")
-    lines.append("## Structural Health Screening (heuristic)")
+    # The heading names the evidence the section is built from: "(heuristic)" over a
+    # basis line naming a trained model contradicted itself.
+    trained = (isinstance(health, dict)
+               and (health.get("basis") or {}).get("defect_evidence") == "trained_model")
+    lines.append("## Structural Health Screening ("
+                 + ("trained model, uncalibrated" if trained else "heuristic") + ")")
     lines.append("")
     if isinstance(health, dict) and health:
         # The score is built from the crack and metal pixel ratios of classical image
@@ -111,7 +116,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
             "- Condition grade, integrity score and failure probabilities: not reported. "
             "They need defect measurements (a trained model's detections confirmed by an "
             "inspector, or a georeferenced defect layer) and a hazard model calibrated "
-            "for this asset; this run has only heuristic ratios."
+            "for this asset; this run has only "
+            + ("uncalibrated model pixel ratios, not confirmed measurements."
+               if basis.get("defect_evidence") == "trained_model" else "heuristic ratios.")
         )
         excluded = (health.get("components", {}) or {}).get("excluded_heuristic_images", {}) or {}
         for detector in ("metal", "solar"):
@@ -130,10 +137,20 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         if not_assessed:
             lines.append(f"- Not assessed (excluded from the index): `{', '.join(not_assessed)}`")
         trend = health.get("trend", {})
-        if isinstance(trend, dict) and trend.get("trend_direction"):
+        if isinstance(trend, dict) and trend.get("trend_computed"):
             lines.append(
-                f"- Screening index trend across runs of this asset: "
-                f"`{trend.get('trend_direction', 'stable')}`"
+                f"- Screening index trend across {int(trend.get('history_points', 0))} runs "
+                f"of this asset over {float(trend.get('span_days', 0.0)):.0f} days: "
+                f"`{trend.get('trend_direction')}`"
+            )
+        elif isinstance(trend, dict) and trend:
+            # With one run, or runs less than a week apart, there is no slope: the
+            # "stable" default used to be printed as if a trend had been observed.
+            lines.append(
+                "- Trend: not computed. It needs two or more runs of this asset at least "
+                f"7 days apart; this asset has {int(trend.get('history_points', 1))} run(s)"
+                + (f" spanning {float(trend.get('span_days', 0.0)):.1f} days."
+                   if int(trend.get('history_points', 1)) > 1 else ".")
             )
     else:
         lines.append("- Structural health screening not available.")
@@ -293,7 +310,7 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## Crack Propagation Forecast (illustrative)")
     lines.append("")
-    if forecast.get("basis") == "what_if_simulation":
+    if forecast.get("basis") == "what_if_simulation" and forecast.get("target_image"):
         lines.append(f"- **What-if simulation, not a measurement.** {forecast.get('note', '')}")
         assumed = forecast.get("assumed_inputs", {})
         if isinstance(assumed, dict) and assumed:
@@ -363,11 +380,22 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Reconstruction FAILED: `{recon.get('error', '')}`. Detection results "
                      "above are complete.")
         lines.append("- No 3D output, measurements or volumes were produced from this run.")
-    lines.append(f"- Frames: `{recon.get('frame_count', 0)}`")
-    lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
-    lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")
-    lines.append(f"- Reconstructed points: `{recon.get('total_points', 0)}`")
-    lines.append(f"- Crack-localized 3D points: `{recon.get('crack_points', 0)}`")
+    else:
+        # A failed run has no counts; zeros printed after "FAILED" read as a result.
+        # "Frames: 10" read as ten frames in the model when two were never registered.
+        frames = int(recon.get("frame_count", 0) or 0)
+        registered = recon.get("registered_images")
+        if isinstance(registered, int) and 0 < registered < frames:
+            lines.append(f"- Frames: `{frames}` (`{registered}` registered, "
+                         f"`{frames - registered}` not in the model)")
+        elif isinstance(registered, int) and registered == frames and frames:
+            lines.append(f"- Frames: `{frames}` (all registered)")
+        else:
+            lines.append(f"- Frames: `{frames}`")
+        lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
+        lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")
+        lines.append(f"- Reconstructed points: `{recon.get('total_points', 0)}`")
+        lines.append(f"- Crack-localized 3D points: `{recon.get('crack_points', 0)}`")
     if recon.get("processing_profile"):
         lines.append(f"- Processing profile: `{recon.get('processing_profile')}`")
     if recon.get("execution_mode_used"):
@@ -376,8 +404,10 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Execution mode: `{req_mode} -> {used_mode}`")
     if recon.get("cache_hits") is not None and recon.get("cache_misses") is not None:
         lines.append(f"- Cache hits/misses: `{int(recon.get('cache_hits', 0))}/{int(recon.get('cache_misses', 0))}`")
-    lines.append(f"- Point cloud: `{recon.get('point_cloud_path', '')}`")
-    lines.append(f"- Camera poses: `{recon.get('camera_pose_path', '')}`")
+    if recon.get("point_cloud_path"):
+        lines.append(f"- Point cloud: `{recon.get('point_cloud_path')}`")
+    if recon.get("camera_pose_path"):
+        lines.append(f"- Camera poses: `{recon.get('camera_pose_path')}`")
     if recon.get("orthomosaic_path"):
         lines.append(f"- Orthomosaic: `{recon.get('orthomosaic_path')}`")
     if recon.get("dsm_path"):
@@ -435,7 +465,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         )
 
     basis = measurements.get("surface_basis", {}) if isinstance(measurements, dict) else {}
-    if isinstance(basis, dict) and basis.get("reason"):
+    # The basis qualifies terrain figures; with none printed (no surface, or a failed
+    # reconstruction) it described a surface that does not exist.
+    if isinstance(basis, dict) and basis.get("reason") and terrain.get("covered_area_m2"):
         lines.append(
             f"- Surface basis: {basis.get('reason')}. Terrain figures above describe the "
             "measured cells only and are not survey-grade."
@@ -469,8 +501,8 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(
             f"- Defect condition score: `{risk.get('defect_condition_score')}` "
             f"(grade `{risk.get('defect_condition_grade')}` - "
-            f"{risk.get('defect_condition_label')}); from the ranked defects above, not "
-            "the image-based integrity score in Structural Health Scoring"
+            f"{risk.get('defect_condition_label')}); from the ranked defects below, not "
+            "the screening index in Structural Health Screening"
         )
         lines.append(f"- Basis: {risk.get('measurement_note', '')}")
         lines.append("")
