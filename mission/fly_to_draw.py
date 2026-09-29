@@ -60,6 +60,15 @@ class BoundaryMark:
         }
 
 
+def _first(telemetry: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """The first of `keys` present with a value, so a spelling that is absent falls through."""
+    for key in keys:
+        value = telemetry.get(key)
+        if value is not None:
+            return value
+    return default
+
+
 def mark_from_telemetry(telemetry: dict[str, Any], note: str = "") -> BoundaryMark:
     """Take a corner from the live telemetry, or refuse and say why.
 
@@ -86,7 +95,11 @@ def mark_from_telemetry(telemetry: dict[str, Any], note: str = "") -> BoundaryMa
             f"The reported position ({longitude}, {latitude}) is not on Earth."
         )
 
-    fix_type = int(telemetry.get("fix_type", telemetry.get("gps_fix_type", 0)) or 0)
+    # The application's telemetry calls this gps_fix (session.telemetry / DroneTelemetry);
+    # fix_type and gps_fix_type are the raw MAVLink and other spellings. Reading only
+    # those two meant every corner from the live app was refused as "fix type 0", even
+    # with an RTK fix -- the feature could not produce a single mark.
+    fix_type = int(_first(telemetry, "gps_fix", "fix_type", "gps_fix_type", default=0) or 0)
     if fix_type < MIN_FIX_TYPE:
         raise BoundaryRefused(
             f"The receiver reports fix type {fix_type}, which is not a 3D fix. A corner "
@@ -97,10 +110,13 @@ def mark_from_telemetry(telemetry: dict[str, Any], note: str = "") -> BoundaryMa
 
     return BoundaryMark(
         longitude=longitude, latitude=latitude,
-        altitude_m=float(telemetry.get("altitude_m", telemetry.get("alt_m", 0.0)) or 0.0),
+        # Above mean sea level where the vehicle reports it (altitude_abs_m), since a
+        # corner is a place, not a height above wherever the aircraft took off.
+        altitude_m=float(_first(telemetry, "altitude_m", "alt_m", "altitude_abs_m",
+                                default=0.0) or 0.0),
         fix_type=fix_type,
-        satellites=int(telemetry.get("satellites", telemetry.get("satellites_visible", 0)) or 0),
-        hdop=float(telemetry.get("hdop", telemetry.get("eph", 0.0)) or 0.0),
+        satellites=int(_first(telemetry, "satellites", "satellites_visible", default=0) or 0),
+        hdop=float(_first(telemetry, "hdop", "eph", default=0.0) or 0.0),
         note=note,
     )
 

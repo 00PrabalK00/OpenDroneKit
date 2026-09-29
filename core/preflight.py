@@ -117,16 +117,21 @@ def check_drone_connection(drone: DroneClient) -> CheckResult:
     )
 
 
+def _hdop_text(telemetry: DroneTelemetry) -> str:
+    hdop = getattr(telemetry, "hdop", None)
+    return "HDOP not reported" if hdop is None else f"HDOP {hdop:.1f}"
+
+
 def check_gps_status(telemetry: DroneTelemetry) -> CheckResult:
     if telemetry.gps_fix >= 5:
         return CheckResult("gps_status", "GPS / RTK Lock", SEVERITY_PASS,
-                           f"RTK fix, {telemetry.satellites} sats, HDOP {telemetry.hdop:.1f}.")
+                           f"RTK fix, {telemetry.satellites} sats, {_hdop_text(telemetry)}.")
     if telemetry.gps_fix >= 3 and telemetry.satellites >= 8:
         return CheckResult("gps_status", "GPS Lock", SEVERITY_PASS,
-                           f"3D fix, {telemetry.satellites} sats, HDOP {telemetry.hdop:.1f}.")
+                           f"3D fix, {telemetry.satellites} sats, {_hdop_text(telemetry)}.")
     if telemetry.gps_fix >= 3:
         return CheckResult("gps_status", "GPS Lock", SEVERITY_WARN,
-                           f"Marginal GPS: {telemetry.satellites} sats, HDOP {telemetry.hdop:.1f}.",
+                           f"Marginal GPS: {telemetry.satellites} sats, {_hdop_text(telemetry)}.",
                            fix_action="Wait for more satellites or move to open sky.")
     return CheckResult("gps_status", "GPS Lock", SEVERITY_BLOCK,
                        f"No GPS fix (fix_type={telemetry.gps_fix}, sats={telemetry.satellites}).",
@@ -148,6 +153,13 @@ def check_battery_status(
     critical_pct: float = 15.0,
     mission_reserve_pct: float = 30.0,
 ) -> CheckResult:
+    if telemetry.battery_pct is None:
+        # The flight controller has no current sensor, or has not said. Unknown is not
+        # full: the operator has to read the pack themselves.
+        return CheckResult("battery", "Battery", SEVERITY_WARN,
+                           "The vehicle has not reported its battery level.",
+                           fix_action="Check the pack voltage by hand before flight.",
+                           requires_manual=True)
     pct = float(telemetry.battery_pct)
     if pct < critical_pct:
         return CheckResult("battery", "Battery", SEVERITY_BLOCK,
@@ -157,8 +169,8 @@ def check_battery_status(
         return CheckResult("battery", "Battery", SEVERITY_WARN,
                            f"Battery {pct:.0f}% below reserve threshold ({mission_reserve_pct:.0f}%).",
                            fix_action="Consider charging or shortening mission.")
-    return CheckResult("battery", "Battery", SEVERITY_PASS,
-                       f"Battery {pct:.0f}% ({telemetry.battery_v:.1f} V).")
+    volts = "" if telemetry.battery_v is None else f" ({telemetry.battery_v:.1f} V)"
+    return CheckResult("battery", "Battery", SEVERITY_PASS, f"Battery {pct:.0f}%{volts}.")
 
 
 def check_storage_ready(free_mb_required: float = 500.0, free_mb_available: float | None = None) -> CheckResult:
@@ -174,11 +186,30 @@ def check_storage_ready(free_mb_required: float = 500.0, free_mb_available: floa
                        f"{free_mb_available:.0f} MB free.")
 
 
-def check_camera_ready(payload_ok: bool = True, notes: str = "") -> CheckResult:
-    if payload_ok:
-        return CheckResult("camera", "Camera / Payload", SEVERITY_PASS, "Camera ready." + (f" {notes}" if notes else ""))
-    return CheckResult("camera", "Camera / Payload", SEVERITY_BLOCK,
-                       "Camera not detected.", fix_action="Check gimbal and SD card.")
+def check_camera_ready(payload_ok: bool | None = None, notes: str = "") -> CheckResult:
+    """Camera readiness, from what the payload itself reported.
+
+    ``None`` -- nothing reported -- is a manual check, not a pass. This used to default
+    to True and print "Camera ready." for a vehicle with no camera at all, which is the
+    one tick an operator is most likely to believe without looking.
+    """
+    if payload_ok is True:
+        return CheckResult("camera", "Camera / Payload", SEVERITY_PASS,
+                           "Camera reported by the payload." + (f" {notes}" if notes else ""))
+    if payload_ok is False:
+        return CheckResult("camera", "Camera / Payload", SEVERITY_BLOCK,
+                           "Camera not detected.", fix_action="Check gimbal and SD card.")
+    return CheckResult("camera", "Camera / Payload", SEVERITY_WARN,
+                       "The camera has not reported itself over MAVLink, so its state is unknown.",
+                       fix_action="Confirm by eye that the camera is powered, has a card, "
+                                  "and triggers.",
+                       requires_manual=True)
+
+
+def camera_reported(telemetry: DroneTelemetry) -> bool | None:
+    """True when the payload sent CAMERA_INFORMATION; None when it has said nothing."""
+    raw = getattr(telemetry, "raw", None) or {}
+    return True if raw.get("camera_information") else None
 
 
 def check_rth_altitude(profile: DroneProfile) -> CheckResult:
@@ -222,21 +253,56 @@ def check_mission_uploaded(uploaded: bool, drone_connected: bool) -> CheckResult
 
 
 def check_geofence(mission_summary: dict[str, Any] | None, geofence: dict[str, Any] | None) -> CheckResult:
+    """Whether the flight path stays inside the fence.
+
+    ``mission_inside`` must be a computed answer (see ``assess_geofence``). A geofence
+    dict without it is an unevaluated fence, which is a manual check, never a pass --
+    the previous default of True let any caller get "Mission inside geofence" by
+    passing a fence nobody had compared the path against.
+    """
     if not geofence:
         return CheckResult("geofence", "Geofence", SEVERITY_WARN,
                            "No geofence configured.", requires_manual=True,
                            fix_action="Confirm flight area manually.")
-    inside = bool(geofence.get("mission_inside", True))
+    inside = geofence.get("mission_inside")
+    if inside is None:
+        return CheckResult("geofence", "Geofence", SEVERITY_WARN,
+                           "A geofence exists but the path was not checked against it.",
+                           requires_manual=True,
+                           fix_action="Confirm the path stays inside the fence.")
     if inside:
-        return CheckResult("geofence", "Geofence", SEVERITY_PASS, "Mission inside geofence.")
+        return CheckResult("geofence", "Geofence", SEVERITY_PASS,
+                           f"All {geofence.get('points_checked', 'planned')} path points "
+                           "are inside the geofence.")
+    outside = geofence.get("points_outside", "Some")
     return CheckResult("geofence", "Geofence", SEVERITY_BLOCK,
-                       "Mission exits geofence.",
-                       fix_action="Adjust path or expand geofence.")
+                       f"{outside} path point(s) fall outside the geofence. An autopilot "
+                       "with the fence enabled will treat that as a breach.",
+                       fix_action="Adjust path or expand geofence.",
+                       details={k: v for k, v in geofence.items() if k != "polygon"})
 
 
 def check_no_fly_zones(mission_summary: dict[str, Any] | None, no_fly_zones: list[dict[str, Any]] | None) -> CheckResult:
+    """No-fly zones against the path.
+
+    An empty list means "none were declared for this site" and passes as exactly that,
+    so the wording says declared, not clear. Each zone must carry a computed
+    ``conflict`` (see ``assess_no_fly_zones``).
+    """
+    if no_fly_zones is None:
+        return CheckResult("no_fly_zones", "No-Fly Zones", SEVERITY_WARN,
+                           "No-fly zones were not checked.", requires_manual=True,
+                           fix_action="Check the airspace for this site.")
     if not no_fly_zones:
-        return CheckResult("no_fly_zones", "No-Fly Zones", SEVERITY_PASS, "No NFZs declared.")
+        return CheckResult("no_fly_zones", "No-Fly Zones", SEVERITY_PASS,
+                           "No no-fly zones are declared for this site. Airspace "
+                           "restrictions not entered here are not checked.")
+    unchecked = [z for z in no_fly_zones if "conflict" not in z]
+    if unchecked:
+        return CheckResult("no_fly_zones", "No-Fly Zones", SEVERITY_WARN,
+                           f"{len(unchecked)} no-fly zone(s) were not compared with the path.",
+                           requires_manual=True,
+                           fix_action="Confirm the path clears every no-fly zone.")
     conflicts = [z for z in no_fly_zones if z.get("conflict")]
     if conflicts:
         return CheckResult("no_fly_zones", "No-Fly Zones", SEVERITY_BLOCK,
@@ -289,6 +355,7 @@ def run_preflight(
     weather_acknowledged: bool = False,
     free_storage_mb: float | None = None,
     gimbal_ok: bool | None = None,
+    camera_ok: bool | None = None,
 ) -> PreflightReport:
     telemetry: DroneTelemetry
     try:
@@ -307,7 +374,9 @@ def run_preflight(
         # A bad compass arms perfectly happily and is the classic cause of a fly-away.
         checks.append(check_compass(telemetry))
         checks.append(check_imu(telemetry))
-    checks.append(check_camera_ready())
+    # What the payload said, unless the caller knows better.
+    checks.append(check_camera_ready(camera_ok if camera_ok is not None
+                                     else camera_reported(telemetry)))
     checks.append(check_gimbal(gimbal_ok))
     checks.append(check_storage_ready(free_mb_available=free_storage_mb))
     checks.append(check_mission_valid(mission_summary))
@@ -441,3 +510,118 @@ def check_gimbal(gimbal_ok: bool | None = None, notes: str = "") -> CheckResult:
                        "Gimbal status was not reported.",
                        fix_action="Confirm by eye that the gimbal is unlocked and level.",
                        requires_manual=True)
+
+
+# ── Path against geofence and no-fly zones ────────────────────────────────────
+
+def _ring(polygon: Iterable[Iterable[float]]) -> list[tuple[float, float]]:
+    ring = [(float(v[0]), float(v[1])) for v in polygon if len(list(v)) >= 2]
+    if len(ring) >= 2 and ring[0] == ring[-1]:
+        ring = ring[:-1]
+    return ring
+
+
+def _inside(point: tuple[float, float], ring: list[tuple[float, float]]) -> bool:
+    """Even-odd ray cast, in (lon, lat). Adequate at site scale."""
+    x, y = point
+    inside = False
+    count = len(ring)
+    for i in range(count):
+        x1, y1 = ring[i]
+        x2, y2 = ring[(i + 1) % count]
+        if (y1 > y) != (y2 > y):
+            crossing = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if x < crossing:
+                inside = not inside
+    return inside
+
+
+def _segments_cross(a, b, c, d) -> bool:
+    def orient(p, q, r) -> float:
+        return (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+
+    d1, d2 = orient(c, d, a), orient(c, d, b)
+    d3, d4 = orient(a, b, c), orient(a, b, d)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def path_points(mission: Any) -> list[tuple[float, float]]:
+    """The positions the aircraft will actually fly to, in (lon, lat), in order.
+
+    Taken from the MAVLink items that would be uploaded rather than from the planner's
+    waypoint list, because the items are what the autopilot flies.
+    """
+    from mission.exporters import build_mission_items
+
+    from .mission_planner_bridge import _NON_POSITIONAL_COMMANDS
+
+    points: list[tuple[float, float]] = []
+    for item in build_mission_items(mission):
+        if int(item.command) in _NON_POSITIONAL_COMMANDS:
+            continue
+        lat = float(getattr(item, "latitude", 0.0) or 0.0)
+        lon = float(getattr(item, "longitude", 0.0) or 0.0)
+        if abs(lat) < 1e-9 and abs(lon) < 1e-9:
+            continue  # a non-positional command, or "current position"
+        points.append((lon, lat))
+    return points
+
+
+def assess_geofence(points: list[tuple[float, float]],
+                    fence: Iterable[Iterable[float]] | None) -> dict[str, Any] | None:
+    """Compare the flight path with an inclusion fence. None when there is no fence."""
+    ring = _ring(fence or [])
+    if len(ring) < 3:
+        return None
+    outside = [p for p in points if not _inside(p, ring)]
+    return {
+        "mission_inside": bool(points) and not outside,
+        "points_checked": len(points),
+        "points_outside": len(outside),
+        "first_outside": list(outside[0]) if outside else None,
+    }
+
+
+def assess_no_fly_zones(points: list[tuple[float, float]],
+                        zones: Iterable[Iterable[Iterable[float]]] | None) -> list[dict[str, Any]]:
+    """Each no-fly polygon, with whether the path enters or crosses it."""
+    results: list[dict[str, Any]] = []
+    for index, polygon in enumerate(zones or []):
+        ring = _ring(polygon)
+        if len(ring) < 3:
+            continue
+        conflict = any(_inside(p, ring) for p in points)
+        if not conflict:
+            edges = list(zip(ring, ring[1:] + ring[:1]))
+            conflict = any(_segments_cross(a, b, c, d)
+                           for a, b in zip(points, points[1:]) for c, d in edges)
+        results.append({"zone": index + 1, "vertices": len(ring), "conflict": conflict})
+    return results
+
+
+def plan_airspace(mission: Any, extra_no_fly: Iterable[Any] | None = None
+                  ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """The geofence and no-fly assessments for a plan, computed from its own geometry.
+
+    Returns ``(geofence, no_fly_zones)`` in the shape run_preflight takes. The fence is
+    the plan's inclusion polygon; the zones are the plan's exclusions plus any the
+    caller adds (the zones drawn in the app).
+    """
+    from mission.exporters import _plan_dict
+
+    plan = _plan_dict(mission)
+    constraints = plan.get("safety_constraints") or {}
+    points = path_points(plan)
+    fence = (constraints.get("geofence") or constraints.get("geofence_polygon")
+             or plan.get("polygon") or [])
+    zones = list(constraints.get("no_fly_polygons") or constraints.get("no_fly_zones") or [])
+
+    def key(polygon: Any) -> tuple:
+        return tuple((round(x, 7), round(y, 7)) for x, y in _ring(polygon))
+
+    seen = {key(polygon) for polygon in zones}
+    for polygon in extra_no_fly or []:
+        if key(polygon) not in seen:
+            seen.add(key(polygon))
+            zones.append(polygon)
+    return assess_geofence(points, fence), assess_no_fly_zones(points, zones)

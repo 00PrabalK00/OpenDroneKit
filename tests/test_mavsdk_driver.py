@@ -1,0 +1,145 @@
+"""The MAVSDK (PX4) driver, against a stand-in for the mavsdk package.
+
+The driver was a stub even with mavsdk installed: telemetry was an empty DroneTelemetry
+that nothing ever updated, upload_mission always answered "MAVSDK async upload not yet
+wired", and set_flight_mode was unsupported, so manual override could not work on PX4.
+
+mavsdk is not installed here and needs a PX4 to talk to, so tests/fake_mavsdk.py stands
+in at the SDK's public API. Everything on this side of it is production code, driven
+through the Api where a user would drive it. A real PX4 SITL run is what verifies the
+SDK boundary itself.
+"""
+
+from __future__ import annotations
+
+import sys
+import time
+
+import pytest
+
+from app.api import Api
+from app.session import AppSession
+from app.store import ProjectStore
+from fake_mavsdk import FakePX4, build_module
+
+AOI = [[8.5440, 47.3970], [8.5470, 47.3970], [8.5470, 47.3985], [8.5440, 47.3985]]
+
+
+@pytest.fixture
+def px4(monkeypatch):
+    vehicle = FakePX4()
+    module = build_module(vehicle)
+    monkeypatch.setitem(sys.modules, "mavsdk", module)
+    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    return vehicle
+
+
+@pytest.fixture
+def api(tmp_path, px4):
+    api = Api(AppSession(ProjectStore(tmp_path / "projects.db")))
+    api.create_project("px4", str(tmp_path / "project"))
+    connected = api.connect_vehicle("udp://:14540", "mavsdk")
+    assert connected["vehicle"]["connected"] is True, connected
+    time.sleep(0.6)
+    yield api
+    api.disconnect_vehicle()
+
+
+def test_telemetry_streams_into_the_session(api, px4):
+    telemetry = api.telemetry()["telemetry"]
+    assert telemetry["connected"] is True
+    assert telemetry["latitude"] == pytest.approx(47.3977)
+    assert telemetry["altitude_rel_m"] == pytest.approx(25.0)
+    assert telemetry["battery_pct"] == pytest.approx(64.0)
+    assert telemetry["satellites"] == 12 and telemetry["gps_fix"] == 3
+    assert telemetry["hdop"] == pytest.approx(0.9)
+    assert telemetry["speed_mps"] == pytest.approx(5.0)
+    assert telemetry["flight_mode"] == "LOITER"      # PX4 HOLD, in the app's vocabulary
+    assert telemetry["home_set"] is True
+
+
+def test_a_mavsdk_1_battery_fraction_is_read_as_a_fraction(tmp_path, monkeypatch):
+    vehicle = FakePX4()
+    vehicle.battery_remaining = 0.64
+    module = build_module(vehicle, version="1.4.9")
+    monkeypatch.setitem(sys.modules, "mavsdk", module)
+    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    from core.drone import MAVSDKDroneClient
+
+    client = MAVSDKDroneClient()
+    client.connect("udp://:14540")
+    try:
+        time.sleep(0.4)
+        assert client.get_telemetry().battery_pct == pytest.approx(64.0)
+    finally:
+        client.disconnect()
+
+
+def test_the_mission_uploads_with_fence_and_without_a_home_slot(api, px4):
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 50})["ok"]
+    result = api.upload_mission()
+    assert result["ok"] is True, result
+    stored = px4.stored[0]
+    assert len(stored) == result["items"], "PX4 reserves no home slot; none may be added"
+    assert stored[0].command == 22 and stored[0].seq == 0     # NAV_TAKEOFF first
+    waypoint = next(item for item in stored if item.command == 16)   # NAV_WAYPOINT
+    assert abs(waypoint.x) > 1e8 and abs(waypoint.y) > 1e7, "positions go as degrees x 1e7"
+    assert len(px4.stored[1]) == len(AOI)
+
+
+def test_a_rejected_upload_is_a_failure(api, px4):
+    px4.reject_upload = True
+    api.set_aoi(AOI)
+    api.plan_mission({"template": "grid", "altitude_m": 50})
+    result = api.upload_mission()
+    assert result["ok"] is False
+    assert "rejected" in result["error"].lower()
+
+
+def test_commands_report_acceptance_and_denial(api, px4):
+    accepted = api.vehicle_command("rth")
+    assert accepted["ok"] is True and accepted["result"]["ack"] == "accepted"
+    px4.deny_actions.add("land")
+    denied = api.vehicle_command("land")
+    assert denied["ok"] is False and "COMMAND_DENIED" in denied["error"]
+
+
+def test_manual_override_is_confirmed_against_the_reported_mode(api, px4):
+    px4.mode = "MISSION"
+    time.sleep(0.3)
+    result = api.take_manual_control()
+    assert result["ok"] is True
+    assert px4.mode == "HOLD"
+
+
+def test_manual_override_that_does_not_take_is_reported(api, px4):
+    px4.mode = "MISSION"
+    px4.ignore_mode_for.add("hold")
+    time.sleep(0.3)
+    result = api.take_manual_control("HOLD")
+    assert result["ok"] is False
+    assert "still in AUTO" in result["error"]
+
+
+def test_a_vehicle_that_never_appears_is_not_connected(tmp_path, monkeypatch):
+    vehicle = FakePX4()
+    module = build_module(vehicle)
+
+    async def never():
+        import asyncio
+        while True:
+            await asyncio.sleep(1)
+            yield None
+
+    module_core = module.System().core
+    type(module_core).connection_state = lambda self: never()
+    monkeypatch.setitem(sys.modules, "mavsdk", module)
+    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    from core.drone import MAVSDKDroneClient
+
+    client = MAVSDKDroneClient()
+    client.CONNECT_TIMEOUT_S = 1.0
+    with pytest.raises(RuntimeError, match="Failed to connect"):
+        client.connect("udp://:14540")
+    assert client.is_connected() is False

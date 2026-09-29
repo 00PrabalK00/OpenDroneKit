@@ -32,7 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .drone import CommandResult, DroneTelemetry
+from .drone import (
+    ACK_ACCEPTED,
+    ACK_DENIED,
+    ACK_IN_PROGRESS,
+    ACK_NONE,
+    CommandResult,
+    DroneTelemetry,
+)
 from .errors import AppError, ERR_DRONE_NOT_CONNECTED, ERR_INVALID_INPUT
 
 
@@ -51,6 +58,22 @@ MAV_MISSION_TYPE_RALLY = 2
 
 # MAV_MISSION_RESULT
 MAV_MISSION_ACCEPTED = 0
+
+# MAV_RESULT, as carried by COMMAND_ACK. Only ACCEPTED and IN_PROGRESS mean the vehicle
+# is doing what it was asked.
+MAV_RESULT_NAMES = {
+    0: "accepted",
+    1: "temporarily rejected",
+    2: "denied",
+    3: "unsupported",
+    4: "failed",
+    5: "in progress",
+    6: "cancelled",
+}
+
+# SYS_STATUS sentinels for "this vehicle has no such sensor".
+_BATTERY_REMAINING_UNKNOWN = -1
+_VOLTAGE_UNKNOWN = 0xFFFF
 
 _MISSION_RESULT_TEXT = {
     0: "accepted",
@@ -331,6 +354,15 @@ class MissionPlannerDroneClient:
         self._protocol_queue: queue.Queue = queue.Queue()
         self._transfer_lock = threading.Lock()
         self._telemetry_subscribers: list[Any] = []
+        # COMMAND_ACKs, forwarded by the listener to whichever command is waiting.
+        # Commands are serialised so an ack cannot be claimed by the wrong one.
+        self._ack_queue: queue.Queue = queue.Queue()
+        self._command_lock = threading.Lock()
+        self.command_ack_timeout_s = 3.0
+        # Link quality is measured from MAVLink sequence gaps -- the fraction of packets
+        # that arrived -- because RADIO_STATUS exists only on SiK-style radios. A USB or
+        # UDP link has none, and reporting 0 % for it said the link was dead.
+        self._link_window: tuple[float, int, int] | None = None
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -425,6 +457,8 @@ class MissionPlannerDroneClient:
         t = msg.get_type()
         if t in {"MISSION_REQUEST", "MISSION_REQUEST_INT", "MISSION_ACK", "MISSION_COUNT", "MISSION_ITEM_INT"}:
             self._protocol_queue.put(msg)
+        if t == "COMMAND_ACK":
+            self._ack_queue.put(msg)
         if t == "STATUSTEXT":
             self._publish({"type": "statustext", "severity": int(getattr(msg, "severity", 6)),
                            "text": str(getattr(msg, "text", "")).strip("\x00")})
@@ -454,8 +488,14 @@ class MissionPlannerDroneClient:
                     "model_name": getattr(msg, "model_name", b""),
                 }
             elif t == "SYS_STATUS":
-                tel.battery_v = float(msg.voltage_battery) / 1000.0
-                tel.battery_pct = max(0.0, float(msg.battery_remaining))
+                # -1 and UINT16_MAX are how MAVLink says "no such sensor". Clamping -1 to
+                # 0 put an empty battery on screen for every flight controller without
+                # a current sensor.
+                voltage = int(getattr(msg, "voltage_battery", _VOLTAGE_UNKNOWN))
+                tel.battery_v = None if voltage == _VOLTAGE_UNKNOWN else voltage / 1000.0
+                remaining = int(getattr(msg, "battery_remaining", _BATTERY_REMAINING_UNKNOWN))
+                tel.battery_pct = (None if remaining == _BATTERY_REMAINING_UNKNOWN
+                                   else max(0.0, min(100.0, float(remaining))))
                 # Sensor health bitmasks, kept so preflight can report compass, gyro
                 # and accelerometer state instead of leaving them unchecked. Stored
                 # raw: interpreting the bits belongs with the checks, not the parser.
@@ -468,8 +508,9 @@ class MissionPlannerDroneClient:
             elif t == "GPS_RAW_INT":
                 tel.gps_fix = int(msg.fix_type)
                 tel.satellites = int(getattr(msg, "satellites_visible", 0))
-                eph = float(getattr(msg, "eph", 9999.0))
-                tel.hdop = eph / 100.0 if eph < 9999.0 else tel.hdop
+                # eph is HDOP x 100, and UINT16_MAX when the receiver does not know.
+                eph = float(getattr(msg, "eph", 0xFFFF))
+                tel.hdop = eph / 100.0 if eph < 0xFFFF else None
             elif t == "MISSION_CURRENT":
                 # Reported in the plan's own numbering, not the vehicle's. ArduPilot
                 # counts from its reserved home item at sequence 0, so its indices run
@@ -487,7 +528,39 @@ class MissionPlannerDroneClient:
                 tel.home_alt = float(msg.altitude) / 1000.0
                 tel.home_set = True
             elif t == "RADIO_STATUS":
-                tel.link_quality_pct = max(0.0, min(100.0, 100.0 - float(getattr(msg, "remnoise", 0))))
+                # Kept raw. "100 - remnoise" was reported as link quality, but remnoise is
+                # the remote noise floor, not a fraction of anything.
+                tel.raw["radio_status"] = {
+                    "rssi": int(getattr(msg, "rssi", 0) or 0),
+                    "remrssi": int(getattr(msg, "remrssi", 0) or 0),
+                    "noise": int(getattr(msg, "noise", 0) or 0),
+                    "remnoise": int(getattr(msg, "remnoise", 0) or 0),
+                }
+            self._update_link_quality(tel)
+
+    def _update_link_quality(self, tel: DroneTelemetry, window_s: float = 2.0) -> None:
+        """Percentage of MAVLink packets that arrived, over the last couple of seconds.
+
+        pymavlink counts received packets and sequence-number gaps on the link; their
+        ratio is the packet delivery rate, which is what Mission Planner shows as link
+        quality. Until a window has enough packets the field stays unreported.
+        """
+        conn = self._conn
+        if conn is None:
+            return
+        count = int(getattr(conn, "mav_count", 0) or 0)
+        loss = int(getattr(conn, "mav_loss", 0) or 0)
+        now = time.monotonic()
+        if self._link_window is None:
+            self._link_window = (now, count, loss)
+            return
+        started, count0, loss0 = self._link_window
+        if now - started < window_s:
+            return
+        received, lost = count - count0, loss - loss0
+        if received + lost >= 5:
+            tel.link_quality_pct = 100.0 * received / float(received + lost)
+        self._link_window = (now, count, loss)
 
     # ── Mission upload / commands ────────────────────────────────────────────
 
@@ -665,11 +738,17 @@ class MissionPlannerDroneClient:
         This is the defect the SITL harness was built to find, and it was invisible to
         every test that did not talk to a real autopilot.
         """
-        return self._upload_list(
+        result = self._upload_list(
             _with_home_slot(mission_items),
             mission_type=MAV_MISSION_TYPE_MISSION,
             name="upload_mission",
         )
+        if result.success:
+            # The vehicle acknowledged this many plan items, so progress can be shown
+            # against them; MISSION_COUNT only arrives when the mission is downloaded.
+            with self._lock:
+                self._latest_telemetry.waypoint_total = len(mission_items)
+        return result
 
     # Fence and rally have no home slot -- the reservation is specific to the mission
     # mission-type -- so they upload their items unchanged.
@@ -783,19 +862,60 @@ class MissionPlannerDroneClient:
             self._transfer_lock.release()
 
     def _command_long(self, command: int, *params: float, name: str = "command") -> CommandResult:
+        """Send a COMMAND_LONG and report what the vehicle answered.
+
+        Transmitting is not the same as being obeyed. Every command used to come back
+        "Command sent." whether the autopilot accepted it, denied it -- RTL with no home,
+        arming with a failed pre-arm check -- or never heard it. The answer is now the
+        vehicle's COMMAND_ACK, and silence is reported as silence.
+        """
         try:
             conn = self._ensure()
         except AppError as exc:
             return CommandResult(False, name, exc.user_message)
-        try:
-            p = list(params) + [0.0] * (7 - len(params))
-            conn.mav.command_long_send(
-                conn.target_system, conn.target_component, command, 0,
-                *p[:7],
-            )
-            return CommandResult(True, name, "Command sent.")
-        except Exception as exc:
-            return CommandResult(False, name, str(exc))
+        with self._command_lock:
+            while True:
+                try:
+                    self._ack_queue.get_nowait()
+                except queue.Empty:
+                    break
+            try:
+                p = list(params) + [0.0] * (7 - len(params))
+                conn.mav.command_long_send(
+                    conn.target_system, conn.target_component, command, 0,
+                    *p[:7],
+                )
+            except Exception as exc:
+                return CommandResult(False, name, str(exc))
+
+            timeout = max(0.1, float(self.command_ack_timeout_s))
+            deadline = time.monotonic() + timeout
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return CommandResult(
+                        False, name,
+                        f"Sent, but the vehicle did not acknowledge it within {timeout:.0f} s. "
+                        "It may not have been received -- check the aircraft before "
+                        "assuming it acted.",
+                        ack=ACK_NONE,
+                    )
+                try:
+                    ack = self._ack_queue.get(timeout=remaining)
+                except queue.Empty:
+                    continue
+                if int(getattr(ack, "command", -1)) != int(command):
+                    continue
+                code = int(getattr(ack, "result", -1))
+                label = MAV_RESULT_NAMES.get(code, f"result {code}")
+                if code == 0:
+                    return CommandResult(True, name, "Accepted by the vehicle.", ack=ACK_ACCEPTED)
+                if code == 5:
+                    return CommandResult(True, name,
+                                         "Accepted; the vehicle reports it in progress.",
+                                         ack=ACK_IN_PROGRESS)
+                return CommandResult(False, name, f"The vehicle answered: {label}.",
+                                     ack=ACK_DENIED)
 
     # ── Flight commands (the set a ground station is expected to offer) ──────
 
@@ -1012,8 +1132,29 @@ class MissionPlannerDroneClient:
         return self._command_long(20, name="return_to_home")
 
     def abort_mission(self) -> CommandResult:
-        # Hold mode via DO_PAUSE_CONTINUE; on ArduPilot we also disarm if low altitude
-        return self._command_long(193, 0.0, name="abort_mission")
+        """Stop the mission and hold position, confirmed against the vehicle's mode.
+
+        DO_PAUSE_CONTINUE alone was the whole abort, and an autopilot that does not
+        support pausing (older ArduPilot, most planes) acknowledges nothing useful. A
+        position-holding mode is what abort means to a pilot, so that is tried first and
+        confirmed; the pause command is the fallback.
+        """
+        for mode in ("BRAKE", "LOITER"):
+            try:
+                available = self._conn.mode_mapping() if self._conn is not None else {}
+            except Exception:  # noqa: BLE001
+                available = {}
+            if mode not in (available or {}):
+                continue
+            held = self.set_flight_mode(mode)
+            if held.success:
+                return CommandResult(True, "abort_mission",
+                                     f"Mission aborted; the vehicle is holding in {mode}.",
+                                     ack=held.ack or ACK_ACCEPTED)
+        paused = self._command_long(193, 0.0, name="abort_mission")
+        if paused.success:
+            paused.message = "Mission paused (DO_PAUSE_CONTINUE); no hold mode was confirmed."
+        return paused
 
 
 # ── Spec-named helpers ────────────────────────────────────────────────────────
