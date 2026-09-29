@@ -314,9 +314,31 @@
        pixels that were cached, not invented ones. */
     setOfflineMaxZoom(zoom) {
       const z = Math.max(0, Math.min(23, Math.floor(Number(zoom))));
-      if (!Number.isFinite(z) || BASEMAPS.offline.maxzoom === z) return;
+      if (!Number.isFinite(z)) return;
       BASEMAPS.offline.maxzoom = z;
-      if (this.basemap === 'offline') this.setBasemap('offline');
+      if (this.basemap !== 'offline') return;
+      /* Only the basemap source is replaced, in place. This used to call setBasemap,
+         a second full setStyle arriving while the fallback's own setStyle was still
+         loading; the two raced, in-flight tile requests were aborted, and about one
+         start in three the map was left showing only the z0 tile or nothing at all. */
+      const apply = () => {
+        if (this.basemap !== 'offline') return;
+        const current = this.map.getSource('basemap');
+        if (current && current.maxzoom === z) return;
+        const ids = (this.map.getStyle().layers || []).map((l) => l.id);
+        const at = ids.indexOf('basemap');
+        const before = at >= 0 && at + 1 < ids.length ? ids[at + 1] : undefined;
+        if (this.map.getLayer('basemap')) this.map.removeLayer('basemap');
+        if (current) this.map.removeSource('basemap');
+        this.map.addSource('basemap', basemapStyle('offline').sources.basemap);
+        this.map.addLayer({ id: 'basemap', type: 'raster', source: 'basemap' }, before);
+      };
+      try {
+        apply();
+      } catch (_err) {
+        // The fallback's style is still loading: cap it as soon as it has.
+        this.map.once('style.load', () => { try { apply(); } catch (_e) { /* replaced again */ } });
+      }
     }
 
     setTool(tool) {
