@@ -20,6 +20,8 @@
  * and say which -- not to fill the gap with a plausible number.
  */
 
+import { demoAnswer, demoEnabled } from "./demo.js";
+
 const PENDING = new Map();
 
 /** Whether the Python bridge is available in this page. */
@@ -36,11 +38,19 @@ export function connected() {
  * a result carrying ok === false is an error, not data.
  */
 export async function call(method, ...args) {
+  // Demo mode is answered from the bundled example and never reaches Python, even when a
+  // bridge is present -- otherwise the example banner sits over the real projects.
+  if (demoEnabled()) return demoAnswer(method, ...args);
   if (!connected()) throw new Error("Python bridge is not ready.");
   const fn = window.pywebview.api[method];
   if (typeof fn !== "function") throw new Error(`unwired: ${method}`);
   const result = await fn(...args);
-  if (result && result.ok === false) throw new Error(result.error || "Unknown error");
+  // A refusal that explains itself in `summary` or `reason` rather than `error` -- as
+  // verify_site does -- surfaced as "Unknown error", hiding the only useful sentence.
+  if (result && result.ok === false) {
+    throw new Error(result.error || result.reason || result.summary || result.message
+      || `${method} refused without giving a reason.`);
+  }
   return result;
 }
 

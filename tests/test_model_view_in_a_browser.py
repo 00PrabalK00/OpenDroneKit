@@ -7,9 +7,9 @@ provenance pass over the output folder would write -- would have let model units
 metres. Save View and Measure in 3D answered "the 3D viewer is not built".
 
 Now the reconstruction's mesh is georeferenced with the geo_anchor.json written beside
-it (a copy in the CRS, with a sidecar saying so), the cockpit draws it in a WebGL view,
-clicks are picked by the application on the full mesh, and saved views store and restore
-that view's camera.
+it (a copy in the CRS, with a sidecar saying so) and measured there; a ray from a view is
+picked by the application on the full mesh. The cockpit's own 3D view, Measure in 3D and
+saved views are driven in a browser by tests/test_cockpit_3d_viewer.py.
 
 The scene is a 20 x 10 x 6 m block on a ground plane, written in a model frame that is
 rotated 30 degrees, scaled by 1/7 and shifted from UTM -- so every number checked here
@@ -123,7 +123,7 @@ class TestTheMeshIsMeasuredInMetres:
 
     def test_the_scene_is_sent_relative_to_its_origin(self, project):
         api, _recon = project
-        scene = api.model_scene()
+        scene = api.model_mesh_scene()
         assert scene["ok"], scene
         assert scene["epsg"] == EPSG
         positions = np.array(scene["positions"]).reshape(-1, 3) + scene["origin"]
@@ -132,55 +132,15 @@ class TestTheMeshIsMeasuredInMetres:
         assert max(abs(v) for v in scene["positions"]) < 100      # float32-safe
 
 
-def test_measure_and_saved_views_in_the_cockpit(tmp_path, project):
-    """Textured Mesh, Measure in 3D (two clicks on the WebGL canvas), Save View, Open View."""
-    from cockpit_actions_in_a_browser import run_actions
-
+def test_a_measurement_on_the_twin_is_kept_in_the_history(project):
+    """The Digital Twin's Measure tool (measure_on_model) used to answer and forget: the
+    length never reached the measurement history the report reads."""
     api, _recon = project
-    roof_a, roof_b = (ORIGIN + [2, 2, 6]).tolist(), (ORIGIN + [18, 8, 6]).tolist()
-    roof_c, ground = (ORIGIN + [10, 5, 6]).tolist(), (ORIGIN + [-5, -5, 0]).tolist()
-    camera = "const { currentModelViewer } = await import('./js/workspace/model3d.js'); " \
-             "const v = currentModelViewer(); return v.getCamera();"
-    turn = "const { currentModelViewer } = await import('./js/workspace/model3d.js'); " \
-           "const v = currentModelViewer(); v.yaw += 1.2; v.distance *= 0.5; v.render(); " \
-           "return v.getCamera();"
-    zoom = "const { whenModelReady } = await import('./js/workspace/model3d.js'); "            "const v = await whenModelReady(); v.target = v.target.map((c, i) => i < 2 ? c * 0.3 : c); v.distance *= 0.3; v.render(); "            "return { distance: v.distance, pixels: v.size().height };"
-    results = run_actions(api, tmp_path, [
-        {"name": "show", "action": "Textured Mesh"},
-        {"name": "height", "action": "Measure in 3D", "choose": "height",
-         "modelClicks": [roof_c, ground]},
-        # Closer in, as an operator zooms before picking: a pick is one screen pixel,
-        # and the headless canvas is small.
-        {"name": "zoom", "action": "Textured Mesh", "after": zoom},
-        {"name": "length", "action": "Measure in 3D", "choose": "length",
-         "modelClicks": [roof_a, roof_b]},
-        {"name": "save", "action": "Save View", "answers": ["north corner"], "after": camera},
-        {"name": "turn", "action": "Textured Mesh", "after": turn},
-        {"name": "open", "action": "Open View", "choose": "north corner", "after": camera},
-    ], workspace="twin", virtual_time_ms=20000)
-
-    assert "[error]" not in json.dumps(results), results
-    # A click is a whole screen pixel; on the small headless canvas one pixel covers
-    # about a decimetre of roof, so the picks are checked to that and no finer.
-    history = {m["measurement_type"]: m for m in api.list_measurements()["measurements"]}
-    picked = history["model_length"]["details"]["points_xyz"]
-    for got, wanted in zip(picked, [roof_a, roof_b]):
-        assert got[2] == pytest.approx(wanted[2], abs=1e-6)        # on the roof itself
-        assert math.dist(got[:2], wanted[:2]) < 0.25, results["zoom:after"]
-    length = float(results["length"].split("Model length ")[1].split(" m")[0])
-    assert length == pytest.approx(math.dist(picked[0], picked[1]), abs=1e-3)
-    assert length == pytest.approx(math.hypot(16, 6), abs=0.5), results["length"]
-    height = float(results["height"].split("Model height ")[1].split(" m")[0])
-    assert height == pytest.approx(6.0, abs=1e-3), results["height"]
-    assert "EPSG:32617" in results["length"]
-
-    saved, turned, opened = results["save:after"], results["turn:after"], results["open:after"]
-    assert turned["position"] != pytest.approx(saved["position"], abs=1.0)
-    assert opened["position"] == pytest.approx(saved["position"], abs=1e-3)
-    assert opened["target"] == pytest.approx(saved["target"], abs=1e-3)
-    stored = api.list_views()["views"][0]
-    assert stored["name"] == "north corner"
-    assert list(stored["position"]) == pytest.approx(saved["position"], abs=1e-3)
-    # Kept in the project's measurement history.
-    kinds = [m["measurement_type"] for m in api.list_measurements()["measurements"]]
-    assert sorted(kinds) == ["model_height", "model_length"]
+    a, b = to_model([[2, 2, 6], [18, 8, 6]])
+    result = api.measure_on_model("length", [a.tolist(), b.tolist()])
+    assert result["ok"], result
+    assert result["measurement"]["slope_distance_m"] == pytest.approx(math.hypot(16, 6), abs=1e-3)
+    history = api.list_measurements()["measurements"]
+    kept = [m for m in history if m["measurement_type"] == "model_length"]
+    assert len(kept) == 1 and kept[0]["id"] == result["measurement_id"]
+    assert kept[0]["value"] == pytest.approx(math.hypot(16, 6), abs=1e-3)

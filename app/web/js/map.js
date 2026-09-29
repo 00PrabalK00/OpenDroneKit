@@ -227,6 +227,9 @@
       this.map.on('mousemove', (e) => {
         if (this.opts.onCursor) this.opts.onCursor(e.lngLat.lng, e.lngLat.lat);
       });
+      this.map.on('moveend', () => {
+        if (this.opts.onMove) this.opts.onMove(this.map.getZoom());
+      });
 
       this.map.on('draw.create', (e) => this._onDrawChange(e));
       this.map.on('draw.update', (e) => this._onDrawChange(e));

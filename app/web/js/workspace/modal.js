@@ -136,8 +136,17 @@ export async function askOne(title, label, value = "") {
   return answer ? answer.value : null;
 }
 
-/** Pick from a list. `options` is [{label, value, hint}]. Resolves to a value or null. */
-export function choose(title, options) {
+/** Pick from a list. `options` is [{label, value, hint}] or plain strings. Resolves to a
+ *  value or null.
+ *
+ *  Six callers passed strings -- camera names, payload keys, version labels -- and a
+ *  string has no .label or .value, so every row rendered blank and resolved undefined:
+ *  "No camera chosen" whatever was clicked. A bare string is its own label and value. */
+export function choose(title, rawOptions) {
+  const options = (rawOptions || []).map((option) =>
+    option !== null && typeof option === "object"
+      ? option
+      : { label: String(option), value: option });
   return new Promise((resolve) => {
     const box = panel(title);
     const list = document.createElement("div");

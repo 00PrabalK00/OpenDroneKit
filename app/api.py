@@ -24,6 +24,10 @@ from typing import Any, Callable
 from .jobs import JobManager
 from .session import AppSession, MapLayer
 
+#: The largest area of interest one mission is planned over. Beyond this the planner runs
+#: for minutes to hours; see set_aoi.
+MAX_AOI_AREA_M2 = 50_000_000.0
+
 
 def ok(**payload: Any) -> dict[str, Any]:
     return {"ok": True, **payload}
@@ -142,6 +146,91 @@ class Api:
         return ok(capabilities=caps)
 
     @guard
+    def rest_endpoints(self) -> dict[str, Any]:
+        """The REST service's routes, read from its source rather than written down.
+
+        The Developers screen listed nine endpoints by hand -- GET /projects, GET
+        /findings, GET /processing/jobs -- and most of them did not exist; the real routes
+        are /organizations/{id}/projects, /projects/{id}/defects and /projects/{id}/jobs.
+        Reading the decorators means the list is the service's own, and cannot drift.
+        The service is a separate process (uvicorn services.api.main:app); nothing here
+        claims it is running.
+        """
+        import ast
+
+        root = Path(__file__).resolve().parents[1] / "services" / "api"
+        main = root / "main.py"
+        if not main.exists():
+            return fail("The REST service (services/api) is not part of this installation.")
+
+        def routes_in(path: Path, owner: str) -> tuple[str, list[dict[str, Any]]]:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            prefix = ""
+            found: list[dict[str, Any]] = []
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                        and getattr(node.value.func, "id", "") == "APIRouter"):
+                    for kw in node.value.keywords:
+                        if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                            prefix = str(kw.value.value)
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for deco in node.decorator_list:
+                    if not (isinstance(deco, ast.Call) and isinstance(deco.func, ast.Attribute)):
+                        continue
+                    verb = deco.func.attr.upper()
+                    target = getattr(deco.func.value, "id", "")
+                    if target != owner or verb not in {"GET", "POST", "PUT", "PATCH", "DELETE", "WEBSOCKET"}:
+                        continue
+                    if not deco.args or not isinstance(deco.args[0], ast.Constant):
+                        continue
+                    doc = (ast.get_docstring(node) or "").strip().splitlines()
+                    found.append({"method": verb, "path": str(deco.args[0].value),
+                                  "summary": doc[0] if doc else "", "handler": node.name})
+            return prefix, found
+
+        endpoints: list[dict[str, Any]] = []
+        _, app_routes = routes_in(main, "app")
+        for route in app_routes:
+            endpoints.append({**route, "router": "main"})
+        for path in sorted((root / "routers").glob("*.py")):
+            prefix, found = routes_in(path, "router")
+            for route in found:
+                endpoints.append({**route, "path": prefix + route["path"], "router": path.stem})
+        return ok(endpoints=endpoints, count=len(endpoints),
+                  started_with="uvicorn services.api.main:app",
+                  note="Routes of the separate REST service. This desktop app does not start it.")
+
+    @guard
+    def rest_request(self, path: str, base_url: str = "http://127.0.0.1:8000") -> dict[str, Any]:
+        """Send one GET to the REST service on this machine and report what came back.
+
+        Loopback only, and GET only: this is the Developers screen's "does the service
+        answer, and with what", not a general HTTP client -- nothing leaves the machine.
+        A refused connection is reported as the service not running, which is the usual
+        and truthful answer on a desktop install.
+        """
+        from urllib import error, parse, request
+
+        base = parse.urlparse(str(base_url))
+        if base.scheme != "http" or base.hostname not in {"127.0.0.1", "localhost", "::1"}:
+            return fail("Send Request only talks to a service on this machine (127.0.0.1).")
+        if not str(path).startswith("/"):
+            return fail(f"Not a route path: {path!r}")
+        url = f"{base.scheme}://{base.netloc}{path}"
+        try:
+            with request.urlopen(request.Request(url, method="GET"), timeout=5) as response:
+                body = response.read(4000).decode("utf-8", "replace")
+                return ok(url=url, status=response.status, body=body)
+        except error.HTTPError as exc:
+            body = exc.read(4000).decode("utf-8", "replace") if exc.fp else ""
+            return ok(url=url, status=exc.code, body=body)
+        except (error.URLError, OSError) as exc:
+            reason = getattr(exc, "reason", exc)
+            return fail(f"The REST service is not answering at {base.netloc} ({reason}). "
+                        "Start it with: uvicorn services.api.main:app")
+
+    @guard
     def model_status(self) -> dict[str, Any]:
         """Which detection models are present on disk, so the UI never implies AI it lacks.
 
@@ -202,7 +291,13 @@ class Api:
     def create_project(self, name: str, root_dir: str = "", description: str = "") -> dict[str, Any]:
         if not str(name).strip():
             return fail("Project name cannot be empty.")
-        return ok(project=self._session.create_project(name.strip(), root_dir, description))
+        # Names are unique in the store. Checked here so the operator reads which name is
+        # taken, rather than "IntegrityError: UNIQUE constraint failed: projects.name".
+        wanted = name.strip()
+        if any(str(p.get("name", "")).casefold() == wanted.casefold()
+               for p in self._session.store.list_projects()):
+            return fail(f"A project named {wanted!r} already exists. Open it, or choose another name.")
+        return ok(project=self._session.create_project(wanted, root_dir, description))
 
     @guard
     def set_active_project(self, project_id: int) -> dict[str, Any]:
@@ -221,19 +316,29 @@ class Api:
         This replaces the hardcoded survey polygon the previous UI used for every
         mission: planning now uses whatever the operator actually drew.
         """
-        ring = [[float(p[0]), float(p[1])] for p in (polygon_lonlat or []) if len(p) >= 2]
-        if not ring:
-            # Clear. The menu's "Clear Area of Interest" sends an empty list, and this
-            # used to refuse it as a 0-vertex polygon -- the map cleared, the session
-            # kept the old area, and the next Plan flew it.
+        from core import geo
+
+        # Clearing is a real request (Mission > Clear AOI sends null), and iterating None
+        # raised a TypeError at the operator instead of clearing anything.
+        if not polygon_lonlat:
             self._session.aoi_polygon = []
-            return ok(vertices=0, cleared=True)
+            return ok(vertices=0, area_m2=0.0, cleared=True)
+        ring = [[float(p[0]), float(p[1])] for p in polygon_lonlat if len(p) >= 2]
         if len(ring) < 3:
             return fail("An area of interest needs at least 3 vertices.")
         if ring[0] == ring[-1]:
             ring = ring[:-1]
+        # An area drawn with the map zoomed out to the world was 2.7 billion hectares,
+        # and plan_mission then ran until the process had taken 6.4 GB and never came
+        # back. Planning time grows faster than the area (33 km2 takes ~14 s here), so the
+        # refusal comes now, while the operator is still drawing, not after a hang.
+        area_m2 = geo.polygon_area_m2(ring)
+        if area_m2 > MAX_AOI_AREA_M2:
+            return fail(
+                f"That area is {area_m2 / 1e6:,.1f} km2, larger than one mission can cover "
+                f"(limit {MAX_AOI_AREA_M2 / 1e6:,.0f} km2). Zoom in and draw the site, or "
+                "split it into several areas.")
         self._session.aoi_polygon = ring
-        from core import geo
 
         return ok(
             vertices=len(ring),
@@ -250,6 +355,48 @@ class Api:
                 cleaned.append(ring[:-1] if ring[0] == ring[-1] else ring)
         self._session.no_fly_polygons = cleaned
         return ok(count=len(cleaned))
+
+    @guard
+    def measure_geometry(self, coordinates_lonlat: list[list[float]],
+                         kind: str = "distance") -> dict[str, Any]:
+        """Length or area of a shape drawn on the map, in metres on the ground.
+
+        The cockpit's Distance, Area and Measure tools armed themselves and then nothing
+        read the clicks, so no measurement was ever taken. The drawn vertices come here
+        rather than being summed in the browser so the map shares one geodesy with the
+        rest of the toolkit (core.geo).
+
+        These are horizontal distances between the clicked positions. A drawn shape has no
+        heights, so a slope length or a surface area needs the DSM, and `method` says
+        which this is.
+        """
+        from core import geo
+
+        points = [[float(p[0]), float(p[1])] for p in coordinates_lonlat or [] if len(p) >= 2]
+        for lon, lat in points:
+            if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+                return fail(f"Not a longitude/latitude pair: {lon}, {lat}.")
+
+        def path_length(path: list[list[float]]) -> float:
+            return sum(geo.haversine_m(a[1], a[0], b[1], b[0]) for a, b in zip(path, path[1:]))
+
+        if kind == "distance":
+            if len(points) < 2:
+                return fail("A distance needs at least two points.")
+            segments = [round(geo.haversine_m(a[1], a[0], b[1], b[0]), 3)
+                        for a, b in zip(points, points[1:])]
+            return ok(kind="distance", length_m=round(path_length(points), 3),
+                      segments_m=segments, vertices=len(points),
+                      method="horizontal great-circle distance between the drawn positions")
+        if kind == "area":
+            ring = points[:-1] if len(points) > 3 and points[0] == points[-1] else points
+            if len(ring) < 3:
+                return fail("An area needs at least three points.")
+            return ok(kind="area", area_m2=round(geo.polygon_area_m2(ring), 3),
+                      perimeter_m=round(path_length(ring + [ring[0]]), 3),
+                      vertices=len(ring),
+                      method="planimetric area of the drawn polygon")
+        return fail(f"Unknown measurement kind {kind!r}. Use distance or area.")
 
     @guard
     def set_terrain_source(self, path: str) -> dict[str, Any]:
@@ -324,13 +471,32 @@ class Api:
         only when the operator searches, and the response carries a note stating where
         the query went. A typed coordinate is resolved locally either way.
         """
-        from core.geocoding import search_places as run_search
+        from core.geocoding import Place, search_places as run_search
+
+        # What the open project already puts on the map is searchable with no network:
+        # a layer by its name, the area of interest as "Area of interest".
+        local: list[Place] = []
+        for layer in self._session.layer_list():
+            b = layer.get("bounds_lonlat") or []
+            if len(b) == 4:
+                local.append(Place(name=str(layer.get("name") or layer.get("id")),
+                                   longitude=(b[0] + b[2]) / 2, latitude=(b[1] + b[3]) / 2,
+                                   kind=f"{layer.get('kind', 'layer')} layer",
+                                   bounds=(b[0], b[1], b[2], b[3]), source="project"))
+        ring = self._session.aoi_polygon or []
+        if len(ring) >= 3:
+            lons, lats = [p[0] for p in ring], [p[1] for p in ring]
+            local.append(Place(name="Area of interest", longitude=sum(lons) / len(lons),
+                               latitude=sum(lats) / len(lats), kind="area of interest",
+                               bounds=(min(lons), min(lats), max(lons), max(lats)),
+                               source="project"))
 
         selected = provider or getattr(self._session, "geocoding_provider", "") or "nominatim"
         result = run_search(
             query,
             provider=selected,
             gazetteer_path=self._session.project_root() / "places.json",
+            local_places=local,
         )
         if result.get("results"):
             self._session.audit("place_searched", {"query": query, "provider": result.get("provider")})
@@ -824,6 +990,79 @@ class Api:
         self._session.audit("camera_command", {"action": action, "ok": result.ok})
         payload = result.to_dict()
         return ok(**payload) if result.ok else fail(result.message, **payload)
+
+    # -- capture verification ---------------------------------------------
+
+    @guard
+    def match_captures(self, match_radius_m: float = 15.0, image_folder: str = "") -> dict[str, Any]:
+        """Match the flown images to the planned capture points.
+
+        The Verification screen's Match Captures button counted saved mission versions;
+        core.capture_matching, which does the actual comparison, had no route from the
+        interface. This runs it on the planned mission and the selected dataset and keeps
+        the report, so the screen and Request Reflight can read the same answer.
+        """
+        from core.capture_matching import verify_capture
+
+        plan = self._session.mission_plan_dict
+        if not plan:
+            return fail("No mission is planned in this session. Plan it, or restore the "
+                        "version that was flown from History, then match again.")
+        folder = image_folder or self._session.active_dataset_dir
+        if not folder:
+            return fail("Select the flight's images first: Load Flight, or Import.")
+        if not Path(folder).is_dir():
+            return fail(f"Image folder not found: {folder}")
+        target = self._session.project_root() / "verification" / "capture_report.json"
+        report = verify_capture(plan, folder, match_radius_m=float(match_radius_m),
+                                output_path=target)
+        if not report.get("ok"):
+            return fail(report.get("error", "Capture matching failed."))
+        report["image_folder"] = str(folder)
+        self._session.capture_report = report
+        self._session.audit("captures_matched", {
+            "planned": report["planned_total"], "matched": report["matched"],
+            "missed": len(report["missed"]), "folder": str(folder)})
+        return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def capture_report(self) -> dict[str, Any]:
+        """The last capture match in this session, or a refusal saying none was run."""
+        report = getattr(self._session, "capture_report", None)
+        if not report:
+            return fail("No capture match has been run. Use Match Captures.")
+        return ok(**{k: v for k, v in report.items() if k != "ok"})
+
+    @guard
+    def request_reflight(self, reason: str = "") -> dict[str, Any]:
+        """Turn the missed capture points into a reflight layer on the map.
+
+        This used to log a maintenance record against aircraft 1, which is not a
+        reflight and fails on any install without that aircraft. A reflight is the set of
+        planned points that produced no image: they are written as GeoJSON in the project,
+        added as a layer, and recorded in the audit log with the reason.
+        """
+        from core import geo
+
+        report = getattr(self._session, "capture_report", None)
+        if not report:
+            return fail("Run Match Captures first: a reflight is the planned points that "
+                        "produced no image, and none have been found yet.")
+        missed = report.get("missed") or []
+        if not missed:
+            return fail("Every planned capture point was matched to an image. "
+                        "Nothing needs reflying.")
+        features = [
+            geo.point_feature(float(m["lon"]), float(m["lat"]),
+                              {"planned_index": m["index"], "reason": reason or ""},
+                              alt=m.get("alt_m"))
+            for m in missed
+        ]
+        target = self._session.project_root() / "verification" / "reflight_points.geojson"
+        geo.write_geojson(target, features)
+        layer = self._session.register_vector_layer(target, name="Reflight points")
+        self._session.audit("reflight_requested", {"points": len(missed), "reason": reason})
+        return ok(points=len(missed), path=str(target), layer=layer)
 
     @guard
     def check_interrupted_flight(self) -> dict[str, Any]:
@@ -1374,6 +1613,87 @@ class Api:
             tag=tag or None,
         )
         return ok(annotations=[a.to_dict() for a in found], count=len(found))
+
+    @guard
+    def model_scene(self, kind: str = "mesh") -> dict[str, Any]:
+        """The project's mesh or point cloud as buffers the cockpit's 3D viewer draws.
+
+        Textured Mesh and Point Cloud used to fall back to a 2D raster, and Save View,
+        Clip and Measure in 3D all said "the 3D viewer is not built" -- with the model,
+        the view store and the clip store already on disk.
+        """
+        from core.model_scene import SceneRefused, build_scene
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            scene = build_scene(Path(root) / "reconstruction", str(kind))
+        except SceneRefused as exc:
+            return fail(str(exc))
+        views = self.list_views()
+        default = next((v for v in (views.get("views") or []) if v.get("is_default")), None)
+        return ok(scene=scene, default_view=default)
+
+    @guard
+    def measure_on_model(self, kind: str, points_xyz: list[list[float]]) -> dict[str, Any]:
+        """Length, height or area between points picked in the 3D viewer, in metres.
+
+        Points arrive in the model file's frame and are carried into the CRS through the
+        reconstruction's recorded georeference; an ungeoreferenced model is refused.
+        """
+        from core.model_scene import SceneRefused, measure_scene
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            measurement = measure_scene(Path(root) / "reconstruction", str(kind), points_xyz or [])
+        except SceneRefused as exc:
+            return fail(str(exc))
+        self._session.audit("model_measured", {"kind": kind, "points": len(points_xyz or [])})
+        # Kept in the project's measurement history, as every other measurement is, so a
+        # length taken on the model reaches the report.
+        value = {"length": measurement.get("slope_distance_m"),
+                 "height": abs(float(measurement.get("vertical_distance_m") or 0.0)),
+                 "area": measurement.get("surface_area_m2")}.get(str(kind))
+        measurement_id = None
+        if value is not None:
+            from core import geo
+
+            crs = [p for p in measurement.get("points_crs") or [] if len(p) >= 2]
+            lonlat: list[list[float]] = []
+            if crs:
+                lon, lat = geo.projected_to_wgs84([p[0] for p in crs], [p[1] for p in crs],
+                                                  int(measurement["crs_epsg"]))
+                lonlat = [[float(a), float(b)] for a, b in zip(lon, lat)]
+            measurement_id = self._record_measurement(
+                f"model_{kind}", float(value), "m2" if kind == "area" else "m", lonlat,
+                str(Path(root) / "reconstruction"), dict(measurement))
+        return ok(measurement=measurement, measurement_id=measurement_id)
+
+    @guard
+    def annotate_model(self, point_xyz: list[float], label: str, severity: str = "medium",
+                       note: str = "", source: str = "mesh") -> dict[str, Any]:
+        """Pin a finding to a point on the 3D model; it joins the project's annotations."""
+        from core.annotations import create_annotation
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        point = [float(v) for v in (point_xyz or [])[:3]]
+        if len(point) != 3:
+            return fail("A 3D annotation needs a point on the model as [x, y, z].")
+        try:
+            annotation = create_annotation(
+                Path(root), str(self._session.project_id()), "3d", str(source), "point",
+                {"type": "Point", "coordinates": point}, str(label).strip(),
+                str(severity or "medium").lower(), "open", note=str(note or "") or None,
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("model_annotated", {"id": annotation.id, "label": annotation.label})
+        return ok(annotation=annotation.to_dict())
 
     @guard
     def list_views(self) -> dict[str, Any]:
@@ -2166,11 +2486,18 @@ class Api:
     @guard
     def add_aircraft(self, organization_id: int, name: str, model: str = "",
                      serial: str = "") -> dict[str, Any]:
-        """Register an aircraft."""
+        """Register an aircraft.
+
+        The fleet rows reference the service database's organisations, which a fresh
+        install has none of, so the cockpit's default organisation 1 failed every Add
+        Aircraft, Add Battery and Add Pilot with a foreign-key error. Each fleet call
+        resolves the organisation the way sharing does (app/local_tenant.py).
+        """
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_aircraft(organization_id, name, model, serial))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_aircraft(org, name, model, serial))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2181,7 +2508,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_battery(organization_id, serial, capacity_mah, cycle_limit))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_battery(org, serial, capacity_mah, cycle_limit))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2192,7 +2520,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_pilot(organization_id, display_name,
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_pilot(org, display_name,
                                               licence_number, licence_expires_on))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
@@ -2224,7 +2553,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.fleet_status(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.fleet_status(org))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2239,11 +2569,35 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.list_fleet(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.list_fleet(org))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
     # -------------------------------------------------------------- sharing
+
+    def _service_ids(self, desktop_project_id: int | None = None,
+                     organization_id: int | None = None) -> tuple[int | None, int]:
+        """The service-database project and organisation for a desktop id.
+
+        The cockpit sends DESKTOP project ids, and share links reference the service
+        database's projects -- a different table in a different file -- so every Share
+        failed with a foreign-key error. See app/local_tenant.py.
+        """
+        from app import desktop_ops, local_tenant
+
+        with desktop_ops._session() as db:
+            org = local_tenant.organization_id(db, organization_id)
+            project = None
+            if desktop_project_id is not None:
+                wanted = int(desktop_project_id)
+                desktop = next((p for p in self._session.store.list_projects()
+                                if int(p["id"]) == wanted), None)
+                if desktop is None:
+                    raise ValueError(f"No project with id {desktop_project_id} on this machine.")
+                project = local_tenant.service_project_id(db, desktop)
+            db.commit()
+        return project, org
 
     @guard
     def create_share_link(self, project_id: int, note: str = "",
@@ -2252,9 +2606,15 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.create_share_link(project_id, note, allow_download))
+            service_project, _ = self._service_ids(project_id)
+            link = desktop_ops.create_share_link(service_project, note, allow_download)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
+        self._session.audit("share_link_issued", {"prefix": link["prefix"], "note": link["note"]})
+        return ok(**link, service_project_id=service_project,
+                  reaches=("The REST service's record of this project, served at "
+                           "/public/shares/{token} while the service runs. Desktop files are not "
+                           "uploaded by issuing a link."))
 
     @guard
     def list_share_links(self, project_id: int) -> dict[str, Any]:
@@ -2262,7 +2622,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(links=desktop_ops.list_share_links(project_id))
+            service_project, _ = self._service_ids(project_id)
+            return ok(links=desktop_ops.list_share_links(service_project))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2285,7 +2646,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_webhook(organization_id, url, events, description))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_webhook(org, url, events, description), organization_id=org)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2295,9 +2657,44 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(webhooks=desktop_ops.list_webhooks(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(webhooks=desktop_ops.list_webhooks(org), organization_id=org)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
+
+    @guard
+    def issue_api_token(self, email: str, password: str, name: str = "api token") -> dict[str, Any]:
+        """Issue a REST API token for a service account, exactly as POST /auth/tokens does.
+
+        The Developers screen's New Key used to issue a SHARE link and call it an API key.
+        A key belongs to a user of the REST service, so this asks for that account's
+        credentials and writes the same ApiToken row the service would; the secret is
+        returned once and only its hash is stored.
+        """
+        from sqlalchemy import select
+
+        from app import desktop_ops
+        from services.api.models import ApiToken, User
+        from services.api.security import hash_token, verify_password
+
+        with desktop_ops._session() as db:
+            user = db.scalar(select(User).where(User.email == str(email).strip().lower()))
+            # One message for both branches, as the service does: the difference would
+            # tell whoever is at the keyboard which accounts exist.
+            if user is None or not verify_password(str(password), user.password_hash):
+                return fail("Incorrect email or password for the REST service. Accounts are "
+                            "created with POST /auth/register on the service.")
+            if not user.is_active:
+                return fail("This service account is disabled.")
+            secret, prefix = ApiToken.generate()
+            token = ApiToken(user_id=user.id, name=str(name or "api token"),
+                             token_hash=hash_token(secret), prefix=prefix)
+            db.add(token)
+            db.commit()
+            db.refresh(token)
+            self._session.audit("api_token_issued", {"prefix": prefix, "user_id": user.id})
+            return ok(id=token.id, name=token.name, prefix=prefix, secret=secret,
+                      user=user.email)
 
     # -------------------------------------------------------------- reports
     #
@@ -3634,8 +4031,12 @@ class Api:
         return self._mesh_cache[1]
 
     @guard
-    def model_scene(self, model_path: str = "", max_faces: int = 120000) -> dict[str, Any]:
-        """The project's mesh, in its CRS, for the 3D view.
+    def model_mesh_scene(self, model_path: str = "", max_faces: int = 120000) -> dict[str, Any]:
+        """The project's mesh, georeferenced into its CRS, as display buffers.
+
+        The cockpit's Digital Twin draws model_scene (the model file's own frame, mesh or
+        cloud); this is the same mesh already carried into the CRS, for a client that
+        works in survey coordinates and picks with pick_model_point.
 
         Coordinates are sent relative to ``origin`` so a WebGL float32 buffer keeps
         centimetres (UTM eastings do not fit in one). Large meshes are thinned by taking
@@ -4946,6 +5347,9 @@ class Api:
             return fail(f"Image folder not found: {images}")
 
         output = Path(opts.get("output_dir") or (self._session.project_root() / "reconstruction"))
+        busy = self._job_writing_to(output)
+        if busy:
+            return fail(busy)
         session = self._session
         # Set CRS stores the operator's choice; it used to be read by nothing.
         chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
@@ -4998,7 +5402,29 @@ class Api:
             return payload
 
         job_id = self._jobs.submit("reconstruction", work)
+        self._writers()[str(output.resolve())] = job_id
         return ok(job_id=job_id)
+
+    def _writers(self) -> dict[str, str]:
+        """Output folder -> the job writing into it."""
+        if not hasattr(self, "_output_writers"):
+            self._output_writers: dict[str, str] = {}
+        return self._output_writers
+
+    def _job_writing_to(self, output: Path) -> str:
+        """Why a second run into `output` must wait, or "" when nothing is writing there.
+
+        Two reconstructions into one folder overwrite each other's files, and on Windows
+        the second one died with "PermissionError: [WinError 32]" on a file the first
+        held open -- after the operator had been told it started.
+        """
+        job_id = self._writers().get(str(output.resolve()))
+        job = self._jobs.get(job_id) if job_id else None
+        if not job or job.get("status") not in {"pending", "running"}:
+            return ""
+        return (f"A {job.get('name', 'job')} is already writing to {output} "
+                f"(job {job_id}, {job.get('percent', 0)}%). Wait for it to finish, or "
+                "Cancel it, before starting another into the same folder.")
 
     @guard
     def run_pipeline(self, options: dict[str, Any] | None = None) -> dict[str, Any]:

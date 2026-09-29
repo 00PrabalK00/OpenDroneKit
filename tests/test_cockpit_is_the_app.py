@@ -118,10 +118,13 @@ class TestTheShellDistinguishesItsThreeStates:
         assert "showingSampleContent" in shell_js, (
             "the banner condition ignores what is actually rendered"
         )
-        assert 'const synthetic = this.mode !== "connected" || this.showingSampleContent();' in shell_js
+        assert 'const synthetic = this.mode === "demo" || this.showingSampleContent();' in shell_js
 
-        # Being disconnected must still raise it: panels render the sample then too.
-        assert 'this.mode !== "connected"' in shell_js
+        # Being disconnected no longer raises it by itself, because panels no longer
+        # render the sample then: every live() panel says it is not connected instead.
+        # "EXAMPLE DATA" over a screen of "Not connected" was its own false label.
+        live_js = (WORKSPACE_JS / "live.js").read_text(encoding="utf-8")
+        assert "emptyState(NOT_CONNECTED)" in live_js
 
     def test_the_sample_sentinels_come_from_the_demo_constants(self) -> None:
         """The detector must not carry its own copy of what the sample looks like.

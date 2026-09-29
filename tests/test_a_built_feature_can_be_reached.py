@@ -135,8 +135,9 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("mark_boundary_corner", "Mark Corner"),
         ("boundary_from_marks", "Close Boundary"),
         ("clear_boundary_marks", "Clear Corners"),
-        # The 3D view (app/web/js/workspace/model3d.js) gave these a camera and a
-        # surface to pick on; tests/test_model_view_in_a_browser.py drives them.
+        # The Digital Twin's 3D view (viewer3d.js) gave these a camera and a surface to
+        # pick on; tests/test_cockpit_3d_viewer.py drives them. Measure in 3D also
+        # offers the volume of the closed model, which measure_in_model computes.
         ("save_view", "Save View"),
         ("open_view", "Open View"),
         ("list_views", "Open View"),
@@ -145,6 +146,17 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("mark_gcp", "Mark GCP"),
         ("gcp_accuracy_report", "GCP Report"),
         ("diff_mission_versions", "Compare Versions"),
+        # Declared "needs the 3D viewer" until the Digital Twin had one (viewer3d.js).
+        # They act on the model on screen; tests/test_cockpit_3d_viewer.py drives them.
+        ("save_view", "Save View"),
+        ("open_view", "Save View"),
+        ("set_default_view", "Save View"),
+        ("set_clip_visible", "Clip"),
+        ("remove_clip", "Clip"),
+        ("export_clipped_model", "Clip"),
+        # Declared "no thermal product is selectable" until it took a radiometric frame
+        # from disk; tests/test_cockpit_thermal_range.py drives it.
+        ("scale_thermal", "Temperature Range"),
     ]
 
     @pytest.mark.parametrize("method,button", REACHABLE, ids=[m for m, _ in REACHABLE])
@@ -158,34 +170,16 @@ class TestTheFeaturesBuiltHereAreReachable:
         )
 
 
-class TestWhatCannotBeReachedSaysWhy:
-    """Two capabilities still need what the cockpit does not have: a plane placed
-    against the model on screen, and a selectable radiometric raster.
-
-    They are declared rather than wired. A button that always answers "no camera pose
-    yet" would be the same dead control this audit exists to remove -- but silently
-    dropping them would lose the fact that the capability exists and is tested.
-    """
-
-    DECLARED = ["Clip", "Temperature Range"]
-
-    @pytest.mark.parametrize("button", DECLARED)
-    def test_it_names_the_missing_capability(self, actions, button) -> None:
-        body = action_body(actions, button)
-        assert "skipped" in body, f"{button!r} does not decline honestly"
-        assert "implemented" in body, (
-            f"{button!r} does not say the capability exists, only that it did nothing"
-        )
-
-    @pytest.mark.parametrize("button", DECLARED)
-    def test_the_api_really_does_implement_it(self, button) -> None:
-        """The declaration has to be true in both directions: the button says the
-        capability is implemented, so it had better be."""
-        api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
-        method = {"Save View": "save_view", "Clip": "add_plane_clip",
-                  "Temperature Range": "scale_thermal",
-                  "Measure in 3D": "measure_in_model"}[button]
-        assert f"def {method}(" in api
+def test_measure_in_3d_reaches_the_model_measurement() -> None:
+    """Measure in 3D opens the model with the measure tool armed; the viewer's picks go
+    to measure_on_model, which the Api implements."""
+    viewer = (ROOT / "app" / "web" / "js" / "workspace" / "viewer3d.js").read_text(encoding="utf-8")
+    api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
+    assert 'call("measure_on_model"' in viewer
+    assert "def measure_on_model(" in api
+    # Clip's "New cut" arms the viewer, whose picked point becomes the plane.
+    assert 'call("add_plane_clip"' in viewer
+    assert "def add_plane_clip(" in api
 
 
 class TestTheContextHelpersExist:

@@ -1376,16 +1376,20 @@ INSPECTION = [
                       "tests/test_model_measurement.py::TestVolume",
                       "tests/test_model_measurement.py::TestThroughTheApi",
                       "tests/test_model_measurement.py::TestMeshReading",
-                      "tests/test_model_view_in_a_browser.py"],
-      "core/model_measurement.py; Api.measure_in_model, model_scene, pick_model_point; "
-      "cockpit Textured Mesh view (model3d.js), Measure in 3D, Save View, Open View. "
+                      "tests/test_model_view_in_a_browser.py",
+                      "tests/test_cockpit_3d_viewer.py::test_the_twin_draws_the_mesh_and_measures_between_picked_points",
+                      "tests/test_cockpit_3d_viewer.py::test_an_unreferenced_model_is_drawn_but_not_measured"],
+      "core/model_measurement.py; Api.measure_in_model, model_mesh_scene, pick_model_point. "
       "The reconstruction's mesh is in the SfM frame, so it is measured on a copy "
       "transformed with the run's geo_anchor.json (sidecar coordinate_frame=crs); a CRS "
       "recorded against the raw mesh is refused, not trusted. Volume is the divergence "
-      "theorem over a closed mesh, summed about the centroid (about the CRS origin the "
-      "terms cancel to float noise); an open exterior with no floor is refused instead "
-      "of summed. The view draws a thinned mesh; picks use the full one. Absolute "
-      "accuracy is that of the georeferencing fit, which the sidecar records."),
+      "theorem over a closed mesh, summed about the centroid; an open exterior with no "
+      "floor is refused instead of summed. In the desktop cockpit the Digital Twin draws "
+      "the project's mesh or cloud (core/model_scene.py, viewer3d.js); Measure picks "
+      "points on the drawn (possibly thinned) model and Api.measure_on_model carries "
+      "them into the CRS through geo_anchor.json, refusing a model without one, and keeps "
+      "the result in the measurement history; Measure in 3D also offers the closed "
+      "model's volume. Absolute accuracy is that of the georeferencing fit."),
     F("me.volume", "Volume and stockpile", "core", "Measurement",
       "Cut/fill against DTM, plane and lowest-point references, exact on a known surface.",
       "verified", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",

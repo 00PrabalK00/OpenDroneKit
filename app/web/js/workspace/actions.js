@@ -17,14 +17,20 @@
  */
 
 import { call, tryCall, lastError, connected } from "./api.js";
+import { demoEnabled } from "./demo.js";
+import { currentViewer, queueModelTool } from "./viewer3d.js";
+import { setView } from "./viewstate.js";
+
+/* Where the REST service listens when started with its documented command. */
+const REST_BASE = "http://127.0.0.1:8000";
 
 /** Actions that need an open project before they mean anything. */
 const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
-  "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
+  "Process", "New Job", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
   "Change", "Volume", "Cut & Fill", "Stockpile", "Slope", "Ponding", "Generate Report",
   "Export Report", "Export PDF", "Export Word", "Open Report", "Record Finding", "Annotate",
-  "New Report", "Share", "Archive",
+  "New Report", "Share", "Revoke Links", "Archive",
 ]);
 
 /* -- survey packs ---------------------------------------------------------- */
@@ -185,18 +191,9 @@ function summarisePack(result) {
   return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
 }
 
-/** The 3D view, opened on the mesh if it is not already showing. */
-async function openModel(ctx) {
-  const { currentModelViewer, whenModelReady } = await import("./model3d.js");
-  const shown = currentModelViewer();
-  if (shown && shown.ready) return shown;
-  if (!shown) ctx.showView("mesh");
-  return whenModelReady();
-}
-
 /** Actions that need images on disk. */
-const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D",
-                               "Label"]);
+const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
+                               "Open in 3D", "Label"]);
 
 /**
  * The dispatch table.
@@ -245,7 +242,22 @@ export const ACTIONS = {
       if (!folder || !folder.path) return { skipped: "No folder chosen." };
       const result = await call("import_dataset", folder.path);
       await call("set_active_dataset", folder.path);
-      return { message: `Imported ${result.image_count ?? "?"} images.`, refresh: true };
+      // The Api answers ok(dataset={... metadata_json}), so result.image_count was always
+      // undefined and every import reported "Imported ? images".
+      let meta = {};
+      try {
+        meta = JSON.parse((result.dataset && result.dataset.metadata_json) || "{}");
+      } catch {
+        meta = {};
+      }
+      const count = meta.image_count ?? result.image_count;
+      const tagged = meta.geotagged_count;
+      return {
+        message: count == null
+          ? `Imported ${folder.path}.`
+          : `Imported ${count} image(s)${tagged != null ? `, ${tagged} geotagged` : ""}.`,
+        refresh: true,
+      };
     },
   },
 
@@ -254,12 +266,15 @@ export const ACTIONS = {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
       const result = await call("plan_mission", ctx.missionOptions());
-      // plan_mission answers {summary: {waypoints, ...}, warnings}; reading
-      // result.waypoint_count printed "Planned ? waypoints." after every plan.
+      // The Api answers ok(summary={waypoints, distance_m, ...}, warnings); reading
+      // result.waypoint_count printed "Planned ? waypoints" after every successful plan.
       const summary = result.summary || {};
-      const warnings = (result.warnings || []).length ? ` ${result.warnings.join(" ")}` : "";
+      const warnings = result.warnings || [];
       return {
-        message: `Planned ${summary.waypoints ?? "?"} waypoints, ${summary.duration_min ?? "?"} min.${warnings}`,
+        message: `Planned ${summary.waypoints ?? "?"} waypoints, `
+          + `${((summary.distance_m || 0) / 1000).toFixed(2)} km, ${summary.duration_min ?? "?"} min`
+          + (summary.gsd_cm ? `, GSD ${summary.gsd_cm} cm` : "")
+          + (warnings.length ? `. ${warnings.join(" ")}` : "."),
         refresh: true,
       };
     },
@@ -268,6 +283,9 @@ export const ACTIONS = {
   Save: {
     describe: "Save the planned mission into the project.",
     async run(ctx) {
+      // Asked for a name and THEN learned there was nothing to save.
+      const state = await call("get_state");
+      if (!state.has_mission) return { skipped: "No mission has been planned yet. Plan one first." };
       const name = await ctx.prompt("Mission name", "Mission");
       if (!name) return { skipped: "No name given." };
       await call("save_mission", name);
@@ -282,13 +300,18 @@ export const ACTIONS = {
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
       const result = await tryCall("export_mission");
-      // export_mission answers {written: {format: path | "failed: ..."}, directory}.
-      const written = (result && result.written) || {};
-      const files = Object.values(written).filter((v) => !String(v).startsWith("failed"));
-      const failed = Object.entries(written).filter(([, v]) => String(v).startsWith("failed"));
-      if (files.length || failed.length) {
-        const note = failed.length ? ` ${failed.map(([k, v]) => `${k}: ${v}`).join("; ")}` : "";
-        return { message: `Exported ${files.length} mission file(s) to ${result.directory}.${note}`, files };
+      // export_mission answers ok(written={format: path | "failed: ..."}, directory).
+      // Reading result.files found nothing, so a successful export of five mission files
+      // fell through to revealing the reconstruction products and said so instead.
+      const written = Object.entries((result && result.written) || {});
+      if (written.length) {
+        const failed = written.filter(([, v]) => String(v).startsWith("failed"));
+        const files = written.filter(([, v]) => !String(v).startsWith("failed")).map(([, v]) => v);
+        return {
+          message: `Exported ${files.length} mission file(s) to ${result.directory}`
+            + (failed.length ? `; ${failed.map(([k, v]) => `${k} ${v}`).join("; ")}` : "."),
+          files,
+        };
       }
 
       // Export sits on Projects, Digital Twin, Thermal, Fleet and Settings as well as
@@ -716,9 +739,28 @@ export const ACTIONS = {
       return { message: result.message || "The camera accepted the trigger." };
     },
   },
+  /* Sat on the Verification toolbar and called check_interrupted_flight, which answers
+     whether the software stopped mid-flight -- nothing to do with loading the flight to
+     verify. Loading a flight here means choosing which imported image set is the flown
+     one, which is what Match Captures then checks against the plan. */
   "Load Flight": {
-    describe: "Report a flight that was interrupted when this software last stopped.",
-    async run() {
+    /* Two screens carry this button and mean different things by it. On Flight it is
+       crash recovery: the record of a flight that was interrupted when this software
+       last stopped. On Verification it chooses which imported flight's images Match
+       Captures checks against the plan. */
+    describe: "Recover an interrupted flight (Flight), or choose the flown images to verify (Verification).",
+    async run(ctx) {
+      if (ctx.workspaceId && ctx.workspaceId() === "verification") {
+        const listed = await call("list_datasets");
+        const sets = listed.datasets || [];
+        if (!sets.length) return { skipped: "No flights imported yet. Use Import on Home or Projects." };
+        const path = await ctx.choose("Verify which flight?", sets.map((d) => ({
+          label: d.name || d.path, value: d.path, hint: d.path,
+        })));
+        if (!path) return { skipped: "No flight chosen." };
+        await call("set_active_dataset", path);
+        return { message: `Loaded ${path}. Match Captures compares it with the plan.`, refresh: true };
+      }
       const result = await call("check_interrupted_flight");
       /* The Api answers `recovered`; reading `interrupted` said "No interrupted flight"
          over a record saying a mission was on the aircraft. */
@@ -836,19 +878,41 @@ export const ACTIONS = {
                  + (report.warnings || []).join(" ") };
     },
   },
+  /* Called check_spatial_reference with no images at all -- "missing 1 required
+     positional argument: image_paths" -- and, had it worked, set nothing. It now takes
+     the output EPSG for the next reconstruction (run_reconstruction reads `epsg`),
+     checks what the selected images can support in that frame, and keeps the choice. */
   "Set CRS": {
-    describe: "Choose the projected CRS reconstructions are written in.",
+    describe: "Choose the projected CRS reconstructions are written in, and check the images.",
     async run(ctx) {
       const current = await call("get_project_crs");
       const answer = await ctx.prompt(
-        "EPSG code of a projected CRS (blank = automatic UTM zone)",
+        "Output EPSG code of a projected CRS (blank = automatic UTM from the geotags)",
         current.epsg ? String(current.epsg) : "");
       if (answer === null) return { skipped: "Cancelled." };
       const trimmed = String(answer).trim();
-      const result = await call("set_project_crs", trimmed === "" ? null : Number(trimmed));
-      return { message: result.epsg ? `Reconstructions will be written in EPSG:${result.epsg} `
-                                       + `(${result.name}).`
-                                     : "Reconstructions will use the UTM zone of the imagery." };
+      const epsg = trimmed ? Number(trimmed) : null;
+      if (trimmed && !Number.isInteger(epsg)) return { skipped: `Not an EPSG code: ${trimmed}` };
+      // Kept with the project (run_pipeline and run_reconstruction read it), and refused
+      // when it is not a projected CRS in metres.
+      const kept = await call("set_project_crs", epsg);
+      ctx.setSetting("epsg", epsg || "");
+      // What the selected images can support in that frame.
+      let check = "";
+      const listed = await tryCall("list_dataset_images");
+      if (listed && listed.folder && (listed.images || []).length) {
+        const sep = String(listed.folder).includes("\\") ? "\\" : "/";
+        const paths = listed.images.map((name) => `${listed.folder}${sep}${name}`);
+        const gcps = await tryCall("gcp_accuracy_report");
+        const gcpCount = (gcps && gcps.report && gcps.report.point_count) || 0;
+        const result = await call("check_spatial_reference", paths, gcpCount, epsg);
+        check = ` ${result.geotagged_count}/${result.image_count} images geotagged, `
+          + `${result.gcp_count} control point(s): ${result.note}`;
+      }
+      return {
+        message: `${kept.epsg ? `Output CRS EPSG:${kept.epsg} (${kept.name})` : "Output CRS: automatic UTM"} `
+          + `for the next reconstruction.${check}`,
+      };
     },
   },
 
@@ -963,27 +1027,32 @@ export const ACTIONS = {
     },
   },
 
-  /* Two points picked on the mesh in the 3D view. The picks are made by the application
-     on the full-resolution mesh in its CRS; the model is measured only when its
-     georeferencing is recorded. */
+  /* Said "the interactive viewer is not built". It opens the model in the Digital Twin
+     with the measure tool armed: two points picked on the model, measured in metres by
+     measure_on_model through the reconstruction's georeference. With the model already
+     on screen it also offers the volume the closed mesh encloses (measure_in_model),
+     which refuses a mesh that does not close rather than summing it. */
   "Measure in 3D": {
-    describe: "Measure a length or a height between two points picked on the 3D model.",
+    describe: "Measure between points picked on the 3D model, or the volume it encloses.",
     async run(ctx) {
-      const viewer = await openModel(ctx);
-      const kind = await ctx.choose("Measure", ["length", "height"]);
-      if (!kind) return { skipped: "Nothing chosen." };
-      viewer.clearPins();
-      ctx.toast("Click the first point on the model.");
-      const first = await viewer.pickNext();
-      ctx.toast("Click the second point on the model.");
-      const second = await viewer.pickNext();
-      const result = await call("measure_in_model", viewer.scene.model_path, kind, [first, second]);
-      const m = result.measurement;
-      const text = kind === "height"
-        ? `height ${m.height_m.toFixed(3)} m`
-        : `length ${m.slope_distance_m.toFixed(3)} m (horizontal ${m.horizontal_distance_m.toFixed(3)} m, `
-          + `vertical ${m.vertical_distance_m.toFixed(3)} m)`;
-      return { message: `Model ${text}, EPSG:${m.crs_epsg}. Kept in the measurement history.` };
+      if (currentViewer()) {
+        const kind = await ctx.choose("Measure in 3D", [
+          { label: "Between points picked on the model", value: "picks" },
+          { label: "Volume enclosed by the model", value: "volume",
+            hint: "closed meshes only" },
+        ]);
+        if (!kind) return { skipped: "Nothing chosen." };
+        if (kind === "volume") {
+          const result = await call("measure_in_model", "", "volume");
+          const m = result.measurement || {};
+          return { message: `Model volume ${Number(m.volume_m3).toFixed(2)} m³`
+            + (m.crs_epsg ? `, EPSG:${m.crs_epsg}` : "") + ". Kept in the measurement history." };
+        }
+      }
+      queueModelTool("measure");
+      setView("mesh");
+      ctx.openWorkspace("twin");
+      return { message: "Measure in 3D: click two points on the model." };
     },
   },
 
@@ -1134,10 +1203,13 @@ export const ACTIONS = {
       const result = await call("size_reconstruction_job", count);
       /* Answered before the run rather than after the failure. A reconstruction that
          exhausts memory eight hours in has cost the whole night. */
+      /* Read verdict, fits and peak_ram_gb, none of which size_job returns -- so every
+         dataset was reported "may not fit" beside a note that said it would. The verdict
+         is can_run_as_one_job, and the note already states it with the figures. */
+      const warnings = (result.warnings || []).join(" ");
       return {
-        message: `${count} images: ${result.verdict || (result.fits ? "should fit" : "may not fit")}`
-          + (result.peak_ram_gb ? `, about ${result.peak_ram_gb} GB peak RAM` : "")
-          + (result.note ? `. ${result.note}` : ""),
+        message: `${result.can_run_as_one_job ? "Fits" : "Does not fit as one job"}: `
+          + `${result.note || `${count} images`}${warnings ? ` ${warnings}` : ""}`,
       };
     },
   },
@@ -1333,47 +1405,139 @@ export const ACTIONS = {
     },
   },
 
-  /* These four are implemented, tested, and cannot be driven from this interface yet.
-     Each needs the 3D viewer: a camera to save, a model to cut against, and a selected
-     raster to scale. Declaring that is the honest state -- a button that always answers
-     "no camera pose yet" would be the same dead control this audit exists to remove. */
+  /* Save View and Clip said the 3D viewer was not built. They act on the model on screen
+     (viewer3d.js): a view is the camera of that viewer, in the model's own coordinates,
+     and a cut is a plane through a point picked on it. */
   "Save View": {
-    describe: "Remember the 3D camera: where it stands and what it looks at.",
+    describe: "Save the 3D camera as a named view, or open a saved one.",
     async run(ctx) {
-      const viewer = await openModel(ctx);
-      const name = await ctx.prompt("View name", "");
-      if (!name) return { skipped: "A view needs a name to be opened again." };
-      const camera = viewer.getCamera();
-      const saved = await call("save_view", name, camera.position, camera.target, camera.fov_deg);
-      return { message: `Saved view "${name}". ${(saved.views || []).length} view(s) in this project.` };
+      const viewer = currentViewer();
+      if (!viewer) {
+        return { skipped: "No 3D model on screen. Open Textured Mesh or Point Cloud in the "
+                          + "Digital Twin first; a view is that camera." };
+      }
+      const listed = await call("list_views");
+      const views = listed.views || [];
+      let choice = "save";
+      if (views.length) {
+        choice = await ctx.choose("Views", [
+          { label: "Save the current camera as a new view", value: "save" },
+          ...views.map((v) => ({ label: `Open “${v.name}”${v.is_default ? " (default)" : ""}`, value: `open:${v.name}` })),
+          ...views.filter((v) => !v.is_default).map((v) => ({ label: `Open with “${v.name}” by default`, value: `default:${v.name}` })),
+        ]);
+        if (!choice) return { skipped: "Nothing chosen." };
+      }
+      if (choice.startsWith("open:")) {
+        const opened = await call("open_view", choice.slice(5));
+        viewer.applyView(opened.view);
+        const missing = opened.missing_clips || [];
+        return { message: `Opened view “${opened.view.name}”.`
+          + (missing.length ? ` It refers to ${missing.length} clip(s) that no longer exist.` : "") };
+      }
+      if (choice.startsWith("default:")) {
+        await call("set_default_view", choice.slice(8));
+        return { message: `“${choice.slice(8)}” now opens by default.` };
+      }
+      const name = await ctx.prompt("Name this view", `view ${views.length + 1}`);
+      if (!name) return { skipped: "No name given." };
+      const cam = viewer.cameraState();
+      const clips = (await call("list_clips")).clips || [];
+      await call("save_view", name, cam.position, cam.target, cam.fov_deg,
+        clips.filter((c) => c.visible).map((c) => c.name), false, true, views.length === 0);
+      return { message: `Saved view “${name}”${views.length === 0 ? " (opens by default)" : ""}.` };
     },
   },
   "Open View": {
     describe: "Put the 3D camera back where a saved view left it.",
     async run(ctx) {
+      const viewer = currentViewer();
+      if (!viewer) {
+        return { skipped: "No 3D model on screen. Open Textured Mesh or Point Cloud in the "
+                          + "Digital Twin first; a view is that camera." };
+      }
       const listed = await call("list_views");
       const views = listed.views || [];
       if (!views.length) return { skipped: "No saved views yet. Use Save View first." };
       const name = await ctx.choose("Saved view", views.map((v) => v.name));
       if (!name) return { skipped: "No view chosen." };
       const opened = await call("open_view", name);
-      const viewer = await openModel(ctx);
-      viewer.setCamera(opened.view.position, opened.view.target, opened.view.fov_deg);
-      return { message: `Opened view "${name}".` + (opened.warning ? ` ${opened.warning}` : "") };
+      viewer.applyView(opened.view);
+      const missing = opened.missing_clips || [];
+      return { message: `Opened view “${opened.view.name}”.`
+        + (missing.length ? ` It refers to ${missing.length} clip(s) that no longer exist.` : "") };
     },
   },
   Clip: {
-    describe: "Cut the model with a plane. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "add_plane_clip is implemented, but a cut plane has to be placed "
-                        + "against a model on screen, and the 3D viewer is not built." };
+    describe: "Cut the model with a plane through a picked point, or manage the cuts.",
+    async run(ctx) {
+      const viewer = currentViewer();
+      if (!viewer) {
+        return { skipped: "No 3D model on screen. Open Textured Mesh or Point Cloud in the "
+                          + "Digital Twin first; a cut is placed on the model." };
+      }
+      const clips = (await call("list_clips")).clips || [];
+      const choice = await ctx.choose("Clip", [
+        { label: "New cut: click a point, the part between the camera and it is removed", value: "new" },
+        ...clips.map((c) => ({ label: `${c.visible ? "Hide" : "Show"} “${c.name}”`, value: `toggle:${c.name}` })),
+        ...clips.map((c) => ({ label: `Remove “${c.name}”`, value: `remove:${c.name}` })),
+        ...(clips.some((c) => c.visible)
+          ? [{ label: "Export the model as the visible cuts leave it", value: "export" }] : []),
+      ]);
+      if (!choice) return { skipped: "Nothing chosen." };
+      if (choice === "new") {
+        viewer.setTool("clip");
+        return { message: "Clip: click a point on the model." };
+      }
+      if (choice === "export") {
+        const done = await call("export_clipped_model", "");
+        return { message: `Wrote ${done.faces.toLocaleString()} of ${done.source_faces.toLocaleString()} `
+          + `triangles to ${done.path}.` };
+      }
+      const [verb, ...rest] = choice.split(":");
+      const name = rest.join(":");
+      if (verb === "toggle") {
+        const clip = clips.find((c) => c.name === name);
+        await call("set_clip_visible", name, !(clip && clip.visible));
+      } else {
+        await call("remove_clip", name);
+      }
+      await viewer.reload();
+      return { message: `${verb === "toggle" ? "Toggled" : "Removed"} “${name}”.` };
     },
   },
+  /* Answered "scale_thermal is implemented, but ... no thermal product is selectable in
+     this build" and did nothing. The frame is now chosen from disk: a radiometric sidecar
+     (raw counts plus the camera's Planck constants) is what core/thermal reads; a thermal
+     JPEG is refused by the Api with the reason, since its pixels are a palette. */
   "Temperature Range": {
-    describe: "Set the palette range. Needs a selected radiometric raster.",
-    async run() {
-      return { skipped: "scale_thermal is implemented, but it takes a radiometric raster "
-                        + "and no thermal product is selectable in this build." };
+    describe: "Choose the temperature range a radiometric frame is drawn in.",
+    async run(ctx) {
+      const picked = await call("pick_file", ["json"]);
+      if (!picked.path) return { skipped: "No radiometric frame chosen." };
+      const modes = {
+        "Automatic (1st to 99th percentile)": "auto",
+        "Manual (enter min and max)": "manual",
+        "Anomaly (mean ± 2σ)": "anomaly",
+      };
+      const choice = await ctx.choose("Temperature range", Object.keys(modes));
+      if (!choice) return { skipped: "No range mode chosen." };
+      const mode = modes[choice];
+      let low = null;
+      let high = null;
+      if (mode === "manual") {
+        low = Number.parseFloat(await ctx.prompt("Lowest temperature °C", "") || "");
+        high = Number.parseFloat(await ctx.prompt("Highest temperature °C", "") || "");
+        if (!Number.isFinite(low) || !Number.isFinite(high)) {
+          return { skipped: "A manual range needs a number for both ends; nothing was changed." };
+        }
+      }
+      const result = await call("scale_thermal", picked.path, mode, low, high);
+      const s = result.scale;
+      const text = `${s.min_c.toFixed(1)} to ${s.max_c.toFixed(1)} °C (${s.method}, ${s.palette}); `
+        + `the frame spans ${s.data_min_c.toFixed(1)} to ${s.data_max_c.toFixed(1)} °C`;
+      return result.warning
+        ? { message: `Range ${text}. ${result.warning}`, level: "warn" }
+        : { message: `Range ${text}; no pixel falls outside it.` };
     },
   },
 
@@ -1388,7 +1552,8 @@ export const ACTIONS = {
   },
 
   /* -- layers ------------------------------------------------------------- */
-  "New Folder": {
+  /* Was labelled "New Folder", which is not what it has ever done. */
+  "Add Layer": {
     describe: "Add a raster or vector layer from a file.",
     async run() {
       const file = await call("pick_file", ["tif", "tiff", "geojson", "json", "shp"]);
@@ -1416,34 +1581,21 @@ export const ACTIONS = {
     },
   },
 
+  /* Counted saved mission versions and diffed two of them -- a comparison of plans,
+     under a button on the screen whose job is to compare the FLIGHT with its plan.
+     match_captures pairs each flown image with the capture point it satisfied. */
   "Match Captures": {
     describe: "Compare what was captured against what was planned.",
-    async run() {
-      // compare_survey_specifications takes the two mission versions to difference.
-      // This called it with none, so the button's only possible outcome was
-      // "TypeError: Api.compare_survey_specifications() missing 2 required positional
-      // arguments" shown to the user as the result. The versions are fetched here and
-      // the honest refusal is given when there are not two of them to compare.
-      const listed = await tryCall("list_mission_versions");
-      const versions = ((listed && (listed.versions || listed)) || [])
-        .map((v) => Number(v.version_num ?? v.version ?? 0))
-        .filter((n) => n > 0)
-        .sort((a, b) => a - b);
-
-      if (versions.length < 2) {
-        return {
-          message:
-            `Match Captures compares two saved survey versions; this project has ` +
-            `${versions.length}. Save the mission again after the next flight to ` +
-            `difference them.`,
-        };
-      }
-
-      const [previous, latest] = versions.slice(-2);
-      const result = await call("compare_survey_specifications", previous, latest);
+    async run(ctx) {
+      const radius = await ctx.prompt("Match radius (metres)", "15");
+      if (radius === null || radius === "") return { skipped: "No match radius given." };
+      const result = await call("match_captures", Number(radius));
+      const missed = (result.missed || []).length;
       return {
-        message:
-          result.summary || `Compared survey version ${previous} against ${latest}.`,
+        message: `${result.matched} of ${result.planned_total} planned captures matched `
+          + `(${result.coverage_pct}%), ${missed} missed, ${(result.unplanned || []).length} `
+          + `unplanned image(s).${missed ? " Request Reflight turns the missed points into a layer." : ""}`,
+        refresh: true,
       };
     },
   },
@@ -1526,11 +1678,14 @@ export const ACTIONS = {
       const note = await ctx.prompt("What is this link for?", "Client review") || "";
       const result = await call("create_share_link", ctx.projectId(), note, false);
       // Shown once on purpose: only the hash is kept, so this cannot be read back.
-      await ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`);
+      await ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`
+        + (result.reaches ? `\n\n${result.reaches}` : ""));
       return { message: `Link ${result.prefix}… issued.`, refresh: true };
     },
   },
-  Archive: {
+  /* Was labelled "Archive" beside an Archived panel, and archived nothing: it revokes
+     the project's share links, and is named for that. */
+  "Revoke Links": {
     confirm: "Revoke every share link for this project?",
     describe: "Close a project down by revoking its outstanding links.",
     async run(ctx) {
@@ -1554,32 +1709,51 @@ export const ACTIONS = {
       return { message: `Webhook registered for ${result.url}.`, refresh: true };
     },
   },
+  /* Issued a SHARE link and called it an API key. A key belongs to an account on the
+     REST service; this asks for that account and issues the same token POST
+     /auth/tokens would. */
   "New Key": {
-    describe: "Issue a share token, which is what this build uses for API access.",
+    describe: "Issue a REST API token for a service account.",
     async run(ctx) {
-      const result = await call("create_share_link", ctx.projectId(), "API access", true);
-      await ctx.reveal(`API token (copy it now, it is not stored):\n\n${result.token}`);
-      return { message: `Token ${result.prefix}… issued.`, refresh: true };
+      const answer = await ctx.form("New API key", [
+        { key: "email", label: "Service account email", value: "" },
+        { key: "password", label: "Password", type: "password", value: "" },
+        { key: "name", label: "Key name", value: "field device" },
+      ]);
+      if (!answer || !answer.email) return { skipped: "No account given." };
+      const result = await call("issue_api_token", answer.email, answer.password, answer.name);
+      await ctx.reveal(`API key for ${result.user} (copy it now, it is not stored):\n\n${result.secret}`);
+      return { message: `Key ${result.prefix}… issued to ${result.user}.`, refresh: true };
     },
   },
+  /* Built its command from the first registered WEBHOOK -- a POST to someone else's
+     URL -- under a button beside the endpoint list. It is the endpoint picked in the
+     Endpoints panel, as a request to the REST service. */
   "Copy cURL": {
-    describe: "A ready-to-run request against the local service.",
+    describe: "The selected endpoint as a curl command against the REST service.",
     async run(ctx) {
-      const hooks = await call("list_webhooks", ctx.organizationId());
-      const first = (hooks.webhooks || [])[0];
-      const command = first
-        ? `curl -X POST ${first.url} -H "Content-Type: application/json" -d '{"event":"test"}'`
-        : `curl http://127.0.0.1:8000/health`;
-      await ctx.reveal(command);
-      return { message: "Command shown; copy it from the dialog." };
+      const endpoint = ctx.selectedEndpoint() || { method: "GET", path: "/health" };
+      const url = `${REST_BASE}${endpoint.path}`;
+      const open = endpoint.path.startsWith("/health") || endpoint.path.startsWith("/auth/");
+      const auth = open ? "" : ' -H "Authorization: Bearer $ODK_TOKEN"';
+      const body = ["POST", "PUT", "PATCH"].includes(endpoint.method)
+        ? ' -H "Content-Type: application/json" -d \'{}\'' : "";
+      await ctx.reveal(`curl -X ${endpoint.method} "${url}"${auth}${body}`, "curl command");
+      return { message: `curl for ${endpoint.method} ${endpoint.path} shown; copy it from the dialog.` };
     },
   },
+  /* Called capabilities() and reported how many fields the BRIDGE returned -- a request
+     to this process, labelled as one to the service. */
   "Send Request": {
-    describe: "Check the local service is answering.",
-    async run() {
-      const result = await call("capabilities");
-      const count = Object.keys(result.capabilities || result || {}).length;
-      return { message: `Bridge answered with ${count} capability field(s).` };
+    describe: "Send the selected GET to the REST service and show what it answered.",
+    async run(ctx) {
+      const endpoint = ctx.selectedEndpoint() || { method: "GET", path: "/health" };
+      if (endpoint.method !== "GET" || endpoint.path.includes("{")) {
+        return { skipped: `${endpoint.method} ${endpoint.path} needs parameters or a body; `
+          + "use Copy cURL. Send Request sends plain GETs only." };
+      }
+      const result = await call("rest_request", endpoint.path, REST_BASE);
+      return { message: `${endpoint.path}: HTTP ${result.status} — ${String(result.body).slice(0, 200)}` };
     },
   },
 
@@ -1731,15 +1905,17 @@ export const ACTIONS = {
       };
     },
   },
+  /* Logged a maintenance record against aircraft 1 -- not a reflight, and an error on
+     any install without that aircraft. A reflight is the planned points that produced
+     no image; they become a layer on the map and an entry in the audit log. */
   "Request Reflight": {
-    describe: "Record that a capture needs flying again.",
+    describe: "Put the missed capture points on the map as a reflight layer.",
     async run(ctx) {
-      const id = parseInt(await ctx.prompt("Aircraft id to task", "1") || "0", 10);
-      if (!id) return { skipped: "No aircraft chosen." };
-      const reason = await ctx.prompt("Why does it need reflying?", "captures out of tolerance");
-      if (!reason) return { skipped: "A reflight request needs a reason." };
-      await call("log_maintenance", id, "reflight-request", reason, "operator");
-      return { message: "Reflight requested and recorded.", refresh: true };
+      const reason = await ctx.prompt("Why does it need reflying?", "captures missed");
+      if (reason === null) return { skipped: "Cancelled." };
+      const result = await call("request_reflight", reason || "");
+      return { message: `${result.points} point(s) to refly, written to ${result.path} `
+        + "and shown on the map as Reflight points.", refresh: true };
     },
   },
   /* On the Reports toolbar this saved a MISSION. It saves the report settings. */
@@ -1905,6 +2081,12 @@ export function resolve(action) {
  * prerequisite the same way, and so the check cannot be forgotten when one is added.
  */
 export function prerequisite(action, state) {
+  // Demo mode answers reads from the bundled example and changes nothing, so an action
+  // is refused before it can look like it worked on the example.
+  if (demoEnabled()) {
+    return "Demo mode shows the bundled example and cannot change anything. "
+      + "Open the cockpit without ?demo=1 to act on a real project.";
+  }
   if (!connected()) return "Not connected to the application.";
   if (NEEDS_PROJECT.has(action) && !state.projectOpen) return "Open a project first.";
   if (NEEDS_DATASET.has(action) && !state.datasetSelected) return "Select a dataset first.";

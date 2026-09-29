@@ -113,6 +113,8 @@ class AppSession:
         # current connection and plan.
         self.preflight_acknowledged: set[str] = set()
         self.no_fly_polygons: list[list[list[float]]] = []
+        # The last capture match (Api.match_captures), read by Request Reflight.
+        self.capture_report: dict[str, Any] | None = None
         self.terrain_source_path: str = ""
         # Which geocoding backend place search uses. Switchable to a self-hosted
         # Nominatim or to "offline" so no query ever leaves the machine.
@@ -150,7 +152,10 @@ class AppSession:
 
     def create_project(self, name: str, root_dir: str = "", description: str = "") -> dict[str, Any]:
         project = self.store.create_project(name=name, root_dir=root_dir or None, description=description)
-        self.store.set_active_project(int(project["id"]))
+        # Through set_active_project rather than the store, so the project being left
+        # takes its mission, layers, area of interest and dataset with it. A new project
+        # used to open showing the previous one's plan and photo points on its map.
+        self.set_active_project(int(project["id"]))
         self.audit("project_created", {"name": name})
         return self.store.get_active_project() or project
 
@@ -162,6 +167,12 @@ class AppSession:
         self.mission_uploaded = False
         self.layers.clear()
         self.active_dataset_dir = ""
+        # The drawn area and no-fly zones are held in memory, not per project, so they
+        # followed the operator into the next project and planned its mission over the
+        # last one's site.
+        self.aoi_polygon = []
+        self.no_fly_polygons = []
+        self.capture_report = None
         # Clearing is right -- the old project's layers are not this one's -- but leaving
         # it there meant opening a project with a finished reconstruction showed an empty
         # layer tree. Restore what this project has on disk.
@@ -204,6 +215,15 @@ class AppSession:
     # -- layers ----------------------------------------------------------
 
     def add_layer(self, layer: MapLayer) -> dict[str, Any]:
+        # The same file registered twice -- importing a folder again, re-running a
+        # match -- replaced nothing and appended a second row, so the layer panel listed
+        # "images photo points" twice and the map drew it twice. Same file, same layer.
+        if layer.path:
+            for existing in list(self.layers.values()):
+                if existing.path == layer.path and existing.kind == layer.kind:
+                    layer.id = existing.id
+                    layer.visible = existing.visible
+                    layer.opacity = existing.opacity
         self.layers[layer.id] = layer
         return layer.to_dict()
 
@@ -296,14 +316,24 @@ class AppSession:
         camera = geo.read_exif_camera(images[0])
         metadata["camera"] = f"{camera.make} {camera.model}".strip()
 
-        entry = self.store.save_dataset_entry(
+        # Importing the same folder again appended another identical row, so Load Flight
+        # and the dataset panels listed one flight four times. The same folder with the
+        # same images is the same dataset; a folder whose contents changed is recorded
+        # again, because its metadata is then genuinely different.
+        existing = next((
+            row for row in self.store.list_datasets(self.project_id())
+            if row.get("path") == str(source)
+            and json.loads(row.get("metadata_json") or "{}").get("image_count") == len(images)
+        ), None)
+        entry = existing or self.store.save_dataset_entry(
             project_id=self.project_id(),
             name=name or source.name,
             path=str(source),
             metadata=metadata,
         )
         self.active_dataset_dir = str(source)
-        self.audit("dataset_imported", {"folder": str(source), "images": len(images)})
+        self.audit("dataset_imported", {"folder": str(source), "images": len(images),
+                                        "already_recorded": existing is not None})
 
         if fixes:
             features = [

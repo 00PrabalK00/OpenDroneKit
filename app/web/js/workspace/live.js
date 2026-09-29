@@ -18,7 +18,17 @@
  */
 
 import { el } from "./primitives.js";
-import { tryCall } from "./api.js";
+import { connected, tryCall, whenReady } from "./api.js";
+import { demoEnabled } from "./demo.js";
+
+/* Said instead of a panel's own empty message when there is no application to ask.
+ *
+ * "No projects yet. Use New Project" is a statement about the machine's projects. With
+ * no bridge nobody has asked, and the cockpit in a plain browser was telling people their
+ * machine was empty. */
+export const NOT_CONNECTED =
+  "Not connected to the application. Start OpenDroneKit to see this project's data, "
+  + "or open the cockpit with ?demo=1 for the bundled example.";
 
 /**
  * A panel backed by one or more API calls.
@@ -44,6 +54,18 @@ export function live({ calls, render, empty, isEmpty, every }) {
   host.appendChild(el("div", { class: "live-wait", text: "Reading…" }));
 
   const settle = async () => {
+    /* The panels render before pywebview has injected its bridge. Asking straight away
+       raced it: every call failed with "bridge is not ready" and the panel settled on
+       its EMPTY state -- "No projects yet" over a machine with projects -- and nothing
+       re-asked once the bridge arrived. Waiting costs nothing when it is already up. */
+    if (!demoEnabled()) {
+      await whenReady();
+      if (!connected()) {
+        host.innerHTML = "";
+        host.appendChild(emptyState(NOT_CONNECTED));
+        return;
+      }
+    }
     let results;
     try {
       // A call is a method name, or a function returning [name, ...args] so a panel
@@ -74,6 +96,8 @@ export function live({ calls, render, empty, isEmpty, every }) {
     }
   };
 
+  host._settle = settle;
+  HOSTS.add(host);
   settle();
   if (every && typeof setInterval === "function") {
     const timer = setInterval(() => {
@@ -86,17 +110,10 @@ export function live({ calls, render, empty, isEmpty, every }) {
       settle();
     }, every);
   }
-  // Re-read after an action changes the project (a finding recorded, a report written).
-  // Without this a panel showed what was true when the workspace opened, so the list of
-  // reports stayed empty after Generate had written one.
-  const onRefresh = () => {
-    if (!host.isConnected) {
-      window.removeEventListener(REFRESH_EVENT, onRefresh);
-      return;
-    }
-    settle();
-  };
-  if (typeof window !== "undefined") window.addEventListener(REFRESH_EVENT, onRefresh);
+  // Re-read after an action changes the project (a finding recorded, a report written):
+  // every host in HOSTS is settled again on REFRESH_EVENT, below. Without this a panel
+  // showed what was true when the workspace opened, so the list of reports stayed empty
+  // after Generate had written one.
   return host;
 }
 
@@ -132,4 +149,35 @@ export function reported(pairs) {
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([label, value, unit]) =>
       unit ? { label, value: String(value), unit } : { label, value: String(value) });
+}
+
+/* Every live panel on screen, so it can be asked again.
+ *
+ * A panel asked once, when its workspace opened. Pressing Import, Plan or New Project
+ * changed what the application held and left every panel describing the state from before
+ * the button was pressed -- "Nothing imported" beside a toast saying 24 images had been.
+ * Forms are deliberately not re-rendered: only answers are re-asked, so nothing the
+ * operator typed is reset. */
+const HOSTS = new Set();
+
+function settleAll() {
+  for (const host of [...HOSTS]) {
+    if (!host.isConnected) { HOSTS.delete(host); continue; }
+    host._settle();
+  }
+}
+
+/* One listener for every panel: whoever announces a change (an action, a report, the
+   map) reaches all of them, and each is asked once. */
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener(REFRESH_EVENT, settleAll);
+}
+
+/** Ask every live panel on screen again (and let the maps redraw the project). */
+export function refreshLive() {
+  if (typeof window !== "undefined" && window.dispatchEvent) {
+    window.dispatchEvent(new Event(REFRESH_EVENT));
+  } else {
+    settleAll();
+  }
 }

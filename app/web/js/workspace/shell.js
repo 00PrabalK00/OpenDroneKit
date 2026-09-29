@@ -12,11 +12,15 @@ import { WORKSPACES, WORKSPACE_BY_ID, auditLine } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
-import { armDrawing, bindDrawingKeys, canDraw, vertices } from "./draw.js";
-import { refreshProjectOverlays, showVector } from "./mapview.js";
+import {
+  armDrawing, armTool, bindDrawingKeys, canDraw, configureDrawing, currentMap, formatArea,
+  formatLength, recordMeasurement, stopDrawing, undoPoint, vertices,
+} from "./draw.js";
+import { basemapNames, fitTo, refreshProjectOverlays, setBasemap, showVector, visibleBounds } from "./mapview.js";
 import { currentImage, setImage, setView } from "./viewstate.js";
 import { ask, askOne, choose as chooseModal, confirmAsk, labelBoxes, reveal, showResult } from "./modal.js";
-import { basemapNames, setBasemap, visibleBounds } from "./mapview.js";
+import { refreshLive } from "./live.js";
+import { armModelTool, configureViewer, currentViewer } from "./viewer3d.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -47,14 +51,20 @@ function jobOutcome(result) {
 const DANGER = new Set(["Abort", "Land", "RTL", "Manual Override", "Cancel"]);
 const PRIMARY = new Set(["Plan", "Process", "Run AI", "Generate", "Start", "Generate Report"]);
 
+/* Every shortcut listed here is bound in bindKeys() and runs from the palette.
+ *
+ * The list used to advertise Ctrl+S, Ctrl+B, F and Ctrl+Z, and the keydown handler bound
+ * none of them -- so the palette documented keys that did nothing, and choosing one there
+ * ran `() => {}`. A shortcut list is a claim about the program. */
 const SHORTCUTS = [
-  ["Ctrl/⌘ K", "Command palette"],
-  ["Ctrl/⌘ S", "Save"],
-  ["Ctrl/⌘ B", "Toggle side panels"],
-  ["F", "Fit view"],
-  ["F11", "Full-screen canvas"],
-  ["1 – 9", "Switch workspace"],
-  ["Ctrl/⌘ Z", "Undo"],
+  ["Ctrl/⌘ K", "Command palette", "palette"],
+  ["Ctrl/⌘ S", "Save the planned mission", "save"],
+  ["Ctrl/⌘ B", "Toggle side panels", "sides"],
+  ["F", "Fit the map to the project", "fit"],
+  ["F11", "Full-screen canvas", "full"],
+  ["1 – 9", "Switch workspace", null],
+  ["Ctrl/⌘ Z", "Undo the last drawn point", "undo"],
+  ["Esc", "Stop drawing", "stop"],
 ];
 
 /* The mission form's field keys, and what plan_mission actually reads.
@@ -160,7 +170,68 @@ export class Shell {
     this.mode = demoEnabled() ? "demo" : "disconnected";
     this.build();
     this.bindKeys();
+    this.bindDrawing();
     this.connect();
+  }
+
+  /** The map tools report here, and what they draw becomes the selection. */
+  bindDrawing() {
+    configureDrawing({
+      toast: (text, kind) => this.toast(text, kind),
+      prompt: (label, fallback) => askOne(label, label, fallback),
+      geometry: (geometry) => {
+        this.selectionGeometry = geometry;
+        this.selectionLabel.textContent = `selection: ${geometry.type}`;
+      },
+      changed: async () => {
+        await this.refreshState();
+        refreshLive();
+      },
+      // A measuring or selecting tool's shape: measured or kept the way the action that
+      // armed it says (the canvas's own Measure button counts as the Measure action).
+      drawn: (tool, geometry) => {
+        let armed = this.armedTool && this.armedTool.tool === tool ? this.armedTool : null;
+        if (!armed) {
+          const found = Object.entries(ACTIONS).find(([, e]) => e && e.tool === tool);
+          armed = { entry: found ? found[1] : {}, action: found ? found[0] : tool };
+        }
+        return this.onGeometryDrawn(armed.entry, armed.action, geometry);
+      },
+    });
+    // The 3D viewer reports and asks through the same channels as the map drawing.
+    configureViewer({
+      toast: (text, kind) => this.toast(text, kind),
+      prompt: (label, fallback) => askOne(label, label, fallback),
+      changed: () => refreshLive(),
+    });
+    this.root.addEventListener("odk:say", (event) => {
+      const { text, kind } = event.detail || {};
+      if (text) this.toast(text, kind || "info");
+    });
+  }
+
+  /** What a keyboard shortcut or its palette entry does. */
+  shortcut(name) {
+    switch (name) {
+      case "palette": this.openPalette(); return;
+      case "save": this.runAction("Save"); return;
+      case "full": this.dock.toggleCanvasFullScreen(); return;
+      case "sides": this.dock.toggleSidePanels(); return;
+      case "fit": {
+        const map = currentMap();
+        if (!map) { this.toast("Fit: there is no map on this workspace.", "warn"); return; }
+        if (!fitTo(map, map._odkBounds)) this.toast("Fit: nothing in this project to fit to yet.", "warn");
+        return;
+      }
+      case "undo":
+        this.toast(undoPoint() ? "Removed the last point." : "Nothing to undo: no shape is being drawn.",
+          "info");
+        return;
+      case "stop":
+        if (stopDrawing()) this.toast("Drawing cancelled.", "info");
+        return;
+      default:
+    }
   }
 
   /**
@@ -193,40 +264,6 @@ export class Shell {
     // again now that there is something to ask.
     this.open(this.workspaceId);
     this.pollChrome();
-  }
-
-  /* The top bar and status bar report the application, not a sample.
-
-     They used to be literals: a green "API", a green "3 workers", "PK / DEMO
-     organisation", a clock pinned to 00:00:00 and "OpenDroneKit Aukerman survey" as the
-     open project, whatever was really open. Now each is read from the Api (or the
-     shell's own runtime file) and says "unknown" when it cannot be. */
-  updateChrome() {
-    if (!this.chrome) return;
-    const live = this.mode === "connected";
-    const demo = this.mode === "demo";
-    const setDot = (node, kind) => { node.className = `status-dot ${kind}`; };
-
-    setDot(this.chrome.apiDot, live ? "ok" : demo ? "idle" : "warn");
-    this.chrome.apiText.textContent = live ? " API connected" : demo ? " demo (no API)" : " API not connected";
-
-    const running = (this.jobs || []).filter((j) => ["running", "pending"].includes(j.status)).length;
-    setDot(this.chrome.jobsDot, live ? (running ? "ok" : "idle") : "idle");
-    this.chrome.jobsText.textContent = live ? ` ${running} job${running === 1 ? "" : "s"} running` : " jobs —";
-
-    const hub = this.hubRuntime || {};
-    const hubKind = hub.hub_status === "running" ? "ok" : hub.hub_status === "starting" ? "idle" : "warn";
-    setDot(this.chrome.hubDot, live ? hubKind : "idle");
-    this.chrome.hubText.textContent = live
-      ? ` Hub ${hub.hub_status || "unknown"}`
-      : " Hub —";
-    this.chrome.hubText.title = hub.hub_error || (hub.hub_api ? `Hub service at ${hub.hub_api}` : "");
-
-    const project = this.state && this.state.project;
-    this.chrome.projectName.textContent = demo ? DEMO.ORG : project ? project.name : "no project open";
-    this.chrome.siteText.textContent = demo ? ` ${DEMO.SITES[0]}` : project ? ` ${project.name}` : " no project open";
-    setDot(this.chrome.siteDot, demo ? "idle" : project ? "ok" : "warn");
-    this.chrome.crsText.textContent = this.state && this.state.epsg ? `EPSG:${this.state.epsg}` : "EPSG:—";
   }
 
   /** Keep jobs and the Hub state current while the window is open. */
@@ -281,7 +318,7 @@ export class Shell {
      */
     const rows = this.workspaceEl.querySelectorAll("[data-rows]");
     for (const node of rows) {
-      if (!node.closest("[data-live]")) return true;
+      if (!node.closest("[data-live]") && !node.closest("[data-reference]")) return true;
     }
 
     // Kept as well. DATA-driven panels render real-looking prose rather than rows --
@@ -312,7 +349,12 @@ export class Shell {
     // this project does not do.
     //
     // So the banner now follows what is on screen rather than what the bridge says.
-    const synthetic = this.mode !== "connected" || this.showingSampleContent();
+    //
+    // Disconnected no longer counts as synthetic by itself: with no bridge every live()
+    // panel says "Not connected" rather than drawing anything, so there is no example on
+    // screen to label, and "EXAMPLE DATA" over an empty cockpit was its own false claim.
+    // Anything that still renders the sample is caught by showingSampleContent().
+    const synthetic = this.mode === "demo" || this.showingSampleContent();
     this.banner.classList.toggle("hidden", !synthetic);
     this.updateChrome();
     if (this.connectionChip) {
@@ -452,11 +494,18 @@ export class Shell {
         return;
       }
       case "tool": {
-        // The Measurements workspace lists its tools in a tree. Picking one used to
-        // print its name; it now does what the toolbar button of the same name does.
-        const tool = String(value.label || name).replace(/ line$/, "");
+        // The Measurements workspace lists its tools in a tree. Picking one used to print
+        // its name; it now does what the toolbar button of the same name does.
+        const tool = String(value.action || value.label || name).replace(/ line$/, "");
         if (resolve(tool)) this.runAction(tool);
         else this.toast(`${tool}: no such tool.`, "warn");
+        return;
+      }
+      case "endpoint": {
+        if (!value.method) return;
+        this.selectedEndpoint = { method: value.method, path: value.path };
+        this.toast(`${value.method} ${value.path}${value.summary ? ` — ${value.summary}` : ""}. `
+          + "Copy cURL and Send Request act on this one.", "ok");
         return;
       }
       case "setting": {
@@ -493,6 +542,7 @@ export class Shell {
     setImage(null);
     setView("map");
     await this.refreshState();
+    refreshLive();
     this.toast(`Opened ${name}.`, "ok");
   }
 
@@ -645,8 +695,8 @@ export class Shell {
       "project.new": "New Project",
       "project.open": "Open",
       "data.import_imagery": "Import",
-      "data.import_raster": "New Folder",
-      "data.import_vector": "New Folder",
+      "data.import_raster": "Add Layer",
+      "data.import_vector": "Add Layer",
       "mission.plan": "Plan",
       "mission.save": "Save",
       "mission.export": "Export",
@@ -820,16 +870,6 @@ export class Shell {
     }
     this.navItems = items;
 
-    // Filled from the Api by updateChrome(); nothing here is a literal about the world.
-    const chrome = this.chrome = this.chrome || {};
-    chrome.apiDot = el("span", { class: "status-dot warn" });
-    chrome.apiText = el("span", { text: " API not connected" });
-    chrome.jobsDot = el("span", { class: "status-dot idle" });
-    chrome.jobsText = el("span", { text: " jobs —" });
-    chrome.hubDot = el("span", { class: "status-dot idle" });
-    chrome.hubText = el("span", { text: " Hub —" });
-    chrome.projectName = el("span", { text: this.mode === "demo" ? DEMO.ORG : "no project open" });
-
     const search = el("div", { class: "searchbox" }, [
       el("span", { text: "⌕" }),
       el("span", { text: "Search projects, missions, findings…", style: "flex:1 1 auto" }),
@@ -837,38 +877,52 @@ export class Shell {
     ]);
     search.onclick = () => this.openPalette();
 
+    /* Every indicator here used to be a literal: a green "API" dot whether or not a
+       bridge existed, "3 workers" in a build that runs jobs on threads in this process,
+       the avatar "PK" and "DEMO organisation" over a real project, and a clock stopped
+       at the epoch. Each is now set from the connection state by updateChrome(). */
+    this.bridgeDot = el("span", { class: "status-dot idle" });
+    this.bridgeText = el("span", { class: "nav-bridge", text: " bridge…" });
+    this.jobsDot = el("span", { class: "status-dot idle" });
+    this.jobsText = el("span", { class: "nav-jobs", text: " jobs —" });
+    this.orgText = el("span", { class: "nav-project", text: "" });
+    // The Hub the desktop shell starts (odk-runtime.json), polled by pollChrome().
+    this.hubDot = el("span", { class: "status-dot idle" });
+    this.hubText = el("span", { class: "nav-hub", text: " Hub —" });
     return el("header", { class: "topnav" }, [
       el("div", { class: "brand" }, [el("span", { class: "mark" }), el("span", { text: "OpenDroneKit" })]),
       items,
       el("div", { class: "nav-right" }, [
         search,
         el("span", { class: "sep" }),
-        el("span", {}, [chrome.apiDot, chrome.apiText]),
-        el("span", {}, [chrome.jobsDot, chrome.jobsText]),
-        el("span", {}, [chrome.hubDot, chrome.hubText]),
+        el("span", { title: "Connection to the Python application" }, [this.bridgeDot, this.bridgeText]),
+        el("span", { title: "Background jobs in this application" }, [this.jobsDot, this.jobsText]),
+        el("span", { title: "The Hub web service this window started" }, [this.hubDot, this.hubText]),
         // The aircraft link, on every screen: a lost link must be visible in the frame.
-        this.vehicleIndicator = el("span", {}, [
+        this.vehicleIndicator = el("span", { title: "Aircraft link" }, [
           this.vehicleDot = el("span", { class: "status-dot idle" }),
           this.vehicleLabel = el("span", { text: " no aircraft" }),
         ]),
+        el("span", { title: "Projects are stored on this machine" }, [
+          el("span", { class: "status-dot idle" }), el("span", { text: " local-first" })]),
         el("span", { class: "sep" }),
         this.clock = el("span", { class: "mono", text: "--:--:-- UTC" }),
         el("span", { class: "sep" }),
-        chrome.projectName,
+        this.orgText,
       ]),
     ]);
   }
 
   buildStatus() {
     this.selectionLabel = el("span", { text: "no selection" });
-    const chrome = this.chrome = this.chrome || {};
-    chrome.siteDot = el("span", { class: "status-dot warn" });
-    chrome.siteText = el("span", { text: this.mode === "demo" ? ` ${DEMO.SITES[0]}` : " no project open" });
-    chrome.crsText = el("span", { class: "mono", text: "EPSG:—" });
+    // Was DEMO.SITES[0] -- "OpenDroneKit Aukerman survey" -- whatever project was open.
+    this.siteDot = el("span", { class: "status-dot idle" });
+    this.siteText = el("span", { class: "status-project", text: " not connected" });
+    this.crsText = el("span", { class: "mono", text: "map EPSG:4326" });
     return el("footer", { class: "statusbar" }, [
-      el("span", {}, [chrome.siteDot, chrome.siteText]),
+      el("span", {}, [this.siteDot, this.siteText]),
       el("span", { class: "sep" }),
-      chrome.crsText,
+      this.crsText,
       el("span", { class: "sep" }),
       this.selectionLabel,
       el("span", { class: "spacer" }),
@@ -976,17 +1030,21 @@ export class Shell {
       return;
     }
     if (entry.tool) {
+      // Armed on the map drawing layer, which reads the clicks. Storing the name on the
+      // shell and toasting "Draw on the canvas" was all this did before, and nothing ever
+      // read it back: Distance and Area took no measurement at all.
+      // A 3D model on screen takes the tool; otherwise the map drawing layer does.
+      // Which action armed it, so a finished shape is measured the way that action says.
+      this.armedTool = { tool: entry.tool, entry, action };
+      const onModel = currentViewer();
+      let said = onModel ? armModelTool(entry.tool) : null;
+      const onMap = !said;
+      if (onMap) said = armTool(entry.tool);
       this.activeTool = entry.tool;
       this.workspaceEl.dataset.tool = entry.tool;
-      if (entry.draw) {
-        // The tool is only armed if something is listening for the drawing. It used to
-        // set activeTool, which nothing read, and report "Draw on the canvas".
-        armDrawing(entry.draw, (geometry) => this.onGeometryDrawn(entry, action, geometry));
-        this.toast(`${action}: click points on the map; double-click or Enter to finish, `
-          + "Esc to cancel.", "ok");
-        return;
-      }
-      this.toast(`Tool armed: ${action}. Draw on the canvas.`, "ok");
+      if (said) this.toast(`${action}: ${said}`, !onMap || currentMap() ? "ok" : "warn");
+      else this.toast(`${action}: this tool draws on a 3D model, and needs the 3D view open. `
+        + "Use Textured Mesh or Point Cloud first.", "warn");
       return;
     }
     if (entry.workspace) {
@@ -1018,15 +1076,15 @@ export class Shell {
         return;
       }
       const message = (result && result.message) || `${action} done.`;
-      this.toast(message, "ok");
+      this.toast(message, (result && result.level) || "ok");
       if (result && result.job) this.watchJob(result.job);
       if (result && result.refresh) {
         await this.refreshState();
         // A new overlay or marker belongs on the map the operator is looking at.
         refreshProjectOverlays();
         this.dock.refreshLive();
-        // Live panels re-read what the action changed.
-        window.dispatchEvent(new Event("odk:refresh"));
+        // Live panels (and the maps) re-read what the action changed.
+        refreshLive();
       }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
@@ -1044,6 +1102,7 @@ export class Shell {
    */
   async onGeometryDrawn(entry, action, geometry) {
     this.selectionGeometry = geometry;
+    if (this.selectionLabel) this.selectionLabel.textContent = `selection: ${geometry.type}`;
     const points = vertices(geometry);
     const pending = this.pendingSelectionAction;
     this.pendingSelectionAction = null;
@@ -1061,9 +1120,38 @@ export class Shell {
       return;
     }
     try {
-      const result = await call("measure_drawn", entry.measure, points);
-      this.lastMeasurement = result;
-      this.toast(`${action}: ${describeMeasurement(result)}`, "ok");
+      /* Two measurements, each saying what it is. The drawn positions give a horizontal
+         length or area on the ground anywhere (measure_geometry); the project's own
+         georeferenced raster, when there is one, gives the planar figure in its CRS
+         and the length over the surface (measure_drawn). A profile only exists on the
+         raster. Neither is worked out in the browser. */
+      const parts = [];
+      if (entry.measure === "distance" || entry.measure === "area") {
+        const flat = await call("measure_geometry", points, entry.measure);
+        if (entry.measure === "distance") {
+          recordMeasurement({ kind: "distance", value: flat.length_m, unit: "m", vertices: flat.vertices });
+          parts.push(`Distance ${formatLength(flat.length_m)} over ${flat.vertices} points (${flat.method}).`);
+        } else {
+          recordMeasurement({ kind: "area", value: flat.area_m2, unit: "m²", perimeter_m: flat.perimeter_m });
+          parts.push(`Area ${formatArea(flat.area_m2)}, perimeter ${formatLength(flat.perimeter_m)}. `
+            + "Volume, Cut & Fill and Slope act on it.");
+        }
+        try {
+          const surface = await call("measure_drawn", entry.measure, points);
+          this.lastMeasurement = surface;
+          parts.push(`On the project raster: ${describeMeasurement(surface)}`);
+        } catch (error) {
+          // No raster in the project is not an error of this measurement; any other
+          // refusal (a raster in feet, an unprojected CRS) is shown as one.
+          const why = String(error.message || error);
+          if (!/no georeferenced raster/i.test(why)) parts.push(`Raster measurement refused: ${why}`);
+        }
+        this.toast(parts.join(" "), "ok");
+      } else {
+        const result = await call("measure_drawn", entry.measure, points);
+        this.lastMeasurement = result;
+        this.toast(`${action}: ${describeMeasurement(result)}`, "ok");
+      }
       this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
     } catch (error) {
       this.toast(`${action}: ${error.message || error}`, "error");
@@ -1106,6 +1194,7 @@ export class Shell {
       ask: (title, fields) => ask(title, fields),
       showResult: (title, content) => showResult(title, content),
       labelBoxes: (title, spec) => labelBoxes(title, spec),
+      form: (title, fields) => ask(title, fields),
       missionOptions: () => {
         // What the mission panels were actually edited to, under the names the planner
         // reads.
@@ -1170,6 +1259,8 @@ export class Shell {
         if (raw.dense !== undefined && raw.dense !== "") {
           options.dense = String(raw.dense).toLowerCase() === "yes";
         }
+        // Chosen with Set CRS. Empty means the reconstruction picks the UTM zone itself.
+        if (raw.epsg) options.epsg = Number(raw.epsg);
         return options;
       },
       // The pipeline also runs coverage QA, which sizes each photograph's footprint from
@@ -1221,6 +1312,9 @@ export class Shell {
         };
       },
       selectedReport: () => this.selectedReportId || null,
+      openWorkspace: (id) => this.open(id),
+      // Which workspace the button was pressed on, for a toolbar name two screens share.
+      workspaceId: () => this.workspaceId,
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
@@ -1252,6 +1346,11 @@ export class Shell {
       // One click on the photograph on the canvas, in the photograph's own full-
       // resolution pixels: {x, y, width, height}. null on Esc or a click off the picture.
       pickImagePixel: (message) => this.pickImagePixel(message),
+      selectedEndpoint: () => this.selectedEndpoint || null,
+      setSetting: (key, value) => {
+        this.settings = this.settings || {};
+        this.settings[key] = value;
+      },
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather
       // than refusing keeps a single-tenant desktop install usable; a multi-tenant
@@ -1261,7 +1360,7 @@ export class Shell {
       // A secret the application will never show again. A toast disappears after four
       // seconds, which is not long enough to copy a token, so this blocks until the
       // user dismisses it.
-      reveal: (text) => reveal("Copy this now — it is not stored", text),
+      reveal: (text, title) => reveal(title || "Copy this now — it is not stored", text),
     };
   }
 
@@ -1272,6 +1371,62 @@ export class Shell {
     };
   }
 
+  /** The header and status bar, from what the application actually reported. */
+  updateChrome() {
+    if (!this.bridgeDot) return;
+    const project = (this.state && this.state.project) || null;
+    const jobs = this.jobs || [];
+    const running = jobs.filter((j) =>
+      ["running", "queued", "pending"].includes(j.status || j.state)).length;
+
+    if (this.mode === "demo") {
+      this.bridgeDot.className = "status-dot idle";
+      this.bridgeText.textContent = " demo — not connected";
+      this.jobsDot.className = "status-dot idle";
+      this.jobsText.textContent = " no jobs (example)";
+      this.orgText.textContent = DEMO.ORG;
+    } else if (this.mode === "connected") {
+      this.bridgeDot.className = "status-dot ok";
+      this.bridgeText.textContent = " bridge";
+      this.jobsDot.className = `status-dot ${running ? "ok" : "idle"}`;
+      this.jobsText.textContent = running
+        ? ` ${running} job${running === 1 ? "" : "s"} running`
+        : ` no jobs running${jobs.length ? ` (${jobs.length} recorded)` : ""}`;
+      this.orgText.textContent = project ? String(project.name || "") : "";
+    } else {
+      this.bridgeDot.className = "status-dot warn";
+      this.bridgeText.textContent = " no bridge";
+      this.jobsDot.className = "status-dot idle";
+      this.jobsText.textContent = " jobs unknown";
+      this.orgText.textContent = "";
+    }
+
+    // The Hub service the desktop shell started, as its runtime file reports it.
+    if (this.hubDot) {
+      const hub = this.hubRuntime || {};
+      const live = this.mode === "connected";
+      const kind = hub.hub_status === "running" ? "ok" : hub.hub_status === "starting" ? "idle" : "warn";
+      this.hubDot.className = `status-dot ${live ? kind : "idle"}`;
+      this.hubText.textContent = live ? ` Hub ${hub.hub_status || "unknown"}` : " Hub —";
+      this.hubText.title = hub.hub_error || (hub.hub_api ? `Hub service at ${hub.hub_api}` : "");
+    }
+
+    const name = this.mode === "demo" ? DEMO.SITES[0] : project && project.name;
+    this.siteDot.className = `status-dot ${name ? "ok" : "idle"}`;
+    this.siteText.textContent = name ? ` ${name}`
+      : this.mode === "connected" ? " no project open" : " not connected";
+    // The map is drawn in WGS84 longitude/latitude, which is what the cursor readout
+    // reports. The project's own CRS, when it has one, is a different thing and is named
+    // beside it rather than conflated with it.
+    const layerCrs = ((this.state && this.state.layers) || [])
+      .map((l) => l.crs_epsg).find((epsg) => epsg && Number(epsg) !== 4326);
+    const projectCrs = this.mode === "demo" ? DATA.project.epsg
+      : (project && project.epsg) || (this.state && this.state.epsg) || layerCrs;
+    this.crsText.textContent = projectCrs
+      ? `map EPSG:4326 · project ${String(projectCrs).startsWith("EPSG") ? projectCrs : `EPSG:${projectCrs}`}`
+      : "map EPSG:4326";
+  }
+
   /** Ask the application what is open, so prerequisites are real rather than assumed. */
   async refreshState() {
     const state = await tryCall("get_state");
@@ -1280,6 +1435,7 @@ export class Shell {
         project: state.project || state.active_project || null,
         dataset: state.dataset || state.active_dataset || null,
         epsg: state.display_epsg || null,
+        layers: state.layers || [],
       };
     }
     const projects = await tryCall("list_projects");
@@ -1335,6 +1491,7 @@ export class Shell {
         this.toast(`Job ${jobId} finished${jobOutcome(status.result)}.`, "ok");
         await this.refreshState();
         this.dock.refreshLive();
+        refreshLive();
         return;
       }
       if (state === "failed" || state === "error") {
@@ -1375,12 +1532,14 @@ export class Shell {
       ...WORKSPACES.map((w) => ({ kind: "workspace", label: w.title, hint: "switch", run: () => this.open(w.id) })),
       { kind: "layout", label: "Reset workspace layout", run: () => this.dock.resetLayout() },
       { kind: "view", label: "Toggle full-screen canvas", hint: "F11", run: () => this.dock.toggleCanvasFullScreen() },
-      ...SHORTCUTS.map(([keys, what]) => ({ kind: "shortcut", label: what, hint: keys, run: () => {} })),
-      // The projects this machine actually holds; picking one opens it. There used to be
-      // two demo sites, a finding and a mission version here that existed nowhere.
-      ...(this.mode === "connected" ? (this.projects || []) : []).map((p) => ({
-        kind: "project", label: String(p.name), hint: "open project",
-        run: () => this.openProject(p.id, p.name),
+      ...SHORTCUTS.filter(([, , name]) => name && name !== "palette").map(([keys, what, name]) => ({
+        kind: "shortcut", label: what, hint: keys, run: () => this.shortcut(name),
+      })),
+      // The projects on this machine, each of which opens. This listed two demo site
+      // names that did nothing when chosen, plus a finding and a mission that existed
+      // nowhere -- on every install, connected or not.
+      ...(this.mode === "connected" ? (this.projects || []) : []).slice(0, 40).map((p) => ({
+        kind: "project", label: String(p.name), hint: "open", run: () => this.openProject(p.id, p.name),
       })),
     ];
     this.palette(items, "");
@@ -1445,8 +1604,18 @@ export class Shell {
     }
     document.addEventListener("keydown", (event) => {
       const meta = event.ctrlKey || event.metaKey;
-      if (meta && event.key.toLowerCase() === "k") { event.preventDefault(); this.openPalette(); return; }
-      if (event.key === "F11") { event.preventDefault(); this.dock.toggleCanvasFullScreen(); return; }
+      const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+      const key = String(event.key || "").toLowerCase();
+      if (meta && key === "k") { event.preventDefault(); this.openPalette(); return; }
+      if (event.key === "F11") { event.preventDefault(); this.shortcut("full"); return; }
+      if (meta && key === "s") { event.preventDefault(); this.shortcut("save"); return; }
+      if (meta && key === "b") { event.preventDefault(); this.shortcut("sides"); return; }
+      if (meta && key === "z" && !typing) { event.preventDefault(); this.shortcut("undo"); return; }
+      if (!meta && !typing && key === "f") { this.shortcut("fit"); return; }
+      if (event.key === "Escape" && !document.querySelector(".modal-backdrop, .palette-backdrop")) {
+        this.shortcut("stop");
+        return;
+      }
       // Digits switch workspace, but not while typing into a field.
       if (!meta && /^[1-9]$/.test(event.key) && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
         const workspace = WORKSPACES[Number(event.key) - 1];
@@ -1458,11 +1627,20 @@ export class Shell {
     const tick = async () => {
       // The epoch while the shell is showing demo content: a live wall clock beside
       // synthetic sites is the detail that makes the whole screen read as a real shift
-      // in progress. Connected to the application, it is simply the time -- it used to
-      // stay pinned at the epoch for the whole session, a clock that was always wrong.
-      this.clock.textContent = this.mode === "connected"
-        ? `${new Date().toISOString().slice(11, 19)} UTC`
-        : `${DEMO.CLOCK} UTC`;
+      // in progress, and it is the one number here that is genuinely true -- which is
+      // exactly what makes it misleading in this company.
+      //
+      // Only then, though. This used to show the epoch in every mode, so a connected
+      // operator saw a clock stopped at 00:00:00 over their own project: a frozen reading
+      // presented as the time, the same fault pointing the other way.
+      if (this.mode === "demo") {
+        this.clock.textContent = `${DEMO.CLOCK} UTC`;
+        return;
+      }
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      this.clock.textContent =
+        `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())} UTC`;
       // The aircraft indicator follows the link, so a lost link shows up in the frame
       // on every screen, not only on the Flight workspace.
       ticks += 1;

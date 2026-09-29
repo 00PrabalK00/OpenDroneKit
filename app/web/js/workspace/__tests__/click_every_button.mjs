@@ -162,7 +162,11 @@ const originalContext = shell.actionContext.bind(shell);
 shell.actionContext = () => ({
   ...originalContext(),
   prompt: async () => "Harness",
-  choose: async (_title, options) => (options[0] ? options[0].value : null),
+  choose: async (_title, options) => { const first = (options || [])[0]; return first === undefined ? null : (typeof first === "object" ? first.value : first); },
+  // A form answers with every field's own value, or "Harness" where the field is
+  // empty, so a button behind a multi-field dialog is exercised rather than waited on.
+  form: async (_title, fields) => Object.fromEntries(
+    (fields || []).map((f) => [f.key, f.value === undefined || f.value === "" ? "Harness" : f.value])),
   reveal: async () => {},
   // Several fields at once: each keeps the value the action offered as its default.
   ask: async (_title, fields) => Object.fromEntries(fields.map((f) => [f.key, f.value])),

@@ -103,3 +103,41 @@ class TestChunking:
         assert large.recommended_chunk_size >= small.recommended_chunk_size
         # Never above the matching limit, however much memory there is.
         assert large.recommended_chunk_size <= EXHAUSTIVE_MATCH_LIMIT
+
+
+class TestTheVerdictAgreesWithItself:
+    """Audit: Size Job said "Does not fit as one job: 8 images should run as a single
+    job ... Run in chunks of about 8 images" on a machine with 573 MB free. The fit test
+    deducted a 2 GB margin from memory that is already net of the OS, and the note and
+    the verdict were worked out from different conditions."""
+
+    def test_a_job_within_available_memory_fits_and_says_memory_is_tight(self) -> None:
+        estimate = size_job(8, memory_mb=573, disk_mb=500000)
+        assert estimate.fits_in_memory and estimate.can_run_as_one_job
+        assert not estimate.chunking_required and estimate.recommended_chunk_size == 8
+        assert estimate.note.startswith("8 images should run as a single job")
+        assert any(w.startswith("Memory is tight") for w in estimate.warnings)
+
+    def test_a_job_past_available_memory_is_split_into_smaller_chunks(self) -> None:
+        estimate = size_job(20, memory_mb=700, disk_mb=500000)
+        assert not estimate.fits_in_memory and not estimate.can_run_as_one_job
+        assert estimate.chunking_required
+        assert 1 <= estimate.recommended_chunk_size < 20
+        assert estimate.note.startswith("This job should be split")
+
+    def test_a_job_short_of_disk_does_not_claim_it_should_run(self) -> None:
+        estimate = size_job(50, memory_mb=32000, disk_mb=1000)
+        assert not estimate.can_run_as_one_job
+        assert "should run as a single job" not in estimate.note
+        assert "not on disk" in estimate.note
+
+    @pytest.mark.parametrize("images", [1, 8, 40, 299, 301, 2000])
+    @pytest.mark.parametrize("memory", [0, 100, 573, 2500, 8000, 64000])
+    @pytest.mark.parametrize("disk", [0, 500, 5_000_000])
+    def test_note_verdict_and_chunk_never_contradict(self, images, memory, disk) -> None:
+        e = size_job(images, memory_mb=memory, disk_mb=disk)
+        assert e.chunking_required == (e.recommended_chunk_size < images)
+        assert e.note.startswith("This job should be split") == e.chunking_required
+        assert ("should run as a single job" in e.note) == e.can_run_as_one_job
+        if not e.fits_in_memory:
+            assert e.chunking_required, "a job that does not fit was not split"

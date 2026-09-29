@@ -237,11 +237,18 @@ def search_places(
     provider: str = "nominatim",
     limit: int = 8,
     gazetteer_path: Path | None = None,
+    local_places: list[Place] | None = None,
 ) -> dict[str, Any]:
     """Search, always answering with the coordinate interpretation first when one exists.
 
     A typed coordinate never requires the network, so it is resolved locally even when
     a remote provider is selected.
+
+    `local_places` are what this machine already knows about the open project -- its
+    layers, its area of interest -- and are matched by name whatever the provider. When a
+    remote provider cannot be reached, the saved places are searched as well and the
+    answer says the remote search did not happen: on a field laptop with no signal the
+    search used to answer only with "URLError ... blocked".
     """
     text = str(query or "").strip()
     if not text:
@@ -258,18 +265,31 @@ def search_places(
             kind="coordinates", source="typed",
         ))
 
+    needle = text.lower()
+    results.extend(p for p in (local_places or []) if needle in p.name.lower())
+
     engine = build_provider(provider, **({"gazetteer_path": gazetteer_path} if provider == "offline" else {}))
     error = ""
+    note = engine.describe()
+    used = getattr(engine, "name", provider)
     try:
         results.extend(p for p in engine.search(text, limit=limit) if p.longitude != 0.0 or p.latitude != 0.0)
     except Exception as exc:  # noqa: BLE001
-        # A failed lookup must not lose a coordinate the operator already typed.
-        error = f"{type(exc).__name__}: {exc}"
+        # A failed lookup must not lose a coordinate the operator already typed, and on
+        # a machine with no network the places saved on it are still worth searching.
+        reason = getattr(exc, "reason", None) or exc
+        offline = OfflineProvider(gazetteer_path=gazetteer_path)
+        results.extend(p for p in offline.search(text, limit=limit) if p.kind != "coordinates")
+        error = (f"The {used} search could not be reached ({type(exc).__name__}: {reason}), "
+                 "so nothing was looked up online. Matches here are from this machine only: "
+                 "typed coordinates, the open project's layers and area, and saved places.")
+        note = offline.describe()
+        used = "offline"
 
     return {
         "ok": bool(results) or not error,
         "results": [p.to_dict() for p in results[:limit]],
-        "provider": getattr(engine, "name", provider),
-        "provider_note": engine.describe(),
+        "provider": used,
+        "provider_note": note,
         "error": error,
     }

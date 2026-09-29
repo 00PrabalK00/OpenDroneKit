@@ -87,8 +87,79 @@ export function demoEnabled() {
  * DATA banner belongs on screen. Derived from the same constants the panels render, so
  * the two cannot disagree: there is no second list to keep in step.
  */
+/* Only the example PROJECT's name, not the model keys that follow it in DEMO.SITES.
+ * Those are the installed models' real names, and the Home and Settings screens list
+ * them from verify_models() -- so a sentinel on them raised EXAMPLE DATA over a real
+ * project's own model list. */
 export const SAMPLE_SENTINELS = [
   DEMO.ORG,
   DEMO.OPERATOR + " site",
-  ...(DEMO.SITES || []).slice(0, 3),
+  (DEMO.SITES || [])[0],
 ].filter((s) => typeof s === "string" && s.length > 3);
+
+/*
+ * What the example answers when the cockpit asks it something.
+ *
+ * Demo mode used to change nothing but the banner. Every panel still called the real
+ * bridge, so ?demo=1 on a machine with projects showed THAT machine's projects, jobs and
+ * images under "EXAMPLE DATA" -- real data labelled as an example, which is the same
+ * lie as the reverse, and a demo with no example in it.
+ *
+ * So in demo mode the calls never reach Python. The handful of reads below are answered
+ * from DEMO_DATA, which holds real figures this repository measured; everything else is
+ * refused with a sentence saying so. Nothing is invented to fill a gap: a panel whose
+ * method is not listed shows its own empty state, under the banner.
+ */
+const DEMO_READS = {
+  get_state: () => ({
+    project: {
+      id: 0,
+      name: DEMO_DATA.project.name,
+      epsg: DEMO_DATA.project.epsg,
+      root_dir: "(bundled example)",
+    },
+    aoi: DEMO_DATA.mission.polygon || [],
+    no_fly: [],
+    terrain_source: "",
+    layers: [],
+    vehicle: {},
+    has_mission: (DEMO_DATA.mission.line || []).length > 1,
+    active_dataset: "",
+    jobs: [],
+  }),
+  list_projects: () => ({
+    projects: [{ id: 0, name: DEMO_DATA.project.name, root_dir: "(bundled example)" }],
+  }),
+  get_project: () => ({ project: { id: 0, name: DEMO_DATA.project.name, epsg: DEMO_DATA.project.epsg } }),
+  mission_geojson: () => ({
+    geojson: {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { role: "flight_line" },
+          geometry: { type: "LineString", coordinates: DEMO_DATA.mission.line || [] } },
+        ...(DEMO_DATA.footprint.captures || []).map((c, i) => ({
+          type: "Feature", properties: { role: "capture", seq: i + 1 },
+          geometry: { type: "Point", coordinates: c },
+        })),
+      ],
+    },
+  }),
+  // The digests are recorded in the example, but nothing was re-hashed here, so no row
+  // claims to be verified.
+  verify_models: () => ({
+    models: (DEMO_DATA.models || []).map((m) => ({
+      model_key: m.key, status: "example", verified: false, sha256: m.sha256,
+    })),
+  }),
+};
+
+/** Answer a Api call from the example, or throw saying the example cannot. */
+export function demoAnswer(method) {
+  const read = DEMO_READS[method];
+  if (!read) {
+    throw new Error(
+      `Demo mode: ${method} needs the application, and the bundled example has no answer `
+      + "for it. Nothing was changed. Open the cockpit without ?demo=1 to use a real project.");
+  }
+  return { ok: true, demo: true, ...read() };
+}

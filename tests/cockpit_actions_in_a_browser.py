@@ -85,16 +85,6 @@ try {
       const clientY = box.top + (box.height - nh * fit) / 2 + ((sy - cy) * nh / ch) * fit;
       image.dispatchEvent(new MouseEvent("click", { clientX, clientY, bubbles: true }));
     }
-    // Real click events on the 3D model's canvas, at the screen point where the viewer
-    // draws each absolute CRS point.
-    for (let k = 0; k < (step.modelClicks || []).length; k += 1) {
-      await until(() => log.slice(before).filter((t) => /^Click /.test(t.text)).length > k);
-      await settle(50);
-      const { currentModelViewer } = await import("./js/workspace/model3d.js");
-      const viewer = currentModelViewer();
-      const at = viewer.project(step.modelClicks[k]);
-      viewer.canvas.dispatchEvent(new MouseEvent("click", { clientX: at.x, clientY: at.y, bubbles: true }));
-    }
     if (step.click) {
       await until(() => canDraw());
       await until(() => log.slice(before).some((t) => /^Click /.test(t.text)));
