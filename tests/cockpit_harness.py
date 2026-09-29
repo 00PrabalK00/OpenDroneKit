@@ -219,7 +219,12 @@ class Cockpit:
                 })
                 return self._send(json.dumps(result, default=str).encode(), "application/json")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # The listen backlog defaults to 5. A map opening fires a burst of tile and
+        # module requests, and on a loaded Windows machine the overflow was refused:
+        # "Failed to fetch", and tiles MapLibre marks errored and never asks for again.
+        server_class = type("CockpitServer", (ThreadingHTTPServer,),
+                            {"request_queue_size": 128, "daemon_threads": True})
+        self.server = server_class(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self) -> "Cockpit":
@@ -263,7 +268,8 @@ class Cockpit:
         html = html.replace("<head>", "<head>" + shim, 1)
         return html.replace("</body>", scenario + "</body>", 1)
 
-    def run(self, scenario: str, *, query: str = "", virtual_time_ms: int = 60000) -> dict[str, Any]:
+    def run(self, scenario: str, *, query: str = "", virtual_time_ms: int = 60000,
+            timeout_s: float = 240) -> dict[str, Any]:
         """Load the cockpit, run `scenario` (the body of an async function), return what
         it returned."""
         self._scenario = scenario
@@ -276,7 +282,7 @@ class Cockpit:
         argv.insert(-1, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1")
         if self.window_size:
             argv.insert(-1, f"--window-size={self.window_size}")
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=240,
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s,
                                    encoding="utf-8", errors="replace")
         found = re.search(r'<pre id="odk-result">(.*?)</pre>', completed.stdout, re.DOTALL)
         assert found, f"the page never rendered a result:\n{completed.stdout[-2000:]}\n{completed.stderr[-2000:]}"

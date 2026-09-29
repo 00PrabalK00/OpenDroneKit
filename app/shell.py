@@ -299,7 +299,12 @@ class Shell:
                 self.wfile.write(body)
 
         handler = functools.partial(Handler, directory=str(root))
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        # The listen backlog defaults to 5. Opening the map fires a burst of tile and
+        # module requests; on a busy Windows machine the overflow is refused, and a
+        # basemap tile refused once is marked errored and never requested again.
+        server_class = type("ShellServer", (ThreadingHTTPServer,),
+                            {"request_queue_size": 128, "daemon_threads": True})
+        server = server_class(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{server.server_port}/{page}"
 
