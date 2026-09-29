@@ -117,23 +117,95 @@ def add_battery(organization_id: int, serial: str, capacity_mah: int = 0,
 
     if not str(serial).strip():
         raise ValueError("A battery needs a serial number; it is how cycles are tracked.")
+    capacity = _whole_number(capacity_mah, "Capacity (mAh)")
+    limit = _whole_number(cycle_limit, "Cycle limit")
     with _session() as db:
         battery = Battery(
             organization_id=_organization(db, organization_id),
             serial_number=str(serial).strip(),
-            capacity_mah=int(capacity_mah or 0),
-            cycle_limit=int(cycle_limit or 0),
+            capacity_mah=capacity,
+            cycle_limit=limit,
+            # Not measured yet. Left empty rather than 100: nobody has tested this pack.
+            health_pct=None,
         )
         db.add(battery)
         db.commit()
         db.refresh(battery)
-        return {
-            "id": battery.id,
-            "serial_number": battery.serial_number,
-            "capacity_mah": battery.capacity_mah,
-            "cycle_count": battery.cycle_count,
-            "cycle_limit": battery.cycle_limit,
-        }
+        return _battery_row(battery)
+
+
+def _whole_number(value: Any, label: str) -> int:
+    """A count that cannot be negative, from a prompt's text or a number.
+
+    Blank means 0 (not recorded). A negative cycle limit made a new 0-cycle pack read
+    "past cycle limit"; a negative capacity is not a battery.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return 0
+    try:
+        number = float(text)
+    except ValueError:
+        raise ValueError(f"{label} must be a whole number, not {text!r}.") from None
+    if number != int(number):
+        raise ValueError(f"{label} must be a whole number, not {text!r}.")
+    if number < 0:
+        raise ValueError(f"{label} cannot be negative (got {text}).")
+    return int(number)
+
+
+def _battery_row(battery) -> dict[str, Any]:
+    return {
+        "id": battery.id,
+        "serial_number": battery.serial_number,
+        "capacity_mah": battery.capacity_mah,
+        "cycle_count": int(battery.cycle_count or 0),
+        "cycle_limit": int(battery.cycle_limit or 0),
+        "health_pct": None if battery.health_pct is None else round(float(battery.health_pct), 1),
+    }
+
+
+def log_battery_cycle(organization_id: int, battery_id: Any, cycles: Any = 1,
+                      health_pct: Any = "") -> dict[str, Any]:
+    """Count charge cycles on a pack, and record its health if someone measured it.
+
+    The desktop could register a pack but never move its cycle count or enter a
+    health reading, so the Cycles column stayed 0 and Health had nothing to show.
+    Health is optional here and is only ever what the operator typed: blank leaves
+    the stored value (or its absence) as it was. A reading outside 0-100 is refused,
+    not clamped, because a clamped number is not what was measured.
+    """
+    from services.api.models import Battery
+
+    try:
+        number = int(battery_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{battery_id!r} is not a battery id; select a battery in the "
+                         "fleet list.") from None
+    count = _whole_number(cycles, "Cycles")
+    reading: float | None = None
+    text = str(health_pct if health_pct is not None else "").strip().rstrip("%").strip()
+    if text:
+        try:
+            reading = float(text)
+        except ValueError:
+            raise ValueError(f"Health must be a percentage, not {text!r}.") from None
+        if not 0.0 <= reading <= 100.0:
+            raise ValueError(f"Health must be between 0 and 100 % (got {text}).")
+    if count == 0 and reading is None:
+        raise ValueError("Nothing to record: give a number of cycles or a measured health.")
+    with _session() as db:
+        battery = db.get(Battery, number)
+        if battery is None or int(battery.organization_id) != int(organization_id):
+            raise ValueError(f"No battery with id {number} in this fleet.")
+        battery.cycle_count = int(battery.cycle_count or 0) + count
+        if count:
+            battery.last_used_at = _utc_now()
+        if reading is not None:
+            battery.health_pct = reading
+        db.commit()
+        db.refresh(battery)
+        return _battery_row(battery)
 
 
 def add_pilot(organization_id: int, display_name: str, licence_number: str = "",

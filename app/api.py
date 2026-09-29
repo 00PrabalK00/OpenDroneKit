@@ -2518,6 +2518,20 @@ class Api:
             return fail(str(exc))
 
     @guard
+    def log_battery_cycle(self, organization_id: int, battery_id: int, cycles: Any = 1,
+                          health_pct: Any = "") -> dict[str, Any]:
+        """Add charge cycles to a pack and, if measured, record its health."""
+        from app import desktop_ops
+
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            row = desktop_ops.log_battery_cycle(org, battery_id, cycles, health_pct)
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+        self._session.audit("battery_cycle_logged", row)
+        return ok(**row)
+
+    @guard
     def add_pilot(self, organization_id: int, display_name: str, licence_number: str = "",
                   licence_expires_on: str = "") -> dict[str, Any]:
         """Add a pilot, refusing an unparseable licence expiry rather than defaulting it."""

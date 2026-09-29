@@ -70,8 +70,8 @@ class AircraftOut(BaseModel):
 
 class BatteryCreate(BaseModel):
     serial_number: str = Field(min_length=1, max_length=120)
-    capacity_mah: int = 0
-    cycle_limit: int = DEFAULT_CYCLE_LIMIT
+    capacity_mah: int = Field(default=0, ge=0)
+    cycle_limit: int = Field(default=DEFAULT_CYCLE_LIMIT, ge=0)
 
 
 class BatteryOut(BaseModel):
@@ -81,7 +81,8 @@ class BatteryOut(BaseModel):
     capacity_mah: int
     cycle_count: int
     cycle_limit: int
-    health_pct: float
+    # None: never measured. Not 100.
+    health_pct: float | None
     retired: bool
     past_cycle_limit: bool
     warnings: list[str]
@@ -138,7 +139,7 @@ def _battery_out(battery: Battery) -> BatteryOut:
         warnings.append(
             f"{battery.cycle_count} cycles against a limit of {battery.cycle_limit}."
         )
-    if battery.health_pct < HEALTH_WARNING_PCT:
+    if battery.health_pct is not None and battery.health_pct < HEALTH_WARNING_PCT:
         warnings.append(f"Health is {battery.health_pct:.0f}%.")
     if battery.retired:
         warnings.append("Marked retired; it should not be flown.")
@@ -147,7 +148,8 @@ def _battery_out(battery: Battery) -> BatteryOut:
         id=battery.id, organization_id=battery.organization_id,
         serial_number=battery.serial_number, capacity_mah=battery.capacity_mah,
         cycle_count=battery.cycle_count, cycle_limit=battery.cycle_limit,
-        health_pct=round(battery.health_pct, 1), retired=battery.retired,
+        health_pct=None if battery.health_pct is None else round(battery.health_pct, 1),
+        retired=battery.retired,
         past_cycle_limit=past_limit, warnings=warnings,
         last_used_at=battery.last_used_at,
     )

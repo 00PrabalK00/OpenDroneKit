@@ -1629,10 +1629,41 @@ export const ACTIONS = {
     async run(ctx) {
       const serial = await ctx.prompt("Battery serial number", "");
       if (!serial) return { skipped: "A battery is tracked by serial; none given." };
-      const capacity = parseInt(await ctx.prompt("Capacity mAh (optional)", "0") || "0", 10) || 0;
-      const limit = parseInt(await ctx.prompt("Cycle limit (optional)", "0") || "0", 10) || 0;
+      // Passed as typed: the Api refuses a negative or non-numeric value by name. Coercing
+      // here let -1 through as a cycle limit and turned "abc" silently into 0.
+      const capacity = await ctx.prompt("Capacity mAh (optional)", "0");
+      if (capacity === null) return { skipped: "Nothing registered." };
+      const limit = await ctx.prompt("Cycle limit (optional)", "0");
+      if (limit === null) return { skipped: "Nothing registered." };
       const result = await call("add_battery", ctx.organizationId(), serial, capacity, limit);
-      return { message: `Battery ${result.serial_number} registered.`, refresh: true };
+      return {
+        message: `Battery ${result.serial_number} registered. Health is blank until you `
+          + "measure it (Log Battery Cycle).",
+        refresh: true,
+      };
+    },
+  },
+  /* Without this a registered pack never moved: Cycles stayed 0 and Health had no way
+     to be entered, which is how every pack came to show the default 100%. */
+  "Log Battery Cycle": {
+    describe: "Add charge cycles to the selected battery and, if measured, its health.",
+    async run(ctx) {
+      const picked = ctx.selectedFleetRecord();
+      if (!picked || picked.kind !== "battery") {
+        return { skipped: "Select a battery in the Batteries list first." };
+      }
+      const cycles = await ctx.prompt(`Cycles to add to ${picked.name}`, "1");
+      if (cycles === null) return { skipped: "Nothing recorded." };
+      const health = await ctx.prompt(
+        "Measured health % (leave blank if you did not measure it)", "");
+      if (health === null) return { skipped: "Nothing recorded." };
+      const result = await call("log_battery_cycle", ctx.organizationId(), picked.id,
+        cycles, health);
+      return {
+        message: `${result.serial_number}: ${result.cycle_count} cycles`
+          + (result.health_pct === null ? ", health not measured." : `, health ${result.health_pct}%.`),
+        refresh: true,
+      };
     },
   },
   "Add Pilot": {

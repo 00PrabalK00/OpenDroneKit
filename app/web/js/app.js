@@ -514,6 +514,7 @@
         `${a.assigned_mission ? ` · on ${a.assigned_mission}` : ''}</b></div>`) +
       '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
         `<div><span>#${b.id} ${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
+        ` · health ${b.health_pct == null ? 'not measured' : `${b.health_pct}%`}` +
         `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
       '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
         `<div><span>#${p.id} ${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`) +
@@ -542,8 +543,11 @@
       (v) => tryCall('add_aircraft', ORG, v['f-name'], v['f-model'], v['f-serial']));
     $('#btn-fleet-battery').onclick = () => fleetForm('Add battery',
       [['f-serial', 'Serial'], ['f-cap', 'Capacity mAh', '0'], ['f-limit', 'Cycle limit', '0']],
-      (v) => tryCall('add_battery', ORG, v['f-serial'], parseInt(v['f-cap'] || '0', 10) || 0,
-                     parseInt(v['f-limit'] || '0', 10) || 0));
+      (v) => tryCall('add_battery', ORG, v['f-serial'], v['f-cap'], v['f-limit']));
+    $('#btn-fleet-cycle').onclick = () => fleetForm('Log battery cycle',
+      [['f-id', 'Battery id (the # in the list)'], ['f-cycles', 'Cycles to add', '1'],
+       ['f-health', 'Measured health % (blank if not measured)']],
+      (v) => tryCall('log_battery_cycle', ORG, parseInt(v['f-id'] || '0', 10), v['f-cycles'], v['f-health']));
     $('#btn-fleet-pilot').onclick = () => fleetForm('Add pilot',
       [['f-name', 'Name'], ['f-licence', 'Licence number'], ['f-expires', 'Licence expires (YYYY-MM-DD)']],
       (v) => tryCall('add_pilot', ORG, v['f-name'], v['f-licence'], v['f-expires']));

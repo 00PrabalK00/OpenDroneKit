@@ -1813,7 +1813,7 @@ const fleet = {
   id: "fleet",
   title: "Fleet",
   toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance",
-            "Remove Record", "|", "Export Fleet"],
+            "Log Battery Cycle", "Remove Record", "|", "Export Fleet"],
   left: [
     /* Four aircraft that do not exist, one of them "flying". */
     { id: "fl.aircraft", title: "Aircraft", render: () => live({
@@ -1892,7 +1892,7 @@ const fleet = {
           s: b.serial_number || `#${b.id}`,
           n: b.cycle_count,
           l: b.cycle_limit || "\u2014",
-          h: b.health_pct === null ? "\u2014" : `${b.health_pct}%`,
+          h: b.health_pct == null ? "\u2014" : `${b.health_pct}%`,
           /* Retired is a decision someone made; over its cycle limit and still in
              service is the state worth surfacing. */
           st: b.retired ? "retired" : b.over_cycle_limit ? "past cycle limit" : "in service",

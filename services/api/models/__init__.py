@@ -546,7 +546,9 @@ class Battery(Base):
     capacity_mah: Mapped[int] = mapped_column(Integer, default=0)
     cycle_count: Mapped[int] = mapped_column(Integer, default=0)
     cycle_limit: Mapped[int] = mapped_column(Integer, default=300)
-    health_pct: Mapped[float] = mapped_column(Float, default=100.0)
+    # None until someone measures it. A default of 100 put "Health 100%" on every pack
+    # nobody had ever tested, which reads as a measurement and is not one.
+    health_pct: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     retired: Mapped[bool] = mapped_column(Boolean, default=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
