@@ -40,20 +40,12 @@ def _detector_weights_present() -> bool:
     detector here would leave a test that passes while checking the opposite of what it
     claims.
     """
-    import json
+    # Resolved the way the detector resolves it, so weights found through
+    # ODK_MODEL_WEIGHTS_DIR count here exactly as they do for the route under test.
+    from core.models import resolve_model_path
 
-    root = pathlib.Path(__file__).resolve().parents[1] / "models"
-    try:
-        registry = json.loads((root / "model_registry.json").read_text(encoding="utf-8"))
-    except OSError:
-        return False
-    return any(
-        (root / entry["path"]).is_file()
-        for entry in registry.get("models", {}).values()
-        if entry.get("status") == "installed"
-        and entry.get("kind", "").startswith("onnx")
-        and entry.get("path")
-    )
+    path = resolve_model_path("structural_multiclass_detector")
+    return bool(path) and path.is_file()
 
 
 @pytest.mark.skipif(
@@ -214,6 +206,67 @@ def test_real_model_prelabels_retain_claims_through_every_review_action(tmp_path
             parent_after = client.get(f"/annotations/{merged_row['id']}", headers=headers).json()
             assert parent_after["review_action"] == "split_source"
             assert parent_after["status"] == "resolved"
+    finally:
+        db_module._engine = None
+        db_module._SessionLocal = None
+
+
+@pytest.mark.skipif(
+    not _detector_weights_present(),
+    reason="no installed ONNX weights on this machine; this test must not mock the detector",
+)
+def test_a_reviewer_can_reject_a_false_positive_without_deleting_the_claim(tmp_path, monkeypatch):
+    """'reject' used to be a 422, so dismissing a false positive meant deleting it --
+    and deleting it destroyed the model's claim, the one record of what it got wrong."""
+    raw = FIXTURE.read_bytes()
+    monkeypatch.setenv("ODK_DATABASE_URL", f"sqlite:///{tmp_path / 'reject.db'}")
+    monkeypatch.setenv("ODK_STORAGE_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("ODK_SECRET_KEY", "assisted-annotation-test-secret-long-enough")
+    import services.api.db as db_module
+
+    db_module._engine = None
+    db_module._SessionLocal = None
+    from services.api.main import app
+
+    try:
+        with TestClient(app) as client:
+            registered = client.post("/auth/register", json={
+                "email": "rejecter@example.com", "password": "longenough1",
+                "organization_name": "Reject Lab",
+            })
+            headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+            organization_id = client.get("/organizations", headers=headers).json()[0]["id"]
+            project_id = client.post(
+                f"/organizations/{organization_id}/projects", headers=headers,
+                json={"name": "False positives"},
+            ).json()["id"]
+            batch = client.post(
+                f"/projects/{project_id}/annotations/prelabel", headers=headers,
+                data={"model_key": "structural_multiclass_detector"},
+                files={"image": (FIXTURE.name, raw, "image/jpeg")},
+            ).json()
+            target = batch["prelabels"][0]
+            claim = target["machine_claims"][0]
+
+            rejected = client.post(
+                f"/annotations/{target['id']}/review", headers=headers,
+                json={"action": "reject", "note": "shadow line, not a crack"},
+            )
+            assert rejected.status_code == 200, rejected.text
+            body = rejected.json()
+            assert body["review_action"] == "rejected"
+            assert body["status"] == "dismissed"
+            assert body["include_in_report"] is False
+            assert body["machine_claims"][0] == claim
+            assert body["geometry"] == target["geometry"]
+            assert body["label"] == target["label"]
+
+            # Rewriting the geometry while rejecting would erase what the model claimed.
+            refused = client.post(
+                f"/annotations/{batch['prelabels'][1]['id']}/review", headers=headers,
+                json={"action": "reject", "label": "something else"},
+            )
+            assert refused.status_code == 422
     finally:
         db_module._engine = None
         db_module._SessionLocal = None
