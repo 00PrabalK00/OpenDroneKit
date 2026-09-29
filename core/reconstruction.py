@@ -781,6 +781,20 @@ class CustomDroneReconstructor:
                     epsg=epsg, west=float(ortho_info["west"]) - pixel / 2.0,
                     north=float(ortho_info["north"]) + pixel / 2.0, pixel_size=pixel, nodata=0,
                 )
+            # Same rule as the COLMAP engine: shade only cells whose slope was measured.
+            from .reconstruction_colmap import masked_hillshade
+
+            shade, shaded_fraction = masked_hillshade(np.flipud(dsm), grid)
+            if shaded_fraction > 0.0:
+                written["hillshade"] = geo.write_geotiff(
+                    out_dir / "dsm_hillshade.tif", shade,
+                    epsg=epsg, west=west, north=north, pixel_size=grid, nodata=0,
+                )
+            else:
+                warnings.append(
+                    "No hillshade was written: no DSM cell has measured neighbours on every "
+                    "side, so no slope could be computed without inventing terrain."
+                )
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"GeoTIFF export failed: {exc}. PNG products were still written.")
         return written
@@ -1517,6 +1531,22 @@ class CustomDroneReconstructor:
         geotiffs: dict[str, str] = {}
         if anchor is not None and geo.geo_capabilities()["rasterio"]:
             geotiffs = self._write_geotiffs(out_dir, anchor.epsg, dem, dsm_array, dtm_array, ortho_info, warnings)
+        if anchor is not None:
+            # Solved camera centres, with each one's distance from its own EXIF fix.
+            track: list[dict] = []
+            for index in registered:
+                lonlat = anchor.to_wgs84(sfm.center(index).reshape(1, 3))[0]
+                properties: dict[str, Any] = {"image": images[index].name, "altitude_m": float(lonlat[2])}
+                fix = fixes.get(images[index].name)
+                if fix is not None:
+                    properties["exif_latitude"] = fix.latitude
+                    properties["exif_longitude"] = fix.longitude
+                    properties["gps_residual_m"] = round(
+                        geo.haversine_m(float(lonlat[1]), float(lonlat[0]), fix.latitude, fix.longitude), 3
+                    )
+                track.append(geo.point_feature(float(lonlat[0]), float(lonlat[1]), properties, alt=float(lonlat[2])))
+            if track:
+                geotiffs["camera_track"] = str(geo.write_geojson(out_dir / "camera_track.geojson", track))
 
         _emit_progress(94, "Generating mesh")
         meshes = self._build_meshes(
@@ -1618,6 +1648,8 @@ class CustomDroneReconstructor:
             orthomosaic_cog_path=geotiffs.get("orthomosaic", ""),
             dsm_cog_path=geotiffs.get("dsm", ""),
             dtm_cog_path=geotiffs.get("dtm", ""),
+            hillshade_path=geotiffs.get("hillshade", ""),
+            camera_track_geojson_path=geotiffs.get("camera_track", ""),
             ground_sample_distance_m=float(dem["grid_size"]) if anchor is not None else None,
             orthomosaic_gsd_m=ortho_info.get("pixel_size") if (anchor is not None and orthomosaic_path) else None,
         )
