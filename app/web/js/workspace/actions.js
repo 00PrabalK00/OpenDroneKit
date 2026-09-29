@@ -934,7 +934,8 @@ export const ACTIONS = {
       const note = await ctx.prompt("What is this link for?", "Client review") || "";
       const result = await call("create_share_link", ctx.projectId(), note, false);
       // Shown once on purpose: only the hash is kept, so this cannot be read back.
-      await ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`);
+      await ctx.reveal(`Share token (copy it now, it is not stored):\n\n${result.token}`
+        + (result.reaches ? `\n\n${result.reaches}` : ""));
       return { message: `Link ${result.prefix}… issued.`, refresh: true };
     },
   },
@@ -964,12 +965,21 @@ export const ACTIONS = {
       return { message: `Webhook registered for ${result.url}.`, refresh: true };
     },
   },
+  /* Issued a SHARE link and called it an API key. A key belongs to an account on the
+     REST service; this asks for that account and issues the same token POST
+     /auth/tokens would. */
   "New Key": {
-    describe: "Issue a share token, which is what this build uses for API access.",
+    describe: "Issue a REST API token for a service account.",
     async run(ctx) {
-      const result = await call("create_share_link", ctx.projectId(), "API access", true);
-      await ctx.reveal(`API token (copy it now, it is not stored):\n\n${result.token}`);
-      return { message: `Token ${result.prefix}… issued.`, refresh: true };
+      const answer = await ctx.form("New API key", [
+        { key: "email", label: "Service account email", value: "" },
+        { key: "password", label: "Password", type: "password", value: "" },
+        { key: "name", label: "Key name", value: "field device" },
+      ]);
+      if (!answer || !answer.email) return { skipped: "No account given." };
+      const result = await call("issue_api_token", answer.email, answer.password, answer.name);
+      await ctx.reveal(`API key for ${result.user} (copy it now, it is not stored):\n\n${result.secret}`);
+      return { message: `Key ${result.prefix}… issued to ${result.user}.`, refresh: true };
     },
   },
   /* Built its command from the first registered WEBHOOK -- a POST to someone else's

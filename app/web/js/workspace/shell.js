@@ -13,7 +13,7 @@ import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setImage, setView } from "./viewstate.js";
-import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
+import { ask, askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 import { refreshLive } from "./live.js";
 import { armTool, configureDrawing, currentMap, stopDrawing, undoPoint } from "./draw.js";
 import { fitTo } from "./mapview.js";
@@ -843,6 +843,7 @@ export class Shell {
       // twenty-six buttons that looked completely dead and raised nothing.
       prompt: (label, fallback) => askOne(label, label, fallback),
       choose: (title, options) => chooseModal(title, options),
+      form: (title, fields) => ask(title, fields),
       missionOptions: () => {
         // What the mission panels were actually edited to, under the names the planner
         // reads.

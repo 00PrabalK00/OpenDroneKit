@@ -2010,6 +2010,29 @@ class Api:
 
     # -------------------------------------------------------------- sharing
 
+    def _service_ids(self, desktop_project_id: int | None = None,
+                     organization_id: int | None = None) -> tuple[int | None, int]:
+        """The service-database project and organisation for a desktop id.
+
+        The cockpit sends DESKTOP project ids, and share links reference the service
+        database's projects -- a different table in a different file -- so every Share
+        failed with a foreign-key error. See app/local_tenant.py.
+        """
+        from app import desktop_ops, local_tenant
+
+        with desktop_ops._session() as db:
+            org = local_tenant.organization_id(db, organization_id)
+            project = None
+            if desktop_project_id is not None:
+                wanted = int(desktop_project_id)
+                desktop = next((p for p in self._session.store.list_projects()
+                                if int(p["id"]) == wanted), None)
+                if desktop is None:
+                    raise ValueError(f"No project with id {desktop_project_id} on this machine.")
+                project = local_tenant.service_project_id(db, desktop)
+            db.commit()
+        return project, org
+
     @guard
     def create_share_link(self, project_id: int, note: str = "",
                           allow_download: bool = False) -> dict[str, Any]:
@@ -2017,9 +2040,15 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.create_share_link(project_id, note, allow_download))
+            service_project, _ = self._service_ids(project_id)
+            link = desktop_ops.create_share_link(service_project, note, allow_download)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
+        self._session.audit("share_link_issued", {"prefix": link["prefix"], "note": link["note"]})
+        return ok(**link, service_project_id=service_project,
+                  reaches=("The REST service's record of this project, served at "
+                           "/public/shares/{token} while the service runs. Desktop files are not "
+                           "uploaded by issuing a link."))
 
     @guard
     def list_share_links(self, project_id: int) -> dict[str, Any]:
@@ -2027,7 +2056,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(links=desktop_ops.list_share_links(project_id))
+            service_project, _ = self._service_ids(project_id)
+            return ok(links=desktop_ops.list_share_links(service_project))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2050,7 +2080,8 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(**desktop_ops.add_webhook(organization_id, url, events, description))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.add_webhook(org, url, events, description), organization_id=org)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2060,9 +2091,44 @@ class Api:
         from app import desktop_ops
 
         try:
-            return ok(webhooks=desktop_ops.list_webhooks(organization_id))
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(webhooks=desktop_ops.list_webhooks(org), organization_id=org)
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
+
+    @guard
+    def issue_api_token(self, email: str, password: str, name: str = "api token") -> dict[str, Any]:
+        """Issue a REST API token for a service account, exactly as POST /auth/tokens does.
+
+        The Developers screen's New Key used to issue a SHARE link and call it an API key.
+        A key belongs to a user of the REST service, so this asks for that account's
+        credentials and writes the same ApiToken row the service would; the secret is
+        returned once and only its hash is stored.
+        """
+        from sqlalchemy import select
+
+        from app import desktop_ops
+        from services.api.models import ApiToken, User
+        from services.api.security import hash_token, verify_password
+
+        with desktop_ops._session() as db:
+            user = db.scalar(select(User).where(User.email == str(email).strip().lower()))
+            # One message for both branches, as the service does: the difference would
+            # tell whoever is at the keyboard which accounts exist.
+            if user is None or not verify_password(str(password), user.password_hash):
+                return fail("Incorrect email or password for the REST service. Accounts are "
+                            "created with POST /auth/register on the service.")
+            if not user.is_active:
+                return fail("This service account is disabled.")
+            secret, prefix = ApiToken.generate()
+            token = ApiToken(user_id=user.id, name=str(name or "api token"),
+                             token_hash=hash_token(secret), prefix=prefix)
+            db.add(token)
+            db.commit()
+            db.refresh(token)
+            self._session.audit("api_token_issued", {"prefix": prefix, "user_id": user.id})
+            return ok(id=token.id, name=token.name, prefix=prefix, secret=secret,
+                      user=user.email)
 
     # -------------------------------------------------------------- reports
 
