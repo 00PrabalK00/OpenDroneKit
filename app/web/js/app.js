@@ -879,7 +879,11 @@
     const html = kv([
       ['pycolmap', flag(c.pycolmap)],
       ['CUDA (COLMAP)', flag(c.pycolmap_cuda)],
-      ['Dense MVS', flag(c.dense_stereo)],
+      // The reason matters as much as the flag: a CUDA build that cannot run on this
+      // GPU used to read "yes" here and then fail every dense run.
+      ['Dense MVS', flag(c.dense_stereo) + (c.dense_stereo_reason
+        ? ` <small class="muted">${String(c.dense_stereo_reason).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))}</small>`
+        : '')],
       ['Open3D', flag(c.open3d)],
       ['rasterio', flag(c.geo && c.geo.rasterio)],
       ['pyproj', flag(c.geo && c.geo.pyproj)],

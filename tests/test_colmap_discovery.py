@@ -1,7 +1,8 @@
 """Finding the COLMAP binary decides whether dense stereo is offered at all.
 
-`dense_stereo` in the capability report is computed from whether a native binary was
-found. So a search that misses an installed build does not merely inconvenience the
+`dense_stereo` in the capability report is computed by running the native binary that
+was found (see test_dense_stereo_probe.py), so a binary that is never found is never
+tested. So a search that misses an installed build does not merely inconvenience the
 operator -- it makes the application report that this machine cannot do dense
 reconstruction, which is a false statement about the hardware.
 
@@ -69,19 +70,38 @@ class TestThePerUserInstall:
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
         assert colmap_executable() == str(tmp_path / "COLMAP" / "bin" / "colmap.exe")
 
-    def test_dense_stereo_is_offered_once_the_binary_is_visible(
+    def test_dense_stereo_is_decided_by_the_binary_once_it_is_visible(
         self, tmp_path, fake_colmap, monkeypatch
     ):
         """The claim that actually matters to a user.
 
         Whether the application says this machine can do dense reconstruction has to
-        follow from whether a binary is reachable, not from where it happens to live.
+        follow from the binary it can reach, not from where that binary happens to live.
+        Once the per-user build is visible it is the one tested: the report names it and
+        answers from running it. Being visible is not enough to say yes -- a file that
+        exists but cannot run patch-match (here, a stand-in that is not even a program)
+        is reported as not able to, with the reason, never as "no binary found".
         """
+        # The probe's result cache lives under APPDATA; keep it out of the user's profile.
+        monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        assert engine_capabilities()["dense_stereo"] is False
+        monkeypatch.setattr("core.reconstruction_colmap._pycolmap_has_dense", lambda: False)
 
-        fake_colmap(tmp_path / "COLMAP")
-        assert engine_capabilities()["dense_stereo"] is True
+        before = engine_capabilities()
+        assert before["colmap_binary"] == ""
+        assert before["dense_stereo"] is False
+        assert "No native COLMAP binary" in before["dense_stereo_reason"]
+
+        exe = fake_colmap(tmp_path / "COLMAP")
+        after = engine_capabilities()
+        assert after["colmap_binary"] == str(exe)
+        assert after["dense_stereo_probed"] is True
+        assert after["dense_stereo"] is False
+        assert "No native COLMAP binary" not in after["dense_stereo_reason"]
+        assert "image_undistorter" in after["dense_stereo_reason"]
+
+        cache = tmp_path / "appdata" / "OpenDroneKit" / "dense_stereo_probe.json"
+        assert cache.exists(), "the probe cache must follow APPDATA, not a fixed profile path"
 
 
 class TestTheRealInstall:

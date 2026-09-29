@@ -73,6 +73,30 @@ def _data_paths() -> dict[str, str]:
     return describe()
 
 
+def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> list[str]:
+    """Add a reconstruction's georeferenced products to the layer tree.
+
+    Only files that exist are registered, so a run that produced no DSM adds no DSM
+    layer. Returns the names that were added.
+    """
+    added: list[str] = []
+    for key, kind, label in (
+        ("orthomosaic_cog_path", "raster", "Orthomosaic"),
+        ("dsm_cog_path", "raster", "DSM"),
+        ("dtm_cog_path", "raster", "DTM"),
+        ("hillshade_path", "raster", "DSM hillshade"),
+    ):
+        path = payload.get(key)
+        if path and Path(path).exists():
+            session.register_raster_layer(path, name=label, kind=kind)
+            added.append(label)
+    track = payload.get("camera_track_geojson_path")
+    if track and Path(track).exists():
+        session.register_vector_layer(track, name="Camera positions")
+        added.append("Camera positions")
+    return added
+
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -2827,10 +2851,10 @@ class Api:
             note=(
                 "Dense patch-match stereo is available; a dense cloud can be produced."
                 if dense else
-                "Dense point clouds are NOT available in this environment: no CUDA "
-                "COLMAP binary and no CUDA-enabled pycolmap. Sparse reconstruction, "
-                "mesh and orthomosaic still work. The sparse cloud is never inflated "
-                "to imitate a dense one."
+                "Dense point clouds are NOT available in this environment: "
+                f"{caps.get('dense_stereo_reason') or 'no working CUDA COLMAP.'} "
+                "Sparse reconstruction, mesh and orthomosaic still work. The sparse "
+                "cloud is never inflated to imitate a dense one."
             ),
         )
 
@@ -4815,7 +4839,8 @@ class Api:
                 ground_control=control,
             )
             result = reconstructor.reconstruct(
-                image_dir=images, output_dir=str(output), progress_callback=progress
+                image_dir=images, output_dir=str(output), progress_callback=progress,
+                should_cancel=should_cancel,
             )
             payload = result.to_dict()
             if control and payload.get("engine") != "colmap":
@@ -4825,18 +4850,7 @@ class Api:
             payload["ground_control"] = getattr(reconstructor, "control_report", None)
             # Reconstruction products become map layers immediately, which is the whole
             # point of doing this inside a GIS tool.
-            for key, kind, label in (
-                ("orthomosaic_cog_path", "raster", "Orthomosaic"),
-                ("dsm_cog_path", "raster", "DSM"),
-                ("dtm_cog_path", "raster", "DTM"),
-                ("hillshade_path", "raster", "DSM hillshade"),
-            ):
-                path = payload.get(key)
-                if path and Path(path).exists():
-                    session.register_raster_layer(path, name=label, kind=kind)
-            track = payload.get("camera_track_geojson_path")
-            if track and Path(track).exists():
-                session.register_vector_layer(track, name="Camera positions")
+            _register_reconstruction_layers(session, payload)
             session.audit("reconstruction_complete", {"engine": payload.get("engine"), "output": str(output)})
             return payload
 
@@ -4876,7 +4890,7 @@ class Api:
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
-            config.reconstruction_target_epsg = opts.get("epsg") or chosen_epsg
+            config.reconstruction_target_epsg = int(opts["epsg"]) if opts.get("epsg") else chosen_epsg
             # Coverage QA sizes each image's footprint from its height above ground.
             config.coverage_flight_height_agl_m = float(opts.get("flight_height_agl_m") or 0.0)
             if opts.get("ground_elevation_m") not in (None, ""):
@@ -4893,9 +4907,12 @@ class Api:
                 if opts.get(key) is not None:
                     setattr(config, key, bool(opts[key]))
             pipeline = StructuralFaultPipeline(config, ground_control=control)
-            # The keyword is output_dir. This call said output_root, so every Run AI and
-            # Start click failed with a TypeError three seconds in.
-            result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
+            # The keyword is output_dir. This call said output_root, so every Run AI,
+            # Start and "Run Full Pipeline" click failed with a TypeError seconds in.
+            result = pipeline.run(
+                image_dir=images, output_dir=output, progress_callback=progress,
+                should_cancel=should_cancel,
+            )
             payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
             payload["ground_control"] = getattr(pipeline.reconstructor, "control_report", None)
             if control and not hasattr(pipeline.reconstructor, "control_report"):
@@ -4906,6 +4923,11 @@ class Api:
             summary = json.loads(Path(payload["summary_json_path"]).read_text(encoding="utf-8"))
             payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
             payload["reconstruction_status"] = summary.get("reconstruction", {}).get("status", "ok")
+            # The pipeline reconstructs too; its ortho, DSM and camera track belong on the
+            # map exactly as a standalone reconstruction's do. They used to be left on
+            # disk, so a full run ended with only the photo points visible.
+            payload["layers_registered"] = _register_reconstruction_layers(
+                session, summary.get("reconstruction") or {})
             # Which optional detectors ran as heuristics and so were left out of the
             # health score -- said in the finished-job message, not only in the report.
             components = (summary.get("health_scoring", {}) or {}).get("components", {}) or {}

@@ -191,11 +191,13 @@ def load_image(path: str | Path) -> np.ndarray:
 def _filter_connected_components(mask: np.ndarray, min_area_px: int) -> np.ndarray:
     """Remove tiny blobs from a binary mask."""
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
-    cleaned = np.zeros_like(mask, dtype=np.uint8)
-    for idx in range(1, count):
-        if stats[idx, cv2.CC_STAT_AREA] >= min_area_px:
-            cleaned[labels == idx] = 255
-    return cleaned
+    # One lookup table indexed by label, not one full-image comparison per component:
+    # a noisy 18 MP frame has tens of thousands of blobs, and the per-label loop spent
+    # minutes per image here before the pipeline reached reconstruction.
+    keep = stats[:, cv2.CC_STAT_AREA] >= int(min_area_px)
+    keep[0] = False
+    lut = np.where(keep, 255, 0).astype(np.uint8)
+    return lut[labels]
 
 
 def _mask_to_hits(mask: np.ndarray, label: str, min_area_px: int,

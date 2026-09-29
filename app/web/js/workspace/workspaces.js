@@ -1109,6 +1109,7 @@ const processing = {
             { label: "Native COLMAP", value: c.colmap_binary
               ? chip("found", "ok") : chip("not found", "warn") },
             { label: "GPU dense stereo", value: yn(c.dense_stereo, "available") },
+            { label: "Dense stereo detail", value: c.dense_stereo_reason || undefined },
             { label: "Open3D mesh", value: yn(c.open3d) },
           ]);
         },
@@ -2054,7 +2055,8 @@ const developers = {
             d: caps.colmap_binary ? "native COLMAP binary"
                : caps.pycolmap ? "pycolmap (CPU)" : "install COLMAP or pycolmap" },
           { c: "Dense stereo", s: caps.dense_stereo ? "available" : "not available",
-            d: caps.pycolmap_cuda ? "CUDA" : "needs a CUDA COLMAP build" },
+            d: caps.dense_stereo_reason
+               || (caps.pycolmap_cuda ? "CUDA" : "needs a CUDA COLMAP build") },
           { c: "Meshing", s: caps.open3d ? "available" : "missing",
             d: caps.open3d ? "open3d" : "install open3d to build meshes" },
           { c: "GPU", s: caps.cuda ? "available" : "not available", d: caps.gpu || "" },

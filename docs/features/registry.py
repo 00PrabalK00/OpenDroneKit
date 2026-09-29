@@ -652,17 +652,27 @@ PROCESSING = [
       "COLMAP SfM with bundle adjustment; reprojection error under 1.5 px on a real "
       "survey, with images that failed to register declared rather than hidden.",
       "implemented", ["tests/test_reconstruction_colmap.py::TestStructureFromMotion",
-                      "tests/test_reconstruction_colmap.py::TestNoFabrication"],
+                      "tests/test_reconstruction_colmap.py::TestNoFabrication",
+                      "tests/test_custom_engine_reconstructs.py"],
       "Regression test runs the real engine on 8 Aukerman frames in ~15 s: "
-      "0.81 px, 6/8 registered and warned about."),
+      "0.81 px, 6/8 registered and warned about. Without pycolmap, Auto falls back to "
+      "a dependency-free incremental SfM (SIFT, PnP registration, SciPy bundle "
+      "adjustment, EXIF intrinsics, no distortion model) that registered 15/15 "
+      "Aukerman frames at 0.59 px and 1.96 m geo RMSE; it refuses imagery it cannot "
+      "register instead of laying frames out at an assumed overlap."),
     F("pr.georeference", "Georeferencing", "workers", "Processing",
       "RANSAC Helmert similarity between camera centres and geotags, into an auto-selected UTM zone.",
       "verified", ["tests/test_geo.py::TestUmeyamaSimilarity", "tests/test_geo.py::TestUtmZoneSelection"]),
     F("pr.ortho", "Orthomosaic generation", "workers", "Processing",
       "True orthophoto by DSM back-projection, written as a Cloud-Optimized GeoTIFF "
       "carrying the survey's CRS, not a PNG that would leave measurements in pixels.",
-      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing"],
-      "COLMAP engine; CRS asserted against the auto-selected UTM zone."),
+      "implemented", ["tests/test_reconstruction_colmap.py::TestGeoreferencing",
+                      "tests/test_reconstruction_colmap.py::TestSparseProductsAreUsableAndHonest",
+                      "tests/test_custom_engine_reconstructs.py::test_the_orthomosaic_is_georeferenced_and_rectified_not_a_strip"],
+      "COLMAP engine; CRS asserted against the auto-selected UTM zone. Without dense "
+      "MVS the photos are rectified at their own resolution (0.0625 m/px on Aukerman) "
+      "onto a surface interpolated between the sparse points, and a warning says so; "
+      "it is a true orthophoto only where dense MVS ran."),
     F("pr.dsm_dtm", "DSM and DTM", "workers", "Processing",
       "Metric elevation rasters with a ground filter, in a stated CRS, coarsened openly "
       "when the cloud is too sparse to fill a finer grid rather than interpolated into "
@@ -674,15 +684,21 @@ PROCESSING = [
       "Patch-match multi-view stereo. Never synthesised from the sparse cloud, and the "
       "environment is asked before a job starts rather than discovered mid-run.",
       "implemented", ["tests/test_honesty.py::TestNoSyntheticDensification",
-                      "tests/test_api_measurements.py::TestReconstructionCapabilities"],
+                      "tests/test_api_measurements.py::TestReconstructionCapabilities",
+                      "tests/test_dense_stereo_probe.py"],
       "The densification fake -- cloning sparse points with Gaussian jitter and calling "
       "it MVS -- was removed and a test guards its absence. api.reconstruction_"
       "capabilities() now reports dense_available honestly with the specific missing "
-      "piece named. Reaching verified needs a CUDA COLMAP binary or CUDA-enabled "
-      "pycolmap in the environment; that is a dependency, not code to write, and no "
-      "post-processing turns a sparse cloud into a dense one."),
-    F("pr.mesh", "Textured mesh", "workers", "Processing",
-      "Poisson surface reconstruction with density trimming and orthophoto texture.",
+      "piece named. A present binary is no longer taken as proof: patch-match is run "
+      "once on a two-view fixture (cached per binary and driver), because the stock "
+      "CUDA build has no sm_120 kernels and fails on an RTX 50-series card. Reaching "
+      "verified needs a COLMAP build that runs patch-match on the host GPU; that is a "
+      "dependency, not code to write, and no post-processing turns a sparse cloud "
+      "into a dense one."),
+    F("pr.mesh", "Surface mesh", "workers", "Processing",
+      "Poisson surface reconstruction with density trimming (untextured, and named "
+      "mesh_obj_path rather than textured); the dependency-free engine drapes its "
+      "orthomosaic over a DSM-grid mesh with no faces across nodata cells.",
       "verified", ["tests/test_mesh_reconstruction.py::TestRefusals",
                    "tests/test_mesh_reconstruction.py::TestRealMesh",
                    "tests/test_mesh_reconstruction.py::TestDensityTrimming"],
