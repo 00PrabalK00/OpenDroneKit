@@ -3261,6 +3261,9 @@ class Api:
             return fail(f"Image folder not found: {images}")
 
         output = Path(opts.get("output_dir") or (self._session.project_root() / "reconstruction"))
+        busy = self._job_writing_to(output)
+        if busy:
+            return fail(busy)
         session = self._session
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
@@ -3294,7 +3297,29 @@ class Api:
             return payload
 
         job_id = self._jobs.submit("reconstruction", work)
+        self._writers()[str(output.resolve())] = job_id
         return ok(job_id=job_id)
+
+    def _writers(self) -> dict[str, str]:
+        """Output folder -> the job writing into it."""
+        if not hasattr(self, "_output_writers"):
+            self._output_writers: dict[str, str] = {}
+        return self._output_writers
+
+    def _job_writing_to(self, output: Path) -> str:
+        """Why a second run into `output` must wait, or "" when nothing is writing there.
+
+        Two reconstructions into one folder overwrite each other's files, and on Windows
+        the second one died with "PermissionError: [WinError 32]" on a file the first
+        held open -- after the operator had been told it started.
+        """
+        job_id = self._writers().get(str(output.resolve()))
+        job = self._jobs.get(job_id) if job_id else None
+        if not job or job.get("status") not in {"pending", "running"}:
+            return ""
+        return (f"A {job.get('name', 'job')} is already writing to {output} "
+                f"(job {job_id}, {job.get('percent', 0)}%). Wait for it to finish, or "
+                "Cancel it, before starting another into the same folder.")
 
     @guard
     def run_pipeline(self, options: dict[str, Any] | None = None) -> dict[str, Any]:

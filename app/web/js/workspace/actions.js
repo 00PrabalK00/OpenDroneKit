@@ -27,13 +27,13 @@ const REST_BASE = "http://127.0.0.1:8000";
 /** Actions that need an open project before they mean anything. */
 const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
-  "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
+  "Process", "New Job", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
   "Change", "Volume", "Cut & Fill", "Stockpile", "Generate Report", "Export Report",
   "Export PDF", "New Report", "Share", "Revoke Links",
 ]);
 
 /** Actions that need images on disk. */
-const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D"]);
+const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures", "Open in 3D"]);
 
 /**
  * The dispatch table.
@@ -632,10 +632,13 @@ export const ACTIONS = {
       const result = await call("size_reconstruction_job", count);
       /* Answered before the run rather than after the failure. A reconstruction that
          exhausts memory eight hours in has cost the whole night. */
+      /* Read verdict, fits and peak_ram_gb, none of which size_job returns -- so every
+         dataset was reported "may not fit" beside a note that said it would. The verdict
+         is can_run_as_one_job, and the note already states it with the figures. */
+      const warnings = (result.warnings || []).join(" ");
       return {
-        message: `${count} images: ${result.verdict || (result.fits ? "should fit" : "may not fit")}`
-          + (result.peak_ram_gb ? `, about ${result.peak_ram_gb} GB peak RAM` : "")
-          + (result.note ? `. ${result.note}` : ""),
+        message: `${result.can_run_as_one_job ? "Fits" : "Does not fit as one job"}: `
+          + `${result.note || `${count} images`}${warnings ? ` ${warnings}` : ""}`,
       };
     },
   },
