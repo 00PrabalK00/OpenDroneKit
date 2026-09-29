@@ -120,7 +120,7 @@ class TestTheForecastSaysWhatItIs:
         assert all("failure_probability_horizon" not in p for p in result.critical_points)
 
     def test_the_report_calls_its_risk_level_illustrative(self, tmp_path, crack):
-        from core.report_engine import _render_section
+        from core.report_engine import build_blocks
 
         image = tmp_path / "wall.png"
         mask = tmp_path / "wall_mask.png"
@@ -130,8 +130,9 @@ class TestTheForecastSaysWhatItIs:
             CrackPropagationConfig(image_path=str(image), mask_path=str(mask), steps=3),
             output_dir=tmp_path / "out",
         )
-        html_text = _render_section("crack_propagation", {"crack_runs": [result.to_dict()]})
+        block = build_blocks({"crack_runs": [result.to_dict()]}, {})["crack_propagation"]
+        html_text = " ".join(block.get("paragraphs") or [])
         # The level comes from default stresses (35/12 MPa) and an assumed pixel size.
         assert "Illustrative risk level" in html_text
         assert "not measured" in html_text
-        assert ">Risk level:" not in html_text
+        assert " Risk level:" not in html_text

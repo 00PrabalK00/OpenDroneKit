@@ -101,6 +101,8 @@ def test_missing_weights_are_refused_rather_than_substituted(client, site, monke
     shutil_copy = __import__("shutil").copy
     shutil_copy(models.registry_path(), empty / "model_registry.json")
     monkeypatch.setattr(models, "models_root", lambda: empty)
+    # Nor from the second weights location a checkout may name (core.models).
+    monkeypatch.delenv("ODK_MODEL_WEIGHTS_DIR", raising=False)
     headers, project_id, dataset_id = site
     response = client.post(f"/projects/{project_id}/ai-jobs", headers=headers, json={
         "task": "detection", "model_key": "structural_multiclass_detector",

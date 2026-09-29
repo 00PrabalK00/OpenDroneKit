@@ -83,6 +83,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
                     f"the {detector} component is not scored, which is not the same as "
                     "no defects."
                 )
+        failure = health.get("probabilistic_failure", {})
+        if isinstance(failure, dict) and failure.get("available") is False:
+            lines.append(f"- Failure probability: not computed. {failure.get('reason', '')}")
         not_assessed = (health.get("components") or {}).get("not_assessed") or []
         if not_assessed:
             lines.append(f"- Not assessed (excluded from the index): `{', '.join(not_assessed)}`")

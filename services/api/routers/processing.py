@@ -332,7 +332,10 @@ def _run_detection(db: Session, job: Job, progress) -> tuple[list[str], int | No
                 ),
                 source=HEURISTIC_SOURCE if choice.is_heuristic else "model",
                 model_key=choice.identity()["model_key"], model_sha256=choice.sha256,
-                confidence=float(hit["confidence"]), review_state="unreviewed",
+                # None for a heuristic region: it has no score, and none is stored.
+                confidence=(None if hit.get("confidence") is None
+                            else float(hit["confidence"])),
+                review_state="unreviewed",
                 created_by=job.created_by,
             ))
     db.add_all(created)

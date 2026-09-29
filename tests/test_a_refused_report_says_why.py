@@ -175,6 +175,29 @@ def _photo_with_crack_like_edges(path: Path) -> None:
     cv2.imwrite(str(path), image)
 
 
+def _without_the_crack_model():
+    """This case is about the classical crack heuristic, so it must be the one that runs.
+
+    On a machine with the trained crack segmenter installed, the pipeline prefers it and
+    the heuristic never fires on these strokes. The installed-weights lookup is the
+    external boundary; reporting the crack models as absent is how a machine without
+    them behaves, and everything downstream runs for real.
+    """
+    import core.detection as detection
+
+    real = detection.model_status
+
+    def status(key: str, *args, **kwargs):
+        info = real(key, *args, **kwargs)
+        if str(key).startswith("crack"):
+            info = {**info, "exists": False}
+        return info
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(detection, "model_status", status)
+    return patch
+
+
 def _run(api: Api) -> dict:
     job = api.run_pipeline({"engine": "custom"})
     assert job["ok"], job
@@ -197,7 +220,11 @@ def run(tmp_path_factory):
     api = Api(AppSession(ProjectStore(base / "state.db")))
     assert api.create_project("Park", str(base / "project"))["ok"]
     assert api.import_dataset(str(images), "Park photos")["ok"]
-    status = _run(api)
+    patch = _without_the_crack_model()
+    try:
+        status = _run(api)
+    finally:
+        patch.undo()
     assert status["status"] == "done", status.get("error")
     return status["result"]
 
@@ -241,8 +268,12 @@ def test_a_physics_forecast_is_labelled_as_model_output_from_assumed_inputs(tmp_
     config = PipelineConfig()
     config.reconstruction_engine = "custom"
     config.propagation_mode = "physics_informed"
-    result = StructuralFaultPipeline(config).run(image_dir=str(images),
-                                                 output_dir=str(tmp_path / "out"))
+    patch = _without_the_crack_model()
+    try:
+        result = StructuralFaultPipeline(config).run(image_dir=str(images),
+                                                     output_dir=str(tmp_path / "out"))
+    finally:
+        patch.undo()
     payload = result.to_dict()
     text = Path(payload["report_markdown_path"]).read_text(encoding="utf-8")
     assert "assumed inputs, not measured on site" in text

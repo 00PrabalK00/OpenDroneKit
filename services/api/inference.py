@@ -350,7 +350,10 @@ def _infer_one(choice: ModelChoice, image, image_path: Path, out_dir: Path,
             for hit in hits:
                 x1, y1, x2, y2 = hit.bbox_xyxy
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(overlay, f"{hit.label} {hit.confidence:.2f}", (x1, max(12, y1 - 4)),
+                # A heuristic region has no confidence, and none is drawn for it.
+                caption = (hit.label if hit.confidence is None
+                           else f"{hit.label} {hit.confidence:.2f}")
+                cv2.putText(overlay, caption, (x1, max(12, y1 - 4)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
             path = out_dir / f"{stem}_detections.jpg"
             cv2.imwrite(str(path), overlay)
