@@ -104,14 +104,20 @@ class ProjectedDefect:
     altitude_m: float
     easting: float
     northing: float
-    area_m2: float
-    length_m: float
-    width_m: float
+    # None when the defect was located but its outline could not be measured (part of
+    # it fell in a DSM hole): a partial outline under-states the size, and dropping the
+    # defect altogether hid it from the map.
+    area_m2: float | None
+    length_m: float | None
+    width_m: float | None
     severity: str
     confidence: float
     observation_count: int
     source_images: list[str] = field(default_factory=list)
     boundary_lonlat: list[list[float]] = field(default_factory=list)
+    # True when part of the outline met a DSM cell bridged from its neighbours rather
+    # than one the reconstruction measured.
+    surface_interpolated: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -121,14 +127,23 @@ class ProjectedDefect:
         properties = {
             "defect_id": self.defect_id,
             "defect_type": self.defect_type,
-            "area_m2": round(self.area_m2, 6),
-            "length_m": round(self.length_m, 4),
-            "width_m": round(self.width_m, 4),
+            "area_m2": None if self.area_m2 is None else round(self.area_m2, 6),
+            "length_m": None if self.length_m is None else round(self.length_m, 4),
+            "width_m": None if self.width_m is None else round(self.width_m, 4),
+            "sized": self.area_m2 is not None,
             "severity": self.severity,
             "confidence": round(self.confidence, 4),
             "observation_count": self.observation_count,
             "source_images": ", ".join(self.source_images[:8]),
             "altitude_m": round(self.altitude_m, 3),
+            # The located centre, whatever geometry the feature carries. A polygon
+            # layer had no point coordinates, so risk ranking reported every defect's
+            # position as null.
+            "longitude": round(self.longitude, 8),
+            "latitude": round(self.latitude, 8),
+            "easting": round(self.easting, 3),
+            "northing": round(self.northing, 3),
+            "surface_interpolated": self.surface_interpolated,
         }
         if len(self.boundary_lonlat) >= 3:
             return geo.polygon_feature(self.boundary_lonlat, properties)
@@ -180,6 +195,44 @@ def load_surface(dsm_path: str | Path) -> SurfaceModel:
     )
 
 
+# A ray is allowed to meet an interpolated cell only this many cells from measured data.
+# Wider holes are not bridged: the surface there is unknown, not merely unsampled.
+MAX_BRIDGED_CELLS = 3
+
+
+def bridge_small_holes(surface: SurfaceModel, max_cells: int = MAX_BRIDGED_CELLS
+                       ) -> tuple[SurfaceModel, np.ndarray]:
+    """A copy of the surface with holes up to ``max_cells`` wide filled from neighbours.
+
+    A DSM rasterised from a sparse cloud is mostly holes -- 70% of the Aukerman cells --
+    and a ray aimed at a defect usually lands in one. Filling each empty cell with the
+    mean of its measured neighbours, a ring at a time, bridges the gaps between samples
+    without inventing a surface across a genuinely unobserved area. Returns the filled
+    surface and a mask of which cells were filled, so every hit on one can be labelled.
+    """
+    elevation = np.array(surface.elevation, dtype=float)
+    measured = np.isfinite(elevation)
+    for _ in range(max(0, int(max_cells))):
+        holes = ~np.isfinite(elevation)
+        if not holes.any():
+            break
+        padded = np.pad(elevation, 1, constant_values=np.nan)
+        stack = np.stack([
+            padded[1 + dy:padded.shape[0] - 1 + dy, 1 + dx:padded.shape[1] - 1 + dx]
+            for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx
+        ])
+        known = np.isfinite(stack)
+        counts = known.sum(axis=0)
+        sums = np.where(known, stack, 0.0).sum(axis=0)
+        fill = holes & (counts > 0)
+        if not fill.any():
+            break
+        elevation[fill] = sums[fill] / counts[fill]
+    filled = SurfaceModel(elevation=elevation, west=surface.west, north=surface.north,
+                          pixel_size=surface.pixel_size, epsg=surface.epsg)
+    return filled, np.isfinite(elevation) & ~measured
+
+
 def intersect_surface(
     origin: np.ndarray,
     direction: np.ndarray,
@@ -212,23 +265,43 @@ def intersect_surface(
     while travelled <= limit:
         point = origin + direction * travelled
         ground = surface.sample(point[0], point[1])
-        if math.isfinite(ground):
-            gap = float(point[2] - ground)
-            if previous_gap is not None and previous_gap > 0.0 >= gap:
-                low, high = previous_t, travelled
-                for _ in range(24):
-                    mid = 0.5 * (low + high)
-                    probe = origin + direction * mid
-                    ground_mid = surface.sample(probe[0], probe[1])
-                    if not math.isfinite(ground_mid):
-                        break
-                    if probe[2] - ground_mid > 0.0:
-                        low = mid
-                    else:
-                        high = mid
-                return origin + direction * (0.5 * (low + high))
-            previous_gap = gap
-            previous_t = travelled
+        if not math.isfinite(ground):
+            # A hole in the DSM breaks the bracket. Carrying the last gap across it let
+            # a ray that entered a hole above the surface and left it below be "hit" in
+            # mid-air -- 15 m above the real DSM on the Aukerman reconstruction. A
+            # crossing only counts between two consecutive samples that both have data.
+            previous_gap = None
+            travelled += stride
+            continue
+        gap = float(point[2] - ground)
+        if previous_gap is not None and previous_gap > 0.0 >= gap:
+            low, high = previous_t, travelled
+            for _ in range(24):
+                mid = 0.5 * (low + high)
+                probe = origin + direction * mid
+                ground_mid = surface.sample(probe[0], probe[1])
+                if not math.isfinite(ground_mid):
+                    # A hole inside the bracket: the crossing cannot be refined any
+                    # further, so settle on the end that is known to be at or under
+                    # the surface rather than the midpoint, which may be in the air.
+                    low = high
+                    break
+                if probe[2] - ground_mid > 0.0:
+                    low = mid
+                else:
+                    high = mid
+            hit = origin + direction * (0.5 * (low + high))
+            ground_hit = surface.sample(hit[0], hit[1])
+            if not math.isfinite(ground_hit):
+                hit = origin + direction * high
+                ground_hit = surface.sample(hit[0], hit[1])
+            if not math.isfinite(ground_hit):
+                return None
+            # The point is ON the surface: its height is the DSM's, not the ray's
+            # (they agree to within the bisection tolerance when refinement finished).
+            return np.array([hit[0], hit[1], ground_hit], dtype=float)
+        previous_gap = gap
+        previous_t = travelled
         travelled += stride
     return None
 
@@ -316,13 +389,25 @@ def project_defects(
     mask_dir: str | Path | None = None,
     merge_radius_m: float = 0.35,
     max_boundary_points: int = 64,
+    diagnostics: dict[str, int] | None = None,
 ) -> list[ProjectedDefect]:
     """Locate and size every detection on the reconstructed surface.
 
     Each detection must carry `image` plus either `mask` (a path to a binary mask) or
     `bbox` in pixel coordinates. Detections whose ray never meets the surface are
     dropped, since an unlocated defect cannot be placed on a map.
+
+    A boundary is only sized when EVERY one of its rays reaches the surface. With one
+    corner of a box lost to a DSM hole the old code measured the triangle left over --
+    1.5 m2 for a 3 x 3 m footprint -- and reported it as the defect's area. Such
+    boundaries are counted in ``diagnostics`` instead of being measured wrong.
     """
+    if diagnostics is None:
+        diagnostics = {}
+    diagnostics.setdefault("boundaries", 0)
+    diagnostics.setdefault("sized", 0)
+    diagnostics.setdefault("incomplete_boundaries", 0)
+    diagnostics.setdefault("unposed_images", 0)
     surface_local = SurfaceModel(
         elevation=surface.elevation,
         west=surface.west,
@@ -330,6 +415,16 @@ def project_defects(
         pixel_size=surface.pixel_size,
         epsg=surface.epsg,
     )
+
+    bridged, bridged_cells = bridge_small_holes(surface_local)
+    diagnostics.setdefault("sized_on_bridged_surface", 0)
+
+    def on_bridged_cell(point: np.ndarray) -> bool:
+        col = int((point[0] - bridged.west) / bridged.pixel_size)
+        row = int((bridged.north - point[1]) / bridged.pixel_size)
+        if 0 <= row < bridged.height and 0 <= col < bridged.width:
+            return bool(bridged_cells[row, col])
+        return False
 
     observations: list[dict[str, Any]] = []
     rotation = anchor.rotation_matrix
@@ -348,6 +443,7 @@ def project_defects(
         image_name = Path(str(detection.get("image") or detection.get("image_path") or "")).name
         pose = poses.get(image_name)
         if pose is None:
+            diagnostics["unposed_images"] += 1
             continue
 
         boundaries: list[np.ndarray] = []
@@ -377,18 +473,51 @@ def project_defects(
                 step = max(1, boundary.shape[0] // max_boundary_points)
                 boundary = boundary[::step]
 
-            hits: list[np.ndarray] = []
-            for pixel in boundary:
-                direction_sfm = pose.ray_direction(float(pixel[0]), float(pixel[1]))
+            diagnostics["boundaries"] += 1
+            directions = [
                 # Rotate and scale the direction into projected space; translation does
                 # not apply to a direction vector.
-                direction_world = anchor.scale * (rotation @ direction_sfm)
-                hit = intersect_surface(camera_center_world, direction_world, surface_local)
-                if hit is not None:
-                    hits.append(hit)
-
-            if len(hits) < 3:
+                anchor.scale * (rotation @ pose.ray_direction(float(p[0]), float(p[1])))
+                for p in boundary
+            ]
+            hits = [intersect_surface(camera_center_world, d, surface_local) for d in directions]
+            interpolated = False
+            if any(h is None for h in hits):
+                # Retry the whole outline on the surface with small holes bridged, so
+                # every corner is measured the same way; label the result.
+                hits = [intersect_surface(camera_center_world, d, bridged) for d in directions]
+                interpolated = any(h is not None and on_bridged_cell(h) for h in hits)
+            if any(h is None for h in hits) or len(hits) < 3:
+                diagnostics["incomplete_boundaries"] += 1
+                # Not sized -- but still placed, when the ray through the outline's
+                # centre reaches the surface. A defect the camera saw does not vanish
+                # from the map because a corner of its box fell in a hole.
+                middle = boundary.mean(axis=0)
+                ray = anchor.scale * (rotation @ pose.ray_direction(float(middle[0]), float(middle[1])))
+                centre_hit = intersect_surface(camera_center_world, ray, surface_local)
+                centre_bridged = False
+                if centre_hit is None:
+                    centre_hit = intersect_surface(camera_center_world, ray, bridged)
+                    centre_bridged = centre_hit is not None and on_bridged_cell(centre_hit)
+                if centre_hit is None:
+                    continue
+                diagnostics["located_unsized"] = diagnostics.get("located_unsized", 0) + 1
+                observations.append({
+                    "centroid": np.asarray(centre_hit, dtype=float),
+                    "boundary": None,
+                    "image": image_name,
+                    "type": str(detection.get("defect_type") or detection.get("type") or "defect"),
+                    "severity": str(detection.get("severity") or "informational"),
+                    "confidence": float(detection.get("confidence") or detection.get("score") or 0.0),
+                    "area": None,
+                    "length": None,
+                    "width": None,
+                    "interpolated": centre_bridged,
+                })
                 continue
+            diagnostics["sized"] += 1
+            if interpolated:
+                diagnostics["sized_on_bridged_surface"] += 1
             hit_array = np.asarray(hits, dtype=float)
             area, length, width = _shape_metrics(hit_array)
             if area <= 0.0:
@@ -406,6 +535,7 @@ def project_defects(
                     "area": area,
                     "length": length,
                     "width": width,
+                    "interpolated": interpolated,
                 }
             )
 
@@ -426,13 +556,13 @@ def project_defects(
 
             # Keep the largest single observation rather than averaging: partial views
             # of one defect would otherwise shrink its reported size.
-            best = max(members, key=lambda m: m["area"])
+            best = max(members, key=lambda m: -1.0 if m["area"] is None else m["area"])
             boundary_world = best["boundary"]
-            lon, lat = geo.projected_to_wgs84(boundary_world[:, 0], boundary_world[:, 1], anchor.epsg)
             centre_lon, centre_lat = geo.projected_to_wgs84([centre[0]], [centre[1]], anchor.epsg)
 
             hull_lonlat: list[list[float]] = []
-            if boundary_world.shape[0] >= 3:
+            if boundary_world is not None and boundary_world.shape[0] >= 3:
+                lon, lat = geo.projected_to_wgs84(boundary_world[:, 0], boundary_world[:, 1], anchor.epsg)
                 planar = np.stack([lon, lat], axis=1).astype(np.float32)
                 try:
                     hull = cv2.convexHull(planar.reshape(-1, 1, 2)).reshape(-1, 2)
@@ -449,18 +579,19 @@ def project_defects(
                     altitude_m=float(centre[2]),
                     easting=float(centre[0]),
                     northing=float(centre[1]),
-                    area_m2=float(best["area"]),
-                    length_m=float(best["length"]),
-                    width_m=float(best["width"]),
+                    area_m2=None if best["area"] is None else float(best["area"]),
+                    length_m=None if best["length"] is None else float(best["length"]),
+                    width_m=None if best["width"] is None else float(best["width"]),
                     severity=_worst_severity(m["severity"] for m in members),
                     confidence=float(max(m["confidence"] for m in members)),
                     observation_count=len(members),
                     source_images=sorted({m["image"] for m in members}),
                     boundary_lonlat=hull_lonlat,
+                    surface_interpolated=any(m.get("interpolated") for m in members),
                 )
             )
 
-    projected.sort(key=lambda d: d.area_m2, reverse=True)
+    projected.sort(key=lambda d: -1.0 if d.area_m2 is None else d.area_m2, reverse=True)
     return projected
 
 
@@ -476,7 +607,8 @@ def write_defect_layer(
     properties = {
         "generated_utc": datetime.now(timezone.utc).isoformat(),
         "defect_count": len(defects),
-        "total_area_m2": round(sum(d.area_m2 for d in defects), 4),
+        "total_area_m2": round(sum(d.area_m2 or 0.0 for d in defects), 4),
+        "unsized_count": sum(1 for d in defects if d.area_m2 is None),
     }
     if metadata:
         properties.update(metadata)
@@ -519,6 +651,7 @@ def project_run_defects(
     anchor = geo.GeoAnchor(**anchor_payload)
     surface = load_surface(dsm_path)
 
+    diagnostics: dict[str, int] = {}
     defects = project_defects(
         detections=detections,
         poses=poses,
@@ -526,12 +659,16 @@ def project_run_defects(
         anchor=anchor,
         mask_dir=mask_dir,
         merge_radius_m=merge_radius_m,
+        diagnostics=diagnostics,
     )
+    note = _projection_note(diagnostics)
     if not defects:
         return {
             "status": "empty",
-            "reason": "No detection ray intersected the reconstructed surface.",
+            "reason": "No detection could be located and sized on the reconstructed "
+                      "surface. " + note,
             "input_detections": len(detections),
+            "diagnostics": diagnostics,
         }
 
     layer_path = write_defect_layer(
@@ -544,7 +681,39 @@ def project_run_defects(
         "path": layer_path,
         "defect_count": len(defects),
         "input_detections": len(detections),
-        "total_area_m2": round(sum(d.area_m2 for d in defects), 4),
+        "diagnostics": diagnostics,
+        "note": note,
+        "total_area_m2": round(sum(d.area_m2 or 0.0 for d in defects), 4),
+        "unsized_count": sum(1 for d in defects if d.area_m2 is None),
         "crs_epsg": anchor.epsg,
         "defects": [d.to_dict() for d in defects],
     }
+
+
+def _projection_note(diagnostics: dict[str, int]) -> str:
+    """What could not be placed, in words, so a short defect list is not read as complete."""
+    parts = []
+    if diagnostics.get("incomplete_boundaries"):
+        parts.append(
+            f"{diagnostics['incomplete_boundaries']} of {diagnostics.get('boundaries', 0)} "
+            "defect outline(s) had at least one ray that did not reach the DSM (a hole in "
+            "the reconstruction or the edge of it) and were not sized, since a partial "
+            "outline under-states the area."
+        )
+        if diagnostics.get("located_unsized"):
+            parts.append(
+                f"{diagnostics['located_unsized']} of those were still placed from the ray "
+                "through their centre and appear as points with no size (sized=false)."
+            )
+    if diagnostics.get("sized_on_bridged_surface"):
+        parts.append(
+            f"{diagnostics['sized_on_bridged_surface']} outline(s) met DSM cells bridged "
+            f"from neighbours at most {MAX_BRIDGED_CELLS} cells away (the DSM has holes "
+            "between reconstructed points); those defects carry surface_interpolated=true."
+        )
+    if diagnostics.get("unposed_images"):
+        parts.append(
+            f"{diagnostics['unposed_images']} detection(s) came from images the "
+            "reconstruction did not pose."
+        )
+    return " ".join(parts)

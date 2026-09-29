@@ -11,8 +11,10 @@ import { el, selection } from "./primitives.js";
 import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
-import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
-import { setImage, setView } from "./viewstate.js";
+import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
+import { armDrawing, bindDrawingKeys, canDraw, vertices } from "./draw.js";
+import { refreshProjectOverlays, showVector } from "./mapview.js";
+import { currentImage, setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
@@ -350,6 +352,14 @@ export class Shell {
         this.showLayer(value.id || value.layer_id || value.key || name, name);
         return;
       }
+      case "tool": {
+        // The Measurements workspace lists its tools in a tree. Picking one used to
+        // print its name; it now does what the toolbar button of the same name does.
+        const tool = String(value.label || name).replace(/ line$/, "");
+        if (resolve(tool)) this.runAction(tool);
+        else this.toast(`${tool}: no such tool.`, "warn");
+        return;
+      }
       case "setting": {
         // Kept, so Plan uses what the operator typed. Without this the field updated
         // its own input and the planner ran on defaults -- the worst kind of broken,
@@ -413,6 +423,8 @@ export class Shell {
     if (vector && vector.geojson) {
       const features = vector.geojson.features || [];
       const kinds = [...new Set(features.map((f) => (f.geometry || {}).type).filter(Boolean))];
+      // Drawn, not just counted: CAD overlays, boundaries and camera tracks go on the map.
+      showVector(String(layerId), vector.geojson, String(name).startsWith("CAD:") ? "cad" : "layer");
       // Leaving the previously drawn raster up would caption someone else's picture with
       // this layer's name. Go back to the map, which is where geometry belongs.
       setImage(null);
@@ -431,14 +443,61 @@ export class Shell {
     this.toast(`${name}: ${why || "this layer cannot be displayed."}`, "warn");
   }
 
+  /**
+   * Wait for one click on the photograph shown on the canvas.
+   *
+   * The canvas draws a downscaled preview with object-fit: contain, so the click is
+   * mapped through the letterboxing to the preview's pixels and then scaled to the
+   * source frame's size -- a ground control mark is a pixel on the photograph, not on
+   * the screen.
+   */
+  async pickImagePixel(message) {
+    let image = null;
+    for (let i = 0; i < 200 && !image; i += 1) {
+      image = this.root.querySelector("img.canvas-product");
+      if (!image || !image.naturalWidth) {
+        image = null;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+    }
+    if (!image) return null;
+    const picked = currentImage() || {};
+    this.toast(message || "Click the point on the photograph (Esc to cancel).", "ok");
+    return new Promise((resolve) => {
+      const done = (value) => {
+        image.removeEventListener("click", onClick);
+        document.removeEventListener("keydown", onKey);
+        resolve(value);
+      };
+      const onKey = (event) => { if (event.key === "Escape") done(null); };
+      const onClick = (event) => {
+        const box = image.getBoundingClientRect();
+        const nw = image.naturalWidth;
+        const nh = image.naturalHeight;
+        const fit = Math.min(box.width / nw, box.height / nh);
+        const x = (event.clientX - box.left - (box.width - nw * fit) / 2) / fit;
+        const y = (event.clientY - box.top - (box.height - nh * fit) / 2) / fit;
+        if (x < 0 || y < 0 || x > nw || y > nh) { done(null); return; }
+        const width = Number(picked.source_width) || nw;
+        const height = Number(picked.source_height) || nh;
+        // A close-up covers a window of the frame, not all of it.
+        const [cx, cy, cw, ch] = picked.crop || [0, 0, width, height];
+        done({ x: cx + (x * cw) / nw, y: cy + (y * ch) / nh, width, height });
+      };
+      image.addEventListener("click", onClick);
+      document.addEventListener("keydown", onKey);
+    });
+  }
+
   /** Draw one image from the active dataset on the canvas. */
-  async showImage(name) {
+  async showImage(name, crop = null) {
     if (!connected()) {
       this.toast(`${name}: connect a project to preview the image.`, "warn");
       return;
     }
     this.toast(`Loading ${name}…`);
-    const preview = await tryCall("image_preview", name);
+    const preview = crop ? await tryCall("image_preview", name, 1400, crop)
+      : await tryCall("image_preview", name);
     if (!preview || preview.ok === false) {
       this.toast(`${name}: ${(preview && preview.error) || "no preview available."}`, "warn");
       return;
@@ -744,6 +803,14 @@ export class Shell {
     if (entry.tool) {
       this.activeTool = entry.tool;
       this.workspaceEl.dataset.tool = entry.tool;
+      if (entry.draw) {
+        // The tool is only armed if something is listening for the drawing. It used to
+        // set activeTool, which nothing read, and report "Draw on the canvas".
+        armDrawing(entry.draw, (geometry) => this.onGeometryDrawn(entry, action, geometry));
+        this.toast(`${action}: click points on the map; double-click or Enter to finish, `
+          + "Esc to cancel.", "ok");
+        return;
+      }
       this.toast(`Tool armed: ${action}. Draw on the canvas.`, "ok");
       return;
     }
@@ -778,12 +845,67 @@ export class Shell {
       const message = (result && result.message) || `${action} done.`;
       this.toast(message, "ok");
       if (result && result.job) this.watchJob(result.job);
-      if (result && result.refresh) await this.refreshState();
+      if (result && result.refresh) {
+        await this.refreshState();
+        // A new overlay or marker belongs on the map the operator is looking at.
+        refreshProjectOverlays();
+      }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
       // application produces and it used to vanish into a rejected promise.
       this.toast(`${action}: ${error.message || error}`, "error");
     }
+  }
+
+  /**
+   * A line or polygon was finished on the map.
+   *
+   * It becomes the selection that Volume, Cut & Fill, Slope, Stockpile and Compare act
+   * on. For the measuring tools it is also measured straight away, on the project's own
+   * rasters -- the browser never works out a length itself.
+   */
+  async onGeometryDrawn(entry, action, geometry) {
+    this.selectionGeometry = geometry;
+    const points = vertices(geometry);
+    const pending = this.pendingSelectionAction;
+    this.pendingSelectionAction = null;
+    if (pending) {
+      await this.runAction(pending);
+      return;
+    }
+    if (!entry.measure) {
+      this.toast(`${geometry.type === "Polygon" ? "Area" : "Line"} selected `
+        + `(${points.length} points). Volume, Cut & Fill, Slope and Stockpile use it.`, "ok");
+      return;
+    }
+    if (!connected()) {
+      this.toast(`${action}: connect to the application to measure.`, "warn");
+      return;
+    }
+    try {
+      const result = await call("measure_drawn", entry.measure, points);
+      this.lastMeasurement = result;
+      this.toast(`${action}: ${describeMeasurement(result)}`, "ok");
+      this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+    } catch (error) {
+      this.toast(`${action}: ${error.message || error}`, "error");
+    }
+  }
+
+  /**
+   * The drawn selection, or -- when there is none of the right shape -- start drawing
+   * one and run `action` again once it is finished. Returns the vertices or null.
+   */
+  requireSelection(shape, action, prompt) {
+    const geometry = this.selectionGeometry;
+    const wanted = shape === "polygon" ? "Polygon" : "LineString";
+    if (geometry && geometry.type === wanted) return vertices(geometry);
+    this.pendingSelectionAction = action;
+    this.activeTool = `select-${shape}`;
+    armDrawing(shape, (drawn) => this.onGeometryDrawn({}, action, drawn));
+    this.toast(prompt || `${action}: draw the ${shape === "polygon" ? "area" : "line"} on `
+      + "the map, then double-click or press Enter.", "ok");
+    return null;
   }
 
   async runVehicle(command, action) {
@@ -869,6 +991,17 @@ export class Shell {
         }
         return options;
       },
+      // The pipeline also runs coverage QA, which sizes each photograph's footprint from
+      // its height above ground. Reconstruction alone does not read it.
+      pipelineOptions: () => {
+        const raw = this.settings || {};
+        const options = this.actionContext().reconstructionOptions();
+        const agl = Number(raw.agl);
+        if (raw.agl !== undefined && raw.agl !== "" && Number.isFinite(agl) && agl > 0) {
+          options.flight_height_agl_m = agl;
+        }
+        return options;
+      },
       /* What the Report panel was set to.
        *
        * Generate Report used to call generate_report("", title, "standard", "") with the
@@ -886,6 +1019,33 @@ export class Shell {
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
       selectionGeometry: () => this.selectionGeometry || null,
+      selectionVertices: () => vertices(this.selectionGeometry),
+      // The drawn area or line, or null after starting a drawing that will re-run the
+      // action once it is finished.
+      requireSelection: (shape, action, prompt) => this.requireSelection(shape, action, prompt),
+      // One click on the map, as [lon, lat]; null when there is no map to click (the
+      // caller then asks for typed coordinates) or when the operator presses Esc.
+      pickPoint: (message) => {
+        if (!canDraw()) return Promise.resolve(null);
+        this.toast(message || "Click the position on the map (Esc to type it instead).", "ok");
+        return new Promise((resolve) => {
+          armDrawing("point", (geometry) => resolve(geometry.coordinates), () => resolve(null));
+        });
+      },
+      // Switch the canvas to a view (the mesh, say), as the view buttons do.
+      showView: (view) => {
+        this.canvasView = view;
+        this.workspaceEl.dataset.view = view;
+        setImage(null);
+        setView(view);
+        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+      },
+      toast: (text, kind) => this.toast(text, kind || "ok"),
+      // Put one dataset photograph on the canvas.
+      showImage: (name, crop) => this.showImage(name, crop),
+      // One click on the photograph on the canvas, in the photograph's own full-
+      // resolution pixels: {x, y, width, height}. null on Esc or a click off the picture.
+      pickImagePixel: (message) => this.pickImagePixel(message),
       resetLayout: () => this.dock.resetLayout(),
       // The organisation and project the session is actually on. Defaulting to 1 rather
       // than refusing keeps a single-tenant desktop install usable; a multi-tenant
@@ -1073,6 +1233,15 @@ export class Shell {
   /* ------------------------------------------------------------- keyboard */
 
   bindKeys() {
+    // Enter finishes a drawing, Esc cancels it, Backspace removes the last vertex.
+    bindDrawingKeys(document);
+    // The canvas's own tool icons (draw polygon, draw line, measure) run the toolbar
+    // action of the same meaning.
+    if (typeof window !== "undefined" && window.addEventListener) {
+      window.addEventListener("odk:action", (event) => {
+        if (event && event.detail) this.runAction(String(event.detail));
+      });
+    }
     document.addEventListener("keydown", (event) => {
       const meta = event.ctrlKey || event.metaKey;
       if (meta && event.key.toLowerCase() === "k") { event.preventDefault(); this.openPalette(); return; }

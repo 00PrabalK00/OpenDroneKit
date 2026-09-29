@@ -12,6 +12,91 @@
  */
 
 import { el } from "./primitives.js";
+import { attachDrawing } from "./draw.js";
+import { tryCall } from "./api.js";
+
+/* Vector layers every canvas map draws: the project's CAD overlays and site markers,
+   plus any vector layer the operator picked. The overlays used to be written to disk
+   and listed by nobody, and the markers were never drawn -- a hazard recorded on the
+   site did not appear on the map the pilot planned over. */
+const mounted = new Set();
+const pinned = new Map();
+
+const PALETTE = {
+  cad: "#22d3ee",
+  markers: "#ef4444",
+  layer: "#a78bfa",
+};
+
+const sourceId = (id) => `odk-v-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
+function drawPinned(map) {
+  if (!map.isStyleLoaded || !map.isStyleLoaded()) {
+    /* isStyleLoaded() is false while any source is still fetching (a raster layer being
+       added, a basemap tile in flight). Returning then dropped the overlays for good;
+       wait for the map to go idle and draw them. */
+    if (!map.__odkVectorsPending && map.once) {
+      map.__odkVectorsPending = true;
+      map.once("idle", () => { map.__odkVectorsPending = false; drawPinned(map); });
+    }
+    return;
+  }
+  for (const [id, entry] of pinned) {
+    const source = sourceId(id);
+    const existing = map.getSource(source);
+    if (existing) { existing.setData(entry.geojson); continue; }
+    map.addSource(source, { type: "geojson", data: entry.geojson });
+    const colour = PALETTE[entry.kind] || PALETTE.layer;
+    map.addLayer({ id: `${source}-fill`, type: "fill", source,
+      filter: ["==", ["geometry-type"], "Polygon"],
+      paint: { "fill-color": colour, "fill-opacity": 0.15 } });
+    map.addLayer({ id: `${source}-line`, type: "line", source,
+      filter: ["!=", ["geometry-type"], "Point"],
+      paint: { "line-color": colour, "line-width": 1.5 } });
+    map.addLayer({ id: `${source}-point`, type: "circle", source,
+      filter: ["==", ["geometry-type"], "Point"],
+      paint: { "circle-radius": 5, "circle-color": colour,
+        "circle-stroke-color": "#0d1015", "circle-stroke-width": 1 } });
+  }
+}
+
+/** Draw a vector layer on every canvas map, now and on any map mounted later. */
+export function showVector(id, geojson, kind = "layer") {
+  if (!geojson) return;
+  pinned.set(id, { geojson, kind });
+  mounted.forEach((map) => drawPinned(map));
+}
+
+/** What is actually on a mounted map, by id, with its feature count -- read back from
+    the map's own sources, so a layer that was pinned but never reached a map is absent. */
+export function shownVectors() {
+  const shown = {};
+  for (const [id, entry] of pinned) {
+    if ([...mounted].some((map) => map.getSource && map.getSource(sourceId(id)))) {
+      shown[id] = ((entry.geojson || {}).features || []).length;
+    }
+  }
+  return shown;
+}
+
+async function loadProjectOverlays(map) {
+  const overlays = await tryCall("list_cad_overlays");
+  for (const overlay of (overlays && overlays.overlays) || []) {
+    if (overlay.kind === "vector" && overlay.geojson) {
+      pinned.set(`cad:${overlay.name}`, { geojson: overlay.geojson, kind: "cad" });
+    }
+  }
+  const markers = await tryCall("list_site_markers");
+  if (markers && markers.geojson) {
+    pinned.set("site-markers", { geojson: markers.geojson, kind: "markers" });
+  }
+  drawPinned(map);
+}
+
+/** Re-read overlays and markers into every mounted map (after an import or a marker). */
+export function refreshProjectOverlays() {
+  mounted.forEach((map) => loadProjectOverlays(map));
+}
 
 /* Style built here rather than imported from js/map.js: that module belongs to the hub
  * and carries its own draw tooling and event wiring. Borrowing it would couple two UIs
@@ -80,6 +165,9 @@ export function mountMap(container, {
     return null;
   }
 
+  // Clicks become vertices while a measurement tool is armed; otherwise they are ignored.
+  attachDrawing(map);
+
   map.addControl(new window.maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
   map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");
 
@@ -96,9 +184,11 @@ export function mountMap(container, {
     ]));
   });
 
+  mounted.add(map);
   map.on("load", () => {
     const placeholder = container.querySelector(".placeholder");
     if (placeholder) placeholder.remove();
+    loadProjectOverlays(map);
     if (onReady) onReady(map);
   });
 

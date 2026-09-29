@@ -63,12 +63,21 @@ function readout({ calls, isEmpty, empty, render, every }) {
  * Plan then generated used the defaults, silently. */
 const settingChanged = (key, value) => selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
 
+/* The drawing tools ask the shell to run the same action as the toolbar button, so the
+   canvas icon and the toolbar cannot drift apart. They had no handler at all: clicking
+   one highlighted it and nothing else happened. */
+const runShellAction = (action) => () => {
+  if (typeof window !== "undefined" && window.dispatchEvent && typeof CustomEvent !== "undefined") {
+    window.dispatchEvent(new CustomEvent("odk:action", { detail: action }));
+  }
+};
+
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
   { icon: "▣", title: "Box select" },
-  { icon: "⬠", title: "Draw polygon" },
-  { icon: "╱", title: "Draw line" },
-  { icon: "⤢", title: "Measure" },
+  { icon: "⬠", title: "Draw polygon", onSelect: runShellAction("Select Area") },
+  { icon: "╱", title: "Draw line", onSelect: runShellAction("Select Line") },
+  { icon: "⤢", title: "Measure", onSelect: runShellAction("Distance") },
   { icon: "⌂", title: "Place home" },
   { icon: "⛔", title: "Exclusion zone" },
   { icon: "⤡", title: "Fit view" },
@@ -917,7 +926,7 @@ const verification = {
          to say whether the survey met its tolerance, so a fixed answer defeats it. */
       { at: "tr", node: readout({
         calls: ["gcp_accuracy_report"],
-        empty: "Import ground control points to check the survey against them.",
+        empty: "Import and mark ground control points, then Process, to check the survey against them.",
         isEmpty: ([g]) => !(g && g.report),
         render: ([g]) => {
           const r = g.report;
@@ -929,7 +938,7 @@ const verification = {
             return [chip(`${r.point_count ?? 0} control points \u00b7 no measured accuracy`, "warn")];
           }
           return [
-            chip(`${r.used} of ${r.point_count} used`, "ok"),
+            chip(`${r.used} of ${r.point_count} ${r.role === "check" ? "checked" : "fitted"}`, "ok"),
             chip(`RMSE ${Number(r.rmse_m).toFixed(3)} m`, r.meets_survey_grade ? "ok" : "warn"),
             ...(r.outlier_count
               ? [chip(`${r.outlier_count} outlier${r.outlier_count === 1 ? "" : "s"}`, "error")]
@@ -998,7 +1007,8 @@ const processing = {
      reconstruction was running. There is no pause_job in the Api either -- a job can be
      cancelled and nothing else -- so the button had nothing behind it in both directions. */
   toolbar: ["New Job", "Size Job", "|", "Process", "Cancel", "|",
-            "Add GCPs", "Set CRS", "Check PPK", "Export Products"],
+            "Add GCPs", "Mark GCP", "GCP Report", "Set CRS", "Check PPK", "|",
+            "Semantic Map", "Survey Packs", "Export Products"],
   left: [
     { id: "proc.datasets", title: "Datasets", render: () => live({
       calls: ["list_datasets", "list_dataset_images"],
@@ -1049,6 +1059,10 @@ const processing = {
         { key: "imgsize", label: "Max image size", value: "4096", unit: "px" },
         { key: "dense", label: "Dense cloud", value: "yes", options: ["yes", "no"] },
         { key: "mesh", label: "Mesh depth", value: "9" },
+        /* Coverage QA places each image from its GPS tag and sizes it from its height
+           above ground. Images that do not record that height need it stated here (or
+           a terrain model); without it coverage is reported as not computed. */
+        { key: "agl", label: "Flight height above ground", value: "", unit: "m" },
       ], settingChanged) },
       /* Was a fixed "EPSG:4326 / 7 GCPs / RTK fixed" on every project, including ones
          with no GCPs and no RTK at all. Read from the layers the project really has. */
@@ -1143,7 +1157,7 @@ const twin = {
   id: "twin",
   title: "Digital Twin",
   toolbar: ["Textured Mesh", "Point Cloud", "Thermal", "Semantic", "Change", "|",
-            "Save View", "Clip", "|",
+            "Save View", "Open View", "Measure in 3D", "Clip", "|",
             "Compare Dates", "Measure", "Annotate", "Export"],
   left: [
     /* A building with a roof, a facade and a stockpile volume, none of which existed.
@@ -1493,7 +1507,7 @@ const measurements = {
   id: "measurements",
   title: "Measurements",
   toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
-            "Measure in 3D", "|", "Compare Dates", "Export"],
+            "Ponding", "Measure in 3D", "|", "Compare Dates", "Survey Packs", "Export"],
   left: [
     { id: "ms.tools", title: "Tools", render: () => tree([
       { id: "t1", label: "Distance", icon: "↔" },
@@ -1503,6 +1517,7 @@ const measurements = {
       { id: "t5", label: "Cut & Fill", icon: "⇅" },
       { id: "t6", label: "Slope", icon: "◺" },
       { id: "t7", label: "Profile line", icon: "∿" },
+      { id: "t8", label: "Ponding", icon: "≈" },
     ], { selectKind: "tool" }) },
     /* Measurement works on rasters -- orthomosaic, DSM, DTM -- so this filters rather
        than listing every layer in the project. */
@@ -1526,32 +1541,101 @@ const measurements = {
     /* A 1,240 m3 stockpile with +-31 m3 uncertainty and a previous survey to compare
        against, on a project with no measurements at all. Volumes are the numbers an
        operator bills from, so an invented one is the most costly kind here. */
-    { id: "ms.details", title: "Measurement Details", render: () =>
-      emptyState("No measurement selected. Use Volume, Area or Distance on the canvas.") },
+    { id: "ms.details", title: "Measurement Details", render: () => live({
+      calls: ["list_measurements"],
+      empty: "No measurement yet. Use Distance, Area, Volume or Profile on the map.",
+      isEmpty: ([m]) => !(m && (m.measurements || []).length),
+      render: ([m]) => properties(measurementDetails(m.measurements[0])),
+    }) },
   ],
   bottom: [
-    /* Five column headings over zero rows, including a change column. An empty grid
-       reads as "no measurements have been taken", when it means the panel was never
-       wired to anything. Measurements are saved as annotations. */
+    /* Measurements are kept per project by list_measurements, which the report reads
+       too. This panel used to filter annotations for "measure", which nothing wrote. */
     { id: "ms.history", title: "Measurement History", flex: 3, render: () => live({
-      calls: ["find_annotations"],
-      empty: "No measurements yet. Use the measure tools on the canvas, then save one.",
-      isEmpty: ([f]) => !(f && (f.annotations || []).some((a) =>
-        String(a.annotation_type || "").includes("measure"))),
-      render: ([f]) => table(
+      calls: ["list_measurements"],
+      empty: "No measurements yet. Use the measure tools on the map.",
+      isEmpty: ([m]) => !(m && (m.measurements || []).length),
+      render: ([m]) => table(
         [{ title: "Name", key: "n" }, { title: "Type", key: "t" },
-         { title: "Recorded", key: "d" }],
-        (f.annotations || [])
-          .filter((a) => String(a.annotation_type || "").includes("measure"))
-          .map((a) => ({
-            n: a.label || String(a.id || "").slice(0, 8),
-            t: a.annotation_type,
-            d: String(a.created_at || "").slice(0, 10),
-          })), { selectKind: "measurement" }),
+         { title: "Value", key: "v" }, { title: "Recorded", key: "d" }],
+        (m.measurements || []).map((row) => ({
+          id: row.id,
+          n: row.label || String(row.id || "").slice(0, 8),
+          t: row.measurement_type,
+          v: `${Number(row.value).toLocaleString(undefined, { maximumFractionDigits: 3 })} ${row.unit}`,
+          d: String(row.created_at || "").slice(0, 16).replace("T", " "),
+        })), { selectKind: "measurement" }),
     }) },
-    { id: "ms.profile", title: "Profile", flex: 2, render: () => canvas({ title: "Elevation profile", note: "Along the selected profile line" }) },
+    { id: "ms.profile", title: "Profile", flex: 2, render: () => live({
+      calls: ["list_measurements"],
+      empty: "No profile yet. Press Profile and draw a line on the map.",
+      isEmpty: ([m]) => !(m && (m.measurements || []).some((r) => r.measurement_type === "profile")),
+      render: ([m]) => profileChart(m.measurements.find((r) => r.measurement_type === "profile")),
+    }) },
   ],
 };
+
+/* Label/value rows for one stored measurement, from what the Api recorded with it. */
+function measurementDetails(row) {
+  const d = row.details || {};
+  const preferred = d.preferred || {};
+  const measured = d.measurement || {};
+  const slope = d.slope || {};
+  return reported([
+    ["Measurement", row.label],
+    ["Type", row.measurement_type],
+    ["Value", Number(row.value).toLocaleString(undefined, { maximumFractionDigits: 3 }), row.unit],
+    ["Reference", preferred.reference === "plane"
+      ? `plane at ${preferred.reference_elevation_m} m` : preferred.reference],
+    ["Above reference", preferred.cut_volume_m3, "m\u00b3"],
+    ["Below reference", preferred.fill_volume_m3, "m\u00b3"],
+    ["Area", preferred.area_m2 ?? d.region_area_m2, "m\u00b2"],
+    ["Surface length", d.surface_length_m, "m"],
+    ["Mean slope", slope.mean_deg, "\u00b0"],
+    ["CRS", d.crs_epsg || measured.epsg || d.epsg ? `EPSG:${d.crs_epsg || measured.epsg || d.epsg}` : ""],
+    ["Measured on", row.source_id],
+    ["Caveat", (measured.caveats || [])[0] || d.note || d.surface_note],
+    ["Recorded", String(row.created_at || "").slice(0, 19).replace("T", " ")],
+  ]);
+}
+
+/* The newest profile as a line chart. The samples are the DSM's own cell values; gaps
+   (no data) break the line rather than being bridged. */
+function profileChart(row) {
+  const d = row.details || {};
+  const points = (d.chart_samples || []).filter((p) => p[1] !== null && p[1] !== undefined);
+  if (points.length < 2) return emptyState("This profile has too few samples with data to draw.");
+  const width = 600;
+  const height = 160;
+  const pad = 28;
+  const xs = points.map((p) => p[0]);
+  const zs = points.map((p) => p[1]);
+  const xMax = Math.max(...xs) || 1;
+  const zMin = Math.min(...zs);
+  const zMax = Math.max(...zs);
+  const span = zMax - zMin || 1;
+  const x = (v) => pad + (v / xMax) * (width - 2 * pad);
+  const y = (v) => height - pad - ((v - zMin) / span) * (height - 2 * pad);
+  const segments = [];
+  let current = [];
+  for (const [dist, z] of d.chart_samples || []) {
+    if (z === null || z === undefined) {
+      if (current.length) segments.push(current);
+      current = [];
+    } else {
+      current.push(`${x(dist).toFixed(1)},${y(z).toFixed(1)}`);
+    }
+  }
+  if (current.length) segments.push(current);
+  const lines = segments.map((seg) =>
+    `<polyline fill="none" stroke="#f59e0b" stroke-width="1.5" points="${seg.join(" ")}"/>`).join("");
+  const svg = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="100%" `
+    + `preserveAspectRatio="none" role="img" aria-label="Elevation profile">`
+    + `<text x="${pad}" y="14" fill="currentColor" font-size="11">${zMax.toFixed(2)} m</text>`
+    + `<text x="${pad}" y="${height - 6}" fill="currentColor" font-size="11">${zMin.toFixed(2)} m`
+    + ` \u2014 ${xMax.toFixed(1)} m along the line</text>${lines}</svg>`;
+  return el("div", { class: "profile-chart", html: svg });
+}
 
 /* -------------------------------------------------------------------- FLEET */
 

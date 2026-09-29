@@ -48,11 +48,14 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(
             f"- Condition grade: `{health.get('condition_grade', '')}` ({health.get('condition_label', '')})"
         )
+        if health.get("index_basis"):
+            lines.append(f"- Basis: {health.get('index_basis')}")
         failure = health.get("probabilistic_failure", {})
-        if isinstance(failure, dict):
-            lines.append(f"- Failure probability (6 months): `{100.0 * float(failure.get('probability_6_month', 0.0)):.2f}%`")
-            lines.append(f"- Failure probability (1 year): `{100.0 * float(failure.get('probability_1_year', 0.0)):.2f}%`")
-            lines.append(f"- Failure probability (3 years): `{100.0 * float(failure.get('probability_3_year', 0.0)):.2f}%`")
+        if isinstance(failure, dict) and failure.get("available") is False:
+            lines.append(f"- Failure probability: not computed. {failure.get('reason', '')}")
+        not_assessed = (health.get("components") or {}).get("not_assessed") or []
+        if not_assessed:
+            lines.append(f"- Not assessed (excluded from the index): `{', '.join(not_assessed)}`")
         trend = health.get("trend", {})
         if isinstance(trend, dict):
             lines.append(f"- Trend direction: `{trend.get('trend_direction', 'stable')}`")
@@ -150,8 +153,18 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     if coverage:
         lines.append(f"- Quality failures: `{int(coverage.get('quality_fail_count', 0))}`")
-        lines.append(f"- Coverage completion: `{float(coverage.get('coverage_completion_pct', 0.0)):.1f}%`")
+        completion = coverage.get("coverage_completion_pct")
+        if completion is None:
+            reason = (coverage.get("layout") or {}).get("reason", "")
+            lines.append(f"- Coverage completion: not computed. {reason}")
+        else:
+            lines.append(f"- Coverage completion: `{float(completion):.1f}%` "
+                         f"(two or more images: `{float(coverage.get('stereo_coverage_pct') or 0.0):.1f}%`, "
+                         f"over the {str(coverage.get('coverage_extent', '')).replace('_', ' ')})")
         lines.append(f"- Gap suggestions: `{int(coverage.get('gap_suggestion_count', 0))}`")
+        not_assessed = (coverage.get("layout") or {}).get("not_assessed_note")
+        if not_assessed:
+            lines.append(f"- Not assessed: {not_assessed}")
         if coverage.get("coverage_heatmap_path"):
             lines.append(f"- Coverage heatmap: `{coverage.get('coverage_heatmap_path')}`")
         if coverage.get("preview_model_path"):
@@ -174,6 +187,10 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("## Crack Propagation Forecast")
     lines.append("")
     if forecast.get("target_image"):
+        if forecast.get("disclaimer"):
+            lines.append(f"- **{forecast.get('disclaimer')}**")
+        if forecast.get("assumed_inputs"):
+            lines.append(f"- Assumed (not measured) inputs: `{', '.join(forecast['assumed_inputs'])}`")
         lines.append(f"- Target image: `{forecast.get('target_image')}`")
         lines.append(f"- Mode: `{forecast.get('mode', 'geometric')}`")
         lines.append(f"- Steps: `{forecast.get('steps', 0)}`")
@@ -200,10 +217,6 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
                 f"  - da/dN: `{float(physics_summary.get('final_fatigue_da_dn_m_per_cycle', 0.0)):.3e} m/cycle`"
             )
             lines.append(f"  - Factor of safety: `{float(physics_summary.get('final_factor_of_safety', 0.0)):.3f}`")
-            lines.append(
-                f"  - Failure probability (horizon): "
-                f"`{100.0 * float(physics_summary.get('final_failure_probability_horizon', 0.0)):.2f}%`"
-            )
         if forecast.get("fenicsx_message"):
             lines.append(f"- FEniCSx: `{forecast.get('fenicsx_message')}`")
     else:
@@ -300,8 +313,10 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     if isinstance(risk, dict) and risk.get("defect_count"):
         lines.append(f"- Risk index: `{risk.get('risk_index')}`")
         lines.append(
-            f"- Integrity score: `{risk.get('integrity_score')}` "
-            f"(grade `{risk.get('grade')}` - {risk.get('grade_label')})"
+            f"- Defect condition score: `{risk.get('defect_condition_score')}` "
+            f"(grade `{risk.get('defect_condition_grade')}` - "
+            f"{risk.get('defect_condition_label')}); from the ranked defects above, not "
+            "the image-based integrity score in Structural Health Scoring"
         )
         lines.append(f"- Basis: {risk.get('measurement_note', '')}")
         lines.append("")

@@ -381,6 +381,24 @@ class AppSession:
                         restored.append(self.register_raster_layer(path, name=label, kind=kind))
                 except Exception:  # noqa: BLE001 - an unreadable product is not fatal
                     continue
+        # CAD drawings and placed images live in overlays/, and vanished from the layer
+        # tree on every restart in exactly the way the products did.
+        overlay_dir = root / "overlays"
+        if overlay_dir.is_dir():
+            for path in sorted(overlay_dir.glob("*.geojson")):
+                if str(path) in known:
+                    continue
+                try:
+                    restored.append(self.register_vector_layer(path, name=f"CAD: {path.stem}"))
+                except Exception:  # noqa: BLE001
+                    continue
+            for path in sorted(overlay_dir.glob("*.tif")):
+                if str(path) in known:
+                    continue
+                try:
+                    restored.append(self.register_raster_layer(path, name=f"Overlay: {path.stem}"))
+                except Exception:  # noqa: BLE001
+                    continue
         return restored
 
     # -- vehicle ---------------------------------------------------------

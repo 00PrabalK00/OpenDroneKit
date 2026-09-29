@@ -1,4 +1,10 @@
-﻿"""Fast on-site coverage and quality validation utilities."""
+"""Fast on-site coverage and quality validation utilities.
+
+Image quality (blur, exposure) is measured from the pixels. Coverage and overlap are
+measured on the ground: each image is placed from its GPS tag and sized from its camera
+geometry and height above ground, and a figure that cannot be computed that way is
+reported as unavailable rather than estimated from the images' appearance.
+"""
 
 from __future__ import annotations
 
@@ -33,31 +39,24 @@ class CoverageValidationConfig:
     motion_blur_threshold: float = 0.45
     lens_blur_ratio_threshold: float = 0.5
     exposure_clip_threshold: float = 0.12
+    # Kept so existing configurations still load. They thresholded an ORB match ratio,
+    # which on textureless aerial imagery stayed under 0.05 for images COLMAP registered
+    # without difficulty, so every image was flagged. Overlap is now geometric.
     overlap_threshold: float = 0.14
     expected_overlap_threshold: float = 0.22
     max_gap_suggestions: int = 12
     min_gap_component_px: int = 1600
     thumbnail_width: int = 180
     canvas_size_px: int = 960
-
-
-@dataclass
-class _LayoutTransform:
-    min_x: float
-    max_y: float
-    scale: float
-    pad: float
-    canvas_size: int
-
-
-@dataclass
-class _SimilarityTransform:
-    scale: float
-    rotation: np.ndarray
-    translation: np.ndarray
-
-    def map_points(self, pts: np.ndarray) -> np.ndarray:
-        return self.scale * (pts @ self.rotation) + self.translation
+    # Share of an image's footprint that its best neighbour must also cover. Below this
+    # there is too little common ground to tie the image into the reconstruction.
+    min_footprint_overlap: float = 0.3
+    # An uncovered patch smaller than this share of one footprint is not reported.
+    min_gap_fraction_of_footprint: float = 0.02
+    # Height above ground, when the images do not carry it (see image_footprints).
+    flight_height_agl_m: float = 0.0
+    ground_elevation_m: float | None = None
+    terrain_path: str = ""
 
 
 def _safe_imread(path: Path) -> np.ndarray | None:
@@ -166,185 +165,232 @@ def _quality_metrics(gray: np.ndarray, cfg: CoverageValidationConfig) -> dict:
     }
 
 
-def _orb_overlap(prev_gray: np.ndarray, curr_gray: np.ndarray) -> tuple[float, int, int]:
-    orb = cv2.ORB_create(nfeatures=1400, fastThreshold=8)
-    kp1, des1 = orb.detectAndCompute(prev_gray, None)
-    kp2, des2 = orb.detectAndCompute(curr_gray, None)
-    k1 = len(kp1) if kp1 is not None else 0
-    k2 = len(kp2) if kp2 is not None else 0
-    keypoints = min(k1, k2)
+# ---------------------------------------------------------------------------------
+# Where each image actually looked
+#
+# The first version of this module placed images by phase-correlating each frame against
+# the previous one, and fell back to a HARDCODED 180 px shift whenever the correlation was
+# weak -- which, on real aerial imagery of fields and roofs, was every pair. Every
+# coverage figure it produced (79.4% complete on the Aukerman set, with 12 "gaps") was
+# computed on a layout it had invented. Positions now come from the images' own GPS tags,
+# footprint sizes from the camera's focal length and sensor width and the height above
+# ground, and when any of those is unknown the coverage figure is not computed.
+# ---------------------------------------------------------------------------------
 
-    if des1 is None or des2 is None or keypoints == 0:
-        return 0.0, 0, keypoints
 
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    raw = bf.knnMatch(des1, des2, k=2)
+@dataclass
+class ImageFootprint:
+    """The ground one nadir image covered, in a local metric frame."""
 
-    good = 0
-    for pair in raw:
-        if len(pair) < 2:
+    image: str
+    easting: float
+    northing: float
+    height_agl_m: float
+    height_source: str
+    width_m: float
+    length_m: float
+    yaw_deg: float | None
+    yaw_source: str
+    corners: np.ndarray            # (4, 2) local metres; a square when yaw is unknown
+    longitude: float
+    latitude: float
+
+    @property
+    def area_m2(self) -> float:
+        return float(abs(cv2.contourArea(self.corners.astype(np.float32))))
+
+    def to_dict(self) -> dict:
+        return {
+            "image": self.image,
+            "easting": round(self.easting, 3),
+            "northing": round(self.northing, 3),
+            "longitude": self.longitude,
+            "latitude": self.latitude,
+            "height_agl_m": round(self.height_agl_m, 2),
+            "height_source": self.height_source,
+            "width_m": round(self.width_m, 2),
+            "length_m": round(self.length_m, 2),
+            "yaw_deg": None if self.yaw_deg is None else round(self.yaw_deg, 1),
+            "yaw_source": self.yaw_source,
+        }
+
+
+_XMP_NUMBER = r'="?\s*([-+]?[0-9]*\.?[0-9]+)'
+
+
+def _xmp_value(raw: bytes, names: Iterable[str]) -> float | None:
+    """A numeric XMP field (DJI, senseFly) as attribute or element, or None."""
+    import re
+
+    for name in names:
+        match = re.search(re.escape(name).encode() + _XMP_NUMBER.encode(), raw)
+        if match is None:
+            match = re.search(
+                rb"<" + re.escape(name).encode() + rb">\s*([-+]?[0-9]*\.?[0-9]+)", raw)
+        if match is not None:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                continue
+    return None
+
+
+def _read_xmp(path: Path) -> bytes:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(256 * 1024)
+    except OSError:
+        return b""
+    start = head.find(b"<x:xmpmeta")
+    if start < 0:
+        return b""
+    end = head.find(b"</x:xmpmeta>", start)
+    return head[start:end if end > 0 else start + 16384]
+
+
+def _terrain_sampler(terrain_path: str):
+    """lon/lat -> ground elevation from a DEM GeoTIFF, or None where it has no data."""
+    import rasterio
+    from pyproj import Transformer
+
+    dataset = rasterio.open(terrain_path)
+    to_raster = Transformer.from_crs("EPSG:4326", dataset.crs, always_xy=True)
+    band = dataset.read(1, masked=True)
+
+    def sample(lon: float, lat: float) -> float | None:
+        x, y = to_raster.transform(lon, lat)
+        row, col = dataset.index(x, y)
+        if not (0 <= row < dataset.height and 0 <= col < dataset.width):
+            return None
+        value = band[row, col]
+        if np.ma.is_masked(value) or not np.isfinite(float(value)):
+            return None
+        return float(value)
+
+    return sample, dataset
+
+
+def image_footprints(
+    paths: Iterable[Path],
+    *,
+    flight_height_agl_m: float | None = None,
+    ground_elevation_m: float | None = None,
+    terrain_path: str = "",
+) -> tuple[list[ImageFootprint], dict]:
+    """Ground footprints from EXIF GPS, camera geometry and height above ground.
+
+    Height above ground is taken, per image, from the first source available: the
+    drone's own relative altitude (DJI XMP), the GPS altitude minus a terrain model
+    sampled under the image, the GPS altitude minus a stated ground elevation, or a
+    stated flight height. With none, the image has no footprint, and the reason is
+    recorded rather than a height assumed.
+
+    Nadir is assumed: a tilted image covers more ground than this says.
+    """
+    from . import geo
+
+    paths = list(paths)
+    problems: dict[str, list[str]] = {}
+    sampler = None
+    dataset = None
+    if terrain_path:
+        try:
+            sampler, dataset = _terrain_sampler(terrain_path)
+        except Exception as exc:  # noqa: BLE001 - an unreadable DEM is reported, not fatal
+            problems.setdefault("terrain", []).append(f"{terrain_path}: {exc}")
+
+    fixes: dict[str, object] = {}
+    records: list[tuple[Path, object, object, bytes]] = []
+    for path in paths:
+        fix = geo.read_exif_gps(path)
+        if fix is None:
+            problems.setdefault("no_gps", []).append(path.name)
             continue
-        m, n = pair[0], pair[1]
-        if m.distance < 0.76 * n.distance:
-            good += 1
+        camera = geo.read_exif_camera(path)
+        records.append((path, fix, camera, _read_xmp(path)))
+        fixes[path.name] = fix
 
-    score = float(good / max(keypoints, 1))
-    return score, int(good), int(keypoints)
+    footprints: list[ImageFootprint] = []
+    if not records:
+        if dataset is not None:
+            dataset.close()
+        return footprints, {"problems": problems, "epsg": None}
 
+    epsg = geo.auto_utm_epsg_for_fixes(list(fixes.values()))
+    lons = [r[1].longitude for r in records]
+    lats = [r[1].latitude for r in records]
+    east, north = geo.wgs84_to_projected(lons, lats, epsg)
+    # Where the images that get no footprint were taken: their ground is not known to
+    # be covered or uncovered, and the caller must not call it a gap.
+    unplaced: dict[str, tuple[float, float]] = {}
 
-def _phase_shift(prev_gray: np.ndarray, curr_gray: np.ndarray) -> tuple[np.ndarray, float]:
-    a = prev_gray.astype(np.float32)
-    b = curr_gray.astype(np.float32)
-    shift, response = cv2.phaseCorrelate(a, b)
-    dx = float(shift[0])
-    dy = float(shift[1])
-    return np.array([dx, -dy], dtype=np.float64), float(response)
+    for (path, fix, camera, xmp), x, y in zip(records, east, north):
+        height, source = None, ""
+        relative = _xmp_value(xmp, ["drone-dji:RelativeAltitude", "RelativeAltitude"])
+        if relative is not None and relative > 0:
+            height, source = relative, "xmp_relative_altitude"
+        elif sampler is not None and fix.altitude_m is not None:
+            ground = sampler(fix.longitude, fix.latitude)
+            if ground is not None:
+                height, source = fix.altitude_m - ground, "gps_altitude_minus_terrain"
+        if height is None and ground_elevation_m is not None and fix.altitude_m is not None:
+            height, source = fix.altitude_m - float(ground_elevation_m), "gps_altitude_minus_ground"
+        if height is None and flight_height_agl_m:
+            height, source = float(flight_height_agl_m), "stated_flight_height"
+        if height is None or not np.isfinite(height) or height <= 0:
+            problems.setdefault("no_height", []).append(path.name)
+            unplaced[path.name] = (float(x), float(y))
+            continue
 
+        if not (camera.focal_length_mm and camera.sensor_width_mm and camera.width and camera.height):
+            if camera.focal_35mm and camera.width and camera.height:
+                width_m = height * 36.0 / float(camera.focal_35mm)
+            else:
+                problems.setdefault("no_camera_geometry", []).append(path.name)
+                unplaced[path.name] = (float(x), float(y))
+                continue
+        else:
+            width_m = height * float(camera.sensor_width_mm) / float(camera.focal_length_mm)
+        length_m = width_m * float(camera.height) / float(camera.width)
 
-def _draw_thumbnail(canvas_acc: np.ndarray, canvas_w: np.ndarray, thumb: np.ndarray, cx: int, cy: int) -> None:
-    h, w = thumb.shape[:2]
-    half_w = w // 2
-    half_h = h // 2
+        yaw = _xmp_value(xmp, ["drone-dji:GimbalYawDegree", "drone-dji:FlightYawDegree",
+                               "Camera:Yaw"])
+        yaw_source = "xmp" if yaw is not None else ""
+        if yaw is None and fix.yaw_deg is not None:
+            yaw, yaw_source = fix.yaw_deg, "exif_gps_img_direction"
 
-    y0 = max(0, cy - half_h)
-    y1 = min(canvas_acc.shape[0], cy + half_h)
-    x0 = max(0, cx - half_w)
-    x1 = min(canvas_acc.shape[1], cx + half_w)
-
-    if x1 <= x0 or y1 <= y0:
-        return
-
-    tx0 = max(0, half_w - cx)
-    ty0 = max(0, half_h - cy)
-    tx1 = tx0 + (x1 - x0)
-    ty1 = ty0 + (y1 - y0)
-
-    patch = thumb[ty0:ty1, tx0:tx1].astype(np.float32)
-    canvas_acc[y0:y1, x0:x1] += patch
-    canvas_w[y0:y1, x0:x1] += 1.0
-
-
-def _build_layout(positions: np.ndarray, canvas_size: int, pad: float = 90.0) -> tuple[np.ndarray, _LayoutTransform]:
-    if len(positions) == 0:
-        return np.zeros((0, 2), dtype=np.float64), _LayoutTransform(0.0, 0.0, 1.0, pad, canvas_size)
-
-    min_x = float(np.min(positions[:, 0]))
-    max_x = float(np.max(positions[:, 0]))
-    min_y = float(np.min(positions[:, 1]))
-    max_y = float(np.max(positions[:, 1]))
-
-    span_x = max(max_x - min_x, 1e-6)
-    span_y = max(max_y - min_y, 1e-6)
-    span = max(span_x, span_y)
-    scale = float(max(1e-6, (canvas_size - 2.0 * pad) / span))
-
-    mapped = np.zeros_like(positions, dtype=np.float64)
-    mapped[:, 0] = (positions[:, 0] - min_x) * scale + pad
-    mapped[:, 1] = (max_y - positions[:, 1]) * scale + pad
-    return mapped, _LayoutTransform(min_x=min_x, max_y=max_y, scale=scale, pad=pad, canvas_size=canvas_size)
-
-
-def _canvas_to_local(point_xy: np.ndarray, tf: _LayoutTransform) -> np.ndarray:
-    x = (float(point_xy[0]) - tf.pad) / max(tf.scale, 1e-6) + tf.min_x
-    y = tf.max_y - (float(point_xy[1]) - tf.pad) / max(tf.scale, 1e-6)
-    return np.array([x, y], dtype=np.float64)
-
-
-def _draw_expected_region(canvas_size: int, mapped_positions: np.ndarray, footprint: tuple[int, int]) -> np.ndarray:
-    expected = np.zeros((canvas_size, canvas_size), dtype=np.uint8)
-    if len(mapped_positions) == 0:
-        return expected
-
-    radius = max(8, int(round(max(footprint[0], footprint[1]) * 0.45)))
-    line_width = max(4, int(round(radius * 1.1)))
-
-    pts = np.round(mapped_positions).astype(np.int32)
-    for p in pts:
-        cv2.circle(expected, (int(p[0]), int(p[1])), radius, 255, thickness=-1)
-
-    for i in range(1, len(pts)):
-        a = tuple(pts[i - 1])
-        b = tuple(pts[i])
-        cv2.line(expected, a, b, 255, thickness=line_width)
-
-    expected = cv2.dilate(expected, np.ones((11, 11), dtype=np.uint8), iterations=1)
-    return expected
+        if yaw is None:
+            # Orientation unknown: the only square every orientation of the image is
+            # sure to cover is the one inscribed in its short side. Coverage drawn this
+            # way is an UNDER-estimate, never an over-estimate.
+            half = min(width_m, length_m) / 2.0
+            corners = np.array([[-half, -half], [half, -half], [half, half], [-half, half]])
+        else:
+            theta = np.radians(float(yaw))
+            # Image "up" points along the heading (clockwise from north); x across it.
+            across = np.array([np.cos(theta), -np.sin(theta)])
+            along = np.array([np.sin(theta), np.cos(theta)])
+            hw, hl = width_m / 2.0, length_m / 2.0
+            corners = np.array([
+                -hw * across - hl * along, hw * across - hl * along,
+                hw * across + hl * along, -hw * across + hl * along,
+            ])
+        footprints.append(ImageFootprint(
+            image=path.name, easting=float(x), northing=float(y), height_agl_m=float(height),
+            height_source=source, width_m=float(width_m), length_m=float(length_m),
+            yaw_deg=None if yaw is None else float(yaw), yaw_source=yaw_source or "unknown",
+            corners=corners + np.array([float(x), float(y)]),
+            longitude=float(fix.longitude), latitude=float(fix.latitude),
+        ))
+    if dataset is not None:
+        dataset.close()
+    return footprints, {"problems": problems, "epsg": int(epsg), "unplaced": unplaced}
 
 
-def _dedup_suggestions(suggestions: list[dict], radius_px: float, max_items: int) -> list[dict]:
-    if not suggestions:
-        return []
-    suggestions = sorted(suggestions, key=lambda row: float(row.get("priority", 0.0)), reverse=True)
-    kept: list[dict] = []
-
-    for row in suggestions:
-        p = np.asarray(row.get("canvas_xy", [0.0, 0.0]), dtype=np.float64)
-        merged = False
-        for cur in kept:
-            q = np.asarray(cur.get("canvas_xy", [0.0, 0.0]), dtype=np.float64)
-            if float(np.linalg.norm(p - q)) <= radius_px:
-                cur_priority = float(cur.get("priority", 0.0))
-                cur["priority"] = float(max(cur_priority, float(row.get("priority", 0.0))))
-                reasons = list(cur.get("reasons", []))
-                for r in row.get("reasons", []):
-                    if r not in reasons:
-                        reasons.append(r)
-                cur["reasons"] = reasons
-                related = list(cur.get("related_images", []))
-                for name in row.get("related_images", []):
-                    if name not in related:
-                        related.append(name)
-                cur["related_images"] = related
-                merged = True
-                break
-        if not merged:
-            kept.append(row)
-        if len(kept) >= max_items:
-            break
-    return kept
-
-
-def _fit_similarity(src_xy: np.ndarray, dst_xy: np.ndarray) -> _SimilarityTransform | None:
-    if len(src_xy) < 2 or len(dst_xy) < 2:
-        return None
-
-    src_mean = src_xy.mean(axis=0)
-    dst_mean = dst_xy.mean(axis=0)
-    src0 = src_xy - src_mean
-    dst0 = dst_xy - dst_mean
-
-    src_norm = float(np.linalg.norm(src0))
-    dst_norm = float(np.linalg.norm(dst0))
-    if src_norm < 1e-6 or dst_norm < 1e-6:
-        return None
-
-    m = src0.T @ dst0
-    u, _, vt = np.linalg.svd(m)
-    r = u @ vt
-    if float(np.linalg.det(r)) < 0:
-        vt[-1, :] *= -1.0
-        r = u @ vt
-
-    scale = float(dst_norm / src_norm)
-    t = dst_mean - scale * (src_mean @ r)
-    return _SimilarityTransform(scale=scale, rotation=r, translation=t)
-
-
-def _local_to_world(points_xy: np.ndarray, frame: AssetReferenceFrame) -> np.ndarray:
-    theta = radians(float(frame.yaw_deg))
-    c = cos(theta)
-    s = np.sin(theta)
-
-    enu_x = points_xy[:, 0] * c - points_xy[:, 1] * s
-    enu_y = points_xy[:, 0] * s + points_xy[:, 1] * c
-
-    lon0 = radians(float(frame.origin_lon))
-    lat0 = radians(float(frame.origin_lat))
-
-    lon = enu_x / (cos(lat0) * EARTH_RADIUS_M) + lon0
-    lat = enu_y / EARTH_RADIUS_M + lat0
-
-    return np.column_stack([np.degrees(lon), np.degrees(lat)])
+def _overlap_fraction(a: ImageFootprint, b: ImageFootprint) -> float:
+    """Share of footprint ``a`` that ``b`` also covers."""
+    area, _ = cv2.intersectConvexConvex(a.corners.astype(np.float32), b.corners.astype(np.float32))
+    return float(area) / max(a.area_m2, 1e-9)
 
 
 def _suggestion_hull_local(points_xy: np.ndarray, margin_m: float = 6.0) -> np.ndarray:
@@ -394,134 +440,161 @@ class CoverageValidator:
         image_paths: Iterable[Path],
         output_dir: str | Path,
         reference_recipe_path: str = "",
+        *,
+        aoi_lonlat: list[list[float]] | None = None,
     ) -> dict:
+        cfg = self.config
         paths = [Path(p) for p in image_paths]
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        images: list[np.ndarray] = []
-        grays: list[np.ndarray] = []
-        thumbs: list[np.ndarray] = []
         rows: list[dict] = []
         skipped_images: list[str] = []
-
+        thumbs: dict[str, np.ndarray] = {}
+        readable: list[Path] = []
         for p in paths:
             img = _safe_imread(p)
             if img is None:
                 skipped_images.append(p.name)
                 continue
+            q = _quality_metrics(_to_gray_small(img), cfg)
+            rows.append({
+                "image": p.name,
+                "valid": True,
+                **q,
+                "overlap_prev": None,
+                "overlap_next": None,
+                "overlap_best": None,
+                "low_overlap": False,
+            })
+            thumbs[p.name] = _resize_with_width(img, cfg.thumbnail_width)
+            readable.append(p)
 
-            gray = _to_gray_small(img)
-            q = _quality_metrics(gray, self.config)
-            rows.append(
-                {
-                    "image": p.name,
-                    "valid": True,
-                    **q,
-                    "overlap_prev": 0.0,
-                    "overlap_next": 0.0,
-                    "low_overlap": False,
-                }
-            )
-            images.append(img)
-            grays.append(gray)
-            thumbs.append(_resize_with_width(img, self.config.thumbnail_width))
+        footprints, layout_meta = image_footprints(
+            readable,
+            flight_height_agl_m=cfg.flight_height_agl_m or None,
+            ground_elevation_m=cfg.ground_elevation_m,
+            terrain_path=cfg.terrain_path,
+        )
+        by_name = {fp.image: fp for fp in footprints}
+        problems = layout_meta.get("problems", {})
 
+        # ---- overlap, from footprint geometry --------------------------------------
         overlap_edges: list[dict] = []
         missing_pairs: list[dict] = []
-        positions = np.zeros((len(grays), 2), dtype=np.float64)
-
-        if len(grays) > 1:
-            step_fallback = float(max(grays[0].shape[1] * 0.25, 40.0))
-            for i in range(1, len(grays)):
-                score, matches, keypoints = _orb_overlap(grays[i - 1], grays[i])
-                shift, response = _phase_shift(grays[i - 1], grays[i])
-
-                shift_norm = float(np.linalg.norm(shift))
-                max_step = float(max(grays[i].shape[1] * 0.6, 80.0))
-                if response < 0.05 or shift_norm < 1.0:
-                    shift = np.array([step_fallback, 0.0], dtype=np.float64)
-                elif shift_norm > max_step:
-                    shift *= max_step / max(shift_norm, 1e-6)
-
-                positions[i] = positions[i - 1] + shift
-
-                overlap_edges.append(
-                    {
-                        "index_prev": i - 1,
-                        "index_curr": i,
-                        "image_prev": rows[i - 1].get("image", ""),
-                        "image_curr": rows[i].get("image", ""),
-                        "score": float(score),
-                        "matches": int(matches),
-                        "keypoints": int(keypoints),
-                        "phase_response": float(response),
-                        "shift_px": [float(shift[0]), float(shift[1])],
-                    }
-                )
-
-                rows[i - 1]["overlap_next"] = float(score)
-                rows[i]["overlap_prev"] = float(score)
-
-                if score < self.config.overlap_threshold:
-                    missing_pairs.append(
-                        {
-                            "index_prev": i - 1,
-                            "index_curr": i,
-                            "image_prev": rows[i - 1].get("image", ""),
-                            "image_curr": rows[i].get("image", ""),
-                            "score": float(score),
-                        }
-                    )
-
-        for row in rows:
-            prev_o = float(row.get("overlap_prev", 1.0))
-            next_o = float(row.get("overlap_next", 1.0))
-            low = min(prev_o, next_o) < self.config.overlap_threshold
-            row["low_overlap"] = bool(low)
-            if low and "overlap_gap" not in row["quality_flags"]:
+        # Consecutive captures, in capture order. A pair is measured only when BOTH
+        # images are on the ground: pairing across an unplaced frame compared 235 with
+        # 237 (1% overlap) while 236, which lies between them, was never looked at, and
+        # sent the operator to re-fly ground that had been photographed.
+        pairs_not_assessed: list[dict] = []
+        sequence: list[tuple[ImageFootprint, ImageFootprint]] = []
+        beside_unplaced: set[str] = set()
+        for before, after in zip(rows, rows[1:]):
+            a, b = by_name.get(before["image"]), by_name.get(after["image"])
+            if a is not None and b is not None:
+                sequence.append((a, b))
+                continue
+            missing = [r["image"] for r in (before, after) if r["image"] not in by_name]
+            pairs_not_assessed.append({
+                "image_prev": before["image"], "image_curr": after["image"],
+                "reason": "not placed on the ground: " + ", ".join(missing),
+            })
+            beside_unplaced.update(r["image"] for r in (before, after) if r["image"] in by_name)
+        for prev, curr in sequence:
+            forward = _overlap_fraction(prev, curr)
+            edge = {
+                "image_prev": prev.image,
+                "image_curr": curr.image,
+                "overlap": round(forward, 4),
+                "distance_m": round(float(np.hypot(curr.easting - prev.easting,
+                                                   curr.northing - prev.northing)), 2),
+            }
+            overlap_edges.append(edge)
+            if forward < cfg.min_footprint_overlap:
+                missing_pairs.append(edge)
+        row_by_name = {r["image"]: r for r in rows}
+        for prev, curr in sequence:
+            share = _overlap_fraction(prev, curr)
+            row_by_name[prev.image]["overlap_next"] = round(share, 4)
+            row_by_name[curr.image]["overlap_prev"] = round(_overlap_fraction(curr, prev), 4)
+        for fp in footprints:
+            best = max((_overlap_fraction(fp, other) for other in footprints if other is not fp),
+                       default=0.0)
+            row = row_by_name[fp.image]
+            row["overlap_best"] = round(best, 4)
+            row["footprint"] = fp.to_dict()
+            if best < cfg.min_footprint_overlap and fp.image in beside_unplaced:
+                # Its neighbour in the capture sequence has no footprint, and may well
+                # be the image that overlaps it. Not assessed, not a gap.
+                row["overlap_note"] = ("Next to an image that could not be placed; its "
+                                       "overlap is not assessed.")
+            elif best < cfg.min_footprint_overlap:
+                row["low_overlap"] = True
                 row["quality_flags"] = list(row.get("quality_flags", [])) + ["overlap_gap"]
                 row["quality_ok"] = False
+        for row in rows:
+            row["overlap_assessed"] = row["image"] in by_name
 
-        mapped, tf = _build_layout(positions, canvas_size=self.config.canvas_size_px)
-        mosaic, heatmap, counts, expected = self._render_preview_artifacts(thumbs, mapped)
-
-        mosaic_path = out_dir / "preview_mosaic.png"
-        heatmap_path = out_dir / "coverage_heatmap.png"
-        expected_path = out_dir / "coverage_expected_mask.png"
-        cv2.imwrite(str(mosaic_path), mosaic)
-        cv2.imwrite(str(heatmap_path), heatmap)
-        cv2.imwrite(str(expected_path), expected)
-
-        suggestions = self._build_gap_suggestions(
-            rows=rows,
-            mapped_positions=mapped,
-            counts=counts,
-            expected=expected,
-            transform=tf,
-            missing_pairs=missing_pairs,
-        )
+        # ---- coverage over the surveyed area ------------------------------------------
+        coverage = self._coverage(footprints, layout_meta.get("epsg"), aoi_lonlat, out_dir, thumbs)
+        unplaced = layout_meta.get("unplaced", {})
+        suggestions, unassessed_gaps = self._gap_suggestions(
+            rows, footprints, coverage, missing_pairs, layout_meta.get("epsg"), unplaced)
 
         quality_fail = sum(1 for row in rows if not bool(row.get("quality_ok", False)))
-        coverage_complete = float(np.mean(counts[expected > 0] > 0) * 100.0) if np.any(expected > 0) else 100.0
+        layout = {
+            "available": bool(coverage.get("available")),
+            "basis": "exif_gps_and_camera_geometry",
+            "epsg": layout_meta.get("epsg"),
+            "images_placed": len(footprints),
+            "images_not_placed": {k: v for k, v in problems.items() if k != "terrain"},
+            "assumptions": [
+                "Images are treated as nadir; an oblique image covers more ground than "
+                "its footprint here.",
+            ],
+        }
+        if problems.get("terrain"):
+            layout["terrain_error"] = problems["terrain"]
+        if unplaced:
+            layout["not_assessed_note"] = (
+                f"{len(unplaced)} image(s) with GPS could not be placed on the ground. "
+                "Overlap with them is not assessed, coverage figures count only the "
+                "placed images, and uncovered ground near where they were taken is "
+                "listed under unassessed_gaps rather than suggested for a re-fly.")
+        if not coverage.get("available"):
+            layout["reason"] = coverage.get("reason", "")
+        if any(fp.yaw_deg is None for fp in footprints):
+            layout["assumptions"].append(
+                "Some images carry no heading, so their footprint is drawn as the square "
+                "inscribed in the short side. Coverage for them is under-stated, never "
+                "over-stated."
+            )
 
         result = {
-            "config": asdict(self.config),
+            "config": asdict(cfg),
             "images": rows,
             "skipped_images": skipped_images,
+            "layout": layout,
+            "footprints": [fp.to_dict() for fp in footprints],
             "overlap_pairs": overlap_edges,
             "missing_pairs": missing_pairs,
+            "pairs_not_assessed": pairs_not_assessed,
+            "unassessed_gaps": unassessed_gaps,
             "quality_fail_count": int(quality_fail),
-            "coverage_completion_pct": float(coverage_complete),
-            "preview_model_path": str(mosaic_path),
-            "coverage_heatmap_path": str(heatmap_path),
-            "coverage_expected_path": str(expected_path),
+            "coverage_completion_pct": coverage.get("completion_pct"),
+            "stereo_coverage_pct": coverage.get("stereo_pct"),
+            "coverage_area_m2": coverage.get("area_m2"),
+            "coverage_extent": coverage.get("extent"),
+            "preview_model_path": coverage.get("mosaic_path", ""),
+            "coverage_heatmap_path": coverage.get("heatmap_path", ""),
+            "coverage_expected_path": coverage.get("expected_path", ""),
             "gap_suggestions": suggestions,
             "gap_suggestion_count": int(len(suggestions)),
             "gap_mission": {},
         }
 
-        gap_payload = self._build_gap_mission(result, reference_recipe_path=reference_recipe_path, output_dir=out_dir)
+        gap_payload = self._build_gap_mission(result, reference_recipe_path=reference_recipe_path,
+                                              output_dir=out_dir)
         if gap_payload:
             result["gap_mission"] = gap_payload
 
@@ -531,141 +604,200 @@ class CoverageValidator:
         result["coverage_json_path"] = str(quality_json_path)
         return result
 
-    def _render_preview_artifacts(
-        self,
-        thumbnails: list[np.ndarray],
-        mapped_positions: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        size = self.config.canvas_size_px
-        accum = np.zeros((size, size, 3), dtype=np.float32)
-        weights = np.zeros((size, size), dtype=np.float32)
-        counts = np.zeros((size, size), dtype=np.float32)
-
-        if not thumbnails:
-            empty = np.zeros((size, size, 3), dtype=np.uint8)
-            return empty, empty, counts, np.zeros((size, size), dtype=np.uint8)
-
-        thumb_h, thumb_w = thumbnails[0].shape[:2]
-        half_w = max(1, thumb_w // 2)
-        half_h = max(1, thumb_h // 2)
-
-        for thumb, pt in zip(thumbnails, mapped_positions):
-            cx = int(round(pt[0]))
-            cy = int(round(pt[1]))
-            _draw_thumbnail(accum, weights, thumb, cx, cy)
-
-            y0 = max(0, cy - half_h)
-            y1 = min(size, cy + half_h)
-            x0 = max(0, cx - half_w)
-            x1 = min(size, cx + half_w)
-            if x1 > x0 and y1 > y0:
-                counts[y0:y1, x0:x1] += 1.0
-
-        preview = np.zeros_like(accum, dtype=np.uint8)
-        mask = weights > 0
-        preview[mask] = np.clip(accum[mask] / weights[mask, None], 0, 255).astype(np.uint8)
-
-        expected = _draw_expected_region(size, mapped_positions, (thumb_w, thumb_h))
-        norm = cv2.normalize(counts, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-        heat = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_TURBO)
-
-        gap_mask = np.zeros_like(expected)
-        gap_mask[(expected > 0) & (counts <= 0.0)] = 255
-        heat[gap_mask > 0] = (0, 0, 255)
-        return preview, heat, counts, expected
-
-    def _build_gap_suggestions(
-        self,
-        rows: list[dict],
-        mapped_positions: np.ndarray,
-        counts: np.ndarray,
-        expected: np.ndarray,
-        transform: _LayoutTransform,
-        missing_pairs: list[dict],
-    ) -> list[dict]:
-        suggestions: list[dict] = []
-
-        if len(mapped_positions) > 0:
-            gap_mask = np.zeros_like(expected)
-            gap_mask[(expected > 0) & (counts <= 0.0)] = 255
-            comp, labels, stats, centroids = cv2.connectedComponentsWithStats(gap_mask, connectivity=8)
-            for idx in range(1, comp):
-                area = int(stats[idx, cv2.CC_STAT_AREA])
-                if area < self.config.min_gap_component_px:
-                    continue
-                cx = float(centroids[idx, 0])
-                cy = float(centroids[idx, 1])
-                local = _canvas_to_local(np.array([cx, cy], dtype=np.float64), transform)
-                suggestions.append(
-                    {
-                        "kind": "coverage_gap",
-                        "priority": float(area),
-                        "canvas_xy": [cx, cy],
-                        "local_xy": [float(local[0]), float(local[1])],
-                        "reasons": ["coverage_gap"],
-                        "related_images": [],
-                    }
+    # ------------------------------------------------------------------ coverage
+    def _coverage(self, footprints: list[ImageFootprint], epsg: int | None,
+                  aoi_lonlat: list[list[float]] | None, out_dir: Path,
+                  thumbs: dict[str, np.ndarray]) -> dict:
+        if len(footprints) < 2 or epsg is None:
+            reasons = []
+            if not footprints:
+                reasons.append(
+                    "No image could be placed on the ground: coverage needs each image's "
+                    "GPS position, its camera's focal length and sensor width, and its "
+                    "height above ground (DJI relative altitude, a terrain model, the site's "
+                    "ground elevation, or the flight height)."
                 )
+            else:
+                reasons.append("Only one image could be placed; coverage needs at least two.")
+            return {"available": False, "reason": " ".join(reasons),
+                    "completion_pct": None, "stereo_pct": None}
 
+        from . import geo
+
+        mean_side = float(np.mean([min(fp.width_m, fp.length_m) for fp in footprints]))
+        cell = max(mean_side / 40.0, 0.05)
+        if aoi_lonlat and len(aoi_lonlat) >= 3:
+            ex, ny = geo.wgs84_to_projected([p[0] for p in aoi_lonlat],
+                                            [p[1] for p in aoi_lonlat], epsg)
+            expected_poly = np.column_stack([ex, ny])
+            extent = "area_of_interest"
+        else:
+            # The block the cameras flew: the hull of their centres. Footprints reach past
+            # it, so its edges are covered; what can be uncovered is inside -- a missed
+            # strip between flight lines, a dropped image.
+            centres = np.array([[fp.easting, fp.northing] for fp in footprints], dtype=np.float32)
+            hull = cv2.convexHull(centres).reshape(-1, 2).astype(np.float64)
+            if len(hull) < 3 or cv2.contourArea(hull.astype(np.float32)) < cell * cell * 4:
+                corners = np.vstack([fp.corners for fp in footprints]).astype(np.float32)
+                hull = cv2.convexHull(corners).reshape(-1, 2).astype(np.float64)
+            expected_poly = hull
+            extent = "hull_of_image_centres"
+
+        all_pts = np.vstack([expected_poly] + [fp.corners for fp in footprints])
+        min_x, min_y = all_pts.min(axis=0) - cell
+        max_x, max_y = all_pts.max(axis=0) + cell
+        cols = int(np.ceil((max_x - min_x) / cell)) + 1
+        rows = int(np.ceil((max_y - min_y) / cell)) + 1
+        scale_down = max(1.0, max(cols, rows) / 2000.0)
+        if scale_down > 1.0:
+            cell *= scale_down
+            cols = int(np.ceil((max_x - min_x) / cell)) + 1
+            rows = int(np.ceil((max_y - min_y) / cell)) + 1
+
+        def to_px(points: np.ndarray) -> np.ndarray:
+            px = np.empty_like(points, dtype=np.float64)
+            px[:, 0] = (points[:, 0] - min_x) / cell
+            px[:, 1] = (max_y - points[:, 1]) / cell
+            return np.round(px).astype(np.int32)
+
+        counts = np.zeros((rows, cols), dtype=np.uint16)
+        for fp in footprints:
+            mask = np.zeros((rows, cols), dtype=np.uint8)
+            cv2.fillPoly(mask, [to_px(fp.corners)], 1)
+            counts += mask
+        expected = np.zeros((rows, cols), dtype=np.uint8)
+        cv2.fillPoly(expected, [to_px(expected_poly)], 255)
+        inside = expected > 0
+        total = int(inside.sum())
+        completion = float((counts[inside] >= 1).mean() * 100.0) if total else None
+        stereo = float((counts[inside] >= 2).mean() * 100.0) if total else None
+
+        # Artifacts, on the real grid.
+        norm = np.clip(counts.astype(np.float32) * (255.0 / max(1, int(counts.max()))), 0, 255)
+        heat = cv2.applyColorMap(norm.astype(np.uint8), cv2.COLORMAP_TURBO)
+        heat[(inside) & (counts == 0)] = (0, 0, 255)
+        heat[~inside & (counts == 0)] = (0, 0, 0)
+        mosaic = np.zeros((rows, cols, 3), dtype=np.uint8)
+        for fp in footprints:
+            thumb = thumbs.get(fp.image)
+            if thumb is None:
+                continue
+            th, tw = thumb.shape[:2]
+            src = np.float32([[0, th], [tw, th], [tw, 0], [0, 0]])
+            dst = to_px(fp.corners).astype(np.float32)
+            if fp.yaw_deg is None:
+                # Orientation unknown: centre crop to the inscribed square.
+                side = min(th, tw)
+                y0, x0 = (th - side) // 2, (tw - side) // 2
+                src = np.float32([[x0, y0 + side], [x0 + side, y0 + side],
+                                  [x0 + side, y0], [x0, y0]])
+            warp = cv2.getPerspectiveTransform(src, dst)
+            placed = cv2.warpPerspective(thumb, warp, (cols, rows))
+            covered = cv2.warpPerspective(np.full((th, tw), 255, np.uint8), warp, (cols, rows)) > 0
+            mosaic[covered] = placed[covered]
+        heatmap_path = out_dir / "coverage_heatmap.png"
+        expected_path = out_dir / "coverage_expected_mask.png"
+        mosaic_path = out_dir / "preview_mosaic.png"
+        cv2.imwrite(str(heatmap_path), heat)
+        cv2.imwrite(str(expected_path), expected)
+        cv2.imwrite(str(mosaic_path), mosaic)
+
+        return {
+            "available": True,
+            "completion_pct": None if completion is None else round(completion, 2),
+            "stereo_pct": None if stereo is None else round(stereo, 2),
+            "area_m2": round(total * cell * cell, 1),
+            "extent": extent,
+            "cell_m": cell,
+            "counts": counts,
+            "expected": inside,
+            "origin": (float(min_x), float(max_y)),
+            "heatmap_path": str(heatmap_path),
+            "expected_path": str(expected_path),
+            "mosaic_path": str(mosaic_path),
+            "mean_footprint_m2": float(np.mean([fp.area_m2 for fp in footprints])),
+        }
+
+    def _gap_suggestions(self, rows: list[dict], footprints: list[ImageFootprint],
+                         coverage: dict, missing_pairs: list[dict],
+                         epsg: int | None,
+                         unplaced: dict[str, tuple[float, float]] | None = None,
+                         ) -> tuple[list[dict], list[dict]]:
+        from . import geo
+
+        suggestions: list[dict] = []
+        unassessed: list[dict] = []
+        unplaced = unplaced or {}
+
+        def located(x: float, y: float) -> dict:
+            lon, lat = geo.projected_to_wgs84([x], [y], int(epsg))
+            return {"easting": round(x, 2), "northing": round(y, 2),
+                    "lonlat": [float(lon[0]), float(lat[0])]}
+
+        if coverage.get("available"):
+            counts, inside = coverage["counts"], coverage["expected"]
+            cell = coverage["cell_m"]
+            min_x, max_y = coverage["origin"]
+            gap = ((inside) & (counts == 0)).astype(np.uint8) * 255
+            n, labels, stats, centroids = cv2.connectedComponentsWithStats(gap, connectivity=8)
+            smallest = self.config.min_gap_fraction_of_footprint * coverage["mean_footprint_m2"]
+            # An unplaced image covers roughly a footprint around where it was taken.
+            reach = float(np.sqrt(coverage["mean_footprint_m2"]))
+            for index in range(1, n):
+                area_m2 = float(stats[index, cv2.CC_STAT_AREA]) * cell * cell
+                if area_m2 < smallest:
+                    continue
+                cx, cy = centroids[index]
+                near = []
+                if unplaced:
+                    rr, cc = np.nonzero(labels == index)
+                    gx, gy = min_x + (cc + 0.5) * cell, max_y - (rr + 0.5) * cell
+                    near = [name for name, (ux, uy) in unplaced.items()
+                            if float(np.min(np.hypot(gx - ux, gy - uy))) <= reach]
+                if near:
+                    unassessed.append({
+                        "area_m2": round(area_m2, 1),
+                        **located(min_x + cx * cell, max_y - cy * cell),
+                        "reason": "images taken here could not be placed on the ground",
+                        "related_images": sorted(near),
+                    })
+                    continue
+                suggestions.append({
+                    "kind": "coverage_gap",
+                    "priority": area_m2,
+                    "area_m2": round(area_m2, 1),
+                    **located(min_x + cx * cell, max_y - cy * cell),
+                    "reasons": ["coverage_gap"],
+                    "related_images": [],
+                })
+        by_name = {fp.image: fp for fp in footprints}
         for miss in missing_pairs:
-            i0 = int(miss.get("index_prev", 0))
-            i1 = int(miss.get("index_curr", 0))
-            if i0 < 0 or i1 < 0 or i0 >= len(mapped_positions) or i1 >= len(mapped_positions):
+            a, b = by_name.get(miss["image_prev"]), by_name.get(miss["image_curr"])
+            if a is None or b is None:
                 continue
-            mid = (mapped_positions[i0] + mapped_positions[i1]) * 0.5
-            local = _canvas_to_local(mid, transform)
-            suggestions.append(
-                {
-                    "kind": "overlap_gap",
-                    "priority": float(1.0 - float(miss.get("score", 0.0))) * 5000.0,
-                    "canvas_xy": [float(mid[0]), float(mid[1])],
-                    "local_xy": [float(local[0]), float(local[1])],
-                    "reasons": ["overlap_gap"],
-                    "related_images": [str(miss.get("image_prev", "")), str(miss.get("image_curr", ""))],
-                }
-            )
-
-        for idx, row in enumerate(rows):
-            if bool(row.get("quality_ok", True)):
+            suggestions.append({
+                "kind": "overlap_gap",
+                "priority": (1.0 - float(miss["overlap"])) * float(coverage.get("mean_footprint_m2", 1.0)),
+                **located((a.easting + b.easting) / 2.0, (a.northing + b.northing) / 2.0),
+                "reasons": ["overlap_gap"],
+                "related_images": [a.image, b.image],
+            })
+        for row in rows:
+            if bool(row.get("quality_ok", True)) or row.get("quality_flags") == ["overlap_gap"]:
                 continue
-            if idx >= len(mapped_positions):
-                continue
-            pt = mapped_positions[idx]
-            local = _canvas_to_local(pt, transform)
-            suggestions.append(
-                {
-                    "kind": "quality_retake",
-                    "priority": float(2200.0 + 100.0 * len(row.get("quality_flags", []))),
-                    "canvas_xy": [float(pt[0]), float(pt[1])],
-                    "local_xy": [float(local[0]), float(local[1])],
-                    "reasons": list(row.get("quality_flags", [])) or ["quality_issue"],
-                    "related_images": [str(row.get("image", ""))],
-                }
-            )
+            fp = by_name.get(row["image"])
+            item = {
+                "kind": "quality_retake",
+                "priority": float(len(row.get("quality_flags", []))),
+                "reasons": [f for f in row.get("quality_flags", []) if f != "overlap_gap"],
+                "related_images": [row["image"]],
+            }
+            if fp is not None:
+                item.update(located(fp.easting, fp.northing))
+            suggestions.append(item)
 
-        merged = _dedup_suggestions(suggestions, radius_px=36.0, max_items=self.config.max_gap_suggestions)
-
-        for row in merged:
-            cx, cy = row["canvas_xy"]
-            nearest = int(np.argmin(np.linalg.norm(mapped_positions - np.array([cx, cy], dtype=np.float64), axis=1))) if len(mapped_positions) > 0 else 0
-            row["suggested_yaw_deg"] = float(self._estimate_yaw(mapped_positions, nearest))
-        return merged
-
-    @staticmethod
-    def _estimate_yaw(mapped_positions: np.ndarray, index: int) -> float:
-        if len(mapped_positions) < 2:
-            return 0.0
-        i0 = max(0, index - 1)
-        i1 = min(len(mapped_positions) - 1, index + 1)
-        if i0 == i1:
-            i0 = max(0, i1 - 1)
-        a = mapped_positions[i0]
-        b = mapped_positions[i1]
-        vec = b - a
-        norm = float(np.linalg.norm(vec))
-        if norm < 1e-6:
-            return 0.0
-        return float(np.degrees(np.arctan2(-vec[1], vec[0])))
+        suggestions.sort(key=lambda s: float(s.get("priority", 0.0)), reverse=True)
+        return suggestions[: self.config.max_gap_suggestions], unassessed
 
     def _build_gap_mission(
         self,
@@ -673,13 +805,14 @@ class CoverageValidator:
         reference_recipe_path: str,
         output_dir: Path,
     ) -> dict:
+        """A re-fly mission over the located gaps, in the reference recipe's settings."""
         if not reference_recipe_path:
             return {}
         recipe_path = Path(reference_recipe_path)
         if not recipe_path.exists():
             return {}
 
-        suggestions = result.get("gap_suggestions", [])
+        suggestions = [s for s in result.get("gap_suggestions", []) if s.get("lonlat")]
         if not suggestions:
             return {}
 
@@ -688,42 +821,19 @@ class CoverageValidator:
         except Exception:
             return {}
 
-        try:
-            compiled = self._planner.compile_recipe(base_recipe, repeat_enabled=True)
-        except Exception:
-            return {}
+        # The suggestions are real ground positions now, so the re-fly area is simply
+        # their hull, grown by the stand-off -- no fitting of an invented layout onto the
+        # recipe's frame, which is what the earlier version had to do.
+        from . import geo
 
-        base_local = np.asarray(
-            [
-                [float(p.get("x_m", 0.0)), float(p.get("y_m", 0.0))]
-                for p in compiled.repeat_anchor.get("capture_poses_local", [])
-            ],
-            dtype=np.float64,
-        )
-        obs_local = np.asarray([row.get("local_xy", [0.0, 0.0]) for row in suggestions], dtype=np.float64)
-
-        n_obs = int(result.get("gap_suggestion_count", len(obs_local)))
-        if n_obs <= 0:
-            return {}
-
-        if len(base_local) >= 2 and len(obs_local) >= 2:
-            k = min(len(base_local), len(obs_local), 24)
-            idx_obs = np.linspace(0, len(obs_local) - 1, k).astype(int)
-            idx_base = np.linspace(0, len(base_local) - 1, k).astype(int)
-            sim = _fit_similarity(obs_local[idx_obs], base_local[idx_base])
-        else:
-            sim = None
-
-        if sim is None:
-            center = np.mean(base_local, axis=0) if len(base_local) else np.array([0.0, 0.0], dtype=np.float64)
-            spread = np.std(base_local, axis=0).mean() if len(base_local) else 10.0
-            mission_local = center + (obs_local - np.mean(obs_local, axis=0)) * max(float(spread), 8.0) / max(float(np.std(obs_local) or 1.0), 1.0)
-        else:
-            mission_local = sim.map_points(obs_local)
-
-        polygon_local = _suggestion_hull_local(mission_local, margin_m=max(5.0, base_recipe.constraints.standoff_m))
-        polygon_world = _local_to_world(polygon_local, base_recipe.asset_frame)
-        polygon_lonlat = [[float(p[0]), float(p[1])] for p in polygon_world.tolist()]
+        epsg = int(result.get("layout", {}).get("epsg") or geo.auto_utm_epsg(
+            suggestions[0]["lonlat"][1], suggestions[0]["lonlat"][0]))
+        xs, ys = geo.wgs84_to_projected([s["lonlat"][0] for s in suggestions],
+                                        [s["lonlat"][1] for s in suggestions], epsg)
+        margin = max(5.0, float(base_recipe.constraints.standoff_m))
+        hull_local = _suggestion_hull_local(np.column_stack([xs, ys]), margin_m=margin)
+        lon, lat = geo.projected_to_wgs84(hull_local[:, 0], hull_local[:, 1], epsg)
+        polygon_lonlat = [[float(a), float(b)] for a, b in zip(lon, lat)]
 
         constraints = MissionConstraints(
             geofence=base_recipe.constraints.geofence,

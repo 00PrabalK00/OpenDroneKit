@@ -80,4 +80,4 @@ def test_index_is_driven_by_the_worst_defects(defect_layer):
     mean = sum(d["risk_score"] for d in result["defects"]) / len(result["defects"])
     assert result["risk_index"] >= mean
     assert result["risk_index"] <= worst + 1e-9
-    assert 0.0 <= result["integrity_score"] <= 100.0
+    assert 0.0 <= result["defect_condition_score"] <= 100.0

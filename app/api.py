@@ -32,6 +32,13 @@ def fail(error: str, **payload: Any) -> dict[str, Any]:
     return {"ok": False, "error": str(error), **payload}
 
 
+def _optional_float(value: Any) -> float | None:
+    """A number from the UI, where an empty field means "not supplied"."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return float(value)
+
+
 def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Convert exceptions into structured failures the UI can display."""
 
@@ -537,47 +544,132 @@ class Api:
         return ok(comparison=compare_specifications(by_num[first_version],
                                                     by_num[second_version]))
 
+    def _control_points(self) -> list:
+        """This project's control points, read from its folder (the only copy that lasts)."""
+        from core.gcp import load_control
+
+        points = load_control(self._session.project_root())
+        self._session.ground_control = points
+        return points
+
     @guard
     def import_gcps(self, path: str, epsg: int | None = None) -> dict[str, Any]:
-        """Load surveyed ground control points for this project."""
-        from core.gcp import GcpError, read_gcp_file
+        """Load surveyed ground control points for this project.
+
+        Written into the project folder with every mark made on them. They used to live
+        only in memory, so an afternoon of marking targets was lost on restart.
+        """
+        from core.gcp import GcpError, read_gcp_file, save_control
 
         try:
             points = read_gcp_file(path, default_epsg=epsg)
         except GcpError as exc:
             return fail(str(exc))
 
+        # Re-importing the same file keeps the marks already made on points it still has.
+        previous = {p.name: p for p in self._control_points()}
+        for point in points:
+            if point.name in previous:
+                point.marks = previous[point.name].marks
         self._session.ground_control = points
+        saved = save_control(self._session.project_root(), points)
         self._session.audit("gcps_imported", {"path": str(path), "count": len(points)})
-        return ok(points=[p.to_dict() for p in points], count=len(points))
+        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved))
 
     @guard
-    def mark_gcp(self, name: str, image: str, pixel_x: float, pixel_y: float) -> dict[str, Any]:
-        """Record where a control point appears in one image."""
-        from core.gcp import add_mark
+    def list_gcps(self) -> dict[str, Any]:
+        """The project's control points with their marks."""
+        points = self._control_points()
+        return ok(points=[{**p.to_dict(), "marks": [m.to_dict() for m in p.marks]}
+                          for p in points], count=len(points))
 
-        points = getattr(self._session, "ground_control", None) or []
+    @guard
+    def mark_gcp(self, name: str, image: str, pixel_x: float, pixel_y: float,
+                 image_width: int = 0, image_height: int = 0) -> dict[str, Any]:
+        """Record where a control point appears in one image.
+
+        Pixels are full-resolution unless ``image_width`` x ``image_height`` says which
+        picture they were read on (a downscaled preview, say); they are rescaled then.
+        """
+        from core.gcp import add_mark, save_control
+
+        points = self._control_points()
         point = next((p for p in points if p.name == name), None)
         if point is None:
             known = ", ".join(p.name for p in points) or "none imported"
             return fail(f"No control point named {name!r}. Imported: {known}.")
+        if image_width and image_height and not (
+                0 <= float(pixel_x) <= float(image_width)
+                and 0 <= float(pixel_y) <= float(image_height)):
+            return fail(f"({float(pixel_x):.0f}, {float(pixel_y):.0f}) is outside the "
+                        f"{int(image_width)}x{int(image_height)} image.")
 
-        add_mark(point, image, float(pixel_x), float(pixel_y))
+        add_mark(point, Path(str(image)).name, float(pixel_x), float(pixel_y),
+                 int(image_width or 0), int(image_height or 0))
+        save_control(self._session.project_root(), points)
+        self._session.audit("gcp_marked", {"name": name, "image": Path(str(image)).name})
         return ok(point=point.to_dict())
 
     @guard
-    def gcp_accuracy_report(self, computed: dict[str, list[float]] | None = None) -> dict[str, Any]:
-        """How far each control point landed from where it was surveyed."""
-        from core.gcp import accuracy_report, residuals_from_positions, write_report
+    def gcp_accuracy_report(self, computed: dict[str, list[float]] | None = None,
+                            reconstruction_dir: str = "") -> dict[str, Any]:
+        """How far each control point landed from where it was surveyed.
 
-        points = getattr(self._session, "ground_control", None) or []
+        Without ``computed`` the positions come from the model: each point is located by
+        intersecting the rays through its image marks with the reconstruction's own
+        camera poses, and placed with the georeferencing that run actually used. When
+        that georeferencing was fitted to these points the residuals are fit residuals
+        (with the leave-one-out check the run wrote); when it came from camera geotags
+        they are an independent check.
+        """
+        import json as _json
+
+        from core import geo
+        from core.gcp import (GcpError, accuracy_report, check_against_anchor,
+                              poses_from_records, residuals_from_positions, write_report)
+
+        points = self._control_points()
         if not points:
             return fail("No ground control points have been imported.")
 
-        placed = {k: tuple(v) for k, v in (computed or {}).items() if len(v) >= 3}
-        report = accuracy_report(points, residuals_from_positions(points, placed))
+        root = self._session.project_root()
+        if computed:
+            placed = {k: tuple(v) for k, v in computed.items() if len(v) >= 3}
+            report = accuracy_report(points, residuals_from_positions(points, placed))
+        else:
+            run = Path(reconstruction_dir) if reconstruction_dir else root / "reconstruction"
+            poses_path = run / "camera_poses.json"
+            anchor_path = run / "geo_anchor.json"
+            if not poses_path.is_file():
+                return fail(f"No reconstruction at {run}: run Process first, then the "
+                            "control points can be located in it.")
+            if not anchor_path.is_file():
+                return fail("That reconstruction is not georeferenced, so there is no "
+                            "position to compare the control with.")
+            anchor = geo.GeoAnchor(**_json.loads(anchor_path.read_text(encoding="utf-8")))
+            poses = poses_from_records(
+                _json.loads(poses_path.read_text(encoding="utf-8")).get("cameras", []))
+            fitted = anchor.method == "ground_control"
+            try:
+                report = check_against_anchor(points, poses, anchor,
+                                              role="fit" if fitted else "check")
+            except GcpError as exc:
+                return fail(str(exc))
+            report["georeferenced_by"] = anchor.method
+            report["reconstruction"] = str(run)
+            usable = sum(1 for p in points if p.is_usable)
+            if not fitted and usable >= 3:
+                report["warnings"].append(
+                    f"{usable} control points are now marked well enough to georeference "
+                    "the model; run Process again to fit it to them."
+                )
+            previous = run / "gcp_report.json"
+            if fitted and previous.is_file():
+                fit_report = _json.loads(previous.read_text(encoding="utf-8"))
+                if "leave_one_out" in fit_report:
+                    report["leave_one_out"] = fit_report["leave_one_out"]
 
-        target = self._session.project_root() / "gcp_report.json"
+        target = root / "gcp_report.json"
         write_report(report, target)
         return ok(report=report, path=str(target))
 
@@ -946,7 +1038,6 @@ class Api:
         return ok(measurement=measurement.to_dict())
 
     @guard
-    @guard
     def import_cad_overlay(self, path: str, source_epsg: int,
                            name: str = "") -> dict[str, Any]:
         """Lay a DXF over the survey, in the project's coordinate system.
@@ -957,8 +1048,9 @@ class Api:
         placement error, and sends somebody to measure a wall that is exactly where it
         should be.
 
-        The alignment against the project's own rasters is checked and reported for the
-        same reason.
+        The alignment against the project's own rasters is checked in their CRS; the
+        overlay is written in WGS84 (as GeoJSON requires) and added to the layer tree,
+        so both the map and the layer list draw it.
         """
         from core.cad_overlay import OverlayRefused, alignment_report, read_dxf, reproject
 
@@ -966,7 +1058,15 @@ class Api:
         if root is None:
             return fail("Open a project first.")
 
-        layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
+        def georeferenced() -> list:
+            return [l for l in self._session.layers.values()
+                    if l.kind == "raster" and getattr(l, "crs_epsg", None)]
+
+        layers = georeferenced()
+        if not layers:
+            # The layer tree is in memory; the products are on disk.
+            self._session.restore_layers()
+            layers = georeferenced()
         if not layers:
             return fail(
                 "This project has no georeferenced products yet, so there is nothing to "
@@ -976,11 +1076,13 @@ class Api:
 
         try:
             drawing = reproject(read_dxf(path), int(source_epsg), target_epsg)
+            lonlat = reproject(read_dxf(path), int(source_epsg), 4326)
         except OverlayRefused as exc:
             return fail(str(exc))
 
         # Bounds of the products, in their own CRS, to check the drawing landed on them.
-        boxes = [l.metadata.get("bounds") for l in layers if (l.metadata or {}).get("bounds")]
+        boxes = [l.metadata.get("bounds") for l in layers
+                 if (l.metadata or {}).get("bounds") and int(l.crs_epsg) == target_epsg]
         report = {}
         if boxes:
             target = [
@@ -995,7 +1097,11 @@ class Api:
         target_path = overlay_dir / f"{label}.geojson"
         import json as _json
 
-        target_path.write_text(_json.dumps(drawing.to_geojson()), encoding="utf-8")
+        collection = lonlat.to_geojson()
+        collection["properties"] = {"source": str(path), "source_epsg": int(source_epsg),
+                                    "kind": "cad_overlay"}
+        target_path.write_text(_json.dumps(collection), encoding="utf-8")
+        layer = self._session.register_vector_layer(target_path, name=f"CAD: {label}")
 
         self._session.audit("cad_overlay_imported",
                             {"name": label, "source_epsg": int(source_epsg)})
@@ -1003,6 +1109,7 @@ class Api:
             name=label,
             path=str(target_path),
             epsg=target_epsg,
+            layer_id=layer["id"],
             entities=drawing.entity_counts,
             skipped=drawing.skipped_entities,
             alignment=report,
@@ -1021,7 +1128,12 @@ class Api:
     def place_image_overlay(self, path: str, west: float, south: float,
                             east: float, north: float, epsg: int = 4326,
                             name: str = "") -> dict[str, Any]:
-        """Georeference a plain scan or screenshot by its bounding box."""
+        """Georeference a plain scan or screenshot by its bounding box.
+
+        The picture is written out as a GeoTIFF in the stated CRS, so it becomes an
+        ordinary raster layer that every map and the layer tree can already show. A
+        GeoTIFF that is already georeferenced needs none of this: add it as a layer.
+        """
         from core.cad_overlay import OverlayRefused, place_raster
 
         root = self._session.project_root()
@@ -1032,20 +1144,60 @@ class Api:
                                   float(east), float(north), int(epsg))
         except OverlayRefused as exc:
             return fail(str(exc))
-        self._session.audit("image_overlay_placed", {"name": name or Path(path).stem})
-        return ok(overlay=placed.to_dict(), name=name or Path(path).stem)
+
+        import cv2
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        picture = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if picture is None:
+            return fail(f"{Path(path).name} is not an image this can read.")
+        if picture.ndim == 2:
+            picture = cv2.cvtColor(picture, cv2.COLOR_GRAY2RGB)
+        elif picture.shape[2] == 4:
+            picture = cv2.cvtColor(picture, cv2.COLOR_BGRA2RGB)
+        else:
+            picture = cv2.cvtColor(picture, cv2.COLOR_BGR2RGB)
+        height, width = picture.shape[:2]
+        label = name or Path(path).stem
+        overlay_dir = Path(root) / "overlays"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+        target = overlay_dir / f"{label}.tif"
+        with rasterio.open(
+            target, "w", driver="GTiff", width=width, height=height, count=3,
+            dtype="uint8", crs=f"EPSG:{int(epsg)}",
+            transform=from_bounds(placed.west, placed.south, placed.east, placed.north,
+                                  width, height),
+        ) as dst:
+            dst.write(np.transpose(picture, (2, 0, 1)).astype(np.uint8))
+        layer = self._session.register_raster_layer(target, name=f"Overlay: {label}")
+        self._session.audit("image_overlay_placed", {"name": label})
+        return ok(overlay=placed.to_dict(), name=label, path=str(target),
+                  layer_id=layer["id"])
 
     @guard
     def list_cad_overlays(self) -> dict[str, Any]:
+        """Every overlay in this project, with its geometry for drawing."""
         root = self._session.project_root()
         if root is None:
             return fail("Open a project first.")
         overlay_dir = Path(root) / "overlays"
         if not overlay_dir.is_dir():
             return ok(overlays=[])
-        return ok(overlays=[
-            {"name": p.stem, "path": str(p)} for p in sorted(overlay_dir.glob("*.geojson"))
-        ])
+        import json as _json
+
+        overlays = []
+        for p in sorted(overlay_dir.glob("*.geojson")):
+            try:
+                geojson = _json.loads(p.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            overlays.append({"name": p.stem, "path": str(p), "kind": "vector",
+                             "geojson": geojson})
+        for p in sorted(overlay_dir.glob("*.tif")):
+            overlays.append({"name": p.stem, "path": str(p), "kind": "image"})
+        return ok(overlays=overlays)
 
     @guard
     def tag_annotations(self, annotation_ids: list[str], tags: list[str]) -> dict[str, Any]:
@@ -1712,7 +1864,8 @@ class Api:
         return ok(folder=str(root), images=names, count=len(names))
 
     @guard
-    def image_preview(self, name: str, max_size: int = 1400) -> dict[str, Any]:
+    def image_preview(self, name: str, max_size: int = 1400,
+                      crop: list[float] | None = None) -> dict[str, Any]:
         """One image from the active dataset, as a data URI the canvas can draw.
 
         The desktop UI is served over loopback from app/web, so it cannot read a file
@@ -1723,6 +1876,11 @@ class Api:
 
         Downscaled because these are 24-megapixel frames: a full-size data URI is tens
         of megabytes of base64 across the bridge for a preview nobody zooms into.
+
+        ``crop`` ([x, y, width, height] in the frame's pixels) returns a close-up of that
+        window instead, clamped to the frame; the answer carries the window actually
+        used. Marking a ground control target needs this: on a whole-frame preview one
+        screen pixel is several pixels of the photograph.
         """
         import base64
 
@@ -1744,10 +1902,19 @@ class Api:
         if image is None:
             return fail(f"Could not read {name}. It may not be an image this build understands.")
         height, width = image.shape[:2]
+        window = None
+        if crop:
+            x0, y0, cw, ch = (float(v) for v in list(crop)[:4])
+            cw, ch = max(8.0, min(cw, width)), max(8.0, min(ch, height))
+            x0 = int(round(min(max(0.0, x0), width - cw)))
+            y0 = int(round(min(max(0.0, y0), height - ch)))
+            window = [x0, y0, int(cw), int(ch)]
+            image = image[y0:y0 + int(ch), x0:x0 + int(cw)]
         limit = max(64, int(max_size))
-        if max(height, width) > limit:
-            scale = limit / float(max(height, width))
-            image = cv2.resize(image, (int(width * scale), int(height * scale)),
+        if max(image.shape[:2]) > limit:
+            height_now, width_now = image.shape[:2]
+            scale = limit / float(max(height_now, width_now))
+            image = cv2.resize(image, (int(width_now * scale), int(height_now * scale)),
                                interpolation=cv2.INTER_AREA)
         okay, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
         if not okay:
@@ -1758,6 +1925,7 @@ class Api:
             height=int(image.shape[0]),
             source_width=int(width),
             source_height=int(height),
+            crop=window,
             data_uri="data:image/jpeg;base64," + base64.b64encode(buffer.tobytes()).decode("ascii"),
         )
 
@@ -2064,7 +2232,37 @@ class Api:
         except (MarkerRefused, TypeError, ValueError) as exc:
             return fail(str(exc))
         self._session.audit("site_marker_added", {"name": name, "kind": kind})
-        return ok(markers=[m.to_dict() for m in markers])
+        result = ok(markers=[m.to_dict() for m in markers])
+        far = self._distance_from_site_m(points)
+        if far is not None and far > 2000.0:
+            # Recorded -- the operator may know better -- but a marker kilometres from
+            # the site is far more often a typo (a swapped digit, lat/lon reversed).
+            result["warning"] = (
+                f"This marker is {far / 1000.0:.1f} km from the area of interest. Check "
+                "the coordinates; a swapped digit or reversed lat/lon lands here."
+            )
+        return result
+
+    def _distance_from_site_m(self, points: list[list[float]]) -> float | None:
+        """Metres from the nearest marker point to the AOI (or mission), None if neither."""
+        from core import geo
+
+        area = list(self._session.aoi_polygon or [])
+        if not area and self._session.mission_plan_dict:
+            area = [[w.get("lon"), w.get("lat")]
+                    for w in self._session.mission_plan_dict.get("waypoints", [])
+                    if w.get("lon") is not None and w.get("lat") is not None]
+        if not area or not points:
+            return None
+        lons = [float(p[0]) for p in area]
+        lats = [float(p[1]) for p in area]
+        best = None
+        for point in points:
+            lon = min(max(float(point[0]), min(lons)), max(lons))
+            lat = min(max(float(point[1]), min(lats)), max(lats))
+            distance = geo.haversine_m(float(point[1]), float(point[0]), lat, lon)
+            best = distance if best is None else min(best, distance)
+        return best
 
     @guard
     def remove_site_marker(self, marker_id: str) -> dict[str, Any]:
@@ -2349,7 +2547,7 @@ class Api:
         )
 
     @guard
-    def find_ponding(self, surface_path: str,
+    def find_ponding(self, surface_path: str = "",
                      vertical_accuracy_m: float | None = None) -> dict[str, Any]:
         """Where water can collect on a surface, from the DSM.
 
@@ -2365,9 +2563,13 @@ class Api:
         from core.ponding import PondingRefused, find_ponding as run_ponding
         from core.slope import NotProjected
 
+        surface_path = surface_path or self._product_path("dsm")
+        if not surface_path:
+            return fail("This project has no DSM to look for ponding on. Run Process first.")
         try:
             surface = load_surface(surface_path)
-            report = run_ponding(surface, vertical_accuracy_m=vertical_accuracy_m)
+            report = run_ponding(surface,
+                                 vertical_accuracy_m=_optional_float(vertical_accuracy_m))
         except (NotGeoreferenced, NotProjected, PondingRefused) as exc:
             return fail(str(exc))
         except (FileNotFoundError, ValueError) as exc:
@@ -2378,7 +2580,8 @@ class Api:
     def compare_surveys(self, earlier_path: str, later_path: str,
                         earlier_accuracy_m: float | None = None,
                         later_accuracy_m: float | None = None,
-                        registration_residual_m: float | None = None) -> dict[str, Any]:
+                        registration_residual_m: float | None = None,
+                        align: bool = True) -> dict[str, Any]:
         """Vertical movement between two surveys of the same ground.
 
         All three uncertainties are required. Two surveys of unchanged ground never
@@ -2386,21 +2589,488 @@ class Api:
         error -- and a subsidence figure nobody can check is worse than none.
         """
         from core.deformation import DeformationRefused, compare_surfaces
-        from core.dsm_analysis import NotGeoreferenced, load_surface
+        from core.dsm_analysis import (
+            NotGeoreferenced, align_to_grid, load_surface, same_grid,
+        )
         from core.slope import NotProjected
 
         try:
+            earlier = load_surface(earlier_path)
+            later = load_surface(later_path)
+            # Two real surveys are never on one grid. The later one is resampled onto
+            # the earlier one and the result says so; the uncertainty inputs still
+            # decide what counts as movement.
+            resampled = False
+            if align and not same_grid(earlier, later):
+                later = align_to_grid(later, earlier)
+                resampled = True
             report = compare_surfaces(
-                load_surface(earlier_path), load_surface(later_path),
-                earlier_accuracy_m=earlier_accuracy_m,
-                later_accuracy_m=later_accuracy_m,
-                registration_residual_m=registration_residual_m,
+                earlier, later,
+                earlier_accuracy_m=_optional_float(earlier_accuracy_m),
+                later_accuracy_m=_optional_float(later_accuracy_m),
+                registration_residual_m=_optional_float(registration_residual_m),
             )
         except (NotGeoreferenced, NotProjected, DeformationRefused) as exc:
             return fail(str(exc))
         except (FileNotFoundError, ValueError) as exc:
             return fail(str(exc))
-        return ok(**report.to_dict())
+        payload = report.to_dict()
+        payload["resampled"] = resampled
+        if resampled:
+            payload["note"] = (
+                "The later survey was resampled (bilinear) onto the earlier survey's grid "
+                "before differencing. " + payload.get("note", "")
+            ).strip()
+        return ok(**payload)
+
+    # -- measurement on the project's own surfaces -------------------------
+    #
+    # Every analysis below existed and was correct, and none could be reached: the
+    # cockpit buttons passed null where a raster path and a drawn geometry belonged. The
+    # map gives WGS84 lon/lat, the rasters are in a projected CRS, and nothing converted
+    # between them. These methods take what the map gives, find the project's own
+    # DSM/DTM/orthomosaic, and do the conversion in one place.
+
+    _PRODUCT_FILES = {"dsm": "dsm.tif", "dtm": "dtm.tif", "orthomosaic": "orthomosaic.tif"}
+
+    def _product_path(self, product: str) -> str:
+        """This project's DSM, DTM or orthomosaic on disk, or '' when it has none."""
+        wanted = product.lower()
+        filename = self._PRODUCT_FILES.get(wanted, "")
+
+        def search() -> str:
+            for layer in self._session.layers.values():
+                if layer.kind != "raster" or not layer.path:
+                    continue
+                if layer.name.lower() == wanted or Path(layer.path).name.lower() == filename:
+                    if Path(layer.path).is_file():
+                        return str(layer.path)
+            return ""
+
+        found = search()
+        if not found:
+            # Layers are in memory and cleared on project switch; the files are not.
+            self._session.restore_layers()
+            found = search()
+        return found
+
+    @staticmethod
+    def _raster_epsg(path: str) -> int | None:
+        import rasterio
+
+        with rasterio.open(path) as raster:
+            return raster.crs.to_epsg() if raster.crs else None
+
+    def _lonlat_to_raster_xy(self, path: str,
+                             lonlat: list[list[float]] | None) -> list[list[float]]:
+        """Project map clicks into the raster's CRS, refusing anything non-finite."""
+        import numpy as np
+
+        from core import geo
+        from core.dsm_analysis import require_projected_epsg
+
+        points = [[float(p[0]), float(p[1])] for p in (lonlat or []) if len(p) >= 2]
+        if not points:
+            return []
+        if not Path(path).is_file():
+            raise FileNotFoundError(f"Raster not found: {path}")
+        epsg = self._raster_epsg(path)
+        require_projected_epsg(epsg, path)
+        east, north = geo.wgs84_to_projected(
+            [p[0] for p in points], [p[1] for p in points], int(epsg))
+        if not (np.isfinite(east).all() and np.isfinite(north).all()):
+            raise ValueError(
+                f"The drawn geometry cannot be expressed in EPSG:{epsg}; it is not a "
+                "location that raster covers."
+            )
+        return [[float(x), float(y)] for x, y in zip(east, north)]
+
+    def _record_measurement(self, kind: str, value: float, unit: str,
+                            coordinates: list[list[float]] | None, source: str,
+                            details: dict[str, Any], label: str = "") -> str:
+        """Keep a measurement in the project's history, which the report reads."""
+        from core.measurements import create_measurement
+
+        points = [[float(p[0]), float(p[1])] for p in (coordinates or []) if len(p) >= 2]
+        geometry: dict[str, Any] = {"crs": "EPSG:4326"}
+        polygonal = {"area", "perimeter", "volume", "cut_fill", "stockpile", "slope",
+                     "surface_change"}
+        if kind in polygonal and len(points) >= 3:
+            geometry.update(type="Polygon", coordinates=[points + [points[0]]])
+        elif points:
+            geometry.update(type="LineString", coordinates=points)
+        else:
+            geometry.update(type="Extent", coordinates=[])
+        measurement = create_measurement(
+            project_root=self._session.project_root(),
+            project_id=str(self._session.project_id()),
+            source_type="map",
+            source_id=str(source),
+            measurement_type=kind,
+            geometry=geometry,
+            value=float(value),
+            unit=unit,
+            label=label or f"{kind.replace('_', ' ').title()} {value:,.3f} {unit}",
+            details=details,
+        )
+        return measurement.id
+
+    def _crs_setting_key(self) -> str:
+        return f"project:{self._session.project_id()}:target_epsg"
+
+    @guard
+    def get_project_crs(self) -> dict[str, Any]:
+        """The projected CRS this project's reconstructions are written in, if chosen."""
+        epsg = self._session.store.get_setting(self._crs_setting_key())
+        if not epsg:
+            return ok(epsg=None, name="automatic UTM zone from the imagery")
+        from pyproj import CRS
+
+        return ok(epsg=int(epsg), name=CRS.from_epsg(int(epsg)).name)
+
+    @guard
+    def set_project_crs(self, epsg: int | None = None) -> dict[str, Any]:
+        """Choose the projected CRS reconstructions are written in; None = automatic.
+
+        A geographic CRS is refused: every product here is measured in metres, and a DSM
+        written in degrees would make every later volume and distance meaningless.
+        """
+        if epsg in (None, "", 0):
+            self._session.store.set_setting(self._crs_setting_key(), None)
+            self._session.audit("project_crs_set", {"epsg": None})
+            return ok(epsg=None, name="automatic UTM zone from the imagery")
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+
+        try:
+            crs = CRS.from_epsg(int(epsg))
+        except (CRSError, ValueError, TypeError) as exc:
+            return fail(f"EPSG:{epsg} is not a coordinate reference system PROJ knows ({exc}).")
+        if not crs.is_projected:
+            return fail(f"EPSG:{epsg} ({crs.name}) is not projected: its units are degrees, "
+                        "and every product is measured in metres. Choose a projected CRS "
+                        "such as a UTM zone.")
+        unit = crs.axis_info[0].unit_name if crs.axis_info else "unknown"
+        factor = crs.axis_info[0].unit_conversion_factor if crs.axis_info else None
+        if factor != 1.0:
+            return fail(f"EPSG:{epsg} ({crs.name}) measures in {unit}, and every product "
+                        "is written with elevations in metres: its DSM would pair "
+                        "horizontal feet with vertical metres, and the volume, slope and "
+                        "ponding tools refuse such a surface. Choose a projected CRS in "
+                        "metres, such as the survey's UTM zone.")
+        self._session.store.set_setting(self._crs_setting_key(), int(epsg))
+        self._session.audit("project_crs_set", {"epsg": int(epsg)})
+        return ok(epsg=int(epsg), name=crs.name)
+
+    @guard
+    def project_surfaces(self) -> dict[str, Any]:
+        """The DSM, DTM and orthomosaic this project's measurements will run on."""
+        found = {name: self._product_path(name) for name in self._PRODUCT_FILES}
+        return ok(**found, missing=[name for name, path in found.items() if not path])
+
+    @guard
+    def measure_volume(self, polygon_lonlat: list[list[float]] | None = None,
+                       base_elevation_m: float | None = None,
+                       dsm_path: str = "", dtm_path: str = "",
+                       label: str = "") -> dict[str, Any]:
+        """Volume (or cut and fill) inside a drawn polygon, against a stated reference.
+
+        With no base elevation the reference is the project's DTM when it has one; with
+        one it is that horizontal plane -- the design level a cut-and-fill is asked
+        against. Every reference used is reported, never just the convenient one.
+        """
+        from core.dsm_analysis import (
+            IncompatibleReferenceSurface, NotGeoreferenced, estimate_volume,
+        )
+
+        dsm = dsm_path or self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM. Run Process (reconstruction) first, "
+                        "or choose a DSM GeoTIFF.")
+        base = None if base_elevation_m in (None, "") else float(base_elevation_m)
+        # A stated design level IS the reference for cut and fill; passing the DTM too
+        # would make it the preferred figure and answer a different question.
+        dtm = None if base is not None else (dtm_path or self._product_path("dtm") or None)
+        try:
+            polygon = self._lonlat_to_raster_xy(dsm, polygon_lonlat)
+            if polygon_lonlat and len(polygon) < 3:
+                return fail("A volume needs a polygon of at least three points.")
+            result = estimate_volume(dsm, dtm_path=dtm, polygon_xy=polygon or None,
+                                     base_elevation_m=base)
+        except (NotGeoreferenced, IncompatibleReferenceSurface, FileNotFoundError,
+                ValueError) as exc:
+            return fail(str(exc))
+        if not result.get("ok"):
+            return fail(result.get("reason") or "No volume could be measured.")
+
+        preferred = result["preferred"] or {}
+        kind = "cut_fill" if base is not None else "volume"
+        if not polygon:
+            result["warning"] = (
+                "No polygon was drawn, so this is the volume over the WHOLE DSM. Draw an "
+                "area on the map to measure one pile or pit."
+            )
+        result["measurement_id"] = self._record_measurement(
+            kind, float(preferred.get("net_volume_m3", 0.0)), "m3", polygon_lonlat, dsm,
+            {k: result[k] for k in ("references", "preferred", "crs_epsg",
+                                    "region_area_m2", "note") if k in result},
+            label=label,
+        )
+        self._session.audit("volume_measured",
+                            {"dsm": dsm, "reference": preferred.get("reference")})
+        return ok(**{k: v for k, v in result.items() if k != "ok"}, kind=kind)
+
+    @guard
+    def measure_stockpile(self, polygon_lonlat: list[list[float]],
+                          base_elevation_m: float | None = None,
+                          label: str = "") -> dict[str, Any]:
+        """One selected stockpile, measured and written out as a report package.
+
+        Needs either the project's DTM or an operator-stated base level: the lowest point
+        of the selection is an over-estimate, not a base, and is not offered.
+        """
+        from datetime import datetime, timezone
+
+        from core.dsm_analysis import IncompatibleReferenceSurface, NotGeoreferenced
+        from core.survey_intelligence import create_stockpile_package
+
+        dsm = self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM. Run Process (reconstruction) first.")
+        base = None if base_elevation_m in (None, "") else float(base_elevation_m)
+        dtm = None if base is not None else (self._product_path("dtm") or None)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        out = self._session.project_root() / "analysis" / "stockpiles" / stamp
+        try:
+            polygon = self._lonlat_to_raster_xy(dsm, polygon_lonlat)
+            package = create_stockpile_package(dsm, out, polygon_xy=polygon,
+                                               dtm_path=dtm, base_elevation_m=base)
+        except (NotGeoreferenced, IncompatibleReferenceSurface, FileNotFoundError,
+                ValueError) as exc:
+            return fail(str(exc))
+        measured = package.measurement
+        preferred = measured.get("preferred") or {}
+        measurement_id = self._record_measurement(
+            "stockpile", float(preferred.get("cut_volume_m3", 0.0)), "m3",
+            polygon_lonlat, dsm,
+            {"references": measured.get("references"), "preferred": preferred,
+             "report": package.report_path}, label=label,
+        )
+        return ok(measurement=measured, preferred=preferred,
+                  report_path=package.report_path, summary_path=package.summary_path,
+                  selection_path=package.selection_geojson_path,
+                  measurement_id=measurement_id)
+
+    @guard
+    def elevation_profile(self, line_lonlat: list[list[float]], dsm_path: str = "",
+                          spacing_m: float | None = None) -> dict[str, Any]:
+        """Elevation along a drawn line, sampled from the project's DSM."""
+        from core.dsm_analysis import NotGeoreferenced, elevation_profile
+
+        dsm = dsm_path or self._product_path("dsm")
+        if not dsm:
+            return fail("This project has no DSM to take a profile from. Run Process first.")
+        try:
+            line = self._lonlat_to_raster_xy(dsm, line_lonlat)
+            result = elevation_profile(dsm, line, spacing_m=spacing_m)
+        except (NotGeoreferenced, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        if not result.get("ok"):
+            return fail(result.get("reason", "No profile could be taken."),
+                        sample_count=result.get("sample_count"))
+        samples = result["samples"]
+        stride = max(1, -(-len(samples) // 500))
+        details = {k: v for k, v in result.items() if k != "samples"}
+        # Every stride-th sample, for drawing the chart; the figures above use them all.
+        details["chart_samples"] = [[s["distance_m"], s["z"]] for s in samples[::stride]]
+        details["chart_stride"] = stride
+        result["measurement_id"] = self._record_measurement(
+            # The walked length only when every sample had an elevation; a partial sum
+            # is shorter than the line and is not the profile's length.
+            "profile", float(result["surface_length_m"] if result.get("surface_length_complete")
+                             else result["planar_length_m"]), "m", line_lonlat, dsm, details,
+        )
+        return ok(**{k: v for k, v in result.items() if k != "ok"})
+
+    @guard
+    def measure_drawn(self, kind: str, coordinates_lonlat: list[list[float]],
+                      raster_path: str = "",
+                      options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Measure what was drawn on the map, on the project's own rasters.
+
+        ``kind`` is distance, area or perimeter (planar, in the raster's CRS, through
+        measure_on_raster), or slope, profile, volume or cut_fill (on the DSM). The map
+        gives lon/lat; converting to the raster's pixels or projected coordinates happens
+        here, so the browser never computes a number it then presents as measured.
+        """
+        opts = dict(options or {})
+        points = [[float(p[0]), float(p[1])] for p in (coordinates_lonlat or []) if len(p) >= 2]
+        kind = str(kind or "").lower()
+        if kind in {"volume", "cut_fill"}:
+            base = opts.get("base_elevation_m") if kind == "cut_fill" else None
+            if kind == "cut_fill" and base in (None, ""):
+                return fail("Cut and fill needs the design (base) elevation to cut and "
+                            "fill against.")
+            return self.measure_volume(points, base, raster_path)
+        if kind == "stockpile":
+            return self.measure_stockpile(points, opts.get("base_elevation_m"))
+        if kind == "profile":
+            return self.elevation_profile(points, raster_path, opts.get("spacing_m"))
+        if kind == "slope":
+            dsm = raster_path or self._product_path("dsm")
+            if not dsm:
+                return fail("This project has no DSM to measure slope on. Run Process first.")
+            try:
+                polygon = self._lonlat_to_raster_xy(dsm, points)
+            except (FileNotFoundError, ValueError) as exc:
+                return fail(str(exc))
+            result = self.measure_slope(dsm, polygon or None)
+            if result.get("ok"):
+                result["measurement_id"] = self._record_measurement(
+                    "slope", float((result.get("slope") or {}).get("mean_deg") or 0.0), "deg",
+                    points, dsm,
+                    {k: v for k, v in result.items() if k != "ok"})
+            return result
+        if kind not in {"distance", "area", "perimeter"}:
+            return fail(f"Unknown measurement kind {kind!r}. Use distance, area, perimeter, "
+                        "profile, slope, volume, cut_fill or stockpile.")
+
+        from core.dsm_analysis import elevation_profile as sample_profile
+        from core.raster_measurement import NotGeoreferenced, NotProjected, lonlat_to_pixels
+
+        raster = raster_path or self._product_path("orthomosaic") or self._product_path("dsm")
+        if not raster:
+            return fail("This project has no georeferenced raster to measure on. Run "
+                        "Process first, or add a GeoTIFF layer.")
+        try:
+            pixels, caveats = lonlat_to_pixels(raster, points)
+        except (NotGeoreferenced, NotProjected, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        result = self.measure_on_raster(raster, [list(p) for p in pixels], kind)
+        if not result.get("ok"):
+            return result
+        measurement = result["measurement"]
+        measurement["caveats"] = list(measurement.get("caveats") or []) + caveats
+        value_m = self._planar_value_in_metres(raster, kind, measurement)
+        if value_m is None:
+            return fail(f"{Path(raster).name} is in {measurement.get('unit')}, a unit with "
+                        "no known length in metres, so the measurement cannot be given "
+                        "in metres. Reproject the raster to a CRS in metres first.")
+        payload: dict[str, Any] = {"measurement": measurement, "raster_path": raster,
+                                   "value_m": value_m}
+        dsm = self._product_path("dsm")
+        if kind == "distance" and dsm:
+            # The planar figure is the map distance; over sloping ground the walked
+            # distance is longer, and the DSM knows by how much.
+            try:
+                along = sample_profile(dsm, self._lonlat_to_raster_xy(dsm, points))
+            except (FileNotFoundError, ValueError):
+                along = {}
+            if along.get("ok") and along.get("surface_length_complete"):
+                payload["surface_length_m"] = along["surface_length_m"]
+            elif along.get("ok"):
+                # A walked length summed over only the spans with elevation came out
+                # shorter than the map distance on a real survey (96 m for a 100 m line).
+                # Partial, so not offered as the over-the-ground length.
+                payload["surface_note"] = (
+                    f"Over-the-ground length not given: {along['samples_without_data']} of "
+                    f"{along['sample_count']} samples along the line have no elevation "
+                    f"(DSM holes or outside it). Over the {along['surface_covers_planar_m']} m "
+                    f"that has data it is {along['surface_length_m']} m.")
+        unit = "m2" if kind == "area" else "m"
+        payload["measurement_id"] = self._record_measurement(
+            kind, value_m, unit, points, raster,
+            {"measurement": measurement,
+             **{k: v for k, v in payload.items() if k.startswith("surface")}},
+        )
+        return ok(**payload)
+
+    def _planar_value_in_metres(self, raster: str, kind: str,
+                                measurement: dict[str, Any]) -> float | None:
+        """The planar measurement in metres (m2 for an area), whatever the raster's unit.
+
+        A raster in US survey feet measured a 100 m line as 328.18 and the history
+        stored it as "328.18 m". A horizontal length converts exactly by the CRS's own
+        unit factor; the native value and unit stay in the measurement for reference.
+        """
+        import rasterio
+
+        from core.dsm_analysis import linear_unit_factor
+
+        with rasterio.open(raster) as src:
+            name, factor = linear_unit_factor(src.crs)
+        if not (factor > 0):
+            return None
+        value = float(measurement["value"])
+        if factor != 1.0:
+            measurement["native_unit"] = name
+            measurement["native_value"] = value
+            measurement.setdefault("caveats", []).append(
+                f"The raster is in {name}; converted to metres with its CRS factor "
+                f"({factor} m per unit).")
+        return value * (factor ** 2 if kind == "area" else factor)
+
+    @guard
+    def list_measurements(self) -> dict[str, Any]:
+        """Every measurement taken in this project, newest first."""
+        from core.measurements import list_measurements
+
+        items = list_measurements(self._session.project_root(),
+                                  str(self._session.project_id()))
+        rows = sorted((m.to_dict() for m in items), key=lambda m: m["created_at"],
+                      reverse=True)
+        return ok(measurements=rows, count=len(rows))
+
+    @guard
+    def delete_measurement(self, measurement_id: str) -> dict[str, Any]:
+        from core.measurements import delete_measurement
+
+        removed = delete_measurement(self._session.project_root(), str(measurement_id))
+        return ok(removed=True) if removed else fail(f"No measurement {measurement_id}.")
+
+    @guard
+    def compare_survey_volumes(self, earlier_path: str, later_path: str,
+                               polygon_lonlat: list[list[float]] | None = None,
+                               change_threshold_m: float = 0.05) -> dict[str, Any]:
+        """Material added and removed between two surveys' DSMs.
+
+        Two independent reconstructions are never on the same grid, so the later one is
+        resampled onto the earlier one -- and the result says so, along with any
+        systematic vertical offset between them, which a volume difference silently
+        includes unless the surveys were co-registered.
+        """
+        from datetime import datetime, timezone
+
+        from core.change_detection import IncomparableSurveys, compare_surfaces
+        from core.dsm_analysis import NotGeoreferenced
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        output = (self._session.project_root() / "analysis" / "change"
+                  / f"difference_{stamp}.tif")
+        try:
+            roi = self._lonlat_to_raster_xy(earlier_path, polygon_lonlat) or None
+            change = compare_surfaces(
+                earlier_path, later_path, output_path=output,
+                change_threshold_m=float(change_threshold_m), roi_polygon_xy=roi,
+                resample=True,
+            )
+        except (NotGeoreferenced, IncomparableSurveys, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        payload = change.to_dict()
+        if payload.get("difference_path"):
+            try:
+                layer = self._session.register_raster_layer(
+                    payload["difference_path"], name="Elevation change")
+                # Only the handle: the layer's metadata carries a NaN nodata value,
+                # which is not JSON.
+                payload["layer"] = {"id": layer["id"], "name": layer["name"]}
+            except Exception:  # noqa: BLE001 - the numbers stand without the layer
+                pass
+        payload["measurement_id"] = self._record_measurement(
+            "surface_change", float(payload["net_volume_m3"]), "m3", polygon_lonlat,
+            later_path, {k: v for k, v in payload.items() if k != "layer"},
+        )
+        return ok(**payload)
 
     @guard
     def plan_irregular_facade(self, polygon_xy: list[list[float]],
@@ -2488,15 +3158,106 @@ class Api:
         })
         return ok(**{k: v for k, v in report.items() if k != "ok"})
 
+    def _project_mesh(self, model_path: str = "") -> Path:
+        """The mesh to show or measure: the one named, or this project's reconstruction."""
+        if model_path:
+            return Path(model_path)
+        recon = self._session.project_root() / "reconstruction"
+        for name in ("mesh.obj", "mesh.ply"):
+            if (recon / name).is_file():
+                return recon / name
+        raise FileNotFoundError(
+            "This project has no reconstructed mesh yet. Run Process with a dataset; "
+            "the mesh needs Open3D (`pip install open3d`)."
+        )
+
+    def _metric_mesh(self, model_path: str = "") -> Path:
+        """The mesh in metres: the reconstruction's own, georeferenced when it needs it."""
+        from core.model_measurement import NotMetric, georeference_model, model_scale
+
+        mesh = self._project_mesh(model_path)
+        try:
+            model_scale(mesh)
+            return mesh
+        except NotMetric:
+            if not (mesh.parent / "geo_anchor.json").is_file():
+                raise
+        return georeference_model(mesh)
+
+    def _mesh_arrays(self, path: Path):
+        """Vertices and faces, cached while the file is unchanged (a pick per click)."""
+        from core.model_measurement import read_mesh
+
+        key = (str(path), path.stat().st_mtime_ns)
+        cache = getattr(self, "_mesh_cache", None)
+        if cache is None or cache[0] != key:
+            self._mesh_cache = (key, read_mesh(path))
+        return self._mesh_cache[1]
+
     @guard
-    def measure_in_model(self, model_path: str, kind: str = "length",
+    def model_scene(self, model_path: str = "", max_faces: int = 120000) -> dict[str, Any]:
+        """The project's mesh, in its CRS, for the 3D view.
+
+        Coordinates are sent relative to ``origin`` so a WebGL float32 buffer keeps
+        centimetres (UTM eastings do not fit in one). Large meshes are thinned by taking
+        every n-th triangle for display only; picking and measuring use the full mesh.
+        """
+        import numpy as np
+
+        from core.model_measurement import NotMetric, model_scale
+
+        try:
+            mesh = self._metric_mesh(model_path)
+        except (NotMetric, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        vertices, faces = self._mesh_arrays(mesh)
+        total = int(len(faces))
+        step = max(1, int(np.ceil(total / max(1, int(max_faces)))))
+        shown = faces[::step]
+        used, remapped = np.unique(shown.reshape(-1), return_inverse=True)
+        local = vertices[used]
+        origin = local.mean(axis=0) if len(local) else np.zeros(3)
+        scale = model_scale(mesh)
+        return ok(
+            model_path=str(mesh),
+            epsg=scale.epsg,
+            origin=[float(v) for v in origin],
+            positions=[round(float(v), 4) for v in (local - origin).reshape(-1)],
+            indices=[int(v) for v in remapped],
+            face_count=total,
+            shown_face_count=int(len(shown)),
+            bounds=[[float(v) for v in vertices.min(axis=0)],
+                    [float(v) for v in vertices.max(axis=0)]],
+        )
+
+    @guard
+    def pick_model_point(self, model_path: str, origin_xyz: list[float],
+                         direction_xyz: list[float]) -> dict[str, Any]:
+        """Where a ray from the 3D view first meets the full-resolution mesh."""
+        from core.model_measurement import NotMetric, pick_on_mesh
+
+        try:
+            mesh = self._metric_mesh(model_path)
+            vertices, faces = self._mesh_arrays(mesh)
+            hit = pick_on_mesh(vertices, faces, origin_xyz, direction_xyz)
+        except (NotMetric, FileNotFoundError, ValueError) as exc:
+            return fail(str(exc))
+        if hit is None:
+            return fail("That click is not on the model.")
+        return ok(point=[float(v) for v in hit], model_path=str(mesh))
+
+    @guard
+    def measure_in_model(self, model_path: str = "", kind: str = "length",
                          points_xyz: list[list[float]] | None = None) -> dict[str, Any]:
         """Length, height, area or volume inside a reconstructed 3D model.
 
-        Refused unless the model's provenance records the CRS it was aligned to, since
-        an ungeoreferenced reconstruction is in structure-from-motion units that read
-        exactly like metres.
+        Refused unless the model's vertices are in a recorded CRS. The reconstruction's
+        own mesh is in the structure-from-motion frame with the transform beside it, so
+        it is measured on its georeferenced copy; a model with no georeferencing is
+        refused, since SfM units read exactly like metres. The result is kept in the
+        project's measurement history.
         """
+        from core import geo
         from core.model_measurement import (
             NotClosed,
             NotMetric,
@@ -2508,15 +3269,21 @@ class Api:
 
         points = [[float(v) for v in p[:3]] for p in (points_xyz or []) if len(p) >= 3]
         try:
+            mesh = self._metric_mesh(model_path)
             if kind == "volume":
-                measurement = measure_volume(model_path)
+                measurement = measure_volume(mesh)
+                value, unit = measurement["volume_m3"], "m3"
             elif kind == "area":
-                measurement = measure_area(model_path, points)
+                measurement = measure_area(mesh, points)
+                value, unit = measurement.get("surface_area_m2"), "m2"
             elif kind in {"length", "height"}:
                 if len(points) < 2:
                     return fail(f"A {kind} needs two picked points.")
                 handler = measure_length if kind == "length" else measure_height
-                measurement = handler(model_path, points[0], points[1])
+                measurement = handler(mesh, points[0], points[1])
+                value = (measurement.get("slope_distance_m") if kind == "length"
+                         else measurement.get("height_m"))
+                unit = "m"
             else:
                 return fail(
                     f"Unknown measurement kind {kind!r}. Use length, height, area or volume."
@@ -2527,7 +3294,341 @@ class Api:
         except (FileNotFoundError, ValueError) as exc:
             return fail(str(exc))
 
-        return ok(measurement=measurement)
+        lonlat = []
+        if points:
+            lon, lat = geo.projected_to_wgs84([p[0] for p in points], [p[1] for p in points],
+                                              int(measurement["crs_epsg"]))
+            lonlat = [[float(a), float(b)] for a, b in zip(lon, lat)]
+        measurement_id = None
+        if value is not None:
+            measurement_id = self._record_measurement(
+                f"model_{kind}", float(value), unit, lonlat, str(mesh),
+                {**measurement, "points_xyz": points})
+        return ok(measurement=measurement, model_path=str(mesh), measurement_id=measurement_id)
+
+    # ------------------------------------------------------------ survey packs
+    #
+    # The India-first packs (land GIS, design progress, agriculture, road/power/rail/
+    # solar assets, thermal module temperatures, anomaly candidates) were library code
+    # that nothing in the application could reach. Each entry below runs one pack on
+    # files the operator names -- or, for the semantic ones, on this project's latest
+    # semantic map -- writes into the project folder, and adds what it produced to the
+    # layer tree. Every refusal the packs raise is passed through as written.
+
+    def _pack_dir(self, pack: str) -> Path:
+        from datetime import datetime, timezone
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        target = self._session.project_root() / "survey_packs" / pack / stamp
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+
+    def _latest_semantic(self) -> tuple[str, str]:
+        """This project's most recent semantic class map and the manifest beside it."""
+        root = self._session.project_root() / "semantic"
+        runs = sorted((p for p in root.glob("*/semantic_manifest.json")), key=lambda p: p.stat().st_mtime) \
+            if root.is_dir() else []
+        if not runs:
+            return "", ""
+        manifest = runs[-1]
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        class_map = (payload.get("artifacts") or {}).get("class_map") or ""
+        return str(class_map), str(manifest)
+
+    def _semantic_inputs(self, semantic_raster: str, schema: str) -> tuple[str, str]:
+        if semantic_raster:
+            if not schema:
+                beside = Path(semantic_raster).parent / "semantic_manifest.json"
+                if beside.is_file():
+                    schema = str(beside)
+            if not schema:
+                raise ValueError(
+                    "Name the class schema (a semantic manifest or schema JSON) for this "
+                    "raster: class ids mean nothing without it.")
+            return semantic_raster, schema
+        raster, manifest = self._latest_semantic()
+        if not raster:
+            raise ValueError(
+                "This project has no semantic map yet. Run Semantic Map on the "
+                "orthomosaic, or name a semantic class raster.")
+        return raster, schema or manifest
+
+    def _finish_pack(self, pack: str, result: Any) -> dict[str, Any]:
+        """Read the pack's summary and put its GeoJSON and GeoTIFF outputs on the map."""
+        summary_path = getattr(result, "summary_path", "")
+        artifacts = (result.artifact_paths() if callable(getattr(result, "artifact_paths", None))
+                     else list(getattr(result, "artifact_paths", ())))
+        summary = {}
+        if summary_path and Path(summary_path).is_file():
+            summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+        layers = []
+        for path in artifacts:
+            target = Path(path)
+            if not target.is_file():
+                continue
+            label = f"{pack}: {target.stem}"
+            try:
+                if target.suffix.lower() in (".geojson", ".json") and target != Path(summary_path):
+                    payload = json.loads(target.read_text(encoding="utf-8"))
+                    if payload.get("type") == "FeatureCollection":
+                        layers.append(self._session.register_vector_layer(target, name=label)["id"])
+                elif target.suffix.lower() in (".tif", ".tiff"):
+                    layers.append(self._session.register_raster_layer(target, name=label)["id"])
+            except Exception:  # noqa: BLE001 - a layer that will not register is still on disk
+                continue
+        self._session.audit("survey_pack_run", {"pack": pack, "summary": str(summary_path)})
+        return ok(pack=pack, summary=summary, summary_path=str(summary_path),
+                  artifacts=[str(p) for p in artifacts], layer_ids=layers)
+
+    def _pack(self, pack: str, run: Callable[[Path], Any]) -> dict[str, Any]:
+        from core.india_geospatial import IndiaPackRefused
+
+        try:
+            result = run(self._pack_dir(pack))
+        except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
+            return fail(str(exc))
+        return self._finish_pack(pack, result)
+
+    @guard
+    def semantic_map(self, orthomosaic_path: str = "", model_path: str = "",
+                     manifest_path: str = "", device: str = "auto") -> dict[str, Any]:
+        """Run the installed semantic model over an orthomosaic, as a background job.
+
+        The model's own registry entry says which classes hold up (vegetation and
+        building for shared_semantic v4) and which do not; that is returned with the
+        map, because a road or water polygon from it looks exactly as confident as a
+        building one.
+        """
+        from core.models import resolve_model_path
+
+        model = Path(model_path) if model_path else resolve_model_path("shared_semantic_landcover")
+        if model is None or not Path(model).is_file():
+            return fail("No semantic model is installed (shared_semantic_landcover). Install "
+                        "its ONNX package into models/, or name one.")
+        manifest = Path(manifest_path) if manifest_path else Path(
+            str(model).replace(".onnx", ".manifest.json"))
+        if not manifest.is_file():
+            return fail(f"The semantic model's manifest is missing: {manifest}")
+        source = orthomosaic_path
+        if not source:
+            ortho = next((l for l in self._session.layers.values()
+                          if l.kind == "raster" and "ortho" in (l.name or "").lower()), None)
+            source = ortho.path if ortho else ""
+        if not source or not Path(source).is_file():
+            return fail("Name a georeferenced orthomosaic, or run Process to produce one.")
+        from datetime import datetime, timezone
+
+        from core.models import load_registry
+
+        entry = (load_registry().get("models") or {}).get("shared_semantic_landcover") or {}
+        usable = list(entry.get("usable_labels") or [])
+        output = (self._session.project_root() / "semantic"
+                  / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            import onnxruntime as ort
+
+            from core.semantic_engine import (ONNXSemanticPredictor, SemanticInferenceConfig,
+                                              load_semantic_manifest, run_semantic_inference)
+
+            schema, metadata, defaults = load_semantic_manifest(manifest)
+            chosen = device
+            if chosen == "auto":
+                chosen = "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
+            progress(5, f"Semantic inference on {chosen}")
+            predictor = ONNXSemanticPredictor(model, device=chosen,
+                                              mean=defaults.get("mean", (0.485, 0.456, 0.406)),
+                                              std=defaults.get("std", (0.229, 0.224, 0.225)))
+            package = run_semantic_inference(
+                source, output, schema=schema, model=metadata, predictor=predictor,
+                config=SemanticInferenceConfig(
+                    tile_size=int(defaults.get("tile_size", 518)),
+                    overlap=int(defaults.get("overlap", 126)),
+                    device=chosen,
+                    allow_cpu=chosen == "cpu",
+                    max_cpu_pixels=int(defaults.get("max_cpu_pixels", 4_000_000)),
+                    min_polygon_area_m2=float(defaults.get("min_polygon_area_m2", 1.0)),
+                ))
+            session.register_raster_layer(package.class_map_path, name="Semantic classes")
+            session.register_vector_layer(package.polygons_path, name="Semantic polygons")
+            return {"class_map": package.class_map_path, "polygons": package.polygons_path,
+                    "manifest": package.manifest_path, "usable_labels": usable,
+                    "caveat": ("Only " + ", ".join(usable) + " are measured to hold up for this "
+                               "model; treat every other class as unvalidated.") if usable else
+                              "This model has no validated classes recorded."}
+
+        return ok(job_id=self._jobs.submit("semantic_map", work), usable_labels=usable)
+
+    @guard
+    def india_land_gis(self, semantic_raster: str = "", schema: str = "",
+                       cadastral_geojson: str = "", previous_semantic_raster: str = "",
+                       boundary_tolerance_m: float = 0.0) -> dict[str, Any]:
+        """Land-cover vectors from a semantic map; encroachment when a boundary is given."""
+        from core.india_land import detect_cadastral_encroachment, extract_land_gis
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        if cadastral_geojson:
+            return self._pack("land_encroachment", lambda out: detect_cadastral_encroachment(
+                raster, classes, cadastral_geojson, out,
+                previous_semantic_class_raster=previous_semantic_raster or None,
+                boundary_tolerance_m=float(boundary_tolerance_m)))
+        return self._pack("land_gis", lambda out: extract_land_gis(raster, classes, out))
+
+    @guard
+    def india_design_progress(self, design_geojson: str, semantic_raster: str = "",
+                              schema: str = "", complete_at_percent: float = 95.0) -> dict[str, Any]:
+        """Observed coverage inside each approved design element (not contract completion)."""
+        from core.india_construction import measure_approved_design_progress
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("design_progress", lambda out: measure_approved_design_progress(
+            raster, classes, design_geojson, out, complete_at_percent=float(complete_at_percent)))
+
+    @guard
+    def india_canopy_cover(self, semantic_raster: str = "", schema: str = "") -> dict[str, Any]:
+        """Canopy and bare/missing regions from explicit semantic classes."""
+        from core.india_agriculture import analyse_canopy_cover
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("canopy", lambda out: analyse_canopy_cover(raster, classes, out))
+
+    @guard
+    def india_vegetation_indices(self, multispectral_raster: str,
+                                 calibrations: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """NDVI/NDRE/GNDVI from explicitly calibrated reflectance bands only.
+
+        ``calibrations`` maps a band role (red, green, red_edge, nir) to {band, scale,
+        offset, source}; a role with no calibration leaves its indices unavailable.
+        """
+        from core.india_agriculture import ReflectanceBandCalibration, compute_vegetation_indices
+
+        try:
+            parsed = {str(role): ReflectanceBandCalibration(
+                band=int(c["band"]), scale=float(c["scale"]), offset=float(c.get("offset", 0.0)),
+                source=str(c.get("source", ""))) for role, c in (calibrations or {}).items()}
+        except (KeyError, TypeError, ValueError) as exc:
+            return fail(f"Calibration not usable: {exc}")
+        return self._pack("vegetation_indices", lambda out: compute_vegetation_indices(
+            multispectral_raster, parsed, out))
+
+    @guard
+    def india_stress_zones(self, index_raster: str, severe_below: float, moderate_below: float,
+                           validation_scope: str, canopy_mask_raster: str = "") -> dict[str, Any]:
+        """Stress zones from a calibrated index, with thresholds the operator states."""
+        from core.india_agriculture import create_stress_zones
+
+        return self._pack("stress_zones", lambda out: create_stress_zones(
+            index_raster, out, severe_below=float(severe_below),
+            moderate_below=float(moderate_below), validation_scope=str(validation_scope),
+            canopy_mask_raster=canopy_mask_raster or None))
+
+    @guard
+    def india_plant_count(self, instance_raster: str, validation_scope: str,
+                          instance_encoding: str = "binary") -> dict[str, Any]:
+        """Geolocated plant/tree instances from a validated instance mask."""
+        from core.india_agriculture import count_plant_instances
+
+        return self._pack("plant_count", lambda out: count_plant_instances(
+            instance_raster, out, validation_scope=str(validation_scope),
+            instance_encoding=str(instance_encoding)))
+
+    @guard
+    def india_road_condition(self, road_centerline_geojson: str, defect_findings_geojson: str,
+                             semantic_raster: str = "", schema: str = "") -> dict[str, Any]:
+        """Road surface, surveyed distance and validated findings along a centreline."""
+        from core.india_assets import create_road_condition_package
+
+        try:
+            raster, classes = self._semantic_inputs(semantic_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("road_condition", lambda out: create_road_condition_package(
+            raster, classes, road_centerline_geojson, defect_findings_geojson, out))
+
+    @guard
+    def india_corridor_inspection(self, kind: str, detections_geojson: str,
+                                  corridor_centerline_geojson: str, capture_geometry: str,
+                                  validation_scope: str) -> dict[str, Any]:
+        """Power-line or railway corridor findings mapped along the corridor."""
+        from core.india_assets import create_power_inspection_package, create_rail_inspection_package
+
+        builder = {"power": create_power_inspection_package,
+                   "rail": create_rail_inspection_package}.get(str(kind))
+        if builder is None:
+            return fail("Corridor kind must be 'power' or 'rail'.")
+        return self._pack(f"{kind}_corridor", lambda out: builder(
+            detections_geojson, corridor_centerline_geojson, out,
+            capture_geometry=str(capture_geometry), validation_scope=str(validation_scope)))
+
+    @guard
+    def india_solar_inventory(self, module_instance_raster: str, validation_scope: str,
+                              approved_layout_geojson: str = "",
+                              findings_geojson: str = "") -> dict[str, Any]:
+        """Module inventory from instances, compared with an approved layout if given."""
+        from core.india_assets import create_solar_module_inventory
+
+        return self._pack("solar_inventory", lambda out: create_solar_module_inventory(
+            module_instance_raster, out, validation_scope=str(validation_scope),
+            approved_layout_geojson=approved_layout_geojson or None,
+            findings_geojson=findings_geojson or None))
+
+    @guard
+    def india_module_temperatures(self, thermal_path: str, rgb_path: str,
+                                  control_points_path: str, modules_path: str,
+                                  validated_by: str, warning_delta_c: float,
+                                  critical_delta_c: float, hot_cell_delta_c: float,
+                                  threshold_basis: str) -> dict[str, Any]:
+        """Measured module temperatures, after the RGB/thermal tie points are checked.
+
+        Positional on purpose: the bridge calls with positional arguments only, and
+        keyword-only parameters made the cockpit's call a TypeError every time.
+        """
+        from core.india_thermal import associate_module_temperatures, score_rgb_thermal_registration
+
+        def run(out: Path):
+            registration = score_rgb_thermal_registration(
+                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by))
+            return associate_module_temperatures(
+                thermal_path, registration, modules_path, out,
+                warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
+                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis))
+
+        return self._pack("module_temperatures", run)
+
+    @guard
+    def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,
+                               validation_scope: str) -> dict[str, Any]:
+        """Fit a normal baseline from rasters someone has confirmed to be normal."""
+        from core.india_anomaly import fit_validated_baseline
+        from core.india_geospatial import IndiaPackRefused
+
+        target = self._pack_dir("anomaly_baseline") / "baseline.json"
+        try:
+            baseline = fit_validated_baseline(list(raster_paths), target,
+                                              validated_by=str(validated_by),
+                                              validation_scope=str(validation_scope))
+        except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
+            return fail(str(exc))
+        return ok(pack="anomaly_baseline", baseline_path=str(target), baseline=baseline.to_dict())
+
+    @guard
+    def india_find_anomalies(self, feature_raster: str, baseline_path: str,
+                             threshold_sigma: float = 3.5) -> dict[str, Any]:
+        """Deviation candidates against a validated baseline (never named as defects)."""
+        from core.india_anomaly import detect_anomaly_candidates
+
+        return self._pack("anomalies", lambda out: detect_anomaly_candidates(
+            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma)))
 
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:
@@ -3407,6 +4508,11 @@ class Api:
 
         output = Path(opts.get("output_dir") or (self._session.project_root() / "reconstruction"))
         session = self._session
+        # Set CRS stores the operator's choice; it used to be read by nothing.
+        chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
+        # Marked control points georeference the model (three or more marked in three
+        # images each) or are reported as a check on the geotag fit.
+        control = self._control_points()
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.reconstruction_colmap import build_reconstructor
@@ -3415,12 +4521,20 @@ class Api:
                 opts.get("engine", "auto"),
                 profile=opts.get("profile", "standard"),
                 dense=opts.get("dense"),
-                target_epsg=opts.get("epsg"),
+                use_gpu=bool(opts.get("use_gpu", True)),
+                max_image_size=opts.get("max_image_size"),
+                target_epsg=opts.get("epsg") or chosen_epsg,
+                ground_control=control,
             )
             result = reconstructor.reconstruct(
                 image_dir=images, output_dir=str(output), progress_callback=progress
             )
             payload = result.to_dict()
+            if control and payload.get("engine") != "colmap":
+                payload.setdefault("warnings", []).append(
+                    "Ground control points were not used: only the COLMAP engine fits the "
+                    "model to them.")
+            payload["ground_control"] = getattr(reconstructor, "control_report", None)
             # Reconstruction products become map layers immediately, which is the whole
             # point of doing this inside a GIS tool.
             for key, kind, label in (
@@ -3449,6 +4563,12 @@ class Api:
         if not images:
             return fail("Select a dataset before running the pipeline.")
         output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
+        chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
+        terrain = self._session.terrain_source_path
+        aoi = list(self._session.aoi_polygon or [])
+        # Start / Run AI used to reconstruct without the project's marked control points,
+        # silently: only Process used them.
+        control = self._control_points()
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
@@ -3456,9 +4576,23 @@ class Api:
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
-            pipeline = StructuralFaultPipeline(config)
-            result = pipeline.run(image_dir=images, output_root=output, progress_callback=progress)
-            return result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            config.reconstruction_target_epsg = opts.get("epsg") or chosen_epsg
+            # Coverage QA sizes each image's footprint from its height above ground.
+            config.coverage_flight_height_agl_m = float(opts.get("flight_height_agl_m") or 0.0)
+            if opts.get("ground_elevation_m") not in (None, ""):
+                config.coverage_ground_elevation_m = float(opts["ground_elevation_m"])
+            config.coverage_terrain_path = str(opts.get("terrain_path") or terrain or "")
+            config.coverage_aoi_lonlat = aoi or None
+            pipeline = StructuralFaultPipeline(config, ground_control=control)
+            result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
+            payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            payload["ground_control"] = getattr(pipeline.reconstructor, "control_report", None)
+            if control and not hasattr(pipeline.reconstructor, "control_report"):
+                payload.setdefault("warnings", []).append(
+                    "Ground control points were not used: only the COLMAP engine fits the "
+                    "model to them, and this run used "
+                    f"{type(pipeline.reconstructor).__name__}.")
+            return payload
 
         return ok(job_id=self._jobs.submit("pipeline", work))
 

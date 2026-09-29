@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from .dsm_analysis import RasterSurface
+from .dsm_analysis import require_projected_epsg
 from .slope import NotProjected
 
 
@@ -193,6 +194,9 @@ def find_ponding(
             "Ponding needs a projected surface: depth is metres and area is square "
             "metres, and neither means anything over degrees."
         )
+    # A geographic CRS passes the check above and then reports "0 depressions" with a
+    # cell size of 0.0 m: a silent all-clear. Refuse it like every other analysis.
+    require_projected_epsg(surface.epsg, surface.path)
     cell = surface.pixel_size_m
     if not np.isfinite(cell) or cell <= 0:
         raise NotProjected("The raster transform has no ground spacing to measure across.")

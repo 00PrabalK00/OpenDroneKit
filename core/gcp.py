@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+import numpy as np
+
 # A point seen in fewer images than this cannot be triangulated reliably: two rays
 # intersect somewhere no matter how badly they are aimed, and a third is what makes the
 # intersection meaningful.
@@ -80,9 +82,15 @@ class ImageMark:
     image: str
     pixel_x: float
     pixel_y: float
+    # The size of the picture the pixel was read on. The reconstruction may have worked
+    # on the same frame at another resolution, and a mark taken at face value there lands
+    # somewhere else in the photograph.
+    image_width: int = 0
+    image_height: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"image": self.image, "pixel_x": self.pixel_x, "pixel_y": self.pixel_y}
+        return {"image": self.image, "pixel_x": self.pixel_x, "pixel_y": self.pixel_y,
+                "image_width": self.image_width, "image_height": self.image_height}
 
 
 @dataclass
@@ -203,26 +211,36 @@ def read_gcp_file(path: str | Path, default_epsg: int | None = None
 
 
 def add_mark(point: GroundControlPoint, image: str,
-             pixel_x: float, pixel_y: float) -> GroundControlPoint:
+             pixel_x: float, pixel_y: float,
+             image_width: int = 0, image_height: int = 0) -> GroundControlPoint:
     """Record where a control point was identified in one image."""
     existing = next((m for m in point.marks if m.image == image), None)
     if existing is not None:
         existing.pixel_x = float(pixel_x)
         existing.pixel_y = float(pixel_y)
+        existing.image_width = int(image_width or 0)
+        existing.image_height = int(image_height or 0)
     else:
         point.marks.append(ImageMark(image=image, pixel_x=float(pixel_x),
-                                     pixel_y=float(pixel_y)))
+                                     pixel_y=float(pixel_y),
+                                     image_width=int(image_width or 0),
+                                     image_height=int(image_height or 0)))
     return point
 
 
 def residuals_from_positions(points: Sequence[GroundControlPoint],
                              computed: dict[str, tuple[float, float, float]]
                              ) -> list[GcpResidual]:
-    """Compare where the reconstruction put each point against where it was surveyed."""
+    """Compare where the reconstruction put each point against where it was surveyed.
+
+    Only points marked in the imagery can have been placed by the reconstruction. A
+    position supplied for an unmarked point came from somewhere else, and counting it
+    produced a report that quoted an RMSE over points its own warning said took no part.
+    """
     residuals: list[GcpResidual] = []
     for point in points:
         position = computed.get(point.name)
-        if position is None:
+        if position is None or not point.marks:
             continue
         residuals.append(GcpResidual(
             name=point.name,
@@ -235,12 +253,17 @@ def residuals_from_positions(points: Sequence[GroundControlPoint],
 
 
 def accuracy_report(points: Sequence[GroundControlPoint],
-                    residuals: Sequence[GcpResidual]) -> dict[str, Any]:
+                    residuals: Sequence[GcpResidual], *,
+                    role: str = "fit") -> dict[str, Any]:
     """What the control says about the survey's accuracy.
 
     Reports the residuals rather than a verdict. A fit always produces a transform;
     whether it is good enough is a question about the job's tolerance, which this module
     does not know.
+
+    ``role`` says what the residuals are: ``"fit"`` for points the georeferencing was
+    fitted to (which flatter it), ``"check"`` for points that took no part in it and
+    are therefore an independent measure.
     """
     unusable = [p for p in points if not p.is_usable]
     unmarked = [p for p in points if not p.marks]
@@ -298,9 +321,27 @@ def accuracy_report(points: Sequence[GroundControlPoint],
             "or the control accuracy is understated."
         )
 
+    if role == "check":
+        note = (
+            f"RMSE is computed over {len(residuals)} control point(s) located in the "
+            "imagery and compared with where the georeferencing put them. They took no "
+            "part in that georeferencing, so this is an independent check. "
+            f"{GOOD_RMSE_M} m is quoted as a common expectation, not as this job's "
+            "tolerance."
+        )
+    else:
+        note = (
+            f"RMSE is computed over the {len(residuals)} control point(s) that took part "
+            "in the fit. Points used to fit a transform and then measured against it "
+            "flatter the result; independent check points give a truer figure. "
+            f"{GOOD_RMSE_M} m is quoted as a common expectation, not as this job's "
+            "tolerance."
+        )
+
     return {
         "point_count": len(points),
         "used": len(residuals),
+        "role": role,
         "rmse_m": round(rmse, 4),
         "horizontal_rmse_m": round(
             math.sqrt(sum(h * h for h in horizontal) / len(horizontal)), 4),
@@ -312,13 +353,7 @@ def accuracy_report(points: Sequence[GroundControlPoint],
         "residuals": [r.to_dict() for r in residuals],
         "warnings": warnings,
         "meets_survey_grade": rmse <= GOOD_RMSE_M,
-        "note": (
-            f"RMSE is computed over the {len(residuals)} control point(s) that took part "
-            "in the fit. Points used to fit a transform and then measured against it "
-            "flatter the result; independent check points give a truer figure. "
-            f"{GOOD_RMSE_M} m is quoted as a common expectation, not as this job's "
-            "tolerance."
-        ),
+        "note": note,
     }
 
 
@@ -327,3 +362,329 @@ def write_report(report: dict[str, Any], path: str | Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return target
+
+
+# ---------------------------------------------------------------------------
+# Kept with the project
+# ---------------------------------------------------------------------------
+
+CONTROL_FILE = "gcps.json"
+
+
+def save_control(project_root: str | Path, points: Sequence[GroundControlPoint]) -> Path:
+    """Write the control points and every image mark into the project folder.
+
+    They lived only in memory, so an afternoon of marking targets vanished when the
+    application closed.
+    """
+    target = Path(project_root) / CONTROL_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "points": [
+            {**{k: v for k, v in p.to_dict().items() if k not in ("mark_count", "usable")},
+             "marks": [m.to_dict() for m in p.marks]}
+            for p in points
+        ],
+    }
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
+
+
+def load_control(project_root: str | Path) -> list[GroundControlPoint]:
+    """The project's control points, or an empty list when none were imported."""
+    source = Path(project_root) / CONTROL_FILE
+    if not source.is_file():
+        return []
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise GcpError(f"{source} cannot be read: {exc}") from exc
+    points: list[GroundControlPoint] = []
+    for raw in payload.get("points", []):
+        point = GroundControlPoint(
+            name=str(raw["name"]), x=float(raw["x"]), y=float(raw["y"]), z=float(raw["z"]),
+            epsg=int(raw["epsg"]), accuracy_m=float(raw.get("accuracy_m", 0.02)),
+        )
+        for mark in raw.get("marks", []):
+            add_mark(point, str(mark["image"]), float(mark["pixel_x"]), float(mark["pixel_y"]),
+                     int(mark.get("image_width") or 0), int(mark.get("image_height") or 0))
+        points.append(point)
+    return points
+
+
+# ---------------------------------------------------------------------------
+# Locating the marks in the reconstruction
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ViewPose:
+    """One registered photograph: where the camera stood and how it sees."""
+
+    image: str
+    rotation: np.ndarray        # camera-from-world, 3x3
+    translation: np.ndarray     # camera-from-world, 3
+    intrinsics: np.ndarray      # K, 3x3
+    width: int = 0
+    height: int = 0
+    model: str = ""
+    params: list[float] = field(default_factory=list)
+
+    @property
+    def center(self) -> np.ndarray:
+        return -self.rotation.T @ self.translation
+
+    def _camera(self):
+        """The COLMAP camera, so lens distortion is removed exactly as COLMAP models it."""
+        if not (self.model and self.params and self.width and self.height):
+            return None
+        try:
+            import pycolmap  # type: ignore
+        except ImportError:
+            return None
+        try:
+            return pycolmap.Camera(model=self.model, width=int(self.width),
+                                   height=int(self.height), params=list(self.params))
+        except Exception:  # noqa: BLE001 - an unknown model falls back to the pinhole
+            return None
+
+    def _scaled(self, mark: "ImageMark") -> tuple[float, float]:
+        """The mark in this camera's pixel grid."""
+        x, y = float(mark.pixel_x), float(mark.pixel_y)
+        if mark.image_width and mark.image_height and self.width and self.height:
+            x *= self.width / float(mark.image_width)
+            y *= self.height / float(mark.image_height)
+        return x, y
+
+    def ray(self, mark: "ImageMark") -> np.ndarray:
+        """Unit direction, in the model frame, of the ray through a marked pixel."""
+        x, y = self._scaled(mark)
+        camera = self._camera()
+        if camera is not None:
+            normalised = np.asarray(camera.cam_from_img(np.asarray([[x, y]], dtype=float)),
+                                    dtype=float).reshape(-1)[:2]
+            direction_cam = np.array([normalised[0], normalised[1], 1.0])
+        else:
+            direction_cam = np.linalg.solve(self.intrinsics, np.array([x, y, 1.0]))
+        direction = self.rotation.T @ direction_cam
+        return direction / np.linalg.norm(direction)
+
+    def project(self, point: np.ndarray) -> np.ndarray | None:
+        """Pixel (in this camera's grid) where a model-frame point appears."""
+        in_camera = self.rotation @ np.asarray(point, dtype=float) + self.translation
+        if in_camera[2] <= 0:
+            return None
+        camera = self._camera()
+        if camera is not None:
+            return np.asarray(camera.img_from_cam(in_camera.reshape(1, 3)), dtype=float).reshape(-1)[:2]
+        homogeneous = self.intrinsics @ (in_camera / in_camera[2])
+        return homogeneous[:2]
+
+
+def poses_from_records(records: Iterable[dict[str, Any]]) -> dict[str, ViewPose]:
+    """Registered views from the ``cameras`` list a reconstruction writes to camera_poses.json."""
+    poses: dict[str, ViewPose] = {}
+    for record in records:
+        if not record.get("rotation_cam_from_world") or not record.get("intrinsics"):
+            continue
+        poses[str(record["image"])] = ViewPose(
+            image=str(record["image"]),
+            rotation=np.asarray(record["rotation_cam_from_world"], dtype=float).reshape(3, 3),
+            translation=np.asarray(record["translation_cam_from_world"], dtype=float).reshape(3),
+            intrinsics=np.asarray(record["intrinsics"], dtype=float).reshape(3, 3),
+            width=int(record.get("width") or 0),
+            height=int(record.get("height") or 0),
+            model=str(record.get("model") or ""),
+            params=[float(v) for v in record.get("params") or []],
+        )
+    return poses
+
+
+@dataclass
+class LocatedPoint:
+    """A control point found in the model by intersecting the rays through its marks."""
+
+    name: str
+    position: np.ndarray            # model frame
+    views: int
+    reprojection_px: dict[str, float]
+    unregistered_images: list[str]
+
+    @property
+    def rms_reprojection_px(self) -> float:
+        values = list(self.reprojection_px.values())
+        return math.sqrt(sum(v * v for v in values) / len(values)) if values else float("nan")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name, "views": self.views,
+            "rms_reprojection_px": round(self.rms_reprojection_px, 3),
+            "reprojection_px": {k: round(v, 3) for k, v in self.reprojection_px.items()},
+            "unregistered_images": list(self.unregistered_images),
+        }
+
+
+def locate_in_model(point: GroundControlPoint,
+                    poses: dict[str, ViewPose]) -> LocatedPoint | None:
+    """Intersect the rays through a point's marks. None when fewer than two views see it."""
+    rays = []
+    missing = []
+    for mark in point.marks:
+        pose = poses.get(mark.image) or poses.get(Path(mark.image).name)
+        if pose is None:
+            missing.append(mark.image)
+            continue
+        rays.append((pose, mark, pose.center, pose.ray(mark)))
+    if len(rays) < 2:
+        return None
+
+    # The point closest, in the least-squares sense, to every ray.
+    system = np.zeros((3, 3))
+    rhs = np.zeros(3)
+    for _pose, _mark, origin, direction in rays:
+        projector = np.eye(3) - np.outer(direction, direction)
+        system += projector
+        rhs += projector @ origin
+    if np.linalg.cond(system) > 1e12:
+        return None
+    position = np.linalg.solve(system, rhs)
+
+    errors: dict[str, float] = {}
+    for pose, mark, _origin, _direction in rays:
+        pixel = pose.project(position)
+        if pixel is None:
+            # Behind a camera that marked it: the marks do not describe one point.
+            return None
+        x, y = pose._scaled(mark)
+        errors[mark.image] = float(math.hypot(pixel[0] - x, pixel[1] - y))
+    return LocatedPoint(name=point.name, position=position, views=len(rays),
+                        reprojection_px=errors, unregistered_images=missing)
+
+
+def surveyed_positions(points: Sequence[GroundControlPoint], epsg: int) -> np.ndarray:
+    """Each point's surveyed position in ``epsg`` (heights are left as surveyed)."""
+    from core import geo
+
+    out = np.zeros((len(points), 3))
+    for index, point in enumerate(points):
+        x, y = point.x, point.y
+        if int(point.epsg) != int(epsg):
+            x, y = geo.transformer(int(point.epsg), int(epsg)).transform(x, y)
+        out[index] = (float(x), float(y), float(point.z))
+    if not np.all(np.isfinite(out)):
+        raise GcpError(
+            f"Some control points cannot be expressed in EPSG:{epsg}; check the CRS "
+            "they were imported in."
+        )
+    return out
+
+
+@dataclass
+class ControlSolution:
+    """What the control did to the georeferencing, and how well it fits."""
+
+    anchor: Any | None              # geo.GeoAnchor fitted to the control, or None
+    report: dict[str, Any]
+
+
+def solve_with_control(points: Sequence[GroundControlPoint],
+                       poses: dict[str, ViewPose],
+                       epsg: int,
+                       camera_anchor: Any | None = None) -> ControlSolution:
+    """Georeference a model from its control points, or check it against them.
+
+    With three or more points each marked in at least ``MIN_IMAGE_MARKS`` registered
+    images, the model is fitted to the control (a 7-parameter similarity) and the
+    residuals of that fit are reported -- with leave-one-out residuals too when there
+    are four or more, which is the honest measure: each point checked against a fit it
+    took no part in. With fewer, the camera-GPS georeferencing stands and every point
+    that can be located is reported as an independent check against it.
+    """
+    from core import geo
+
+    located: list[tuple[GroundControlPoint, LocatedPoint]] = []
+    for point in points:
+        found = locate_in_model(point, poses)
+        if found is not None:
+            located.append((point, found))
+    usable = [(p, f) for p, f in located if f.views >= MIN_IMAGE_MARKS]
+    located_info = {f.name: f.to_dict() for _p, f in located}
+
+    if len(usable) >= 3:
+        control = [p for p, _f in usable]
+        world = surveyed_positions(control, epsg)
+        model = np.asarray([f.position for _p, f in usable])
+        origin = world.mean(axis=0)
+        scale, rotation, translation = geo.solve_similarity_umeyama(model, world - origin)
+        predicted = scale * (model @ rotation.T) + translation + origin
+        errors = predicted - world
+        fit = [GcpResidual(name=p.name, dx=float(e[0]), dy=float(e[1]), dz=float(e[2]),
+                           mark_count=len(p.marks)) for p, e in zip(control, errors)]
+        norms = np.linalg.norm(errors, axis=1)
+        anchor = geo.GeoAnchor(
+            scale=float(scale),
+            rotation=[[float(v) for v in row] for row in rotation],
+            translation=[float(v) for v in translation],
+            epsg=int(epsg),
+            origin=[float(v) for v in origin],
+            inlier_count=len(control),
+            sample_count=len(control),
+            rmse_m=float(np.sqrt(np.mean(norms ** 2))),
+            max_residual_m=float(norms.max()),
+            method="ground_control",
+        )
+        report = accuracy_report(points, fit, role="fit")
+        if len(usable) >= 4:
+            checks: list[GcpResidual] = []
+            for held in range(len(usable)):
+                keep = [i for i in range(len(usable)) if i != held]
+                s, r, t = geo.solve_similarity_umeyama(model[keep], world[keep] - origin)
+                guess = s * (r @ model[held]) + t + origin
+                e = guess - world[held]
+                checks.append(GcpResidual(name=control[held].name, dx=float(e[0]),
+                                          dy=float(e[1]), dz=float(e[2]),
+                                          mark_count=len(control[held].marks)))
+            report["leave_one_out"] = accuracy_report(control, checks, role="check")
+        else:
+            report["warnings"].append(
+                "With only three usable control points every one of them is needed for "
+                "the fit, so there is no independent check. A fourth point, or a check "
+                "point that is not used for fitting, is what makes the RMSE mean something."
+            )
+        report["georeferenced_by"] = "ground_control"
+    else:
+        anchor = None
+        if camera_anchor is not None:
+            report = check_against_anchor(points, poses, camera_anchor, role="check")
+        else:
+            report = accuracy_report(points, [], role="check")
+        report["georeferenced_by"] = "camera_gps" if camera_anchor is not None else "none"
+        report["warnings"].append(
+            f"{len(usable)} control point(s) are marked in at least {MIN_IMAGE_MARKS} "
+            "registered images; three are needed to georeference the model with them, "
+            "so they were not used for the fit."
+        )
+    report["located"] = located_info
+    return ControlSolution(anchor=anchor, report=report)
+
+
+def check_against_anchor(points: Sequence[GroundControlPoint],
+                         poses: dict[str, ViewPose],
+                         anchor: Any, *, role: str = "check") -> dict[str, Any]:
+    """Residuals of an existing georeferencing at every control point the model can see.
+
+    ``role`` is "fit" when that georeferencing was itself fitted to these points and
+    "check" when it came from somewhere else (the camera geotags).
+    """
+    located = [(p, locate_in_model(p, poses)) for p in points]
+    located = [(p, f) for p, f in located if f is not None]
+    residuals: list[GcpResidual] = []
+    if located:
+        world = surveyed_positions([p for p, _f in located], int(anchor.epsg))
+        placed = anchor.apply(np.asarray([f.position for _p, f in located]), absolute=True)
+        residuals = [GcpResidual(name=p.name, dx=float(e[0]), dy=float(e[1]), dz=float(e[2]),
+                                 mark_count=len(p.marks))
+                     for (p, _f), e in zip(located, placed - world)]
+    report = accuracy_report(points, residuals, role=role)
+    report["located"] = {f.name: f.to_dict() for _p, f in located}
+    return report

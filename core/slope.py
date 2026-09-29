@@ -32,6 +32,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from .dsm_analysis import NotGeoreferenced, RasterSurface, _polygon_mask, load_surface
+from .dsm_analysis import NotProjected as _NotProjected
 
 # Below this many cells there is not enough surface to describe a gradient: three cells
 # can be fitted exactly by a plane, which would report a residual of zero and mean it.
@@ -43,8 +44,9 @@ MIN_CELLS = 12
 PLANAR_RESIDUAL_WARN = 0.15
 
 
-class NotProjected(ValueError):
-    """The raster's horizontal units are not metres, so a gradient is not an angle."""
+# One refusal type across every surface analysis: slope, ponding, deformation and
+# volume all reject a geographic raster the same way, and callers catch one class.
+NotProjected = _NotProjected
 
 
 @dataclass
@@ -111,6 +113,10 @@ def _require_projected(surface: RasterSurface) -> None:
             "while elevations are in metres, so their ratio is not a slope. Reproject "
             "the surface to a metric CRS -- a UTM zone -- before measuring gradient."
         )
+    from .dsm_analysis import require_projected_epsg
+
+    # Feet horizontally against metres vertically turned a 10.1 deg slope into 2.6 deg.
+    require_projected_epsg(surface.epsg, surface.path or "The surface")
 
 
 def _fit_plane(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> tuple[float, float, float]:

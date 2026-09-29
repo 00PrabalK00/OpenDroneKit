@@ -22,9 +22,177 @@ import { call, tryCall, lastError, connected } from "./api.js";
 const NEEDS_PROJECT = new Set([
   "New Mission", "Plan", "Save", "Save Template", "Export", "Export Products",
   "Process", "Start", "Run AI", "Add GCPs", "Set CRS", "Compare", "Compare Dates",
-  "Change", "Volume", "Cut & Fill", "Stockpile", "Generate Report", "Export Report",
+  "Change", "Volume", "Cut & Fill", "Stockpile", "Slope", "Ponding", "Generate Report",
+  "Export Report",
   "Export PDF", "New Report", "Share", "Archive",
 ]);
+
+/* -- survey packs ---------------------------------------------------------- */
+
+async function pickPath(extensions, what) {
+  const picked = await call("pick_file", extensions);
+  if (!picked || !picked.path) throw new Error(`No ${what} chosen.`);
+  return picked.path;
+}
+
+/** "" for this project's latest semantic map, or a picked class raster and its schema. */
+async function semanticSource(ctx) {
+  const source = await ctx.choose("Semantic class map", [
+    "This project's latest semantic map", "Choose a class raster"]);
+  if (!source) throw new Error("No semantic map chosen.");
+  if (source.startsWith("This project")) return ["", ""];
+  const raster = await pickPath(["tif", "tiff"], "class raster");
+  const schema = await call("pick_file", ["json"]);
+  return [raster, (schema && schema.path) || ""];
+}
+
+async function required(ctx, label, fallback = "") {
+  const value = await ctx.prompt(label, fallback);
+  if (value === null || String(value).trim() === "") throw new Error(`${label} is required.`);
+  return String(value).trim();
+}
+
+async function number(ctx, label, fallback = "") {
+  const value = Number(await required(ctx, label, fallback));
+  if (!Number.isFinite(value)) throw new Error(`${label} must be a number.`);
+  return value;
+}
+
+const SURVEY_PACKS = {
+  "Land GIS / encroachment": async (ctx) => {
+    const [raster, schema] = await semanticSource(ctx);
+    const mode = await ctx.choose("Land analysis", ["Land cover vectors", "Encroachment against a boundary"]);
+    if (!mode) return { skipped: "Nothing chosen." };
+    const boundary = mode.startsWith("Encroachment") ? await pickPath(["geojson", "json"], "cadastral boundary") : "";
+    return call("india_land_gis", raster, schema, boundary);
+  },
+  "Design progress": async (ctx) => {
+    const design = await pickPath(["geojson", "json"], "approved design");
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_design_progress", design, raster, schema);
+  },
+  "Canopy cover": async (ctx) => {
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_canopy_cover", raster, schema);
+  },
+  "Vegetation indices": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "multispectral raster");
+    const source = await required(ctx, "Reflectance calibration source (panel / sensor record)");
+    const calibrations = {};
+    for (const role of ["red", "green", "red_edge", "nir"]) {
+      const band = await ctx.prompt(`Band number for ${role} (blank if absent)`, "");
+      if (!band) continue;
+      const scale = await number(ctx, `Reflectance scale for ${role}`, "");
+      const offset = await number(ctx, `Reflectance offset for ${role}`, "0");
+      calibrations[role] = { band: Number(band), scale, offset, source };
+    }
+    return call("india_vegetation_indices", raster, calibrations);
+  },
+  "Stress zones": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "vegetation index raster");
+    const severe = await number(ctx, "Severe below (index value)");
+    const moderate = await number(ctx, "Moderate below (index value)");
+    const scope = await required(ctx, "Who validated these thresholds, for which crop and stage");
+    return call("india_stress_zones", raster, severe, moderate, scope);
+  },
+  "Plant count": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "instance mask");
+    const scope = await required(ctx, "Validation scope of the instance model");
+    return call("india_plant_count", raster, scope);
+  },
+  "Road condition": async (ctx) => {
+    const centreline = await pickPath(["geojson", "json"], "road centreline");
+    const findings = await pickPath(["geojson", "json"], "validated road findings");
+    const [raster, schema] = await semanticSource(ctx);
+    return call("india_road_condition", centreline, findings, raster, schema);
+  },
+  "Power corridor": (ctx) => corridor(ctx, "power"),
+  "Rail corridor": (ctx) => corridor(ctx, "rail"),
+  "Solar module inventory": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "module instance raster");
+    const scope = await required(ctx, "Validation scope of the module model");
+    const layout = await call("pick_file", ["geojson", "json"]);
+    return call("india_solar_inventory", raster, scope, (layout && layout.path) || "");
+  },
+  "Module temperatures": async (ctx) => {
+    // The pack reads a radiometric sidecar (raw counts + calibration + georeferencing,
+    // core/india_thermal.py); a rendered .tif is refused there as "not measurements",
+    // and the chooser offering only .tif made the one accepted file unselectable.
+    const thermal = await pickPath(["json"], "radiometric thermal sidecar (.json)");
+    const rgb = await pickPath(["tif", "tiff", "jpg", "png"], "RGB image");
+    const points = await pickPath(["json", "csv"], "RGB/thermal tie points");
+    const modules = await pickPath(["geojson", "json"], "module polygons");
+    const by = await required(ctx, "Tie points validated by");
+    const warning = await number(ctx, "Warning above module median (°C)");
+    const critical = await number(ctx, "Critical above module median (°C)");
+    const hot = await number(ctx, "Hot cell above module median (°C)");
+    const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
+    return call("india_module_temperatures", thermal, rgb, points, modules, by, warning, critical, hot, basis);
+  },
+  "Anomaly baseline": async (ctx) => {
+    // A baseline is fitted to at least two independently captured normal rasters; one
+    // file was all this button could ever send, so it was refused every time.
+    const rasters = [await pickPath(["tif", "tiff"], "raster confirmed normal")];
+    for (;;) {
+      const more = await ctx.choose(`Anomaly baseline: ${rasters.length} normal raster(s) chosen`,
+        ["Add another raster confirmed normal", "Done choosing rasters"]);
+      if (!more || more.startsWith("Done")) break;
+      rasters.push(await pickPath(["tif", "tiff"], "raster confirmed normal"));
+    }
+    const by = await required(ctx, "Confirmed normal by");
+    const scope = await required(ctx, "Where and when this baseline applies");
+    return call("india_anomaly_baseline", rasters, by, scope);
+  },
+  "Find anomalies": async (ctx) => {
+    const raster = await pickPath(["tif", "tiff"], "feature raster");
+    const baseline = await pickPath(["json"], "validated baseline");
+    const sigma = await number(ctx, "Threshold (robust sigma)", "3.5");
+    return call("india_find_anomalies", raster, baseline, sigma);
+  },
+};
+
+const CAPTURE_GEOMETRIES = {
+  power: ["close_range_oblique", "close_range_orbit"],
+  rail: ["corridor_nadir", "corridor_nadir_oblique"],
+};
+
+async function corridor(ctx, kind) {
+  const detections = await pickPath(["geojson", "json"], `${kind} detections`);
+  const centreline = await pickPath(["geojson", "json"], "corridor centreline");
+  // The values the pack accepts (core/india_assets.py); the prompt used to suggest
+  // "oblique_close_range", which it refuses.
+  const geometry = await ctx.choose("Capture geometry", CAPTURE_GEOMETRIES[kind]);
+  if (!geometry) throw new Error("No capture geometry chosen.");
+  const scope = await required(ctx, "Validation scope of the detector");
+  return call("india_corridor_inspection", kind, detections, centreline, geometry, scope);
+}
+
+/** A line about what a pack produced: its own status and headline numbers. */
+function summarisePack(result) {
+  const summary = result.summary || {};
+  const parts = [];
+  if (result.baseline_path) return `baseline written to ${result.baseline_path}.`;
+  for (const key of ["observed_surface_coverage_percent", "surveyed_distance_m",
+    "road_surface_area_m2", "module_count", "instance_count", "candidate_count", "status"]) {
+    if (summary[key] !== undefined && typeof summary[key] !== "object") parts.push(`${key.replace(/_/g, " ")} ${summary[key]}`);
+  }
+  if (summary.categories) {
+    parts.push(Object.entries(summary.categories)
+      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`).join(", "));
+  }
+  if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
+  const layers = (result.layer_ids || []).length;
+  return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
+}
+
+/** The 3D view, opened on the mesh if it is not already showing. */
+async function openModel(ctx) {
+  const { currentModelViewer, whenModelReady } = await import("./model3d.js");
+  const shown = currentModelViewer();
+  if (shown && shown.ready) return shown;
+  if (!shown) ctx.showView("mesh");
+  return whenModelReady();
+}
 
 /** Actions that need images on disk. */
 const NEEDS_DATASET = new Set(["Process", "Start", "Run AI", "Match Captures", "Open in 3D"]);
@@ -194,7 +362,7 @@ export const ACTIONS = {
     confirm: "Run the full pipeline? Reconstruction plus analysis.",
     describe: "Reconstruction followed by defect analysis.",
     async run(ctx) {
-      const result = await call("run_pipeline", ctx.reconstructionOptions());
+      const result = await call("run_pipeline", ctx.pipelineOptions());
       return { message: "Pipeline started.", job: result.job_id, refresh: true };
     },
   },
@@ -209,35 +377,80 @@ export const ACTIONS = {
     },
   },
 
-  /* -- measurement -------------------------------------------------------- */
+  /* -- measurement --------------------------------------------------------
+     Every one of these used to call the Api with null: selectionGeometry was never
+     assigned, and Volume asked measure_on_raster for a kind it does not have. They now
+     take the area or line drawn on the map (drawing one first when there is none) and
+     the project's own DSM/DTM, which the Api finds and reprojects into. */
   Volume: {
-    describe: "Volume between DSM and DTM over the selection.",
+    describe: "Volume above the DTM inside the drawn area.",
     async run(ctx) {
-      const result = await call("measure_on_raster", ctx.selectionGeometry(), "volume");
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Volume");
+      if (!polygon) return { skipped: "Draw the area to measure, then double-click." };
+      const result = await call("measure_drawn", "volume", polygon);
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   "Cut & Fill": {
-    describe: "Cut and fill against a reference surface.",
+    describe: "Cut and fill against a design level, inside the drawn area.",
     async run(ctx) {
-      const result = await call("measure_on_raster", ctx.selectionGeometry(), "cut_fill");
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Cut & Fill");
+      if (!polygon) return { skipped: "Draw the area to cut and fill, then double-click." };
+      const level = await ctx.prompt("Design (base) elevation, metres", "");
+      if (level === null || level === "" || !Number.isFinite(Number(level))) {
+        return { skipped: "Cut and fill needs the design elevation to measure against." };
+      }
+      const result = await call("measure_drawn", "cut_fill", polygon, "",
+                                { base_elevation_m: Number(level) });
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   Slope: {
-    describe: "Slope over the selection.",
+    describe: "Slope over the drawn area.",
     async run(ctx) {
-      const result = await call("measure_slope", ctx.selectionGeometry());
-      return { message: describeMeasurement(result) };
+      const polygon = ctx.requireSelection("polygon", "Slope");
+      if (!polygon) return { skipped: "Draw the area to measure slope over, then double-click." };
+      const result = await call("measure_drawn", "slope", polygon);
+      return { message: describeMeasurement(result), refresh: true };
     },
   },
   Stockpile: {
-    describe: "Inventory the assets in this project.",
-    async run() {
-      const result = await call("build_asset_inventory");
-      return { message: `${(result.assets || []).length} asset(s).` };
+    describe: "Measure one stockpile and write its report package.",
+    async run(ctx) {
+      const polygon = ctx.requireSelection("polygon", "Stockpile");
+      if (!polygon) return { skipped: "Draw around the pile's toe, then double-click." };
+      /* Blank means the project's DTM. The selection's lowest point is not offered as a
+         base: it always over-states a pile on sloping ground. */
+      const base = await ctx.prompt("Base elevation in metres (blank = use the DTM)", "");
+      if (base === null) return { skipped: "Cancelled." };
+      const options = base !== "" && Number.isFinite(Number(base))
+        ? { base_elevation_m: Number(base) } : {};
+      const result = await call("measure_drawn", "stockpile", polygon, "", options);
+      return { message: `${describeMeasurement(result)} Report: ${result.report_path}`,
+               refresh: true };
     },
   },
+  Ponding: {
+    describe: "Where water can collect on the DSM.",
+    async run(ctx) {
+      /* No default: without the survey's vertical accuracy a basin cannot be told from
+         reconstruction noise, and find_ponding refuses rather than guess. */
+      const accuracy = await ctx.prompt("Vertical accuracy of this DSM, metres", "");
+      if (!accuracy || !Number.isFinite(Number(accuracy))) {
+        return { skipped: "Ponding needs the survey's vertical accuracy." };
+      }
+      const result = await call("find_ponding", "", Number(accuracy));
+      return {
+        message: result.count
+          ? `${result.count} depression(s) deeper than ${result.detection_floor_m} m, `
+            + `${Number(result.total_volume_m3).toFixed(2)} m³ of capacity.`
+          : `No depression deeper than ${result.detection_floor_m} m (the detection floor).`,
+      };
+    },
+  },
+  "Select Area": { tool: "select-polygon", draw: "polygon",
+                   describe: "Draw the area Volume, Slope and Stockpile act on." },
+  "Select Line": { tool: "select-line", draw: "line", describe: "Draw a line to act on." },
 
   /* -- flight -------------------------------------------------------------
      The cockpit could not connect an aircraft at all: fly.connect only switched
@@ -370,12 +583,42 @@ export const ACTIONS = {
     },
   },
 
-  /* -- survey comparison -------------------------------------------------- */
+  /* -- survey comparison --------------------------------------------------
+     compare_surveys was called with no arguments. Two real surveys also could never be
+     compared, because no two reconstructions share a grid; the later one is now
+     resampled onto the earlier one and the result says so. */
   Compare: {
-    describe: "Compare this survey against a previous one.",
-    async run() {
-      const result = await call("compare_surveys");
-      return { message: result.summary || "Surveys compared." };
+    describe: "Compare this survey's DSM against an earlier one.",
+    async run(ctx) {
+      const surfaces = await call("project_surfaces");
+      const earlier = await tryCall("pick_file", ["tif", "tiff"]);
+      if (!(earlier && earlier.path)) return { skipped: "No earlier DSM chosen." };
+      let later = surfaces.dsm;
+      if (!later) {
+        const picked = await tryCall("pick_file", ["tif", "tiff"]);
+        later = picked && picked.path;
+      }
+      if (!later) return { skipped: "This project has no DSM to compare against." };
+      const polygon = ctx.selectionVertices();
+      const change = await call("compare_survey_volumes", earlier.path, later,
+                                polygon.length >= 3 ? polygon : null);
+      let message = `Added ${change.added_volume_m3} m³, removed `
+        + `${change.removed_volume_m3} m³ (net ${change.net_volume_m3}).`;
+      const warnings = change.warnings || [];
+      if (warnings.length) message += ` ${warnings[warnings.length - 1]}`;
+
+      /* Movement needs error bounds; without them it is not asked for. */
+      const bounds = await ctx.prompt(
+        "For movement: vertical accuracy of earlier, later survey and registration "
+        + "residual in metres, comma separated (blank to skip)", "");
+      const numbers = String(bounds || "").split(/[,\s]+/).filter(Boolean).map(Number);
+      if (numbers.length === 3 && numbers.every(Number.isFinite)) {
+        const moved = await call("compare_surveys", earlier.path, later, ...numbers);
+        message += moved.moved
+          ? ` ${moved.count} region(s) moved beyond the ${moved.detection_floor_m} m floor.`
+          : ` No movement resolvable above ${moved.detection_floor_m} m.`;
+      }
+      return { message, refresh: true };
     },
   },
   "Compare Dates": { alias: "Compare" },
@@ -384,18 +627,81 @@ export const ACTIONS = {
   /* -- ground control ----------------------------------------------------- */
   "Add GCPs": {
     describe: "Import ground control points.",
-    async run() {
+    async run(ctx) {
       const file = await call("pick_file", ["csv", "txt"]);
       if (!file || !file.path) return { skipped: "No file chosen." };
-      const result = await call("import_gcps", file.path);
-      return { message: `Imported ${result.count ?? "?"} control points.`, refresh: true };
+      let result = await tryCall("import_gcps", file.path);
+      if (!result) {
+        /* A file with no CRS column is refused rather than guessed. Ask for the code
+           and try again; the refusal text says why it matters. */
+        const why = lastError.get("import_gcps") || "";
+        if (!/CRS/i.test(why)) throw new Error(why || "The control file could not be read.");
+        const epsg = await ctx.prompt("EPSG code the control coordinates are in", "");
+        if (!epsg) return { skipped: "Control points need the CRS they were surveyed in." };
+        result = await call("import_gcps", file.path, Number(epsg));
+      }
+      return { message: `Imported ${result.count ?? "?"} control points; mark each in at `
+                 + "least three photographs with Mark GCP.", refresh: true };
+    },
+  },
+  "Mark GCP": {
+    describe: "Click where a control point is in a photograph.",
+    async run(ctx) {
+      const listed = await call("list_gcps");
+      const points = listed.points || [];
+      if (!points.length) return { skipped: "Import ground control points first (Add GCPs)." };
+      const labels = points.map((p) => `${p.name} (${p.mark_count} mark${p.mark_count === 1 ? "" : "s"})`);
+      const chosenPoint = await ctx.choose("Control point", labels);
+      if (!chosenPoint) return { skipped: "No control point chosen." };
+      const point = points[labels.indexOf(chosenPoint)];
+      const images = ((await call("list_dataset_images")).images || [])
+        .map((i) => (typeof i === "string" ? i : i.name));
+      if (!images.length) return { skipped: "Select a dataset first." };
+      const image = await ctx.choose(`Photograph showing ${point.name}`, images);
+      if (!image) return { skipped: "No photograph chosen." };
+      await ctx.showImage(image);
+      const rough = await ctx.pickImagePixel(`Click ${point.name} on ${image} (Esc to cancel).`);
+      if (!rough) return { skipped: "No point clicked on the photograph." };
+      /* On the whole frame one screen pixel is several pixels of the photograph, which
+         is metres on the ground at the far edge. The second click is on a close-up. */
+      const side = Math.max(64, Math.round(Math.min(rough.width, rough.height) / 8));
+      await ctx.showImage(image, [rough.x - side / 2, rough.y - side / 2, side, side]);
+      const at = await ctx.pickImagePixel(`Click ${point.name} again on the close-up (Esc to cancel).`);
+      if (!at) return { skipped: "No point clicked on the close-up." };
+      const marked = await call("mark_gcp", point.name, image, at.x, at.y, at.width, at.height);
+      const count = marked.point.mark_count;
+      return { message: `${point.name} marked on ${image} at (${Math.round(at.x)}, ${Math.round(at.y)}); `
+                 + `${count} mark${count === 1 ? "" : "s"}`
+                 + (marked.point.usable ? "." : ` -- needs ${3 - count} more to be used.`),
+               refresh: true };
+    },
+  },
+  "GCP Report": {
+    describe: "How far each control point lands from where it was surveyed.",
+    async run() {
+      const { report } = await call("gcp_accuracy_report");
+      if (report.rmse_m === null || report.rmse_m === undefined) {
+        return { message: `No measured accuracy: ${(report.warnings || []).join(" ")}` };
+      }
+      const kind = report.role === "check" ? "independent check" : "fit to the control";
+      return { message: `GCP RMSE ${Number(report.rmse_m).toFixed(3)} m over ${report.used} of `
+                 + `${report.point_count} points (${kind}; georeferenced by ${report.georeferenced_by}). `
+                 + (report.warnings || []).join(" ") };
     },
   },
   "Set CRS": {
-    describe: "Report the coordinate reference system in use.",
-    async run() {
-      const result = await call("check_spatial_reference");
-      return { message: result.epsg ? `CRS ${result.epsg}` : "No CRS resolved." };
+    describe: "Choose the projected CRS reconstructions are written in.",
+    async run(ctx) {
+      const current = await call("get_project_crs");
+      const answer = await ctx.prompt(
+        "EPSG code of a projected CRS (blank = automatic UTM zone)",
+        current.epsg ? String(current.epsg) : "");
+      if (answer === null) return { skipped: "Cancelled." };
+      const trimmed = String(answer).trim();
+      const result = await call("set_project_crs", trimmed === "" ? null : Number(trimmed));
+      return { message: result.epsg ? `Reconstructions will be written in EPSG:${result.epsg} `
+                                       + `(${result.name}).`
+                                     : "Reconstructions will use the UTM zone of the imagery." };
     },
   },
 
@@ -411,16 +717,24 @@ export const ACTIONS = {
   Radiometric: { view: "radiometric", describe: "Calibrated Celsius values." },
   Semantic: { view: "semantic", describe: "Semantic classes." },
   "Point Cloud": { view: "pointcloud", describe: "Show the point cloud." },
-  "Textured Mesh": { view: "mesh", describe: "Show the textured mesh." },
-  Profile: { view: "profile", describe: "Elevation profile along a line." },
+  // The Poisson mesh carries no texture; it is shaded by height. The label is the
+  // toolbar's, the description says what is drawn.
+  "Textured Mesh": { view: "mesh", describe: "Show the reconstructed 3D mesh (shaded by height)." },
+  // A line drawn on the map, sampled from the DSM. It used to be a view toggle with
+  // nothing behind it: no code anywhere computed a profile.
+  Profile: { tool: "profile", draw: "line", measure: "profile",
+             describe: "Elevation profile along a drawn line." },
 
   /* -- canvas tools ------------------------------------------------------
      Arming a tool is also local. The measurement itself goes to the Api once there is
      geometry to measure, which is why Distance and Area report through the same path as
      Volume rather than inventing a number in the browser. */
-  Measure: { tool: "measure", describe: "Arm the measure tool." },
-  Distance: { tool: "distance", describe: "Measure a distance on the canvas." },
-  Area: { tool: "area", describe: "Measure an area on the canvas." },
+  Measure: { tool: "measure", draw: "line", measure: "distance",
+             describe: "Measure a distance on the map." },
+  Distance: { tool: "distance", draw: "line", measure: "distance",
+              describe: "Measure a distance on the map." },
+  Area: { tool: "area", draw: "polygon", measure: "area",
+          describe: "Measure an area on the map; it also becomes the selection." },
   Annotate: { tool: "annotate", describe: "Draw an annotation." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
@@ -503,13 +817,27 @@ export const ACTIONS = {
     },
   },
 
-  /* measure_in_model joins Save View and Clip: implemented, tested, and it needs points
-     picked on a mesh that is on screen. */
+  /* Two points picked on the mesh in the 3D view. The picks are made by the application
+     on the full-resolution mesh in its CRS; the model is measured only when its
+     georeferencing is recorded. */
   "Measure in 3D": {
-    describe: "Measure between two points on the model. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "measure_in_model is implemented, but a 3D measurement is two "
-                        + "points picked on a mesh, and the interactive viewer is not built." };
+    describe: "Measure a length or a height between two points picked on the 3D model.",
+    async run(ctx) {
+      const viewer = await openModel(ctx);
+      const kind = await ctx.choose("Measure", ["length", "height"]);
+      if (!kind) return { skipped: "Nothing chosen." };
+      viewer.clearPins();
+      ctx.toast("Click the first point on the model.");
+      const first = await viewer.pickNext();
+      ctx.toast("Click the second point on the model.");
+      const second = await viewer.pickNext();
+      const result = await call("measure_in_model", viewer.scene.model_path, kind, [first, second]);
+      const m = result.measurement;
+      const text = kind === "height"
+        ? `height ${m.height_m.toFixed(3)} m`
+        : `length ${m.slope_distance_m.toFixed(3)} m (horizontal ${m.horizontal_distance_m.toFixed(3)} m, `
+          + `vertical ${m.vertical_distance_m.toFixed(3)} m)`;
+      return { message: `Model ${text}, EPSG:${m.crs_epsg}. Kept in the measurement history.` };
     },
   },
 
@@ -633,17 +961,22 @@ export const ACTIONS = {
     async run(ctx) {
       const events = await tryCall("pick_file", ["csv", "txt", "mrk"]);
       if (!(events && events.path)) return { skipped: "No camera-event file chosen." };
-      const rinex = await tryCall("pick_file", ["obs", "rnx", "zip", "o"]);
+      /* RINEX 2 observation files are named by year: base.26o, base.25o. A filter of
+         "o" matched none of them. */
+      const year = new Date().getFullYear();
+      const yearly = Array.from({ length: 12 }, (_, i) => `${String((year - i) % 100).padStart(2, "0")}o`);
+      const rinex = await tryCall("pick_file", ["obs", "rnx", "o", ...yearly]);
       if (!(rinex && rinex.path)) return { skipped: "No base observation file chosen." };
       const result = await call("check_ppk_inputs", events.path, rinex.path);
-      /* It answers with what is wrong, not merely whether. An overlap that is short by
-         four minutes and one that is short by four hours need different responses. */
-      const problems = result.problems || result.warnings || [];
-      return {
-        message: problems.length
-          ? `PPK inputs are not usable: ${problems.join(" ")}`
-          : `PPK inputs check out${result.overlap_s ? `; ${Math.round(result.overlap_s)} s of overlap.` : "."}`,
-      };
+      /* It answers with what is wrong, not merely whether. This read `problems` and
+         `overlap_s`, which the check never returns, so a flight half outside the base
+         window was announced as "PPK inputs check out". */
+      const blocking = result.blocking || [];
+      const covered = `${(result.alignment || {}).covered_count ?? "?"} of ${result.events ?? "?"} events inside the base window`;
+      if (!result.usable_for_ppk) {
+        return { message: `PPK inputs are not usable (${covered}): ${blocking.join(" ")}` };
+      }
+      return { message: `PPK inputs check out: ${covered}. ${result.accuracy_statement || ""}`.trim() };
     },
   },
   "Size Job": {
@@ -730,17 +1063,46 @@ export const ACTIONS = {
 
       const name = await ctx.prompt("Marker name", "");
       if (!name) return { skipped: "A marker needs a name to be found again." };
-      /* Typed rather than clicked. The canvas does not report a map coordinate, and a
-         button that waits for a click the UI cannot deliver is a dead control. An
-         operator placing a hazard usually has the coordinate written down anyway. */
-      const lon = await ctx.prompt("Longitude", "");
-      const lat = await ctx.prompt("Latitude", "");
-      if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
-      const result = await call("add_site_marker", name, kind, [[Number(lon), Number(lat)]]);
+      /* Clicked on the map when there is one; typed when there is not, or when the
+         operator presses Esc because the coordinate is written down. */
+      let point = await ctx.pickPoint(`Click where "${name}" is (Esc to type it).`);
+      if (!point) {
+        const lon = await ctx.prompt("Longitude", "");
+        const lat = await ctx.prompt("Latitude", "");
+        if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
+        point = [Number(lon), Number(lat)];
+      }
+      const result = await call("add_site_marker", name, kind, [point]);
       /* It answers with the whole marker list, not the one just added. */
       const total = (result.markers || []).length;
-      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`,
+      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`
+                 + (result.warning ? ` ${result.warning}` : ""),
                refresh: true };
+    },
+  },
+  /* -- survey packs -------------------------------------------------------
+     The India-first packs were library code nothing could reach. One button offers
+     them; each asks for exactly the inputs its pack refuses to guess (a boundary, a
+     design, a calibration, a validation scope) and puts what it produced on the map. */
+  "Semantic Map": {
+    describe: "Classify the orthomosaic with the installed semantic model (background job).",
+    async run() {
+      const started = await call("semantic_map");
+      const usable = (started.usable_labels || []).join(" and ");
+      return { message: "Semantic map started."
+                 + (usable ? ` Only ${usable} are validated for this model; treat other classes as unvalidated.` : ""),
+               job: started.job_id, refresh: true };
+    },
+  },
+  "Survey Packs": {
+    describe: "Land GIS, design progress, agriculture, road/power/rail/solar and anomaly packs.",
+    async run(ctx) {
+      const packs = Object.keys(SURVEY_PACKS);
+      const pack = await ctx.choose("Survey pack", packs);
+      if (!pack) return { skipped: "No pack chosen." };
+      const result = await SURVEY_PACKS[pack](ctx);
+      if (!result || result.skipped) return result || { skipped: "Cancelled." };
+      return { message: `${pack}: ${summarisePack(result)}`, refresh: true };
     },
   },
   "Check Hazards": {
@@ -767,14 +1129,38 @@ export const ACTIONS = {
     },
   },
   "Import CAD": {
-    describe: "Place a DXF or a georeferenced image over the survey.",
+    describe: "Place a DXF, a GeoTIFF or a plain scanned image over the survey.",
     async run(ctx) {
       /* pick_file takes an EXTENSION LIST, not a title. Passing a title made pywebview
          raise "is not a valid file filter" and the exception arrived at the toolbar as
          the result of pressing the button. */
-      const picked = await tryCall("pick_file", ["dxf", "tif", "tiff", "png", "jpg"]);
+      const picked = await tryCall("pick_file", ["dxf", "tif", "tiff", "png", "jpg", "jpeg"]);
       const path = picked && picked.path;
       if (!path) return { skipped: "No file chosen." };
+      const extension = path.split(".").pop().toLowerCase();
+
+      if (extension === "tif" || extension === "tiff") {
+        /* A GeoTIFF carries its own CRS: it is a layer, not something to place. Images
+           used to be sent to the DXF reader, which answered "No usable geometry". */
+        const added = await tryCall("add_layer_from_file", path);
+        if (added && added.layer && added.layer.crs_epsg) {
+          return { message: `Added ${added.layer.name} (EPSG:${added.layer.crs_epsg}).`,
+                   refresh: true };
+        }
+      }
+      if (extension !== "dxf") {
+        /* A plain picture has no georeferencing: its corners are asked for, never guessed. */
+        const box = await ctx.prompt("Image corners: west, south, east, north", "");
+        const numbers = String(box || "").split(/[,\s]+/).filter(Boolean).map(Number);
+        if (numbers.length !== 4 || !numbers.every(Number.isFinite)) {
+          return { skipped: "A plain image needs its four bounds to be placed." };
+        }
+        const epsg = await ctx.prompt("EPSG code of those bounds", "4326");
+        if (!epsg) return { skipped: "The bounds need their EPSG code." };
+        const placed = await call("place_image_overlay", path, ...numbers, Number(epsg));
+        return { message: `Placed ${placed.name} as a map layer.`, refresh: true };
+      }
+
       /* Required, never guessed. An overlay placed in the wrong coordinate system lands
          somewhere plausible and wrong, and import_cad_overlay refuses without it. */
       const epsg = await ctx.prompt("Source EPSG code", "");
@@ -784,8 +1170,10 @@ export const ACTIONS = {
          flattened. Reporting the placed count alone would present a partial import as
          a complete one. */
       const placed = Object.values(result.entities || {}).reduce((a, b) => a + b, 0);
+      const offset = result.alignment && Number.isFinite(result.alignment.centre_offset_m)
+        ? ` Centre ${Math.round(result.alignment.centre_offset_m)} m from the survey's.` : "";
       return {
-        message: `Placed ${placed} entities from ${result.name}.`
+        message: `Placed ${placed} entities from ${result.name}.${offset}`
           + (result.warning ? ` ${result.warning}` : ""),
         refresh: true,
       };
@@ -804,10 +1192,28 @@ export const ACTIONS = {
      raster to scale. Declaring that is the honest state -- a button that always answers
      "no camera pose yet" would be the same dead control this audit exists to remove. */
   "Save View": {
-    describe: "Remember a camera position. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "save_view is implemented, but the cockpit has no interactive "
-                        + "3D camera to read a position from yet." };
+    describe: "Remember the 3D camera: where it stands and what it looks at.",
+    async run(ctx) {
+      const viewer = await openModel(ctx);
+      const name = await ctx.prompt("View name", "");
+      if (!name) return { skipped: "A view needs a name to be opened again." };
+      const camera = viewer.getCamera();
+      const saved = await call("save_view", name, camera.position, camera.target, camera.fov_deg);
+      return { message: `Saved view "${name}". ${(saved.views || []).length} view(s) in this project.` };
+    },
+  },
+  "Open View": {
+    describe: "Put the 3D camera back where a saved view left it.",
+    async run(ctx) {
+      const listed = await call("list_views");
+      const views = listed.views || [];
+      if (!views.length) return { skipped: "No saved views yet. Use Save View first." };
+      const name = await ctx.choose("Saved view", views.map((v) => v.name));
+      if (!name) return { skipped: "No view chosen." };
+      const opened = await call("open_view", name);
+      const viewer = await openModel(ctx);
+      viewer.setCamera(opened.view.position, opened.view.target, opened.view.fov_deg);
+      return { message: `Opened view "${name}".` + (opened.warning ? ` ${opened.warning}` : "") };
     },
   },
   Clip: {
@@ -1183,14 +1589,45 @@ function describePreflight(result) {
   return `${lead}All preflight checks pass.`;
 }
 
-function describeMeasurement(result) {
+/** One line an operator can read, from any of the measurement results. */
+export function describeMeasurement(result) {
   if (!result) return "No measurement returned.";
   if (result.refused) return `Refused: ${result.refused}`;
+  const round = (v, d = 2) => Number(v).toLocaleString(undefined, { maximumFractionDigits: d });
   const parts = [];
-  for (const key of ["volume_m3", "cut_m3", "fill_m3", "area_m2", "slope_deg", "mean", "value"]) {
-    if (result[key] !== undefined) parts.push(`${key.replace(/_/g, " ")} ${result[key]}`);
+  const m = result.measurement;
+  if (m && m.value !== undefined && m.unit) {
+    const unit = String(m.unit).replace("square metre", "m²").replace("metre", "m");
+    parts.push(`${m.kind} ${round(m.value)} ${unit}`);
+    if (m.native_unit && result.value_m !== undefined) {
+      // A raster in feet: the figure above is in its own unit, this is the metric one.
+      parts.push(`= ${round(result.value_m)} ${m.kind === "area" ? "m²" : "m"}`);
+    }
+    if (result.surface_length_m !== undefined) {
+      parts.push(`over the ground ${round(result.surface_length_m)} m`);
+    } else if (result.surface_note) {
+      parts.push(result.surface_note);
+    }
   }
-  return parts.length ? parts.join(", ") : "Measured.";
+  const preferred = result.preferred;
+  if (preferred && preferred.cut_volume_m3 !== undefined) {
+    const against = preferred.reference === "plane"
+      ? `a ${round(preferred.reference_elevation_m)} m plane` : `the ${preferred.reference}`;
+    parts.push(`${round(preferred.cut_volume_m3)} m³ above and `
+      + `${round(preferred.fill_volume_m3)} m³ below ${against}, over `
+      + `${round(preferred.area_m2)} m²`);
+  }
+  if (result.slope) {
+    parts.push(`slope mean ${round(result.slope.mean_deg, 1)}° `
+      + `(${round(result.slope.mean_percent, 1)}%), plane dip `
+      + `${round(result.slope.plane_dip_deg, 1)}°`);
+  }
+  if (result.planar_length_m !== undefined && result.elevation_min_m !== undefined) {
+    parts.push(`profile ${round(result.planar_length_m)} m long, elevation `
+      + `${round(result.elevation_min_m)}–${round(result.elevation_max_m)} m`);
+  }
+  if (result.warning) parts.push(result.warning);
+  return parts.length ? parts.join("; ") + "." : "Measured.";
 }
 
 /** Resolve an alias chain to the entry that does the work. */

@@ -711,9 +711,19 @@ PROCESSING = [
                       "tests/test_gcp.py::TestMarking",
                       "tests/test_gcp.py::TestResiduals",
                       "tests/test_gcp.py::TestAccuracyReport",
-                      "tests/test_gcp.py::TestReportOutput"],
-      "core/gcp.py; Api.import_gcps, mark_gcp, gcp_accuracy_report. Fitting the "
-      "transform itself belongs to the reconstruction engine."),
+                      "tests/test_gcp.py::TestReportOutput",
+                      "tests/test_gcp_georeferencing.py"],
+      "core/gcp.py; Api.import_gcps, list_gcps, mark_gcp, gcp_accuracy_report; cockpit "
+      "Add GCPs, Mark GCP (a click on the photograph, then on a close-up), GCP Report. "
+      "Points and marks are kept in the project's gcps.json. Each point is located in the "
+      "model by intersecting the rays through its marks with the run's camera poses; "
+      "three or more marked in three registered images georeference the COLMAP "
+      "reconstruction (every product is written with that fit, with leave-one-out "
+      "residuals from four points), fewer are reported as an independent check on the "
+      "geotag fit. The real-imagery test (COLMAP on eight Aukerman frames, marks taken "
+      "from COLMAP's own tie-point observations, survey coordinates offset from the GPS "
+      "fit by a known amount) skips without the gitignored imagery; the custom engine "
+      "ignores control and says so."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
       "RTK/PPK metadata and RINEX base station data with timestamp alignment: camera "
       "events read from the aircraft's own event file with corrections in the units "
@@ -727,9 +737,14 @@ PROCESSING = [
                       "tests/test_rtk.py::TestBaseStation",
                       "tests/test_rtk.py::TestAlignment",
                       "tests/test_rtk.py::TestPositioningReport",
-                      "tests/test_rtk.py::TestThroughTheApi"],
-      "core/rtk.py; Api.check_ppk_inputs. Checks and describes the inputs; it does not "
-      "compute the PPK solution or rewrite a coordinate, and says so in every report."),
+                      "tests/test_rtk.py::TestThroughTheApi",
+                      "tests/test_rtk_dji_layout.py"],
+      "core/rtk.py; Api.check_ppk_inputs, cockpit Check PPK. Checks and describes the "
+      "inputs; it does not compute the PPK solution or rewrite a coordinate, and says so "
+      "in every report. Reads the DJI layout (bracketed week, untagged standard "
+      "deviations) and DJI's Q flags (50 fixed, 34 float, 16 single); 16 and 34 were "
+      "read as fixed until the audit. No real aircraft MRK is in the repository: the "
+      "layout is the published Phantom 4 RTK example."),
     F("pr.distributed", "Distributed processing", "workers", "Processing",
       "Jobs submitted, polled and cancelled across workers, with cooperative "
       "cancellation and honest failure reporting.",
@@ -1152,7 +1167,11 @@ INDIA_FIRST = [
     F("pack.construction.progress", "Progress against approved design", "core",
       "India pack: Construction",
       "Measured percentage and location of progress against an explicit approved design model.",
-      "implemented", ["tests/test_india_construction_pack.py::test_approved_design_progress_measures_observed_surface_not_contract_completion"]),
+      "implemented", ["tests/test_india_construction_pack.py::test_approved_design_progress_measures_observed_surface_not_contract_completion",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_design_progress",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_a_design_in_utm_without_a_crs_is_refused_in_words"],
+      "Reached from the app: Api.india_design_progress, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. A design in projected coordinates with no CRS "
+      "member is refused in words instead of a raw PROJ error."),
 
     # Mining and quarry
     F("pack.mining.stockpile", "Stockpile selection and measurement", "core",
@@ -1217,11 +1236,18 @@ INDIA_FIRST = [
       "Georeferenced building, road/path, water and vegetation polygons extracted from "
       "an orthomosaic.",
       "implemented", ["tests/test_india_land_pack.py::test_land_gis_extracts_real_georeferenced_semantic_classes",
-                      "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster"]),
+                      "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_land_gis",
+                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit"],
+      "Reached from the app: Api.india_land_gis, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. With no raster named it reads the project's latest "
+      "semantic map (Semantic Map runs the installed shared_semantic model, whose only "
+      "validated classes are vegetation and building, and says so)."),
     F("pack.land.encroachment", "Property and encroachment change", "core",
       "India pack: Land",
       "New buildings, boundary encroachment, new roads and structure expansion between surveys.",
-      "implemented", ["tests/test_india_land_pack.py::test_encroachment_uses_imported_boundary_and_aligned_previous_survey"]),
+      "implemented", ["tests/test_india_land_pack.py::test_encroachment_uses_imported_boundary_and_aligned_previous_survey",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_encroachment_against_a_boundary"],
+      "Reached from the app: Api.india_land_gis(cadastral_geojson=...), cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
 
     # Agriculture
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
@@ -1231,7 +1257,9 @@ INDIA_FIRST = [
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration"],
+      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
@@ -1245,7 +1273,9 @@ INDIA_FIRST = [
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
       "Road/edge segmentation plus geolocated pothole, crack, waterlogging and debris "
       "counts, severity and surveyed distance.",
-      "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance"]),
+      "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_road_condition"],
+      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
     F("pack.power.inspection", "Power-line asset inspection", "vision",
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
@@ -1300,10 +1330,17 @@ INSPECTION = [
                       "tests/test_model_measurement.py::TestArea",
                       "tests/test_model_measurement.py::TestVolume",
                       "tests/test_model_measurement.py::TestThroughTheApi",
-                      "tests/test_model_measurement.py::TestMeshReading"],
-      "core/model_measurement.py; Api.measure_in_model. Volume is the divergence "
-      "theorem over a closed mesh, so it is origin-independent; an open exterior with "
-      "no floor is refused instead of summed."),
+                      "tests/test_model_measurement.py::TestMeshReading",
+                      "tests/test_model_view_in_a_browser.py"],
+      "core/model_measurement.py; Api.measure_in_model, model_scene, pick_model_point; "
+      "cockpit Textured Mesh view (model3d.js), Measure in 3D, Save View, Open View. "
+      "The reconstruction's mesh is in the SfM frame, so it is measured on a copy "
+      "transformed with the run's geo_anchor.json (sidecar coordinate_frame=crs); a CRS "
+      "recorded against the raw mesh is refused, not trusted. Volume is the divergence "
+      "theorem over a closed mesh, summed about the centroid (about the CRS origin the "
+      "terms cancel to float noise); an open exterior with no floor is refused instead "
+      "of summed. The view draws a thinned mesh; picks use the full one. Absolute "
+      "accuracy is that of the georeferencing fit, which the sidecar records."),
     F("me.volume", "Volume and stockpile", "core", "Measurement",
       "Cut/fill against DTM, plane and lowest-point references, exact on a known surface.",
       "verified", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",

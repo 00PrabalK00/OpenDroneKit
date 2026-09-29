@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from .dsm_analysis import RasterSurface
+from .dsm_analysis import require_projected_epsg
 from .slope import NotProjected
 
 
@@ -142,6 +143,9 @@ def compare_surfaces(
                 f"The {label} surface has no projected CRS. Displacement is metres and "
                 "cannot be measured over degrees."
             )
+        # Otherwise a geographic pair reports "moved: false" -- an all-clear that
+        # was never measured.
+        require_projected_epsg(surface.epsg, surface.path or f"The {label} surface")
     if earlier.epsg != later.epsg:
         raise DeformationRefused(
             f"The surveys are in different coordinate systems (EPSG {earlier.epsg} and "

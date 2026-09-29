@@ -197,6 +197,9 @@
       this.map.on('draw.update', (e) => this._onDrawChange(e));
       this.map.on('draw.delete', (e) => this._onDrawChange(e));
       this.map.on('click', (e) => this._onClick(e));
+      // Double-click finishes a measurement and hands it to the application, which
+      // measures it on the project's own rasters and keeps it.
+      this.map.on('dblclick', (e) => this._finishMeasure(e));
     }
 
     /* Overlay sources are created once; the style reload on basemap change re-adds them. */
@@ -293,6 +296,20 @@
           this.opts.onMeasure('Click another point to measure.');
         }
       }
+    }
+
+    _finishMeasure(e) {
+      if (this.tool !== 'measure-distance' && this.tool !== 'measure-area') return;
+      if (e && e.preventDefault) e.preventDefault();
+      // The double-click's two clicks each added the same vertex; drop the repeat.
+      const pts = this.measurePoints.filter((p, i, all) =>
+        i === 0 || p[0] !== all[i - 1][0] || p[1] !== all[i - 1][1]);
+      const needed = this.tool === 'measure-area' ? 3 : 2;
+      if (pts.length < needed) return;
+      if (this.opts.onMeasureDone) {
+        this.opts.onMeasureDone(this.tool === 'measure-area' ? 'area' : 'distance', pts);
+      }
+      this.measurePoints = [];
     }
 
     /* Drawn polygons are tagged by the tool that made them, so AOI and no-fly stay

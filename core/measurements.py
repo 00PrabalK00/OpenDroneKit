@@ -35,6 +35,9 @@ class Measurement:
     notes: str = ""
     include_in_report: bool = True
     created_at: str = field(default_factory=_now_iso)
+    # The full result the value was taken from -- reference surfaces, CRS, caveats --
+    # so a figure in the history can always be traced to how it was measured.
+    details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -118,14 +121,21 @@ def calculate_geo_area(polygon_coords: list[tuple[float, float]]) -> float:
 
 
 def calculate_crack_length_from_mask(mask: "np.ndarray", scale_mm_per_px: float) -> float:
-    """Estimate crack length by skeletonizing the binary mask."""
+    """Estimate crack length by skeletonizing the binary mask.
+
+    Without scikit-image there is no skeleton, and dividing the mask's pixel count by a
+    constant is a guess at the crack's width presented as its length. Refused instead.
+    """
     try:
         from skimage.morphology import skeletonize
-        binary = (mask > 0).astype(np.uint8)
-        skeleton = skeletonize(binary)
-        crack_px = float(np.sum(skeleton))
-    except ImportError:
-        crack_px = float(np.sum(mask > 0)) / 3.0
+    except ImportError as exc:
+        raise RuntimeError(
+            "Crack length needs scikit-image to skeletonise the mask "
+            "(`pip install scikit-image`); it is not estimated without it."
+        ) from exc
+    binary = (mask > 0).astype(np.uint8)
+    skeleton = skeletonize(binary)
+    crack_px = float(np.sum(skeleton))
 
     return crack_px * float(scale_mm_per_px) / 1000.0
 
@@ -145,6 +155,7 @@ def create_measurement(
     notes: str = "",
     confidence: float | None = None,
     include_in_report: bool = True,
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     m = Measurement(
         id=str(uuid.uuid4()),
@@ -159,6 +170,7 @@ def create_measurement(
         label=label,
         notes=notes,
         include_in_report=include_in_report,
+        details=dict(details or {}),
     )
     items = _load_store(project_root)
     items.append(m.to_dict())
