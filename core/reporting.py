@@ -48,6 +48,16 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(
             f"- Condition grade: `{health.get('condition_grade', '')}` ({health.get('condition_label', '')})"
         )
+        excluded = (health.get("components", {}) or {}).get("excluded_heuristic_images", {}) or {}
+        for detector in ("metal", "solar"):
+            count = int(excluded.get(detector, 0) or 0)
+            if count:
+                lines.append(
+                    f"- {detector.capitalize()} detection on {count} image(s) came from a "
+                    "heuristic, not a trained model, and was left out of these scores: "
+                    f"the {detector} component is not scored, which is not the same as "
+                    "no defects."
+                )
         failure = health.get("probabilistic_failure", {})
         if isinstance(failure, dict):
             lines.append(f"- Failure probability (6 months): `{100.0 * float(failure.get('probability_6_month', 0.0)):.2f}%`")

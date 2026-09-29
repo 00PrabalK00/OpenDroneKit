@@ -2038,9 +2038,16 @@ class Api:
             target = str(project_id) if project_id else self._report_project_id()
         except Exception as exc:  # noqa: BLE001 - no project open yet
             return fail(str(exc))
+        # Findings are stored under the desktop project's root and id, not the report
+        # engine's mirror, so the report is told where to read them. Only for the open
+        # project: an explicit engine id is that engine project's own findings.
+        findings: dict[str, str] = {}
+        if not project_id:
+            findings = {"findings_root": str(self._session.project_root()),
+                        "findings_project_id": str(self._session.project_id())}
         try:
             return ok(**desktop_ops.generate_report(
-                target, title=title, report_type=report_type, author=author))
+                target, title=title, report_type=report_type, author=author, **findings))
         except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
             return fail(str(exc))
 
@@ -3137,6 +3144,15 @@ class Api:
             summary = json.loads(Path(payload["summary_json_path"]).read_text(encoding="utf-8"))
             payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
             payload["reconstruction_status"] = summary.get("reconstruction", {}).get("status", "ok")
+            # Which optional detectors ran as heuristics and so were left out of the
+            # health score -- said in the finished-job message, not only in the report.
+            components = (summary.get("health_scoring", {}) or {}).get("components", {}) or {}
+            payload["heuristic_images_not_scored"] = dict(
+                components.get("excluded_heuristic_images", {}) or {})
+            payload["detectors_run"] = {
+                name: sorted({str(r.get(f"{name}_model_used", "not_run"))
+                              for r in summary.get("images", []) if isinstance(r, dict)})
+                for name in ("crack", "structural", "solar", "metal")}
             session.audit("pipeline_complete", {
                 "run_dir": payload.get("run_dir"),
                 "findings_created": payload.get("findings_created", 0),

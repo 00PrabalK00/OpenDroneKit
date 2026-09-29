@@ -784,9 +784,11 @@ VISION = [
       "Indian sites most need -- and was deliberately NOT registered. Soiling looks like "
       "a radiometric comparison problem rather than a detection one. "
       "IN THE PIPELINE: its solar routing key, solar_defect_detector, has no weights, so "
-      "Run AI's solar pass on a solar asset is the classical heuristic, reported as "
-      "model_used=heuristic with no confidence and never written as a finding; it does "
-      "not run at all on other assets. Both trained models are run from AI Inspection > "
+      "Run AI's solar pass is the classical heuristic, reported as model_used=heuristic "
+      "with no confidence, never written as a finding and left out of the health score "
+      "(the report and the finished-job message say it was not scored). It runs when AI "
+      "Inspection > Run AI Settings declares a solar structure or switches solar "
+      "detection on, and not otherwise. Both trained models are run from AI Inspection > "
       "Run Model with their scope note beside the answer."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "

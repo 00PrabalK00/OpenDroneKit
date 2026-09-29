@@ -261,6 +261,16 @@ class TestRunAIFromTheApi:
             assert finding["status"] == "in_review"
             assert finding["include_in_report"] is False
 
+    def test_the_segmenter_runs_on_every_image_by_default(self, finished):
+        """As a gate, crack_presence skipped real cracks the segmenter finds (2 of 25
+        CrackForest images). By default it is a recorded second opinion, not a gate."""
+        _, result = finished
+        summary = json.loads(Path(result["summary_json_path"]).read_text(encoding="utf-8"))
+        for row in summary["images"]:
+            assert row["crack_segmentation_run"] is True
+            assert row["crack_model_used"].startswith("onnx:")
+            assert row["crack_presence"]["used_as_gate"] is False
+
     def test_reviewing_a_model_finding_keeps_the_claim(self, finished):
         api, _ = finished
         finding = api.find_annotations()["annotations"][0]
@@ -272,6 +282,80 @@ class TestRunAIFromTheApi:
         accepted = api.review_finding(finding["id"], "accept", "lead")
         assert accepted["include_in_report"] is True
         assert [h["reviewer"] for h in accepted["review_history"]] == ["inspector", "lead"]
+
+    def test_an_accepted_finding_is_in_the_generated_report(self, finished):
+        """The report engine read its own mirror folder, so an accepted model finding
+        never reached the report: 'Annotations: No annotations'. Runs after the review
+        test above, which accepted the first finding."""
+        api, _ = finished
+        accepted = [f for f in api.find_annotations()["annotations"] if f["status"] == "resolved"]
+        assert accepted, "the review test should have accepted one finding"
+        report = api.generate_report(title="AI path report")
+        assert report["ok"], report.get("error")
+        html = Path(report["html_path"]).read_text(encoding="utf-8")
+        annotations = html.split("<h2>Annotations</h2>", 1)[1].split("</section>", 1)[0]
+        assert "No annotations" not in annotations
+        assert accepted[0]["label"] in annotations
+        # Dismissed and unreviewed findings stay out.
+        assert annotations.count("<tr") - 1 == len(accepted)
+
+
+class TestHeuristicsDoNotMoveTheHealthScore:
+    """solar_ratio 0.55..0.98 from the heuristic on concrete photos was clipped to a
+    full solar component, 35% of a solar asset's severity: risk 24.5 -> 41.0 with the
+    row saying 'heuristic' and the score saying nothing."""
+
+    def _rows(self, used: str) -> list[dict]:
+        return [{"crack_ratio": 0.001, "structural_ratio": 0.002,
+                 "solar_ratio": 0.9, "solar_model_used": used,
+                 "metal_ratio": 0.4, "metal_model_used": used}]
+
+    def test_heuristic_ratios_are_left_out_and_counted(self):
+        from core.health_scoring import evaluate_asset_health
+
+        common = dict(asset_id="a", run_utc="2026-01-01T00:00:00Z", structure_type="solar",
+                      material_type="steel", forecast_payload={},
+                      reconstruction_payload={}, coverage_payload={})
+        scored = evaluate_asset_health(image_rows=self._rows("heuristic"), **common)
+        assert scored["components"]["solar_component"] == 0.0
+        assert scored["components"]["metal_component"] == 0.0
+        assert scored["components"]["excluded_heuristic_images"] == {"metal": 1, "solar": 1}
+        model = evaluate_asset_health(image_rows=self._rows("onnx:some_model.onnx"), **common)
+        # A trained model's ratio still counts.
+        assert model["components"]["solar_component"] == 1.0
+        assert model["structural_risk_score"] > scored["structural_risk_score"]
+
+    def test_run_ai_on_a_declared_solar_steel_asset_says_what_was_not_scored(self, api, tmp_path):
+        """Driven through Api.run_pipeline with the options the Run AI Settings panel
+        sends. The solar routing key and metal have no weights, so both run as
+        heuristics, and the score, the report and the finished-job result say so."""
+        if _installed("solar_defect_detector"):
+            pytest.skip("the solar routing model is installed here")
+        folder = tmp_path / "solar_images"
+        folder.mkdir()
+        cv2.imwrite(str(folder / "a.jpg"), cv2.imread(str(FIXTURE)))
+        started = api.run_pipeline({"image_dir": str(folder), "engine": "auto",
+                                    "profile": "fast", "structure_type": "solar",
+                                    "material_type": "steel"})
+        assert started["ok"], started
+        job = _wait(api, started["job_id"])
+        assert job["status"] == "done", job.get("error")
+        result = job["result"]
+        summary = json.loads(Path(result["summary_json_path"]).read_text(encoding="utf-8"))
+        row = summary["images"][0]
+        assert row["solar_model_used"] == "heuristic" and row["solar_ratio"] > 0
+        assert row["metal_model_used"] == "heuristic"
+        health = summary["health_scoring"]
+        assert health["structure_type"] == "solar"
+        assert health["components"]["solar_component"] == 0.0
+        assert health["components"]["metal_component"] == 0.0
+        assert result["heuristic_images_not_scored"] == {"metal": 1, "solar": 1}
+        assert result["detectors_run"]["solar"] == ["heuristic"]
+        report = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
+        assert "Solar detection on 1 image(s) came from a heuristic" in report
+        # Heuristic regions still never become findings.
+        found = api.find_annotations()["annotations"]
+        assert all(f.get("model_key") != "" for f in found)
 
 
 class TestEveryInstalledModelIsReachable:
