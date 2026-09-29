@@ -125,6 +125,28 @@ def tile_media_type(body: bytes) -> str:
     return "image/png"
 
 
+def tile_response(path: str, query: str = "") -> tuple[int, str, bytes, dict[str, str]] | None:
+    """Answer `/tiles/{z}/{x}/{y}.png?provider=` from the cache, or None for other paths.
+
+    One implementation for every local server that hosts the UI (the desktop shell, and
+    the test harness that stands in for it), so the offline basemap a test sees is the
+    one the application serves. A tile that was never cached is a 404 with a
+    transparent image: a gap in coverage looks like a gap.
+    """
+    import re
+    from urllib.parse import parse_qs
+
+    match = re.match(r"^/tiles/(\d+)/(\d+)/(\d+)\.png$", path)
+    if not match:
+        return None
+    provider = (parse_qs(query).get("provider") or ["satellite"])[0]
+    z, x, y = (int(value) for value in match.groups())
+    tile = read_tile(provider, z, x, y)
+    if tile is None:
+        return 404, "image/png", TRANSPARENT_PNG, {"X-ODK-Tile": "not-cached"}
+    return 200, tile_media_type(tile), tile, {"X-ODK-Tile": "cached"}
+
+
 def validate(area: Any) -> int:
     """Refuse a request that cannot be honoured; return its tile count otherwise."""
     spec = PROVIDERS.get(area.provider)

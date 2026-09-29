@@ -307,6 +307,18 @@
       });
     }
 
+    /* The offline cache holds only the zoom levels someone cached. Asking it for a
+       deeper level returns nothing, so past the deepest cached level the map would go
+       dark exactly where the operator zoomed in on the site. Capping the source there
+       makes MapLibre enlarge the deepest real tiles instead -- softer, but the same
+       pixels that were cached, not invented ones. */
+    setOfflineMaxZoom(zoom) {
+      const z = Math.max(0, Math.min(23, Math.floor(Number(zoom))));
+      if (!Number.isFinite(z) || BASEMAPS.offline.maxzoom === z) return;
+      BASEMAPS.offline.maxzoom = z;
+      if (this.basemap === 'offline') this.setBasemap('offline');
+    }
+
     setTool(tool) {
       this.tool = tool;
       this.measurePoints = [];

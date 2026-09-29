@@ -136,6 +136,8 @@ class Cockpit:
     picks: dict[str, str] = field(default_factory=dict)
     calls: list[dict[str, Any]] = field(default_factory=list)
     opened: list[str] = field(default_factory=list)
+    #: Offline basemap tiles the page asked for: (path, HTTP status).
+    tiles: list[tuple[str, int]] = field(default_factory=list)
     ready_delay_ms: int = 0
     bridge: bool = True
     #: The page under test: the cockpit, or "index.html" for the classic window.
@@ -186,6 +188,14 @@ class Cockpit:
                     return self._send(json.dumps(cockpit.calls, default=str).encode(), "application/json")
                 if path == "/__scenario.html":
                     return self._send(cockpit._page().encode("utf-8"), "text/html; charset=utf-8")
+                # The offline basemap, answered by the code the desktop shell uses.
+                from core.tile_cache import tile_response
+
+                tile = tile_response(path, self.path.split("?", 1)[1] if "?" in self.path else "")
+                if tile is not None:
+                    code, kind, body, _ = tile
+                    cockpit.tiles.append((self.path, code))
+                    return self._send(body, kind, code)
                 target = (WEB / path.lstrip("/")).resolve()
                 if WEB.resolve() not in target.parents or not target.is_file():
                     return self._send(b"not found", "text/plain", 404)
