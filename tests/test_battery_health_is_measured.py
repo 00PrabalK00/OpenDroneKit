@@ -245,3 +245,21 @@ def test_the_service_api_reports_an_unmeasured_pack_as_unmeasured(tmp_path, monk
         db_module._engine = None      # noqa: SLF001
         db_module._SessionLocal = None  # noqa: SLF001
 
+
+def test_a_fleet_that_could_not_be_read_is_not_shown_as_empty(fresh_install, tmp_path):
+    """A failed list_fleet rendered "No batteries registered" -- an empty register
+    stated as fact. Seen once while driving Log Battery Cycle under memory pressure."""
+    api = make_api(tmp_path)
+    api.add_battery(1, "BAT-1", 5000, 300)
+    api.list_fleet = lambda *_: {"ok": False, "error": "database is locked"}
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        seen = cockpit.run("""
+            await ODK.nav("Fleet");
+            await ODK.sleep(1500);
+            return { batteries: ODK.panel("Batteries"), aircraft: ODK.panel("Aircraft"),
+                     maintenance: ODK.panel("Maintenance") };
+        """)
+    for panel in ("batteries", "aircraft", "maintenance"):
+        text = seen[panel]
+        assert "Could not read this: the fleet register (database is locked)" in text, seen
+        assert "No " not in text, seen

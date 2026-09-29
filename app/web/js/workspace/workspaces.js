@@ -26,7 +26,7 @@ import { emptyState, live, reported } from "./live.js";
 /* The layer panel writes as well as reads: toggling visibility calls the application.
    tryCall returns null rather than throwing, which is what lets the checkbox revert
    instead of showing a state the application never accepted. */
-import { tryCall } from "./api.js";
+import { lastError, tryCall } from "./api.js";
 import { modelMeasurements } from "./viewer3d.js";
 
 /* One audit_log row as a console line.
@@ -1809,6 +1809,22 @@ function profileChart(row) {
 
 /* -------------------------------------------------------------------- FLEET */
 
+/* A Fleet panel whose read FAILED said "No batteries registered" -- an empty fleet
+   stated as fact over a register that could not be read. A failed read now says so,
+   with the reason; only a read that came back empty shows the empty text. */
+function fleetLive(config) {
+  return live({
+    ...config,
+    isEmpty: ([f]) => f != null && config.isEmpty([f]),
+    render: ([f]) => {
+      if (f == null) {
+        throw new Error(`the fleet register (${lastError.get("list_fleet") || "no answer"})`);
+      }
+      return config.render([f]);
+    },
+  });
+}
+
 const fleet = {
   id: "fleet",
   title: "Fleet",
@@ -1816,7 +1832,7 @@ const fleet = {
             "Log Battery Cycle", "Remove Record", "|", "Export Fleet"],
   left: [
     /* Four aircraft that do not exist, one of them "flying". */
-    { id: "fl.aircraft", title: "Aircraft", render: () => live({
+    { id: "fl.aircraft", title: "Aircraft", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No aircraft registered. Add Aircraft to start a fleet.",
       isEmpty: ([f]) => !(f && (f.aircraft || []).length),
@@ -1831,7 +1847,7 @@ const fleet = {
       })), { selectKind: "aircraft" }),
     }) },
     /* Two named people who do not work here, with flight hours. */
-    { id: "fl.pilots", title: "Pilots", render: () => live({
+    { id: "fl.pilots", title: "Pilots", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No pilots registered.",
       isEmpty: ([f]) => !(f && (f.pilots || []).length),
@@ -1845,7 +1861,7 @@ const fleet = {
   right: [
     /* A serial number, a firmware version and a service interval for an airframe
        that does not exist. "Next service in 7.4 h" is an airworthiness statement. */
-    { id: "fl.details", title: "Aircraft Details", render: () => live({
+    { id: "fl.details", title: "Aircraft Details", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "Select an aircraft to see its serial, firmware, hours and service state.",
       isEmpty: ([f]) => !(f && (f.aircraft || []).length),
@@ -1878,7 +1894,7 @@ const fleet = {
        a link the desktop app does not have -- so the columns are the ones the record
        really holds. Inventing a temperature for a lithium pack is not a neutral
        placeholder. */
-    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => live({
+    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No batteries registered. Add Battery to track cycles and health.",
       isEmpty: ([f]) => !(f && (f.batteries || []).length),
@@ -1892,7 +1908,7 @@ const fleet = {
           s: b.serial_number || `#${b.id}`,
           n: b.cycle_count,
           l: b.cycle_limit || "\u2014",
-          h: b.health_pct == null ? "\u2014" : `${b.health_pct}%`,
+          h: b.health_pct === null ? "\u2014" : `${b.health_pct}%`,
           /* Retired is a decision someone made; over its cycle limit and still in
              service is the state worth surfacing. */
           st: b.retired ? "retired" : b.over_cycle_limit ? "past cycle limit" : "in service",
@@ -1900,7 +1916,7 @@ const fleet = {
     }) },
     /* Two maintenance records for aircraft that do not exist. A maintenance log is
        the document an operator points at to say the airframe was airworthy. */
-    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => live({
+    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No maintenance recorded. Log Maintenance writes a record and resets the "
              + "aircraft's service clock.",
