@@ -211,9 +211,24 @@ class TestThePipelineDoesNotRunDetectorsOnTheWrongAsset:
 class TestRunAIFromTheApi:
     """The Start / Run AI button: Api.run_pipeline, then the Findings panel's call."""
 
-    @pytest.fixture
-    def finished(self, api, mixed_size_dataset):
-        assert api.set_active_dataset(str(mixed_size_dataset))["ok"]
+    # One run for the class: the pipeline takes minutes on CPU, and each test reads a
+    # different part of the same result. The review test mutates findings, so it runs last.
+    @pytest.fixture(scope="class")
+    def finished(self, tmp_path_factory):
+        from app.api import Api
+        from app.session import AppSession
+        from app.store import ProjectStore
+
+        root = tmp_path_factory.mktemp("run_ai")
+        api = Api(AppSession(ProjectStore(root / "odk.db")))
+        assert api.create_project("ai path", str(root / "project"))["ok"]
+        image = cv2.imread(str(FIXTURE))
+        folder = root / "images"
+        folder.mkdir()
+        cv2.imwrite(str(folder / "a_full.jpg"), image)
+        h, w = image.shape[:2]
+        cv2.imwrite(str(folder / "b_crop.jpg"), image[: h * 2 // 3, : w // 2])
+        assert api.set_active_dataset(str(folder))["ok"]
         started = api.run_pipeline({"engine": "auto", "profile": "fast"})
         assert started["ok"], started
         job = _wait(api, started["job_id"])
