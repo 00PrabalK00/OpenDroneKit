@@ -326,6 +326,7 @@ def plan_multispectral_mission(
     front_overlap_pct: float = 80.0,
     side_overlap_pct: float = 75.0,
     speed_m_s: float = 6.0,
+    accept_relative_values: bool = False,
     **planner_kwargs: Any,
 ) -> dict[str, Any]:
     """A grid with synchronised band capture and a calibration shot at each end.
@@ -350,12 +351,14 @@ def plan_multispectral_mission(
             f"{payload.name} states no band centres, so nothing downstream can know "
             "which band is which."
         )
-    if payload.requires_calibration and calibration_panel_lonlat is None:
+    relative_only = payload.requires_calibration and calibration_panel_lonlat is None
+    if relative_only and not accept_relative_values:
         raise MissionTypeRefused(
             f"{payload.name} needs a reflectance panel capture before and after the "
             "flight. Without the panel position this mission cannot include them, and "
             "indices from it will not be comparable with any other survey. Supply the "
-            "panel location, or accept single-flight relative values explicitly."
+            "panel location, or accept single-flight relative values explicitly "
+            "(accept_relative_values)."
         )
 
     plan = planner.generate(
@@ -393,9 +396,14 @@ def plan_multispectral_mission(
             "synchronised_bands": True,
             "band_count": len(payload.bands_nm),
             "calibrated": bool(calibration_captures),
+            "relative_values_only": bool(relative_only),
             "trigger": payload.capture_command(),
         },
-        "limits": [
+        "limits": ([
+            "No reflectance panel is captured: the operator accepted relative values. "
+            "Indices from this flight describe differences WITHIN this flight only and "
+            "must not be compared with any other survey or read as reflectance."
+        ] if relative_only else []) + [
             "All bands are captured at one trigger, so band-to-band alignment depends "
             "on the instrument, not on the flight plan.",
             "Indices are comparable between surveys only where both flights carry "

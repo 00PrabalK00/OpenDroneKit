@@ -51,6 +51,7 @@ const MISSION_OPTION_KEYS = {
   rgb_camera: "rgb_camera",
   payload_key: "payload_key",
   calibration_panel_lonlat: "calibration_panel_lonlat",
+  accept_relative_values: "accept_relative_values",
   pylon_elements: "pylon_elements",
   dome_radius_m: "dome_radius_m",
   box_altitude_levels_m: "box_altitude_levels_m",

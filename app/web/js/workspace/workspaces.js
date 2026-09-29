@@ -527,6 +527,8 @@ const planning = {
         { key: "rgb_camera", label: "Paired RGB camera", value: "" },
         { key: "payload_key", label: "Multispectral payload", value: "" },
         { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
+        { key: "accept_relative_values", label: "No panel: relative values", value: "no",
+          options: ["no", "yes"] },
         { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
         { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
         { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },

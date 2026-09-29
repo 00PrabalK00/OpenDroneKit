@@ -352,6 +352,8 @@ def source_covers_area(source: str | Path,
     if not path.exists():
         return {"covered": False, "reason": "missing_source", "bounds": list(bounds),
                 "detail": f"The terrain source {path} does not exist."}
+    if path.suffix.lower() in {".csv", ".tsv", ".txt", ".xyz"}:
+        return _sample_file_covers_area(path, bounds)
     try:
         raster, epsg, cell = raster_bounds(path)
     except TerrainCacheError as exc:
@@ -376,6 +378,56 @@ def source_covers_area(source: str | Path,
         "cell_size_m": cell,
         "detail": (
             (f"{path.name} overlaps this area but does not contain all of it. Terrain "
+             "following will hold to the ground where the data reaches and fly level "
+             "where it does not, and nothing in the plan marks where that happens.")
+            if overlaps else
+            f"{path.name} covers ground nowhere near this site, so terrain following "
+            "would fall back to flat earth across the whole flight."
+        ),
+    }
+
+
+def _sample_file_covers_area(path: Path, bounds) -> dict[str, Any]:
+    """Coverage for a terrain CSV: its samples are lon/lat, so their extent is known.
+
+    A CSV has no coordinate reference system to read, and the raster route used to
+    say so as if the terrain had not been followed -- while the planner was following
+    it. The extent comes from the samples the planner itself reads.
+    """
+    from mission.planner import read_terrain_csv_points
+
+    points = read_terrain_csv_points(str(path))
+    if points is None:
+        return {"covered": False, "reason": "unreadable_source", "bounds": list(bounds),
+                "detail": f"{path.name} could not be read as a terrain sample file."}
+    world, local = points
+    if len(world) < 3:
+        if len(local) >= 3:
+            return {"covered": False, "reason": "local_coordinates", "bounds": list(bounds),
+                    "detail": (f"{path.name} gives its samples in local metres (x, y), not "
+                               "longitude and latitude, so whether they reach the whole "
+                               "area cannot be checked. Terrain is followed where they do.")}
+        return {"covered": False, "reason": "unreadable_source", "bounds": list(bounds),
+                "detail": f"{path.name} has fewer than 3 usable elevation samples."}
+    lons = [p[0] for p in world]
+    lats = [p[1] for p in world]
+    extent = (min(lons), min(lats), max(lons), max(lats))
+    tile = TerrainTile(name=path.stem, path=str(path), min_lon=extent[0], min_lat=extent[1],
+                       max_lon=extent[2], max_lat=extent[3], epsg=4326, cell_size_m=None)
+    if tile.covers(bounds):
+        return {"covered": True, "reason": "covered", "bounds": list(bounds),
+                "source_bounds": list(extent), "cell_size_m": None,
+                "detail": f"{path.name} has {len(world)} samples spanning the area."}
+    overlaps = not (extent[2] < bounds[0] or extent[0] > bounds[2]
+                    or extent[3] < bounds[1] or extent[1] > bounds[3])
+    return {
+        "covered": False,
+        "reason": "partial" if overlaps else "elsewhere",
+        "bounds": list(bounds),
+        "source_bounds": list(extent),
+        "cell_size_m": None,
+        "detail": (
+            (f"{path.name}'s samples reach part of this area but not all of it. Terrain "
              "following will hold to the ground where the data reaches and fly level "
              "where it does not, and nothing in the plan marks where that happens.")
             if overlaps else

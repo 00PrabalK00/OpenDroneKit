@@ -311,6 +311,7 @@
       rgb_camera: $('#mission-rgb-camera').value || '',
       payload_key: $('#mission-ms-payload').value || null,
       calibration_panel_lonlat: $('#mission-ms-panel').value.trim() || null,
+      accept_relative_values: $('#mission-ms-relative').checked,
       pylon_elements: $('#mission-pylon-elements').value.trim(),
       dome_radius_m: numberOrNull('#mission-dome-radius'),
       dome_base_altitude_m: numberOrNull('#mission-dome-base'),

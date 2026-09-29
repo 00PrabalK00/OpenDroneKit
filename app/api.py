@@ -1393,7 +1393,7 @@ class Api:
             return fail(str(exc))
         extra = {k: v for k, v in plan.items() if k != "plan"}
         adopted = self._adopt_plan(plan["plan"], "thermal", list(plan.get("limits") or []),
-                                   extra={"thermal": extra})
+                                   extra={"thermal": extra}, options=options)
         self._session.audit("thermal_planned", {"camera": thermal_camera})
         return ok(plan=extra, **adopted)
 
@@ -1404,7 +1404,8 @@ class Api:
                                   calibration_panel_lonlat: list[float] | None = None,
                                   front_overlap_pct: float = 80.0,
                                   side_overlap_pct: float = 75.0,
-                                  options: dict[str, Any] | None = None) -> dict[str, Any]:
+                                  options: dict[str, Any] | None = None,
+                                  accept_relative_values: bool = False) -> dict[str, Any]:
         """A grid for a multispectral array, with the calibration panel in the plan.
 
         The payload is the subject here, not the camera: a multispectral array has its
@@ -1429,6 +1430,7 @@ class Api:
                 ),
                 front_overlap_pct=float(front_overlap_pct),
                 side_overlap_pct=float(side_overlap_pct),
+                accept_relative_values=bool(accept_relative_values),
                 constraints=self._mission_constraints(options or {}),
                 **self._terrain_kwargs(options or {}),
             )
@@ -1436,7 +1438,8 @@ class Api:
             return fail(str(exc))
         extra = {k: v for k, v in plan.items() if k != "plan"}
         adopted = self._adopt_plan(plan["plan"], "multispectral", list(plan.get("limits") or []),
-                                   extra={"multispectral": extra, "payload": plan.get("payload")})
+                                   extra={"multispectral": extra, "payload": plan.get("payload")},
+                                   options=options)
         self._session.audit("multispectral_planned", {"payload": payload_key})
         return ok(plan=extra, **adopted)
 
@@ -2586,7 +2589,8 @@ class Api:
         return True
 
     def _adopt_plan(self, plan: Any, template: str, warnings: list[str],
-                    extra: dict[str, Any] | None = None) -> dict[str, Any]:
+                    extra: dict[str, Any] | None = None,
+                    options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Make `plan` the session's mission and describe it the way plan_mission does.
 
         Every planner route ends here, so a plan from the pylon, thermal or
@@ -2598,6 +2602,8 @@ class Api:
         if extra:
             self._session.mission_plan_dict.update(extra)
         self._session.audit("mission_planned", {"template": template, "waypoints": len(plan.waypoints)})
+        # Extended in place: plan_mission keeps appending to this same list afterwards.
+        warnings.extend(self._endurance_warnings(plan, options or {}))
         return {
             "summary": {
                 "template": template,
@@ -2613,6 +2619,39 @@ class Api:
             "geojson": plan.geojson,
             "warnings": warnings,
         }
+
+    @staticmethod
+    def _endurance_warnings(plan: Any, opts: dict[str, Any]) -> list[str]:
+        """Say so when the plan is longer than one battery, on every planner route.
+
+        A 55 minute facade mapping used to plan with no word about batteries; the
+        estimate existed only behind a separate call. The endurance is the operator's
+        (endurance_min / reserve_pct) or a stated generic default, and the warning
+        names which, so an assumption is not presented as the aircraft's figure.
+        """
+        from mission.estimates import AircraftProfile, estimate_batteries
+
+        minutes = float(getattr(plan, "estimated_time_min", 0.0) or 0.0)
+        given = opts.get("endurance_min") not in (None, "")
+        try:
+            aircraft = AircraftProfile(
+                endurance_min=float(opts.get("endurance_min") or 25.0),
+                reserve_pct=float(opts.get("reserve_pct") or 25.0),
+            )
+            estimate = estimate_batteries(minutes, aircraft)
+        except (TypeError, ValueError):
+            return []
+        if estimate.fits_in_one_flight:
+            return []
+        basis = ("the endurance you gave" if given else
+                 "an assumed 25 min endurance (set endurance_min for your aircraft)")
+        return [
+            f"This plan needs about {minutes:.0f} min of flying; with {basis} and a "
+            f"{aircraft.reserve_pct:.0f}% reserve one battery gives "
+            f"{estimate.usable_endurance_min:.0f} min, so it takes "
+            f"{estimate.batteries_required} batteries. Split it into sorties "
+            "(plan_battery_segments) before flying."
+        ]
 
     def _plan_special(self, template: str, opts: dict[str, Any]) -> dict[str, Any]:
         """pylon_inspection / thermal / multispectral, reached with the same form."""
@@ -2658,6 +2697,9 @@ class Api:
             front_overlap_pct=float(opts.get("front_overlap_pct", 80.0)),
             side_overlap_pct=float(opts.get("side_overlap_pct", 75.0)),
             options=opts,
+            # The cockpit form sends strings; "no" must not read as True.
+            accept_relative_values=str(opts.get("accept_relative_values") or "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )
 
     @guard
@@ -2817,7 +2859,7 @@ class Api:
                 )
 
         plan = MissionPlanner().generate(**kwargs)
-        adopted = self._adopt_plan(plan, kwargs["mode"], warnings)
+        adopted = self._adopt_plan(plan, kwargs["mode"], warnings, options=opts)
         adopted["summary"]["template"] = kwargs["mode"]
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
@@ -2881,6 +2923,7 @@ class Api:
             extent = source_covers_area(self._session.terrain_source_path, polygon)
             if not extent["covered"]:
                 warnings.append(
+                    extent["detail"] if extent.get("reason") == "local_coordinates" else
                     f"Terrain source does not cover the planned area: {extent['detail']}"
                 )
 
@@ -2965,7 +3008,7 @@ class Api:
                 exporters.record_written(
                     written, name, writer(target / f"{stem}{suffix}", self._session.mission_plan_dict))
             except Exception as exc:  # noqa: BLE001
-                written[name] = f"failed: {exc}"
+                written[name] = f"failed: {type(exc).__name__}: {exc}"
         self._session.audit("mission_exported", {"formats": selected, "directory": str(target)})
         return ok(written=written, directory=str(target))
 
