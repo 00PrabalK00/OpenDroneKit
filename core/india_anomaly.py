@@ -42,6 +42,9 @@ class ValidatedAnomalyBaseline:
     valid_pixel_count: int
     method: str = "per_band_median_and_scaled_mad"
     schema_version: int = BASELINE_SCHEMA_VERSION
+    # "raster_tag" when every source carried ODK_FEATURE_SCHEMA; otherwise who declared
+    # what the bands mean, since that is a statement a person made, not a measurement.
+    feature_schema_source: str = "raster_tag"
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -67,6 +70,7 @@ class ValidatedAnomalyBaseline:
             valid_pixel_count=int(payload["valid_pixel_count"]),
             method=str(payload.get("method", "per_band_median_and_scaled_mad")),
             schema_version=int(payload["schema_version"]),
+            feature_schema_source=str(payload.get("feature_schema_source", "raster_tag")),
         )
 
 
@@ -89,6 +93,7 @@ class _FeatureRaster:
     valid: np.ndarray
     reference: RasterEvidence
     feature_schema: str
+    schema_declared: bool = False
 
 
 def _sha256(path: Path) -> str:
@@ -99,7 +104,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _read_feature_raster(path: str | Path) -> _FeatureRaster:
+def _read_feature_raster(path: str | Path, declared_schema: str = "") -> _FeatureRaster:
+    """A feature raster and what its bands mean.
+
+    The meaning comes from the raster's ODK_FEATURE_SCHEMA tag when the application
+    wrote one (vegetation indices do). A raster without it -- an orthomosaic, a DSM, a
+    raster from another tool -- can still be used when the operator declares what its
+    bands are; the declaration is recorded as such. A declaration that contradicts the
+    tag is refused rather than silently preferred.
+    """
     import rasterio
 
     source_path = Path(path)
@@ -110,14 +123,21 @@ def _read_feature_raster(path: str | Path) -> _FeatureRaster:
         tags = {str(key): str(value) for key, value in source.tags().items()}
     valid = np.all(masks, axis=0) & np.all(np.isfinite(values), axis=0)
     schema = tags.get("ODK_FEATURE_SCHEMA", "").strip()
-    if not schema:
+    declared = str(declared_schema or "").strip()
+    if schema and declared and declared != schema:
         raise IndiaPackRefused(
-            f"{source_path.name} has no ODK_FEATURE_SCHEMA tag; bands cannot be "
-            "compared to a baseline whose feature meaning is unknown."
+            f"{source_path.name} is tagged ODK_FEATURE_SCHEMA={schema!r}, not the declared "
+            f"{declared!r}; the raster's own tag is not overridden."
+        )
+    if not schema and not declared:
+        raise IndiaPackRefused(
+            f"{source_path.name} has no ODK_FEATURE_SCHEMA tag; say what its bands are "
+            "(a feature schema) so it is compared only with rasters of the same meaning."
         )
     if not np.any(valid):
         raise IndiaPackRefused(f"{source_path.name} contains no valid feature pixels.")
-    return _FeatureRaster(source_path, values, valid, reference, schema)
+    return _FeatureRaster(source_path, values, valid, reference, schema or declared,
+                          schema_declared=not schema)
 
 
 def fit_validated_baseline(
@@ -127,6 +147,7 @@ def fit_validated_baseline(
     validated_by: str,
     validation_scope: str,
     minimum_valid_pixels: int = 32,
+    declared_schema: str = "",
 ) -> ValidatedAnomalyBaseline:
     """Fit robust feature statistics from sources confirmed to be normal."""
 
@@ -138,7 +159,7 @@ def fit_validated_baseline(
         raise IndiaPackRefused(
             "A normal baseline must state validated_by and its validation_scope."
         )
-    rasters = [_read_feature_raster(path) for path in raster_paths]
+    rasters = [_read_feature_raster(path, declared_schema) for path in raster_paths]
     schemas = {item.feature_schema for item in rasters}
     band_counts = {item.values.shape[0] for item in rasters}
     if len(schemas) != 1 or len(band_counts) != 1:
@@ -166,7 +187,10 @@ def fit_validated_baseline(
         "sha256": _sha256(item.path),
         "valid_pixels": int(item.valid.sum()),
         "crs_epsg": item.reference.epsg,
+        "feature_schema_source": "declared" if item.schema_declared else "raster_tag",
     } for item in rasters)
+    schema_source = (f"declared by {validated_by.strip()}"
+                     if any(item.schema_declared for item in rasters) else "raster_tag")
     identity_payload = json.dumps({
         "schema": next(iter(schemas)), "center": center.tolist(),
         "scale": scale.tolist(), "sources": source_files,
@@ -182,6 +206,7 @@ def fit_validated_baseline(
         validation_scope=validation_scope.strip(),
         source_files=source_files,
         valid_pixel_count=int(matrix.shape[0]),
+        feature_schema_source=schema_source,
     )
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -198,6 +223,7 @@ def detect_anomaly_candidates(
     *,
     threshold_sigma: float = 3.5,
     minimum_area_m2: float = 1.0,
+    declared_schema: str = "",
 ) -> AnomalyPackage:
     """Map deviations, preserving the target grid and declining defect labels."""
 
@@ -209,7 +235,7 @@ def detect_anomaly_candidates(
     if not baseline_file.is_file():
         raise IndiaPackRefused(f"Anomaly baseline does not exist: {baseline_file}")
     baseline = ValidatedAnomalyBaseline.from_file(baseline_file)
-    target = _read_feature_raster(feature_raster_path)
+    target = _read_feature_raster(feature_raster_path, declared_schema)
     if target.feature_schema != baseline.feature_schema:
         raise IndiaPackRefused(
             f"Target feature schema {target.feature_schema!r} does not match baseline "
@@ -274,6 +300,7 @@ def detect_anomaly_candidates(
                                           for item in features), 6),
         "threshold_sigma": float(threshold_sigma),
         "feature_schema": baseline.feature_schema,
+        "target_feature_schema_source": "declared" if target.schema_declared else "raster_tag",
         "crs_epsg": target.reference.epsg,
         "baseline": baseline.to_dict(),
         "source": str(target.path),

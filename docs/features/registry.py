@@ -1179,7 +1179,10 @@ INDIA_FIRST = [
       "Find deviations from a validated normal baseline without assigning an unsupported "
       "named defect class.",
       "implemented", ["tests/test_india_anomaly.py::TestValidatedBaseline",
-                      "tests/test_india_anomaly.py::TestGeospatialRefusals"],
+                      "tests/test_india_anomaly.py::TestGeospatialRefusals",
+                      "tests/test_india_pack_gaps.py::test_an_untagged_raster_needs_a_declared_schema_and_a_tag_is_never_overridden",
+                      "tests/test_india_pack_gaps.py::test_a_vegetation_index_the_app_wrote_is_a_valid_anomaly_input",
+                      "tests/test_india_pack_gaps.py::test_anomaly_pair_on_untagged_rasters_in_the_cockpit"],
       "Robust per-band baseline statistics require named validation scope; outputs are georeferenced deviation candidates, never inferred defect names."),
 
     # Photogrammetry and geometry foundation
@@ -1310,7 +1313,8 @@ INDIA_FIRST = [
       "implemented", ["tests/test_india_land_pack.py::test_land_gis_extracts_real_georeferenced_semantic_classes",
                       "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster",
                       "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_land_gis",
-                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit"],
+                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit",
+                      "tests/test_india_pack_gaps.py::test_land_gis_flags_classes_the_model_does_not_validate"],
       "Reached from the app: Api.india_land_gis, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. With no raster named it reads the project's latest "
       "semantic map (Semantic Map runs the installed shared_semantic model, whose only "
       "validated classes are vegetation and building, and says so)."),
@@ -1352,7 +1356,10 @@ INDIA_FIRST = [
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
       "transformers, vegetation and validated component findings.",
-      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors"]),
+      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors",
+                      "tests/test_india_pack_gaps.py::test_a_wgs84_power_centreline_is_measured_in_its_utm_zone"],
+      "A longitude/latitude centreline is measured in the UTM zone of its midpoint and the "
+      "summary says so (measured_in_epsg, crs_note)."),
     F("pack.rail.inspection", "Railway corridor inspection", "vision",
       "India pack: Power and rail",
       "Mapped railway track, bridge, overhead equipment and corridor findings from "

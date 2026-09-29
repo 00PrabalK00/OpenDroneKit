@@ -126,6 +126,9 @@ def compute_vegetation_indices(
             tags={
                 "ODK_ANALYSIS": "calibrated_vegetation_index",
                 "ODK_INDEX": index_name,
+                # What the band means, so the anomaly pack can fit a baseline to it:
+                # an index from calibrated reflectance, one band, in [-1, 1].
+                "ODK_FEATURE_SCHEMA": f"calibrated_{index_name.casefold()}_reflectance_index_v1",
                 "ODK_CALIBRATED_REFLECTANCE": "true",
                 "ODK_POSITIVE_BAND": positive_name,
                 "ODK_NEGATIVE_BAND": negative_name,

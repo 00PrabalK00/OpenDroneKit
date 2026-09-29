@@ -4716,6 +4716,36 @@ class Api:
                 "orthomosaic, or name a semantic class raster.")
         return raster, schema or manifest
 
+    @staticmethod
+    def _validated_classes(schema: str) -> list[str] | None:
+        """The classes the semantic model's holdout validates, or None when unknown.
+
+        From the semantic map's own manifest when Semantic Map recorded it; otherwise
+        from the installed model registry entry whose SHA-256 is the one the map was
+        made with. A class raster from elsewhere, with no such record, is unknown.
+        """
+        try:
+            payload = json.loads(Path(schema).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if isinstance(payload.get("validated_classes"), list):
+            return [str(v) for v in payload["validated_classes"]]
+        sha = str((payload.get("model") or {}).get("checkpoint_sha256") or "").casefold()
+        if not sha:
+            return None
+        try:
+            from core.models import load_registry
+
+            for entry in (load_registry().get("models") or {}).values():
+                if str(entry.get("sha256") or "").casefold() == sha \
+                        and isinstance(entry.get("usable_labels"), list):
+                    return [str(v) for v in entry["usable_labels"]]
+        except Exception:  # noqa: BLE001 - an unreadable registry means unknown
+            return None
+        return None
+
     def _finish_pack(self, pack: str, result: Any) -> dict[str, Any]:
         """Read the pack's summary and put its GeoJSON and GeoTIFF outputs on the map."""
         summary_path = getattr(result, "summary_path", "")
@@ -4819,6 +4849,17 @@ class Api:
                     max_cpu_pixels=int(defaults.get("max_cpu_pixels", 4_000_000)),
                     min_polygon_area_m2=float(defaults.get("min_polygon_area_m2", 1.0)),
                 ))
+            # The holdout verdict is kept with the map, so every pack that reads this
+            # map later can flag the classes that do not hold up.
+            try:
+                written = json.loads(Path(package.manifest_path).read_text(encoding="utf-8"))
+                written["validated_classes"] = usable
+                written["validation_source"] = ("models/model_registry.json "
+                                                "shared_semantic_landcover usable_labels")
+                Path(package.manifest_path).write_text(json.dumps(written, indent=2),
+                                                       encoding="utf-8")
+            except (OSError, ValueError):
+                pass
             session.register_raster_layer(package.class_map_path, name="Semantic classes")
             session.register_vector_layer(package.polygons_path, name="Semantic polygons")
             return {"class_map": package.class_map_path, "polygons": package.polygons_path,
@@ -4845,7 +4886,9 @@ class Api:
                 raster, classes, cadastral_geojson, out,
                 previous_semantic_class_raster=previous_semantic_raster or None,
                 boundary_tolerance_m=float(boundary_tolerance_m)))
-        return self._pack("land_gis", lambda out: extract_land_gis(raster, classes, out))
+        validated = self._validated_classes(classes)
+        return self._pack("land_gis", lambda out: extract_land_gis(
+            raster, classes, out, validated_classes=validated))
 
     @guard
     def india_design_progress(self, design_geojson: str, semantic_raster: str = "",
@@ -4976,8 +5019,12 @@ class Api:
 
     @guard
     def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,
-                               validation_scope: str) -> dict[str, Any]:
-        """Fit a normal baseline from rasters someone has confirmed to be normal."""
+                               validation_scope: str, feature_schema: str = "") -> dict[str, Any]:
+        """Fit a normal baseline from rasters someone has confirmed to be normal.
+
+        ``feature_schema`` says what the bands of an untagged raster are (an orthomosaic
+        or DSM carries no ODK_FEATURE_SCHEMA tag); it is recorded as declared.
+        """
         from core.india_anomaly import fit_validated_baseline
         from core.india_geospatial import IndiaPackRefused
 
@@ -4985,19 +5032,22 @@ class Api:
         try:
             baseline = fit_validated_baseline(list(raster_paths), target,
                                               validated_by=str(validated_by),
-                                              validation_scope=str(validation_scope))
+                                              validation_scope=str(validation_scope),
+                                              declared_schema=str(feature_schema or ""))
         except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
             return fail(str(exc))
         return ok(pack="anomaly_baseline", baseline_path=str(target), baseline=baseline.to_dict())
 
     @guard
     def india_find_anomalies(self, feature_raster: str, baseline_path: str,
-                             threshold_sigma: float = 3.5) -> dict[str, Any]:
+                             threshold_sigma: float = 3.5,
+                             feature_schema: str = "") -> dict[str, Any]:
         """Deviation candidates against a validated baseline (never named as defects)."""
         from core.india_anomaly import detect_anomaly_candidates
 
         return self._pack("anomalies", lambda out: detect_anomaly_candidates(
-            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma)))
+            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma),
+            declared_schema=str(feature_schema or "")))
 
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:

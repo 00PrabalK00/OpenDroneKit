@@ -262,10 +262,33 @@ def _create_corridor_package(
     from rasterio.crs import CRS
 
     target_crs = CRS.from_epsg(epsg)
+    crs_note = None
     if not target_crs.is_projected:
-        raise IndiaPackRefused(
-            "Corridor distance requires a projected GeoJSON CRS; WGS84 degrees are not metres."
+        # Degrees are not metres, but a longitude/latitude centreline -- what a GPS
+        # track or a web map exports -- is not wrong, it is unprojected. It is carried
+        # into the UTM zone of its own midpoint, where a corridor of a few tens of
+        # kilometres is measured to well under 0.1 %, and the report says so.
+        from .india_geospatial import _iter_positions
+
+        positions = [pos for feature in centerline
+                     for pos in _iter_positions(feature["geometry"].get("coordinates"))]
+        if not positions or not target_crs.is_geographic:
+            raise IndiaPackRefused(
+                "Corridor distance needs a projected CRS or a longitude/latitude centreline."
+            )
+        lon = sum(float(p[0]) for p in positions) / len(positions)
+        lat = sum(float(p[1]) for p in positions) / len(positions)
+        utm = geo.auto_utm_epsg(lat, lon)
+        source_epsg = epsg
+        centerline, epsg = read_geojson_features(
+            corridor_centerline_geojson,
+            target_crs=CRS.from_epsg(utm),
+            allowed_geometry_types={"LineString", "MultiLineString"},
         )
+        target_crs = CRS.from_epsg(epsg)
+        crs_note = (f"The centreline was given in EPSG:{source_epsg} "
+                    f"longitude/latitude and was measured after projecting it to its UTM "
+                    f"zone, EPSG:{epsg}.")
     try:
         factor = float(target_crs.linear_units_factor[1])
     except Exception as exc:  # pragma: no cover
@@ -332,6 +355,8 @@ def _create_corridor_package(
                 for item in normalized
             ),
             "units": {"surveyed_distance": "m"},
+            "measured_in_epsg": epsg,
+            "crs_note": crs_note,
             "artifacts": {
                 "corridor": str(centerline_path),
                 "assets_and_findings": str(findings_path),

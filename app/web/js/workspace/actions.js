@@ -212,15 +212,31 @@ const SURVEY_PACKS = {
     }
     const by = await required(ctx, "Confirmed normal by");
     const scope = await required(ctx, "Where and when this baseline applies");
-    return call("india_anomaly_baseline", rasters, by, scope);
+    return withFeatureSchema(ctx, "india_anomaly_baseline", [rasters, by, scope]);
   },
   "Find anomalies": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "feature raster");
     const baseline = await pickPath(["json"], "validated baseline");
     const sigma = await number(ctx, "Threshold (robust sigma)", "3.5");
-    return call("india_find_anomalies", raster, baseline, sigma);
+    return withFeatureSchema(ctx, "india_find_anomalies", [raster, baseline, sigma]);
   },
 };
+
+/* Every raster the application writes except a vegetation index -- orthomosaic, DSM, a
+   raster from another tool -- has no ODK_FEATURE_SCHEMA tag, so the anomaly pack refused
+   them all. The meaning of the bands is the operator's to state; it is asked for only
+   when the raster does not carry it, and the pack records it as declared. */
+async function withFeatureSchema(ctx, method, args) {
+  const first = await tryCall(method, ...args);
+  if (first) return first;
+  const why = lastError.get(method) || "";
+  if (!/ODK_FEATURE_SCHEMA tag;/.test(why)) throw new Error(why || `${method} failed.`);
+  const schema = await ctx.prompt(
+    "What the raster bands are (feature schema, e.g. rgb_orthomosaic_8bit or dsm_elevation_m); "
+    + "rasters are only compared with the same schema", "");
+  if (!schema || !String(schema).trim()) throw new Error(why);
+  return call(method, ...args, String(schema).trim());
+}
 
 const CAPTURE_GEOMETRIES = {
   power: ["close_range_oblique", "close_range_orbit"],
@@ -259,8 +275,14 @@ function summarisePack(result) {
   }
   if (summary.categories) {
     parts.push(Object.entries(summary.categories)
-      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`).join(", "));
+      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`
+        // A class the model's holdout does not support looks as confident as one it
+        // does; the flag is said next to the number, not only in the summary file.
+        + (value && value.validated === false ? " (UNVALIDATED)" : "")
+        + (value && value.status === "available" && value.validated === null ? " (validation unknown)" : ""))
+      .join(", "));
   }
+  if (summary.crs_note) parts.push(summary.crs_note);
   if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
   const layers = (result.layer_ids || []).length;
   return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;

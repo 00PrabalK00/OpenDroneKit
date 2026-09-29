@@ -195,6 +195,14 @@ def test_the_installed_semantic_model_feeds_the_land_pack(api):
     total = sum(v["area_m2"] for v in land["summary"]["categories"].values()
                 if isinstance(v, dict) and "area_m2" in v)
     assert total > 0
+    # The model's holdout validates vegetation and building only; the pack says so per
+    # class instead of reporting water and road as plainly "available".
+    categories = land["summary"]["categories"]
+    assert categories["vegetation"]["validated"] is True
+    assert categories["building"]["validated"] is True
+    assert categories["water"]["validated"] is False
+    assert categories["road_path"]["validated"] is False
+    assert set(land["summary"]["unvalidated_categories"]) == {"water", "road_path"}
 
 
 def test_survey_packs_in_the_cockpit(api, land, tmp_path):
