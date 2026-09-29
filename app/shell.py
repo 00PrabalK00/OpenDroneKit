@@ -95,6 +95,7 @@ class Shell:
                 MenuAction("Export DJI WPML .kmz", act("mission.export", {"format": "dji_wpml"})),
                 MenuAction("Export Litchi CSV", act("mission.export", {"format": "litchi"})),
                 MenuAction("Export KML", act("mission.export", {"format": "kml"})),
+                MenuAction("Export GeoJSON", act("mission.export", {"format": "geojson"})),
             ],
         )
 

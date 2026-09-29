@@ -48,8 +48,11 @@
           <label>Side %<input type="number" id="mission-side" value="65" min="20" max="95" step="1" /></label>
         </div>
         <div class="row">
-          <label>Gimbal&deg;<input type="number" id="mission-gimbal" value="-90" min="-120" max="30" step="1" /></label>
-          <label>Dwell s<input type="number" id="mission-dwell" value="0" min="0" max="30" step="0.5" /></label>
+          <!-- Blank means the template's own value: an orbit looks at its subject, a
+               roof inspection stops at each point. A fixed -90 / 0 here made every
+               structure mission a set of nadir photographs. -->
+          <label>Gimbal&deg;<input type="number" id="mission-gimbal" value="" placeholder="auto" min="-120" max="30" step="1" /></label>
+          <label>Dwell s<input type="number" id="mission-dwell" value="" placeholder="auto" min="0" max="30" step="0.5" /></label>
         </div>
         <div class="row">
           <label>Min alt m<input type="number" id="mission-minalt" value="20" step="1" /></label>
@@ -58,6 +61,48 @@
         <div class="row">
           <label>RTH alt m<input type="number" id="mission-rthalt" value="80" step="1" /></label>
           <label>Wind m/s<input type="number" id="mission-wind" value="0" min="0" step="0.5" /></label>
+        </div>
+        <div class="row">
+          <label>Stand-off m<input type="number" id="mission-standoff" value="" placeholder="auto" min="0" step="0.5" /></label>
+          <label>Altitudes
+            <select id="mission-terrain-mode" title="How altitudes are exported when a terrain model is loaded">
+              <option value="agl">Relative to home</option>
+              <option value="amsl">Absolute (AMSL)</option>
+            </select>
+          </label>
+        </div>
+        <!-- Inputs only some mission types read; shown for those types alone. -->
+        <div id="mission-template-options">
+          <div class="row" data-for="thermal">
+            <label>Thermal camera<select id="mission-thermal-camera"></select></label>
+            <label>Thermal GSD cm<input type="number" id="mission-thermal-gsd" value="" min="0.5" step="0.5" /></label>
+          </div>
+          <div class="row" data-for="thermal">
+            <label>Paired RGB camera<select id="mission-rgb-camera"><option value="">none</option></select></label>
+          </div>
+          <div class="row" data-for="multispectral">
+            <label>Payload<select id="mission-ms-payload"></select></label>
+            <label>Panel lon, lat<input type="text" id="mission-ms-panel" placeholder="-81.753, 41.304" /></label>
+          </div>
+          <div data-for="pylon_inspection">
+            <label>Elements (name@height m)<input type="text" id="mission-pylon-elements" placeholder="crossarm@32, insulator@28" /></label>
+          </div>
+          <div class="row" data-for="dome_inspection">
+            <label>Dome radius m<input type="number" id="mission-dome-radius" value="" placeholder="from outline" min="1" step="0.5" /></label>
+            <label>Dome base m<input type="number" id="mission-dome-base" value="" placeholder="0" min="0" step="0.5" /></label>
+          </div>
+          <div data-for="box_inspection">
+            <label>Box levels m<input type="text" id="mission-box-levels" placeholder="auto, e.g. 20, 35, 50" /></label>
+          </div>
+          <div data-for="linked_mission">
+            <label>Saved version ids<input type="text" id="mission-linked-ids" placeholder="e.g. 3, 5" /></label>
+          </div>
+          <div class="summary" data-for="linear_inspection lateral_capture waypoints solar_inspection facade facade_mapping">
+            Draw the route or row with the Route tool; it is used as the line to fly.
+          </div>
+          <div class="summary" data-for="smart_adaptive">
+            Draw interest regions with the Interest tool; they get a lower, denser, cross-hatched pass.
+          </div>
         </div>
         <label>Terrain source
           <span class="file-row">
@@ -80,6 +125,8 @@
           <button class="tool" data-tool="pan" title="Pan (Esc)">Pan</button>
           <button class="tool" data-tool="aoi" title="Draw area of interest">Draw AOI</button>
           <button class="tool" data-tool="nofly" title="Draw no-fly zone">No-Fly</button>
+          <button class="tool" data-tool="route" title="Draw a route line (linear, lateral, waypoint, solar row, facade line)">Route</button>
+          <button class="tool" data-tool="interest" title="Draw an interest region for smart adaptive missions">Interest</button>
           <button class="tool" data-tool="measure-distance" title="Measure distance">Distance</button>
           <button class="tool" data-tool="measure-area" title="Measure area">Area</button>
           <button class="tool" data-tool="delete" title="Delete selected geometry">Delete</button>

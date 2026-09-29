@@ -429,7 +429,8 @@ const missionTypes = [
   "Facade inspection", "Multi-facade", "Closed loop", "Linear mapping", "Linear inspection",
   "Tower mapping", "Orbit", "Waypoints", "Panorama", "Solar inspection",
   "Wind turbine", "Magnetic mapping", "Complex facade", "L-shaped", "Utility pylon",
-  "Thermal", "Multispectral",
+  "Thermal", "Multispectral", "Dome inspection", "Box inspection", "360 bubble",
+  "Lateral capture", "Smart adaptive", "Linked mission",
 ];
 
 const planning = {
@@ -517,6 +518,19 @@ const planning = {
         { key: "speed", label: "Speed", value: "8", unit: "m/s" },
         { key: "angle", label: "Line heading", value: "90", unit: "°" },
         { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
+        /* Inputs only some mission types read. Left blank they are not sent as values:
+           plan_mission refuses a thermal, multispectral or pylon plan that lacks its
+           one essential input, and says which. */
+        { group: "Mission type inputs" },
+        { key: "thermal_camera", label: "Thermal camera", value: "" },
+        { key: "target_gsd_cm", label: "Thermal GSD", value: "", unit: "cm" },
+        { key: "rgb_camera", label: "Paired RGB camera", value: "" },
+        { key: "payload_key", label: "Multispectral payload", value: "" },
+        { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
+        { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
+        { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
+        { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },
+        { key: "linked_version_ids", label: "Linked version ids", value: "" },
       ], settingChanged) },
       { title: "Aircraft", render: () => fields([
         { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },

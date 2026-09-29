@@ -259,8 +259,8 @@
       this.measurePoints = [];
       this._setData('measure', { type: 'FeatureCollection', features: [] });
       const annotationType = tool.startsWith('annotation-') ? tool.slice(11) : '';
-      if (tool === 'aoi' || tool === 'nofly' || ['polygon', 'rectangle'].includes(annotationType)) this.draw.changeMode('draw_polygon');
-      else if (['line', 'freehand'].includes(annotationType)) this.draw.changeMode('draw_line_string');
+      if (tool === 'aoi' || tool === 'nofly' || tool === 'interest' || ['polygon', 'rectangle'].includes(annotationType)) this.draw.changeMode('draw_polygon');
+      else if (tool === 'route' || ['line', 'freehand'].includes(annotationType)) this.draw.changeMode('draw_line_string');
       else if (['point', 'circle', 'text'].includes(annotationType)) this.draw.changeMode('draw_point');
       else if (tool === 'delete') this.draw.trash();
       else this.draw.changeMode('simple_select');
@@ -319,8 +319,11 @@
       }
       (event.features || []).forEach((feature) => {
         if (!annotationEvent && feature.geometry.type === 'Polygon' && !feature.properties.odkRole) {
-          const role = this.tool === 'nofly' ? 'nofly' : 'aoi';
+          const role = this.tool === 'nofly' ? 'nofly' : (this.tool === 'interest' ? 'interest' : 'aoi');
           this.draw.setFeatureProperty(feature.id, 'odkRole', role);
+        }
+        if (!annotationEvent && feature.geometry.type === 'LineString' && this.tool === 'route' && !feature.properties.odkRole) {
+          this.draw.setFeatureProperty(feature.id, 'odkRole', 'route');
         }
       });
       if (this.opts.onGeometryChange) this.opts.onGeometryChange(this.getGeometry());
@@ -330,13 +333,23 @@
       const all = this.draw.getAll();
       const aoi = [];
       const nofly = [];
+      const interest = [];
+      const routes = [];
       all.features.forEach((feature) => {
+        if (feature.geometry.type === 'LineString') {
+          if (feature.properties.odkRole === 'route') routes.push(feature.geometry.coordinates);
+          return;
+        }
         if (feature.geometry.type !== 'Polygon') return;
         const ring = feature.geometry.coordinates[0];
         if (feature.properties.odkRole === 'nofly') nofly.push(ring);
+        else if (feature.properties.odkRole === 'interest') interest.push(ring);
         else aoi.push(ring);
       });
-      return { aoi: aoi.length ? aoi[aoi.length - 1] : null, allAoi: aoi, nofly: nofly };
+      return {
+        aoi: aoi.length ? aoi[aoi.length - 1] : null, allAoi: aoi, nofly: nofly,
+        interest: interest, route: routes.length ? routes[routes.length - 1] : null
+      };
     }
 
     clearRole(role) {
@@ -491,25 +504,26 @@
   /* Draw styling: AOI in blue, no-fly in red, matching the toolbar semantics. */
   function drawStyles() {
     const noFly = ['==', ['get', 'user_odkRole'], 'nofly'];
+    const interest = ['==', ['get', 'user_odkRole'], 'interest'];
     return [
       {
         id: 'gl-draw-polygon-fill', type: 'fill', filter: ['all', ['==', '$type', 'Polygon']],
         paint: {
-          'fill-color': ['case', noFly, '#e5645f', '#3d9df6'],
+          'fill-color': ['case', noFly, '#e5645f', interest, '#ffd166', '#3d9df6'],
           'fill-opacity': ['case', ['==', ['get', 'active'], 'true'], 0.3, 0.16]
         }
       },
       {
         id: 'gl-draw-polygon-stroke', type: 'line', filter: ['all', ['==', '$type', 'Polygon']],
         paint: {
-          'line-color': ['case', noFly, '#e5645f', '#3d9df6'],
+          'line-color': ['case', noFly, '#e5645f', interest, '#ffd166', '#3d9df6'],
           'line-width': 2,
           'line-dasharray': ['case', noFly, ['literal', [2, 1.5]], ['literal', [1, 0]]]
         }
       },
       {
         id: 'gl-draw-line', type: 'line', filter: ['all', ['==', '$type', 'LineString']],
-        paint: { 'line-color': '#3d9df6', 'line-width': 2 }
+        paint: { 'line-color': ['case', ['==', ['get', 'user_odkRole'], 'route'], '#7ee081', '#3d9df6'], 'line-width': 2 }
       },
       {
         id: 'gl-draw-vertex', type: 'circle',
