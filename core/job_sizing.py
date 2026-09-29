@@ -130,7 +130,18 @@ def size_job(
         )
         fits_memory = True
     else:
-        fits_memory = needed_memory + MEMORY_HEADROOM_MB <= memory
+        # "Available" is what new work can take without swapping; the OS and running
+        # programs are already outside it. So the job fits when it is within that, and
+        # the headroom is a margin to warn about, not a second deduction that turned a
+        # 360 MB job on a machine with 573 MB free into "does not fit".
+        fits_memory = needed_memory <= memory
+        if fits_memory and needed_memory + MEMORY_HEADROOM_MB > memory:
+            warnings.append(
+                f"Memory is tight: the estimated {needed_memory:.0f} MB peak leaves "
+                f"{memory - needed_memory:.0f} MB of the {memory:.0f} MB available, under "
+                f"the {MEMORY_HEADROOM_MB:.0f} MB margin this estimate likes to keep. "
+                "Close other programs before a long run."
+            )
 
     if disk <= 0:
         warnings.append("Could not read free disk space, so the disk verdict is unverified.")
@@ -138,23 +149,31 @@ def size_job(
     else:
         fits_disk = needed_disk <= disk
 
-    usable_memory = max(memory - MEMORY_HEADROOM_MB, 0.0)
-    by_memory = int(usable_memory // MEMORY_PER_IMAGE_MB) if usable_memory > 0 else image_count
-    chunk = max(1, min(EXHAUSTIVE_MATCH_LIMIT, by_memory or image_count))
-    chunking_required = image_count > chunk
+    too_many_to_match = image_count > EXHAUSTIVE_MATCH_LIMIT
+    if fits_memory:
+        by_memory = image_count
+    else:
+        # Size chunks to leave the margin when there is room for it, otherwise to what is
+        # available at all; either way smaller than the job, since the job did not fit.
+        budget = memory - MEMORY_HEADROOM_MB
+        if budget < MEMORY_PER_IMAGE_MB:
+            budget = memory
+        by_memory = int(budget // MEMORY_PER_IMAGE_MB)
+    chunk = max(1, min(EXHAUSTIVE_MATCH_LIMIT, by_memory, image_count))
+    chunking_required = chunk < image_count
 
     if not fits_memory:
         warnings.append(
-            f"Estimated peak memory {needed_memory:.0f} MB plus {MEMORY_HEADROOM_MB:.0f} MB "
-            f"headroom exceeds the {memory:.0f} MB available. Run in chunks of about "
-            f"{chunk} images, or the job will fail partway through with nothing to show."
+            f"Estimated peak memory {needed_memory:.0f} MB exceeds the {memory:.0f} MB "
+            f"available. Run in chunks of about {chunk} images, or the job will fail "
+            "partway through with nothing to show."
         )
     if not fits_disk:
         warnings.append(
             f"Estimated {needed_disk:.0f} MB of intermediates exceeds the {disk:.0f} MB "
             "free on the work volume. Free space or point the job elsewhere."
         )
-    if image_count > EXHAUSTIVE_MATCH_LIMIT:
+    if too_many_to_match:
         warnings.append(
             f"{image_count} images is past the ~{EXHAUSTIVE_MATCH_LIMIT} where exhaustive "
             "matching stops being viable: it compares every pair, so cost grows with the "
@@ -162,11 +181,21 @@ def size_job(
         )
 
     if chunking_required:
+        why = (
+            f"at roughly {MEMORY_PER_IMAGE_MB:.0f} MB each they exceed the memory this "
+            "machine has free for one pass"
+            if not fits_memory else
+            f"that is past the ~{EXHAUSTIVE_MATCH_LIMIT} images one exhaustive match can take"
+        )
         note = (
-            f"This job should be split. {image_count} images at roughly "
-            f"{MEMORY_PER_IMAGE_MB:.0f} MB each exceeds what this machine can hold in one "
-            f"pass; chunks of about {chunk} fit, with overlap between chunks so the "
-            "sub-models can be merged."
+            f"This job should be split. {image_count} images: {why}; chunks of about "
+            f"{chunk} fit, with overlap between chunks so the sub-models can be merged."
+        )
+    elif not fits_disk:
+        note = (
+            f"{image_count} images fit in memory (an estimated {needed_memory:.0f} MB), "
+            f"but not on disk: an estimated {needed_disk:.0f} MB of intermediates against "
+            f"{disk:.0f} MB free."
         )
     else:
         note = (

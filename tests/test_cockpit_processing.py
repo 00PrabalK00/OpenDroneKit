@@ -83,3 +83,24 @@ def test_size_job_reports_the_verdict_the_application_computed(tmp_path) -> None
     verdict = "Fits" if expected["can_run_as_one_job"] else "Does not fit as one job"
     assert result["toast"].startswith(f"{verdict}: {expected['note']}"), (result, expected)
     assert "may not fit" not in result["toast"] or not expected["can_run_as_one_job"]
+
+
+def test_size_job_does_not_contradict_itself_on_a_machine_short_of_memory(tmp_path, monkeypatch) -> None:
+    """Verifier: with 573 MB free the toast read "Does not fit as one job: 8 images should
+    run as a single job ... Run in chunks of about 8 images". The free-memory probe is the
+    machine boundary, so it is the one thing set here; the rest is the real path."""
+    import core.job_sizing as sizing
+
+    monkeypatch.setattr(sizing, "available_memory_mb", lambda: 573.0)
+    api = make_api(tmp_path)
+    _dataset(api, tmp_path)
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        result = cockpit.run("""
+            await ODK.nav("Processing");
+            await ODK.press("Size Job");
+            return { toast: await ODK.waitFor(() => ODK.toasts().find((t) => t.includes("images")), 10000) };
+        """)
+    toast = result["toast"]
+    assert toast.startswith("Fits: 4 images should run as a single job"), toast
+    assert "Memory is tight" in toast
+    assert "Does not fit" not in toast and "chunks of about" not in toast
