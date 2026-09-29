@@ -8,6 +8,7 @@ healthcheck, or a credential committed to the repository.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -29,7 +30,7 @@ def compose() -> dict:
 class TestServices:
     def test_the_expected_services_are_defined(self, compose):
         services = compose["services"]
-        for name in ("postgis", "minio", "api", "worker"):
+        for name in ("postgis", "seaweedfs", "api", "worker"):
             assert name in services, f"{name} service missing"
 
     def test_the_database_is_postgis_not_plain_postgres(self, compose):
@@ -47,7 +48,8 @@ class TestServices:
         """postgis reports 'up' well before it accepts connections on first boot."""
         depends = compose["services"]["api"]["depends_on"]
         assert depends["postgis"]["condition"] == "service_healthy"
-        assert depends["minio"]["condition"] == "service_healthy"
+        # Not merely the object store up: the bucket made, with the API's own keys.
+        assert depends["seaweedfs-init"]["condition"] == "service_completed_successfully"
 
     def test_the_api_serves_the_asgi_app(self, compose):
         text = COMPOSE_PATH.read_text(encoding="utf-8")
@@ -56,13 +58,45 @@ class TestServices:
 
     def test_the_bucket_is_created_before_first_use(self, compose):
         """Without this the first upload fails against a bucket that does not exist."""
-        assert "minio-init" in compose["services"]
+        assert "seaweedfs-init" in compose["services"]
+        init = compose["services"]["seaweedfs-init"]
+        assert init["depends_on"]["seaweedfs"]["condition"] == "service_healthy"
+
+
+class TestObjectStore:
+    """MinIO stopped publishing images (minio/minio and quay.io/minio/minio both refuse
+    pulls as of 2026-09-29), so a stack naming them could not start at all."""
+
+    def test_no_service_uses_an_image_that_can_no_longer_be_pulled(self, compose):
+        for name, service in compose["services"].items():
+            image = str(service.get("image", ""))
+            assert "minio" not in image.lower(), f"{name} still uses {image}"
+
+    def test_the_object_store_is_seaweedfs_with_its_s3_gateway(self, compose):
+        service = compose["services"]["seaweedfs"]
+        assert service["image"].startswith("chrislusf/seaweedfs")
+        script = " ".join(service["command"])
+        assert "server" in script and "-s3" in script and "-s3.port=8333" in script
+        # The gateway's identity is the API's keys, from the environment, via a config
+        # file -- without one SeaweedFS rejects every signed request (AccessDenied).
+        assert "-s3.config=" in script
+        assert "$$ODK_S3_ACCESS_KEY" in script and "$$ODK_S3_SECRET_KEY" in script
+        env = service["environment"]
+        assert "${ODK_S3_ACCESS_KEY:?" in env["ODK_S3_ACCESS_KEY"]
+
+    def test_the_api_and_worker_point_at_the_gateway_that_exists(self, compose):
+        for name in ("api", "worker"):
+            env = compose["services"][name]["environment"]
+            assert env["ODK_S3_ENDPOINT"] == "http://seaweedfs:8333", name
+            # The variable names the storage layer reads did not change.
+            for variable in ("ODK_S3_BUCKET", "ODK_S3_ACCESS_KEY", "ODK_S3_SECRET_KEY"):
+                assert variable in env, (name, variable)
 
 
 class TestPersistence:
     def test_named_volumes_exist_for_stateful_services(self, compose):
         volumes = compose.get("volumes", {})
-        for name in ("postgis_data", "minio_data"):
+        for name in ("postgis_data", "seaweedfs_data"):
             assert name in volumes, f"{name} volume missing; data would not survive a restart"
 
     def test_the_database_persists_to_a_volume(self, compose):
@@ -137,3 +171,61 @@ class TestImages:
         text = (DOCKER_DIR / "Dockerfile.api").read_text(encoding="utf-8")
         assert "gdal" in text.lower()
         assert "proj" in text.lower()
+
+
+# Booting the object store for real needs a Docker daemon and the seaweedfs image, so it
+# runs only when asked. Skipped is not passed: this is what proves the compose service
+# starts, accepts the API's keys, and holds the bucket the API writes to.
+LIVE_COMPOSE = os.environ.get("ODK_TEST_DOCKER_COMPOSE", "") == "1"
+
+
+@pytest.mark.skipif(not LIVE_COMPOSE, reason="Set ODK_TEST_DOCKER_COMPOSE=1 to boot the object store with docker compose.")
+def test_the_compose_object_store_boots_and_the_storage_layer_round_trips(tmp_path, monkeypatch):
+    import secrets
+    import socket
+    import subprocess
+    import urllib.request
+
+    pytest.importorskip("boto3")
+    from services.api.storage import build_storage
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    access, secret = "odk" + secrets.token_hex(6), secrets.token_hex(16)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"POSTGRES_PASSWORD=unused\nODK_SECRET_KEY=unused\nODK_S3_ACCESS_KEY={access}\n"
+        f"ODK_S3_SECRET_KEY={secret}\nODK_S3_BUCKET=odk-compose-test\nODK_S3_PORT={port}\n",
+        encoding="utf-8")
+    project = "odkcompose" + secrets.token_hex(3)
+    base = ["docker", "compose", "-p", project, "-f", str(COMPOSE_PATH), "--env-file", str(env_file)]
+    try:
+        up = subprocess.run(base + ["up", "-d", "--wait", "seaweedfs"], capture_output=True, text=True, timeout=300)
+        assert up.returncode == 0, up.stderr
+        init = subprocess.run(base + ["run", "--rm", "seaweedfs-init"], capture_output=True, text=True, timeout=300)
+        assert init.returncode == 0 and "bucket ready" in init.stdout, (init.stdout, init.stderr)
+        # A second run finds the bucket already there, and that is success too.
+        again = subprocess.run(base + ["run", "--rm", "seaweedfs-init"], capture_output=True, text=True, timeout=300)
+        assert again.returncode == 0 and "bucket ready" in again.stdout, (again.stdout, again.stderr)
+
+        monkeypatch.setenv("ODK_STORAGE_BACKEND", "s3")
+        monkeypatch.setenv("ODK_S3_ENDPOINT", f"http://127.0.0.1:{port}")
+        monkeypatch.setenv("ODK_S3_BUCKET", "odk-compose-test")
+        monkeypatch.setenv("ODK_S3_ACCESS_KEY", access)
+        monkeypatch.setenv("ODK_S3_SECRET_KEY", secret)
+        storage = build_storage()
+        storage.put("survey/one.bin", b"compose")
+        assert storage.get("survey/one.bin") == b"compose"
+        assert storage.list("survey/") == ["survey/one.bin"]
+        # A signed URL really works against the gateway.
+        assert urllib.request.urlopen(storage.url("survey/one.bin"), timeout=30).read() == b"compose"
+        assert storage.delete("survey/one.bin") is True
+        assert storage.exists("survey/one.bin") is False
+
+        # Any other key is refused: the gateway has exactly one identity.
+        monkeypatch.setenv("ODK_S3_SECRET_KEY", "not-the-secret")
+        with pytest.raises(Exception):
+            build_storage().put("survey/two.bin", b"x")
+    finally:
+        subprocess.run(base + ["down", "-v"], capture_output=True, text=True, timeout=300)

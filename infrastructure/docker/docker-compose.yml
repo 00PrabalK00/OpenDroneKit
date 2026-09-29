@@ -3,8 +3,8 @@
 #   cp .env.example .env   and edit it
 #   docker compose up -d
 #
-# Nothing here reaches a proprietary service. PostGIS holds the data, MinIO holds the
-# objects, and both run on your own infrastructure.
+# Nothing here reaches a proprietary service. PostGIS holds the data, SeaweedFS holds
+# the objects, and both run on your own infrastructure.
 
 name: opendronekit
 
@@ -29,42 +29,58 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
 
-  minio:
-    image: minio/minio:latest
+  # S3-compatible object storage. SeaweedFS, because MinIO stopped publishing its
+  # images: `docker pull minio/minio` and `quay.io/minio/minio` both answer "access
+  # denied" (checked 2026-09-29), so a compose file naming them cannot start at all.
+  # The API speaks plain S3 (services/api/storage.py), so nothing else changed: the
+  # same ODK_S3_* variables, the same bucket, the endpoint on port 8333.
+  seaweedfs:
+    image: chrislusf/seaweedfs:latest
     restart: unless-stopped
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${ODK_S3_ACCESS_KEY:?set ODK_S3_ACCESS_KEY in .env}
-      MINIO_ROOT_PASSWORD: ${ODK_S3_SECRET_KEY:?set ODK_S3_SECRET_KEY in .env}
+      ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY:?set ODK_S3_ACCESS_KEY in .env}
+      ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY:?set ODK_S3_SECRET_KEY in .env}
+    # The S3 gateway accepts exactly one identity: the keys from .env. Written at start
+    # from the environment, so the credentials never sit in this file or in the image.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /etc/seaweedfs
+        umask 077
+        printf '{"identities":[{"name":"opendronekit","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}\n' "$$ODK_S3_ACCESS_KEY" "$$ODK_S3_SECRET_KEY" > /etc/seaweedfs/s3.json
+        chown seaweed:seaweed /etc/seaweedfs/s3.json
+        exec /entrypoint.sh server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
     volumes:
-      - minio_data:/data
+      - seaweedfs_data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8333/healthz || exit 1"]
       interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 15s
+      retries: 30
+      start_period: 20s
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${ODK_S3_PORT:-8333}:8333"
 
   # Creates the bucket once, then exits. Without it the first upload fails against a
-  # bucket that does not exist yet.
-  minio-init:
-    image: minio/mc:latest
+  # bucket that does not exist yet. The request is signed with the same keys the API
+  # uses, so this also proves the credentials work before the API starts. 409
+  # BucketAlreadyOwnedByYou on a later start is success.
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:latest
     depends_on:
-      minio:
+      seaweedfs:
         condition: service_healthy
     environment:
       ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
       ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set odk http://minio:9000 $${ODK_S3_ACCESS_KEY} $${ODK_S3_SECRET_KEY} &&
-      mc mb --ignore-existing odk/$${ODK_S3_BUCKET} &&
-      echo 'bucket ready'
-      "
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        code=$$(curl -s -o /tmp/answer -w '%{http_code}' --aws-sigv4 'aws:amz:us-east-1:s3' --user "$$ODK_S3_ACCESS_KEY:$$ODK_S3_SECRET_KEY" -X PUT "http://seaweedfs:8333/$$ODK_S3_BUCKET")
+        if [ "$$code" = 200 ] || grep -q BucketAlreadyOwnedByYou /tmp/answer; then echo 'bucket ready'; exit 0; fi
+        echo "bucket creation failed: HTTP $$code"; cat /tmp/answer; exit 1
 
   api:
     build:
@@ -74,8 +90,8 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -83,7 +99,7 @@ services:
       ODK_SECRET_KEY: ${ODK_SECRET_KEY:?set ODK_SECRET_KEY in .env}
       ODK_STORAGE_BACKEND: ${ODK_STORAGE_BACKEND:-s3}
       ODK_STORAGE_PATH: /data/storage
-      ODK_S3_ENDPOINT: http://minio:9000
+      ODK_S3_ENDPOINT: http://seaweedfs:8333
       ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
       ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
@@ -132,8 +148,8 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
@@ -141,7 +157,7 @@ services:
       ODK_BROKER_URL: redis://redis:6379/0
       ODK_STORAGE_BACKEND: ${ODK_STORAGE_BACKEND:-s3}
       ODK_STORAGE_PATH: /data/storage
-      ODK_S3_ENDPOINT: http://minio:9000
+      ODK_S3_ENDPOINT: http://seaweedfs:8333
       ODK_S3_BUCKET: ${ODK_S3_BUCKET:-opendronekit}
       ODK_S3_ACCESS_KEY: ${ODK_S3_ACCESS_KEY}
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
@@ -183,5 +199,5 @@ services:
 volumes:
   redis_data:
   postgis_data:
-  minio_data:
+  seaweedfs_data:
   api_storage:

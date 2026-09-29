@@ -40,5 +40,25 @@ loud; a working default is silent and permanent.
 {{- if not .Values.secrets.postgresPassword -}}
 {{- fail "secrets.postgresPassword is required, or set secrets.existingSecret." -}}
 {{- end -}}
+{{- if eq .Values.storage.backend "s3" -}}
+{{- if or (not .Values.secrets.s3AccessKey) (not .Values.secrets.s3SecretKey) -}}
+{{- fail "secrets.s3AccessKey and secrets.s3SecretKey are required with storage.backend=s3 (they are the object store's only identity), or set secrets.existingSecret." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The S3 endpoint the API and worker use: storage.endpoint when set, otherwise the
+in-chart SeaweedFS gateway. Rendering fails when neither exists, rather than pointing
+the API at a host nothing serves.
+*/}}
+{{- define "odk.s3Endpoint" -}}
+{{- if .Values.storage.endpoint -}}
+{{ .Values.storage.endpoint }}
+{{- else if .Values.seaweedfs.enabled -}}
+http://{{ include "odk.fullname" . }}-seaweedfs:8333
+{{- else if eq .Values.storage.backend "s3" -}}
+{{- fail "storage.backend=s3 needs storage.endpoint, or seaweedfs.enabled=true for the in-chart object store." -}}
 {{- end -}}
 {{- end -}}
