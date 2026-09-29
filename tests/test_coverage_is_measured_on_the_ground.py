@@ -159,3 +159,79 @@ class TestNothingIsEstimatedWithoutAHeight:
             .validate(_grid(tmp_path, altitude=None), tmp_path / "out")
         assert result["footprints"][0]["height_source"] == "stated_flight_height"
         assert result["coverage_completion_pct"] == pytest.approx(100.0)
+
+
+class TestAnImageThatCannotBePlacedIsNotAGap:
+    """A terrain model with a hole left some real Aukerman images without a height.
+
+    They were dropped from the capture sequence, so 235 was paired with 237 (6%
+    overlap) and a re-fly was suggested over ground that 236 had photographed.
+    """
+
+    @staticmethod
+    def _strip_over_a_hole(tmp_path):
+        # Two columns of five shots northwards, 60 m apart: a footprint is 104 m long,
+        # so neighbours overlap 42% and shots two apart (120 m) do not meet at all.
+        paths = []
+        for col in range(2):
+            # Serpentine, as flown: up the first column, back down the second.
+            for index in range(5):
+                row = index if col == 0 else 4 - index
+                paths.append(_shot(tmp_path / f"IMG_{col}{index}.jpg",
+                                   ORIGIN[0] + col * SPACING, ORIGIN[1] + row * SPACING,
+                                   texture_seed=col * 5 + row))
+        # A DTM at the ground level with no data under the middle row.
+        cell = 5.0
+        west, north = ORIGIN[0] - 200.0, ORIGIN[1] + 4 * SPACING + 200.0
+        height, width = int((4 * SPACING + 400) / cell), int((SPACING + 400) / cell)
+        dtm = np.full((height, width), GROUND_M, dtype=np.float32)
+        hole_top = int((north - (ORIGIN[1] + 2 * SPACING + 10)) / cell)
+        hole_bottom = int((north - (ORIGIN[1] + 2 * SPACING - 10)) / cell)
+        dtm[hole_top:hole_bottom, :] = -9999.0
+        terrain = geo.write_geotiff(tmp_path / "dtm.tif", dtm, epsg=EPSG, west=west,
+                                    north=north, pixel_size=cell, nodata=-9999.0)
+        return paths, terrain
+
+    def test_pairs_across_an_unplaced_image_are_not_assessed(self, tmp_path):
+        paths, terrain = self._strip_over_a_hole(tmp_path)
+        result = CoverageValidator(CoverageValidationConfig(terrain_path=str(terrain))) \
+            .validate(paths, tmp_path / "out")
+        assert sorted(result["layout"]["images_not_placed"]["no_height"]) == \
+            ["IMG_02.jpg", "IMG_12.jpg"]
+        pairs = {(p["image_prev"], p["image_curr"]) for p in result["overlap_pairs"]}
+        # Never IMG_01 -> IMG_03: IMG_02 lies between them.
+        assert ("IMG_01.jpg", "IMG_03.jpg") not in pairs
+        assert ("IMG_00.jpg", "IMG_01.jpg") in pairs
+        unassessed = {(p["image_prev"], p["image_curr"]) for p in result["pairs_not_assessed"]}
+        assert {("IMG_01.jpg", "IMG_02.jpg"), ("IMG_02.jpg", "IMG_03.jpg")} <= unassessed
+        assert result["missing_pairs"] == [
+            p for p in result["missing_pairs"] if p["image_prev"][:5] != p["image_curr"][:5]]
+        within_a_column = [p for p in result["missing_pairs"]
+                           if p["image_prev"][:5] == p["image_curr"][:5]]
+        assert within_a_column == []
+        rows = {r["image"]: r for r in result["images"]}
+        assert rows["IMG_01.jpg"]["low_overlap"] is False
+        assert "not assessed" in result["layout"]["not_assessed_note"]
+
+    def test_no_refly_is_suggested_over_ground_an_unplaced_image_took(self, tmp_path):
+        paths, terrain = self._strip_over_a_hole(tmp_path)
+        result = CoverageValidator(CoverageValidationConfig(terrain_path=str(terrain))) \
+            .validate(paths, tmp_path / "out")
+        # The band between rows 1 and 3 has no placed footprint over it ...
+        assert result["unassessed_gaps"], result["gap_suggestions"]
+        band = result["unassessed_gaps"][0]
+        assert abs(band["northing"] - (ORIGIN[1] + 2 * SPACING)) < 20.0
+        assert set(band["related_images"]) & {"IMG_02.jpg", "IMG_12.jpg"}
+        # ... but it was photographed, so it is not a re-fly instruction.
+        assert not [s for s in result["gap_suggestions"]
+                    if s["kind"] in ("coverage_gap", "overlap_gap")]
+
+    def test_a_shot_that_was_really_missed_is_still_a_gap(self, tmp_path):
+        paths, _terrain = self._strip_over_a_hole(tmp_path)
+        kept = [p for p in paths if p.name not in ("IMG_02.jpg", "IMG_12.jpg")]
+        result = CoverageValidator(CoverageValidationConfig(ground_elevation_m=GROUND_M)) \
+            .validate(kept, tmp_path / "out")
+        assert ("IMG_01.jpg", "IMG_03.jpg") in {
+            (p["image_prev"], p["image_curr"]) for p in result["missing_pairs"]}
+        assert [s for s in result["gap_suggestions"] if s["kind"] == "coverage_gap"]
+        assert result["unassessed_gaps"] == []

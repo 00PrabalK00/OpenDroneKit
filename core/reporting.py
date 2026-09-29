@@ -162,6 +162,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
                          f"(two or more images: `{float(coverage.get('stereo_coverage_pct') or 0.0):.1f}%`, "
                          f"over the {str(coverage.get('coverage_extent', '')).replace('_', ' ')})")
         lines.append(f"- Gap suggestions: `{int(coverage.get('gap_suggestion_count', 0))}`")
+        not_assessed = (coverage.get("layout") or {}).get("not_assessed_note")
+        if not_assessed:
+            lines.append(f"- Not assessed: {not_assessed}")
         if coverage.get("coverage_heatmap_path"):
             lines.append(f"- Coverage heatmap: `{coverage.get('coverage_heatmap_path')}`")
         if coverage.get("preview_model_path"):

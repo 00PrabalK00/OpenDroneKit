@@ -320,6 +320,9 @@ def image_footprints(
     lons = [r[1].longitude for r in records]
     lats = [r[1].latitude for r in records]
     east, north = geo.wgs84_to_projected(lons, lats, epsg)
+    # Where the images that get no footprint were taken: their ground is not known to
+    # be covered or uncovered, and the caller must not call it a gap.
+    unplaced: dict[str, tuple[float, float]] = {}
 
     for (path, fix, camera, xmp), x, y in zip(records, east, north):
         height, source = None, ""
@@ -336,6 +339,7 @@ def image_footprints(
             height, source = float(flight_height_agl_m), "stated_flight_height"
         if height is None or not np.isfinite(height) or height <= 0:
             problems.setdefault("no_height", []).append(path.name)
+            unplaced[path.name] = (float(x), float(y))
             continue
 
         if not (camera.focal_length_mm and camera.sensor_width_mm and camera.width and camera.height):
@@ -343,6 +347,7 @@ def image_footprints(
                 width_m = height * 36.0 / float(camera.focal_35mm)
             else:
                 problems.setdefault("no_camera_geometry", []).append(path.name)
+                unplaced[path.name] = (float(x), float(y))
                 continue
         else:
             width_m = height * float(camera.sensor_width_mm) / float(camera.focal_length_mm)
@@ -379,7 +384,7 @@ def image_footprints(
         ))
     if dataset is not None:
         dataset.close()
-    return footprints, {"problems": problems, "epsg": int(epsg)}
+    return footprints, {"problems": problems, "epsg": int(epsg), "unplaced": unplaced}
 
 
 def _overlap_fraction(a: ImageFootprint, b: ImageFootprint) -> float:
@@ -477,8 +482,25 @@ class CoverageValidator:
         # ---- overlap, from footprint geometry --------------------------------------
         overlap_edges: list[dict] = []
         missing_pairs: list[dict] = []
-        sequence = [fp for fp in (by_name.get(r["image"]) for r in rows) if fp is not None]
-        for prev, curr in zip(sequence, sequence[1:]):
+        # Consecutive captures, in capture order. A pair is measured only when BOTH
+        # images are on the ground: pairing across an unplaced frame compared 235 with
+        # 237 (1% overlap) while 236, which lies between them, was never looked at, and
+        # sent the operator to re-fly ground that had been photographed.
+        pairs_not_assessed: list[dict] = []
+        sequence: list[tuple[ImageFootprint, ImageFootprint]] = []
+        beside_unplaced: set[str] = set()
+        for before, after in zip(rows, rows[1:]):
+            a, b = by_name.get(before["image"]), by_name.get(after["image"])
+            if a is not None and b is not None:
+                sequence.append((a, b))
+                continue
+            missing = [r["image"] for r in (before, after) if r["image"] not in by_name]
+            pairs_not_assessed.append({
+                "image_prev": before["image"], "image_curr": after["image"],
+                "reason": "not placed on the ground: " + ", ".join(missing),
+            })
+            beside_unplaced.update(r["image"] for r in (before, after) if r["image"] in by_name)
+        for prev, curr in sequence:
             forward = _overlap_fraction(prev, curr)
             edge = {
                 "image_prev": prev.image,
@@ -491,7 +513,7 @@ class CoverageValidator:
             if forward < cfg.min_footprint_overlap:
                 missing_pairs.append(edge)
         row_by_name = {r["image"]: r for r in rows}
-        for prev, curr in zip(sequence, sequence[1:]):
+        for prev, curr in sequence:
             share = _overlap_fraction(prev, curr)
             row_by_name[prev.image]["overlap_next"] = round(share, 4)
             row_by_name[curr.image]["overlap_prev"] = round(_overlap_fraction(curr, prev), 4)
@@ -501,7 +523,12 @@ class CoverageValidator:
             row = row_by_name[fp.image]
             row["overlap_best"] = round(best, 4)
             row["footprint"] = fp.to_dict()
-            if best < cfg.min_footprint_overlap:
+            if best < cfg.min_footprint_overlap and fp.image in beside_unplaced:
+                # Its neighbour in the capture sequence has no footprint, and may well
+                # be the image that overlaps it. Not assessed, not a gap.
+                row["overlap_note"] = ("Next to an image that could not be placed; its "
+                                       "overlap is not assessed.")
+            elif best < cfg.min_footprint_overlap:
                 row["low_overlap"] = True
                 row["quality_flags"] = list(row.get("quality_flags", [])) + ["overlap_gap"]
                 row["quality_ok"] = False
@@ -510,8 +537,9 @@ class CoverageValidator:
 
         # ---- coverage over the surveyed area ------------------------------------------
         coverage = self._coverage(footprints, layout_meta.get("epsg"), aoi_lonlat, out_dir, thumbs)
-        suggestions = self._gap_suggestions(rows, footprints, coverage, missing_pairs,
-                                            layout_meta.get("epsg"))
+        unplaced = layout_meta.get("unplaced", {})
+        suggestions, unassessed_gaps = self._gap_suggestions(
+            rows, footprints, coverage, missing_pairs, layout_meta.get("epsg"), unplaced)
 
         quality_fail = sum(1 for row in rows if not bool(row.get("quality_ok", False)))
         layout = {
@@ -527,6 +555,12 @@ class CoverageValidator:
         }
         if problems.get("terrain"):
             layout["terrain_error"] = problems["terrain"]
+        if unplaced:
+            layout["not_assessed_note"] = (
+                f"{len(unplaced)} image(s) with GPS could not be placed on the ground. "
+                "Overlap with them is not assessed, coverage figures count only the "
+                "placed images, and uncovered ground near where they were taken is "
+                "listed under unassessed_gaps rather than suggested for a re-fly.")
         if not coverage.get("available"):
             layout["reason"] = coverage.get("reason", "")
         if any(fp.yaw_deg is None for fp in footprints):
@@ -544,6 +578,8 @@ class CoverageValidator:
             "footprints": [fp.to_dict() for fp in footprints],
             "overlap_pairs": overlap_edges,
             "missing_pairs": missing_pairs,
+            "pairs_not_assessed": pairs_not_assessed,
+            "unassessed_gaps": unassessed_gaps,
             "quality_fail_count": int(quality_fail),
             "coverage_completion_pct": coverage.get("completion_pct"),
             "stereo_coverage_pct": coverage.get("stereo_pct"),
@@ -684,10 +720,14 @@ class CoverageValidator:
 
     def _gap_suggestions(self, rows: list[dict], footprints: list[ImageFootprint],
                          coverage: dict, missing_pairs: list[dict],
-                         epsg: int | None) -> list[dict]:
+                         epsg: int | None,
+                         unplaced: dict[str, tuple[float, float]] | None = None,
+                         ) -> tuple[list[dict], list[dict]]:
         from . import geo
 
         suggestions: list[dict] = []
+        unassessed: list[dict] = []
+        unplaced = unplaced or {}
 
         def located(x: float, y: float) -> dict:
             lon, lat = geo.projected_to_wgs84([x], [y], int(epsg))
@@ -699,13 +739,29 @@ class CoverageValidator:
             cell = coverage["cell_m"]
             min_x, max_y = coverage["origin"]
             gap = ((inside) & (counts == 0)).astype(np.uint8) * 255
-            n, _labels, stats, centroids = cv2.connectedComponentsWithStats(gap, connectivity=8)
+            n, labels, stats, centroids = cv2.connectedComponentsWithStats(gap, connectivity=8)
             smallest = self.config.min_gap_fraction_of_footprint * coverage["mean_footprint_m2"]
+            # An unplaced image covers roughly a footprint around where it was taken.
+            reach = float(np.sqrt(coverage["mean_footprint_m2"]))
             for index in range(1, n):
                 area_m2 = float(stats[index, cv2.CC_STAT_AREA]) * cell * cell
                 if area_m2 < smallest:
                     continue
                 cx, cy = centroids[index]
+                near = []
+                if unplaced:
+                    rr, cc = np.nonzero(labels == index)
+                    gx, gy = min_x + (cc + 0.5) * cell, max_y - (rr + 0.5) * cell
+                    near = [name for name, (ux, uy) in unplaced.items()
+                            if float(np.min(np.hypot(gx - ux, gy - uy))) <= reach]
+                if near:
+                    unassessed.append({
+                        "area_m2": round(area_m2, 1),
+                        **located(min_x + cx * cell, max_y - cy * cell),
+                        "reason": "images taken here could not be placed on the ground",
+                        "related_images": sorted(near),
+                    })
+                    continue
                 suggestions.append({
                     "kind": "coverage_gap",
                     "priority": area_m2,
@@ -741,7 +797,7 @@ class CoverageValidator:
             suggestions.append(item)
 
         suggestions.sort(key=lambda s: float(s.get("priority", 0.0)), reverse=True)
-        return suggestions[: self.config.max_gap_suggestions]
+        return suggestions[: self.config.max_gap_suggestions], unassessed
 
     def _build_gap_mission(
         self,
