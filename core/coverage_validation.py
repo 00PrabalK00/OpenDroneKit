@@ -399,7 +399,9 @@ class CoverageValidator:
         out_dir = Path(output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        images: list[np.ndarray] = []
+        # Only the reduced grey frame and the thumbnail are kept per image. A list of the
+        # full-resolution frames used to be kept as well and never read: about 54 MB per
+        # 18 MP frame, so memory grew with survey size until a large survey could not run.
         grays: list[np.ndarray] = []
         thumbs: list[np.ndarray] = []
         rows: list[dict] = []
@@ -423,9 +425,9 @@ class CoverageValidator:
                     "low_overlap": False,
                 }
             )
-            images.append(img)
             grays.append(gray)
             thumbs.append(_resize_with_width(img, self.config.thumbnail_width))
+            del img
 
         overlap_edges: list[dict] = []
         missing_pairs: list[dict] = []
