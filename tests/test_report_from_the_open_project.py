@@ -285,3 +285,57 @@ class TestThePipelineWritesItsReport:
         assert status["status"] == "done", status.get("error")
         text = Path(status["result"]["report_markdown_path"]).read_text(encoding="utf-8")
         assert "Reconstruction FAILED" in text
+
+
+class TestWhatThisInstallationCannotWrite:
+    def test_a_missing_writer_is_refused_by_name_and_html_still_works(self, surveyed,
+                                                                      monkeypatch) -> None:
+        """The launcher's old environment had no reportlab: PDF vanished silently."""
+        from core import report_engine
+
+        real = report_engine._importable
+        monkeypatch.setattr(report_engine, "_importable",
+                            lambda module: False if module == "reportlab" else real(module))
+        refused = surveyed.generate_report("", "R", "standard", "", "", "", "", ["html", "pdf"])
+        assert not refused["ok"] and "reportlab" in refused["error"]
+        readiness = surveyed.report_readiness("", "standard", ["html", "pdf"])
+        assert not readiness["ready"]
+        assert surveyed.generate_report("", "R", "standard", "", "", "", "", ["html"])["ok"]
+
+
+class TestTheAuditTrail:
+    def test_it_exports_the_desktop_events(self, surveyed) -> None:
+        import csv
+
+        surveyed.generate_report("", "R")
+        result = surveyed.export_audit_log("csv")
+        with open(result["path"], newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        kinds = [row["event_type"] for row in rows]
+        assert "dataset_imported" in kinds and "mission_version_saved" in kinds
+        assert "report_generated" in kinds
+        assert result["events"] == len(rows)
+
+    def test_the_report_prints_the_same_trail(self, surveyed) -> None:
+        page = Path(surveyed.generate_report("", "R")["html_path"]).read_text(encoding="utf-8")
+        assert "mission_version_saved" in page and "dataset_imported" in page
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="the launcher is a Windows batch file")
+def test_the_launcher_names_an_environment_that_can_write_reports(monkeypatch) -> None:
+    import subprocess
+
+    launcher = Path(__file__).resolve().parents[1] / "OpenDroneKit.bat"
+    monkeypatch.setenv("ODK_LAUNCH_CHECK_ONLY", "1")
+    monkeypatch.delenv("ODK_CONDA_ENV", raising=False)
+    completed = subprocess.run(["cmd", "/c", str(launcher)], capture_output=True, text=True,
+                               timeout=120)
+    if "Could not locate conda" in completed.stdout:
+        pytest.skip("no conda installation on this machine")
+    assert "Using conda environment" in completed.stdout
+    env = completed.stdout.split("Using conda environment:")[1].split()[0]
+    # Whichever environment it picked, it either can write reports or says it cannot.
+    check = subprocess.run(["cmd", "/c", "conda", "run", "-n", env, "python", "-c",
+                            "import reportlab, docx"], capture_output=True, text=True, timeout=300)
+    if check.returncode != 0:
+        assert "cannot write PDF/Word reports" in completed.stdout

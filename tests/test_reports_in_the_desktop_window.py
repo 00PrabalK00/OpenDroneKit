@@ -11,6 +11,7 @@ behind the bridge (see desktop_window.py), and then open the files it wrote.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,13 @@ await __waitFor(() => __modalOpen('Generated Reports'));
 out.listed = document.querySelectorAll('#modal-body button[data-kind="html"]').length;
 __clickAction('Close');
 
+out.notificationButton = $('#btn-notifications').textContent;
+$('#btn-notifications').click();
+await __waitFor(() => __modalOpen('Notifications'));
+out.notifications = $('#modal-body').textContent;
+__clickAction('Mark all read');
+await __waitFor(() => $('#btn-notifications').textContent === 'Notifications');
+
 window.odk.onMenu({ action: 'tools.audit' });
 await __waitFor(() => __modalOpen('Audit Log'));
 out.audit = $('#modal-body').textContent;
@@ -123,6 +131,17 @@ def driven(tmp_path_factory):
                         [-81.7500, 41.3045], [-81.7510, 41.3045]])["ok"]
     assert api.plan_mission({"altitude_m": 60, "mode": "grid"})["ok"]
     assert api.save_mission("Culvert grid", "first flight")["ok"]
+
+    # A job that fails for a real reason, through the public Api, so the Notifications
+    # button has something true to show.
+    empty = base / "empty"
+    empty.mkdir()
+    job = api.run_reconstruction({"image_dir": str(empty), "engine": "custom"})
+    assert job["ok"], job
+    for _ in range(600):
+        if api.job_status(job["job_id"])["job"]["status"] in ("done", "failed"):
+            break
+        time.sleep(0.1)
 
     result = run_page(api, DRIVER, base / "profile")
     assert "error" not in result, result
@@ -178,3 +197,10 @@ class TestTheWindowProducesAReport:
         assert "finding_recorded" in result["audit"]
         assert "label: crack" in result["audit"]
         assert "report_generated" in result["audit"]
+
+
+class TestNotificationsReachTheDefaultWindow:
+    def test_a_failed_job_is_announced_with_its_reason(self, driven) -> None:
+        result, _ = driven
+        assert result["notificationButton"] == "Notifications (1)"
+        assert "failed" in result["notifications"].lower()
