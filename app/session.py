@@ -16,6 +16,11 @@ from typing import Any
 
 from .store import ProjectStore
 
+# A vehicle that has said nothing for this long is not "connected" in any sense a pilot
+# cares about. ArduPilot streams several messages a second, so three seconds of silence
+# is a lost link, not a slow one.
+TELEMETRY_STALE_AFTER_S = 3.0
+
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
@@ -40,8 +45,14 @@ class VehicleLink:
             "uri": self.uri,
             "last_error": self.last_error,
             "connected_utc": self.connected_utc,
-            "is_simulated": self.driver in {"mock", "sitl"},
+            "is_simulated": _is_simulated(self.driver),
         }
+
+
+def _is_simulated(driver: str) -> bool:
+    from core.drone import SIMULATED_DRIVERS
+
+    return str(driver or "").lower() in SIMULATED_DRIVERS
 
 
 @dataclass
@@ -86,9 +97,21 @@ class AppSession:
 
         from core.flight_log import FlightLog
 
-        # One log per session. Recording starts as soon as telemetry is read, because a
-        # log that has to be armed separately is one somebody forgets to arm.
+        # One log per vehicle connection, begun by connect_vehicle. Recording starts as
+        # soon as telemetry arrives, because a log that has to be armed separately is one
+        # somebody forgets to arm. It used to be one log per application session, so a
+        # mock connection followed by a real one exported a single "flight" that started
+        # in San Francisco and ended in Ohio -- 3,477 km, with the mock's battery.
         self.flight_log = FlightLog()
+        # Earlier connections' logs, archived rather than discarded when a new
+        # connection starts, so reconnecting never throws a flight away.
+        self.archived_flight_logs: list[dict[str, Any]] = []
+        # Whether the planned mission is known to be on the vehicle: set only when the
+        # vehicle acknowledged the upload, cleared by a new plan or a new connection.
+        self.mission_uploaded: bool = False
+        # Manual preflight checks the operator has confirmed, by check id, for the
+        # current connection and plan.
+        self.preflight_acknowledged: set[str] = set()
         self.no_fly_polygons: list[list[list[float]]] = []
         self.terrain_source_path: str = ""
         # Which geocoding backend place search uses. Switchable to a self-hosted
@@ -102,6 +125,12 @@ class AppSession:
         self.layers: dict[str, MapLayer] = {}
         self.vehicle = VehicleLink()
         self._drone_client: Any = None
+        from core.flight import FlightManager
+
+        # The live flight session: commands.jsonl, telemetry.jsonl and a flight state
+        # per connection. Owned by this session rather than the module singleton so two
+        # sessions (or two tests) never share an aircraft.
+        self.flight_manager = FlightManager()
         self.display_epsg: int = 4326
 
     # -- projects --------------------------------------------------------
@@ -130,6 +159,7 @@ class AppSession:
         # Project-scoped state must not leak between projects.
         self.mission_plan = None
         self.mission_plan_dict = {}
+        self.mission_uploaded = False
         self.layers.clear()
         self.active_dataset_dir = ""
         # Clearing is right -- the old project's layers are not this one's -- but leaving
@@ -355,11 +385,12 @@ class AppSession:
 
     # -- vehicle ---------------------------------------------------------
 
-    def connect_vehicle(self, uri: str, driver: str = "mavlink") -> dict[str, Any]:
+    def connect_vehicle(self, uri: str, driver: str = "pymavlink") -> dict[str, Any]:
         """Connect over the requested driver. Never silently substitutes the mock."""
         from core.drone import create_drone_client
 
         self.disconnect_vehicle()
+        driver = str(driver or "pymavlink").strip().lower()
         try:
             client = create_drone_client(driver)
             client.connect(uri) if hasattr(client, "connect") else None
@@ -368,9 +399,61 @@ class AppSession:
             self.audit("vehicle_connected", {"driver": driver, "uri": uri})
         except Exception as exc:  # noqa: BLE001
             self.vehicle = VehicleLink(connected=False, driver=driver, uri=uri, last_error=str(exc))
+            return self.vehicle.to_dict()
+
+        self.mission_uploaded = False
+        self.preflight_acknowledged = set()
+        self._begin_flight_log(driver, uri)
+        self._begin_flight_session(client, driver, uri)
         return self.vehicle.to_dict()
 
+    def _begin_flight_log(self, driver: str, uri: str) -> None:
+        """Start a fresh log for this connection, archiving the previous one.
+
+        The previous log is written to disk rather than dropped: a pilot who flies,
+        reconnects and then goes to export must still find the flight they flew.
+        """
+        from core.flight_log import FlightLog, export_all
+
+        previous = self.flight_log
+        if previous is not None and previous.samples:
+            try:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                stem = previous.default_stem()
+                files = export_all(previous, self.project_root() / "flights", stem=f"{stem}_{stamp}")
+                self.archived_flight_logs.append({"files": files, "summary": previous.summary()})
+            except Exception:  # noqa: BLE001 - archiving must never block a connection
+                pass
+        self.flight_log = FlightLog(
+            driver=driver,
+            connection_uri=uri,
+            is_simulated=_is_simulated(driver),
+        )
+
+    def _begin_flight_session(self, client: Any, driver: str, uri: str) -> None:
+        """Open the FlightManager session: command and telemetry logs for this link."""
+        manager = self.flight_manager
+        try:
+            root = self.project_root()
+            manager.start_session(
+                project_root=root,
+                project_id=str(self.project_id()),
+                mission_id=str((self.mission_plan_dict or {}).get("template", "")),
+                drone_id=f"{driver}:{uri}",
+                drone=client,
+            )
+            manager.add_telemetry_listener(self._record_telemetry)
+        except Exception as exc:  # noqa: BLE001 - the link itself is still usable
+            self.vehicle.last_error = f"Flight session log unavailable: {exc}"
+
     def disconnect_vehicle(self) -> None:
+        manager = getattr(self, "flight_manager", None)
+        if manager is not None and manager.active_session() is not None:
+            try:
+                manager.remove_telemetry_listener(self._record_telemetry)
+                manager.end_session(reason="disconnected")
+            except Exception:  # noqa: BLE001
+                pass
         client = self._drone_client
         if client is not None:
             try:
@@ -380,9 +463,26 @@ class AppSession:
                 pass
         self._drone_client = None
         self.vehicle = VehicleLink()
+        self.mission_uploaded = False
+
+    def _record_telemetry(self, data: Any) -> None:
+        """Append one sample to this connection's flight log, if it is new and live.
+
+        A snapshot the vehicle has not refreshed is the same observation read twice,
+        and a stale one is not an observation of now at all; recording either would put
+        points in the log that the aircraft never reported.
+        """
+        try:
+            age = data.age_s() if hasattr(data, "age_s") else 0.0
+            if age > TELEMETRY_STALE_AFTER_S:
+                return
+            self.flight_log.record(data)
+        except Exception:  # noqa: BLE001
+            # Logging must never be the reason a pilot loses their telemetry display.
+            pass
 
     def telemetry(self) -> dict[str, Any]:
-        """Live telemetry, or an explicit not-connected marker."""
+        """Live telemetry, or an explicit not-connected / link-lost marker."""
         if self._drone_client is None:
             return {"connected": False, "reason": "No vehicle connected."}
         try:
@@ -390,18 +490,30 @@ class AppSession:
         except Exception as exc:  # noqa: BLE001
             return {"connected": False, "reason": f"Telemetry read failed: {exc}"}
         payload = data.to_dict() if hasattr(data, "to_dict") else dict(getattr(data, "__dict__", {}))
-        payload["connected"] = True
         payload["driver"] = self.vehicle.driver
-        payload["is_simulated"] = self.vehicle.driver in {"mock", "sitl"}
+        payload["is_simulated"] = _is_simulated(self.vehicle.driver)
 
-        # Record as we go. A telemetry stream is transient, and the moment it is wanted
-        # is after the flight, when nobody can go back and start recording.
-        try:
-            self.flight_log.record(data)
-        except Exception:  # noqa: BLE001
-            # Logging must never be the reason a pilot loses their telemetry display.
-            pass
+        # Staleness, measured rather than assumed. The bridge sets connected=True on the
+        # first message and nothing ever cleared it, so an aircraft that flew out of
+        # range read "connected, AUTO, armed, 77 %" indefinitely. The last known values
+        # are kept -- they are where the aircraft was last seen -- but labelled as such.
+        age = data.age_s() if hasattr(data, "age_s") else 0.0
+        payload["telemetry_age_s"] = round(age, 1)
+        if age > TELEMETRY_STALE_AFTER_S:
+            payload["connected"] = False
+            payload["stale"] = True
+            payload["link_lost"] = True
+            payload["reason"] = (
+                f"Link lost: nothing heard from the vehicle for {age:.0f} s. The values "
+                "shown are the last ones it reported, not where it is now."
+            )
+            return payload
 
+        payload["connected"] = True
+        payload["stale"] = False
+        # Recorded here as well as by the flight session's poll, so the log holds what
+        # the pilot saw; the log drops a snapshot it has already recorded.
+        self._record_telemetry(data)
         return payload
 
 

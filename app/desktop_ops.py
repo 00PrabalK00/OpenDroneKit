@@ -24,10 +24,12 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import hashlib
 import secrets
+import threading
 from pathlib import Path
 from typing import Any
 
 TOKEN_BYTES = 24
+_INIT_LOCK = threading.Lock()
 
 
 def _utc_now() -> datetime:
@@ -43,8 +45,42 @@ def _session():
     """
     from services.api.db import get_session_factory, init_db
 
-    init_db()
+    # Serialised: pywebview runs each Api call on its own thread, and the Fleet screen
+    # asks for the list while a Save is in flight. Two concurrent create_all() calls on
+    # a new SQLite file race, and the loser failed the Save with "table users already
+    # exists".
+    with _INIT_LOCK:
+        init_db()
     return get_session_factory()()
+
+
+# The organisation a single-user desktop install records against. The cockpit sends it
+# when no organisation has been chosen.
+LOCAL_ORGANIZATION_ID = 1
+
+
+def _organization(db, organization_id: int) -> int:
+    """The organisation id to record against, creating the local one on first use.
+
+    Organisations were only ever created by the web service's registration endpoint, so
+    on a fresh database -- every new desktop install -- the first fleet record failed
+    with "FOREIGN KEY constraint failed" and the Fleet screen could never hold anything.
+
+    Only the local default is created. Any other id that does not exist is refused by
+    name, because recording an aircraft against an organisation nobody made would
+    invent one.
+    """
+    from services.api.models import Organization
+
+    wanted = int(organization_id)
+    if db.get(Organization, wanted) is not None:
+        return wanted
+    if wanted != LOCAL_ORGANIZATION_ID:
+        raise ValueError(f"No organisation with id {wanted}.")
+    db.add(Organization(id=LOCAL_ORGANIZATION_ID, name="Local organisation",
+                        slug="local-desktop"))
+    db.flush()
+    return wanted
 
 
 # --------------------------------------------------------------------- fleet
@@ -58,7 +94,7 @@ def add_aircraft(organization_id: int, name: str, model: str = "", serial: str =
         raise ValueError("An aircraft needs a name.")
     with _session() as db:
         aircraft = Aircraft(
-            organization_id=int(organization_id),
+            organization_id=_organization(db, organization_id),
             name=str(name).strip(),
             model=str(model).strip(),
             serial_number=str(serial).strip(),
@@ -83,7 +119,7 @@ def add_battery(organization_id: int, serial: str, capacity_mah: int = 0,
         raise ValueError("A battery needs a serial number; it is how cycles are tracked.")
     with _session() as db:
         battery = Battery(
-            organization_id=int(organization_id),
+            organization_id=_organization(db, organization_id),
             serial_number=str(serial).strip(),
             capacity_mah=int(capacity_mah or 0),
             cycle_limit=int(cycle_limit or 0),
@@ -116,7 +152,7 @@ def add_pilot(organization_id: int, display_name: str, licence_number: str = "",
             raise ValueError(f"Licence expiry must be YYYY-MM-DD: {exc}") from exc
     with _session() as db:
         pilot = PilotProfile(
-            organization_id=int(organization_id),
+            organization_id=_organization(db, organization_id),
             display_name=str(display_name).strip(),
             licence_number=str(licence_number).strip(),
             licence_expires_on=expires,
@@ -372,7 +408,7 @@ def add_webhook(organization_id: int, url: str, events: list[str] | None = None,
     secret = secrets.token_urlsafe(TOKEN_BYTES)
     with _session() as db:
         hook = Webhook(
-            organization_id=int(organization_id),
+            organization_id=_organization(db, organization_id),
             url=str(url).strip(),
             events_json=json.dumps(list(events or ["*"])),
             description=str(description).strip(),
