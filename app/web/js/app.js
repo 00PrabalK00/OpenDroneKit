@@ -233,6 +233,7 @@
         clearInterval(timer);
         state.jobPollers.delete(jobId);
         status(`${job.name}: ${job.status}${job.error ? ' — ' + job.error : ''}`);
+        refreshReportInfo();
         if (job.status === 'done' && onDone) onDone(job);
       } else {
         $('#status-message').textContent = `${job.name} ${job.percent}% — ${job.message}`;
@@ -422,6 +423,261 @@
     status(hints[tool] || tool);
   }
 
+  /* ---------- reports ----------
+     Everything here reads and writes the open project: the report is built from its
+     datasets, saved missions, findings, reconstruction and audit trail, and written
+     into <project>/reports. Before this the default window had no way to produce a
+     report at all. */
+
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  const REPORT_TYPES = ['standard', 'engineering', 'executive', 'defect_only',
+    'dataset_quality', 'mission_summary'];
+
+  async function refreshReportInfo() {
+    const [found, reports, notes] = await Promise.all([
+      tryCall('find_annotations'), tryCall('list_reports'), tryCall('list_notifications', true)]);
+    const findings = (found && found.annotations) || [];
+    const unreviewed = findings.filter((a) => a.status === 'open' || a.status === 'in_review').length;
+    const latest = reports && reports.reports && reports.reports[0];
+    $('#report-info').innerHTML = kv([
+      ['Findings', `${findings.length} (${unreviewed} not reviewed)`],
+      ['Reports', reports ? String(reports.reports.length) : '—'],
+      ['Latest', latest ? esc(latest.title) : 'none yet']
+    ]);
+    const unread = notes ? notes.unread : 0;
+    $('#btn-notifications').textContent = unread ? `Notifications (${unread})` : 'Notifications';
+  }
+
+  function readinessHtml(r) {
+    const rows = [];
+    (r.missing || []).forEach((m) => rows.push(`<div><span>Missing</span><b class="no">${esc(m)}</b></div>`));
+    (r.warnings || []).forEach((m) => rows.push(`<div><span>Warning</span><b>${esc(m)}</b></div>`));
+    (r.notes || []).forEach((m) => rows.push(`<div><span>Note</span><b>${esc(m)}</b></div>`));
+    if (!rows.length) rows.push('<div><span>Ready</span><b class="yes">Nothing missing.</b></div>');
+    return rows.join('');
+  }
+
+  function reportLinks(report) {
+    const kinds = [['html', report.html_path], ['pdf', report.pdf_path], ['docx', report.docx_path]]
+      .filter(([, path]) => path);
+    return kinds.map(([kind]) =>
+      `<button data-open-report="${esc(report.id)}" data-kind="${kind}">${kind.toUpperCase()}</button>`)
+      .join(' ') + ` <button data-open-report="${esc(report.id)}" data-kind="folder">Folder</button>`;
+  }
+
+  function wireReportLinks() {
+    $$('#modal-body button[data-open-report]').forEach((button) => {
+      button.onclick = async () => {
+        const result = await tryCall('open_report', button.dataset.openReport, button.dataset.kind);
+        if (result) status(`Opened ${result.opened}`);
+      };
+    });
+  }
+
+  async function generateReportDialog() {
+    const saved = await tryCall('report_templates');
+    const last = (saved && saved.templates && saved.templates[0]) || {};
+    const options = REPORT_TYPES.map((t) =>
+      `<option value="${t}" ${t === (last.report_type || 'standard') ? 'selected' : ''}>${t}</option>`).join('');
+    modal('Generate Report', `
+      <div class="form">
+        <label>Title<input id="rp-title" value="${esc(last.title || 'Inspection report')}" /></label>
+        <label>Type<select id="rp-type">${options}</select></label>
+        <label>Formats
+          <span><input type="checkbox" id="rp-pdf" checked /> PDF
+                <input type="checkbox" id="rp-docx" /> Word</span></label>
+        <label>Organisation<input id="rp-org" value="${esc(last.organization || '')}" /></label>
+        <label>Client<input id="rp-client" value="${esc(last.client || '')}" /></label>
+        <label>Prepared by<input id="rp-author" value="${esc(last.author || '')}" /></label>
+        <label>Logo file<span class="file-row"><input id="rp-logo" value="${esc(last.logo_path || '')}" />
+          <button class="mini-btn" id="rp-logo-pick">...</button></span></label>
+        <label>Summary (optional)<textarea id="rp-summary" rows="2"></textarea></label>
+        <label>Recommendations, one per line (optional)<textarea id="rp-recs" rows="3"></textarea></label>
+      </div>
+      <div class="info" id="rp-readiness">Checking what the report needs…</div>`,
+      [{ label: 'Cancel' }, {
+        label: 'Generate', primary: true, onClick: async () => {
+          const formats = ['html'];
+          if ($('#rp-pdf').checked) formats.push('pdf');
+          if ($('#rp-docx').checked) formats.push('docx');
+          const settings = {
+            title: $('#rp-title').value.trim() || 'Inspection report',
+            report_type: $('#rp-type').value,
+            organization: $('#rp-org').value.trim(),
+            client: $('#rp-client').value.trim(),
+            author: $('#rp-author').value.trim(),
+            logo_path: $('#rp-logo').value.trim(),
+            formats
+          };
+          status('Generating report…');
+          const result = await tryCall('generate_report', '', settings.title, settings.report_type,
+            settings.author, settings.organization, settings.client, settings.logo_path, formats,
+            $('#rp-summary').value.trim(), $('#rp-recs').value);
+          if (!result) return true;
+          await tryCall('save_report_template', 'last used', settings);
+          await refreshReportInfo();
+          status(`Report written to ${result.output_dir}`);
+          showReportResult(result);
+          return true;
+        }
+      }]);
+    const check = async () => {
+      const formats = ['html'];
+      if ($('#rp-pdf').checked) formats.push('pdf');
+      if ($('#rp-docx').checked) formats.push('docx');
+      const r = await tryCall('report_readiness', '', $('#rp-type').value, formats);
+      if (r && $('#rp-readiness')) $('#rp-readiness').innerHTML = readinessHtml(r);
+    };
+    $('#rp-type').onchange = check;
+    $('#rp-pdf').onchange = check;
+    $('#rp-docx').onchange = check;
+    $('#rp-logo-pick').onclick = async () => {
+      const picked = await tryCall('pick_file', ['png', 'jpg', 'jpeg']);
+      if (picked && picked.path) $('#rp-logo').value = picked.path;
+    };
+    await check();
+  }
+
+  function showReportResult(result) {
+    modal('Report Written', `<div class="info">${kv([
+      ['Title', esc(result.title)],
+      ['Type', esc(result.report_type)],
+      ['Findings', String(result.findings)],
+      ['Folder', esc(result.output_dir)]
+    ])}${(result.warnings || []).map((w) => `<div><span>Warning</span><b>${esc(w)}</b></div>`).join('')}
+      <div><span>Open</span><b>${reportLinks(result)}</b></div></div>`);
+    wireReportLinks();
+  }
+
+  async function listReportsDialog() {
+    const result = await tryCall('list_reports');
+    if (!result) return;
+    const rows = result.reports.map((r) =>
+      `<div><span>${esc(r.created_at.slice(0, 19))} · ${esc(r.title)} (${esc(r.report_type)})</span>
+       <b>${reportLinks(r)}</b></div>`).join('');
+    modal('Generated Reports', `<div class="info">${rows || 'No reports generated in this project yet.'}</div>`);
+    wireReportLinks();
+  }
+
+  async function exportFindings(format) {
+    const saved = await tryCall('report_templates');
+    const last = (saved && saved.templates && saved.templates[0]) || {};
+    const result = await tryCall('export_report', format, last.title || 'Inspection findings',
+      last.organization || '', last.client || '', last.author || '', '', last.logo_path || '');
+    if (!result) return;
+    status(`${format.toUpperCase()} with ${result.findings} finding(s) written to ${result.path}`);
+    modal('Findings Exported', `<div class="info">${kv([['File', esc(result.path)],
+      ['Findings', String(result.findings)]])}</div>`,
+      [{ label: 'Close' }, { label: 'Open', primary: true, onClick: () => tryCall('open_path', result.path) }]);
+    await refreshReportInfo();
+  }
+
+  async function recordFindingDialog() {
+    const datasets = await tryCall('list_datasets');
+    const hint = datasets && datasets.datasets && datasets.datasets.length
+      ? `Images from: ${datasets.datasets.map((d) => esc(d.name)).join(', ')}`
+      : 'Import an imagery folder first (File > Import Imagery Folder).';
+    modal('Record Finding', `
+      <div class="form">
+        <label>Image (file name or path)<span class="file-row"><input id="fd-image" placeholder="DSC00229.JPG" />
+          <button class="mini-btn" id="fd-pick">...</button></span></label>
+        <label>What is it<input id="fd-label" placeholder="crack, spalling, corrosion…" /></label>
+        <label>Severity<select id="fd-severity">
+          <option>critical</option><option>high</option><option selected>medium</option>
+          <option>low</option><option>info</option></select></label>
+        <label>Box x0,y0,x1,y1 in pixels (optional)<input id="fd-bbox" placeholder="whole photo" /></label>
+        <label>Note<textarea id="fd-note" rows="2"></textarea></label>
+      </div><div class="info">${hint}</div>`,
+      [{ label: 'Cancel' }, {
+        label: 'Record', primary: true, onClick: async () => {
+          const bboxText = $('#fd-bbox').value.trim();
+          let bbox = null;
+          if (bboxText) {
+            bbox = bboxText.split(/[ ,]+/).map(Number);
+            if (bbox.length !== 4 || bbox.some((v) => !Number.isFinite(v))) {
+              status('The box needs four numbers: x0, y0, x1, y1.');
+              return true;
+            }
+          }
+          const result = await tryCall('record_finding', $('#fd-image').value.trim(),
+            $('#fd-label').value.trim(), $('#fd-severity').value, $('#fd-note').value.trim(), bbox);
+          if (!result) return true;
+          status(`Finding recorded: ${result.finding.label} (${result.finding.severity}).`);
+          await refreshReportInfo();
+        }
+      }]);
+    $('#fd-pick').onclick = async () => {
+      const picked = await tryCall('pick_file', ['jpg', 'jpeg', 'png', 'tif', 'tiff']);
+      if (picked && picked.path) $('#fd-image').value = picked.path;
+    };
+  }
+
+  async function reviewDialog() {
+    const result = await tryCall('find_annotations');
+    if (!result) return;
+    const rows = result.annotations.map((a) => {
+      const source = a.created_by === 'user' ? 'inspector' : esc(a.created_by);
+      const image = esc(String(a.source_id || '').split(/[\\/]/).pop());
+      return `<div><span>${esc(a.label)} · ${esc(a.severity)} · ${image} · ${source}
+        <br/><small>${esc(a.status)} — ${esc((a.note || '').split('\n')[0])}</small></span>
+        <b><button data-review="${esc(a.id)}" data-decision="accept">Accept</button>
+           <button data-review="${esc(a.id)}" data-decision="reject">Reject</button>
+           <button data-review="${esc(a.id)}" data-decision="flag">Flag</button></b></div>`;
+    }).join('');
+    modal('Findings and Review', `<div class="info">${rows || 'No findings recorded in this project.'}</div>`);
+    $$('#modal-body button[data-review]').forEach((button) => {
+      button.onclick = async () => {
+        const done = await tryCall('review_finding', button.dataset.review, button.dataset.decision, 'operator');
+        if (done) {
+          status(`Finding ${done.label}: ${done.status}.`);
+          await refreshReportInfo();
+          await reviewDialog();
+        }
+      };
+    });
+  }
+
+  async function provenanceDialog() {
+    const result = await tryCall('verify_provenance');
+    if (!result) return;
+    const rows = Object.entries(result.results || {}).map(([name, r]) =>
+      `<div><span>${esc(name)}</span><b class="${r.ok ? 'yes' : 'no'}">${esc(r.status)}</b></div>`).join('');
+    modal('Provenance', `<div class="info">${kv([
+      ['Folder', esc(result.directory)],
+      ['Verified', `${result.verified.length} of ${result.total}`],
+      ['Unattributed', String(result.unattributed.length)],
+      ['Modified', String(result.modified.length)]
+    ])}${rows}</div>`,
+      result.unattributed.length
+        ? [{ label: 'Close' }, {
+          label: 'Record now', onClick: async () => {
+            const done = await tryCall('record_provenance');
+            if (done) status(`Recorded provenance for ${done.artifact_count} file(s).`);
+          }
+        }]
+        : [{ label: 'Close' }]);
+  }
+
+  async function notificationsDialog() {
+    const result = await tryCall('list_notifications');
+    if (!result) return;
+    const rows = result.notifications.map((n) =>
+      `<div><span>${esc((n.created_utc || '').slice(0, 19))} · ${esc(n.title)}${n.read ? '' : ' •'}</span>
+       <b class="${n.level === 'error' ? 'no' : ''}">${esc(n.detail || '')}</b></div>`).join('');
+    modal('Notifications', `<div class="info">${rows || 'No notifications.'}</div>`,
+      [{ label: 'Close' }, {
+        label: 'Mark all read', onClick: async () => {
+          await tryCall('mark_all_notifications_read');
+          await refreshReportInfo();
+        }
+      }]);
+  }
+
   /* ---------- menu dispatch ---------- */
 
   const menuHandlers = {
@@ -543,8 +799,30 @@
     'tools.audit': async () => {
       const result = await tryCall('audit_log', 100);
       if (!result) return;
-      const rows = result.events.map((e) => `<div><span>${e.created_at} · ${e.event_type}</span><b></b></div>`).join('');
-      modal('Audit Log', `<div class="info">${rows || 'No events recorded.'}</div>`);
+      // The payload is what the event was about; showing only its type said that
+      // something happened without saying what.
+      const rows = result.events.map((e) => {
+        let detail = '';
+        try {
+          detail = Object.entries(JSON.parse(e.payload_json || '{}'))
+            .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`).join(', ');
+        } catch (err) { detail = e.payload_json || ''; }
+        return `<div><span>${esc(e.created_at)} · ${esc(e.event_type)}</span><b>${esc(detail)}</b></div>`;
+      }).join('');
+      modal('Audit Log', `<div class="info">${rows || 'No events recorded.'}</div>`,
+        [{ label: 'Close' }, { label: 'Export CSV', onClick: () => menuHandlers['report.audit_export']() }]);
+    },
+
+    'report.generate': () => generateReportDialog(),
+    'report.export': (payload) => exportFindings(payload.format || 'pdf'),
+    'report.list': () => listReportsDialog(),
+    'report.finding': () => recordFindingDialog(),
+    'report.review': () => reviewDialog(),
+    'report.provenance': () => provenanceDialog(),
+    'report.notifications': () => notificationsDialog(),
+    'report.audit_export': async () => {
+      const result = await tryCall('export_audit_log', 'csv');
+      if (result) status(`Audit log (${result.events} events) written to ${result.path}`);
     },
 
     'help.about': () => modal('About OpenDroneKit',
@@ -720,6 +998,7 @@
       ['Root', project.root_dir || 'default'],
       ['Sync', project.sync_status || 'offline']
     ]);
+    if ($('#report-info')) await refreshReportInfo();
   }
 
   /* ---------- bootstrap ---------- */
@@ -740,6 +1019,11 @@
     $('#btn-add-layer').onclick = () => importLayer(['Geodata (*.tif;*.tiff;*.geojson;*.json)']);
     $('#btn-recon').onclick = () => runReconstruction($('#recon-engine').value);
     $('#btn-pipeline').onclick = menuHandlers['analysis.pipeline'];
+    $('#btn-report').onclick = menuHandlers['report.generate'];
+    $('#btn-finding').onclick = menuHandlers['report.finding'];
+    $('#btn-review').onclick = menuHandlers['report.review'];
+    $('#btn-reports').onclick = menuHandlers['report.list'];
+    $('#btn-notifications').onclick = menuHandlers['report.notifications'];
     $('#modal-backdrop').onclick = (e) => { if (e.target.id === 'modal-backdrop') closeModal(); };
 
     document.addEventListener('keydown', (e) => {
