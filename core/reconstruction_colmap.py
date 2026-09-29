@@ -174,7 +174,7 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
     return caps
 
 
-_DENSE_PROBE_VERSION = 3
+_DENSE_PROBE_VERSION = 4
 
 
 def _dense_probe_cache_file() -> Path:
@@ -404,10 +404,12 @@ def explain_dense_failure(binary: str, reason: str) -> str:
     toolkit = binary_cuda_toolchain(binary)
     driver, driver_cuda = driver_cuda_version()
     if toolkit and driver_cuda and _version_tuple(toolkit) > _version_tuple(driver_cuda):
-        # Measured on the RTX 5060 dev box (driver 592.15, CUDA 13.1): the official
-        # COLMAP 4.0.4 Windows CUDA archive, built with CUDA 12.9, runs patch-match.
+        # Measured on the RTX 5060 dev box (driver 592.15, CUDA 13.1): conda-forge's
+        # colmap 4.2.0 cuda_129 build and the official COLMAP 4.0.4 Windows CUDA
+        # archive, both built with CUDA 12.9, run patch-match.
         known_good = (
-            " (the official COLMAP 4.0.4 Windows CUDA archive is built with CUDA 12.9)"
+            " (conda-forge's colmap cuda_129 builds and the official COLMAP 4.0.4 "
+            "Windows CUDA archive are built with CUDA 12.9)"
             if _version_tuple(driver_cuda) >= (12, 9) else ""
         )
         return (

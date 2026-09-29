@@ -112,7 +112,7 @@ produces a refusal with a reason, never a quietly worse answer.
 | Missing | What stops working | What you get instead |
 |---|---|---|
 | `open3d` | Poisson meshing (`pr.mesh`) | A warning in the run's output and no mesh file. The point cloud, DSM and orthomosaic are unaffected. |
-| CUDA-enabled COLMAP | Dense point clouds | Sparse cloud only, reported up front by `Api.reconstruction_capabilities()`. The sparse cloud is never inflated to look dense. |
+| A CUDA COLMAP that runs on this GPU | Dense point clouds | Sparse cloud only, reported up front by `Api.reconstruction_capabilities()` with the reason. The sparse cloud is never inflated to look dense. See [Dense reconstruction on RTX 50-series](#dense-reconstruction-on-rtx-50-series). |
 | `rasterio` | GeoTIFF reading, terrain following from DEMs | Those tests skip; planning falls back to flat earth **with a warning on every plan**. |
 | `onnxruntime` / `opencv-python` | Model inference | Detection capabilities refuse rather than returning empty results. |
 | `pymavlink` | Flight control, telemetry | Planning and processing are unaffected. |
@@ -131,6 +131,78 @@ No GPU is required to run OpenDroneKit. A GPU matters for two things:
 from app.api import Api
 Api(session).reconstruction_capabilities()
 ```
+
+The same answer is on screen under Environment Capabilities ("Dense MVS"), with the
+reason when it is "no". It comes from running patch-match once on a two-image test
+scene with the COLMAP that will be used, not from the binary existing.
+
+### Dense reconstruction on RTX 50-series
+
+**Symptom.** Dense MVS reports "no" with `the provided PTX was compiled with an
+unsupported toolchain`, and reconstructions warn "Dense MVS skipped" and build their
+products from the sparse cloud.
+
+**Cause.** The COLMAP build's GPU kernels were compiled with a newer CUDA toolkit
+than the installed NVIDIA driver can load. The reason on screen names both versions,
+read from the binary and from `nvidia-smi`. On the development machine (RTX 5060
+Laptop, driver 592.15, CUDA 13.1):
+
+| COLMAP build | Built with | Dense MVS on that machine |
+|---|---|---|
+| Official 4.1.0, 4.1.1, 4.2.0 Windows CUDA archives | CUDA 13.2 | Fails: toolkit newer than the driver |
+| Official 4.0.4 Windows CUDA archive | CUDA 12.9.1 | **Works** (measured, see below) |
+| conda-forge `colmap=4.2.0` `cuda_129` build (win-64), in its own env | CUDA 12.9 | **Works**, no JIT delay (probe 2 s); needs `openimageio` added, see below |
+| pip `pycolmap` (Windows) | no CUDA | Sparse only; `pycolmap-cuda12` wheels are Linux-only |
+
+**Fix, any of:**
+
+1. **Update the NVIDIA driver** to one whose `nvidia-smi` header shows
+   `CUDA Version: 13.2` or higher. The installed COLMAP then works unchanged. (Not
+   tested here: the development machine's driver was not changed.)
+2. **Use COLMAP 4.0.4** and point OpenDroneKit at it. Nothing is installed into the
+   Python environment:
+
+   ```powershell
+   # about 430 MB
+   Invoke-WebRequest https://github.com/colmap/colmap/releases/download/4.0.4/colmap-x64-windows-cuda.zip -OutFile colmap-4.0.4-cuda.zip
+   Expand-Archive colmap-4.0.4-cuda.zip "$env:LOCALAPPDATA\COLMAP-4.0.4"
+   setx ODK_COLMAP "$env:LOCALAPPDATA\COLMAP-4.0.4\bin\colmap.exe"
+   ```
+
+   Start a new terminal (or restart the app) so `ODK_COLMAP` is seen, then check
+   Environment Capabilities.
+3. **Use conda-forge's COLMAP 4.2.0 CUDA 12.9 build in a separate conda env.** It has
+   kernels for the RTX 50-series, so there is no first-run JIT delay. Do not install it
+   into the OpenDroneKit env; only `ODK_COLMAP` points at it. Its package does not
+   pull in OpenImageIO, which `colmap.exe` needs (without it the exe exits with
+   0xC0000135 and prints nothing), so add it explicitly:
+
+   ```powershell
+   conda create -y -n colmap-cuda -c conda-forge --override-channels "colmap=4.2.0=cuda_129*" openimageio
+   setx ODK_COLMAP "$env:USERPROFILE\miniconda3\envs\colmap-cuda\Library\bin\colmap.exe"
+   ```
+
+   Create the env on an NTFS drive: on a non-NTFS drive the install fails in
+   `qt-main` with `[Errno 22] Invalid argument`.
+
+**The first dense run is slow, once.** The 4.0.4 kernels predate the RTX 50-series,
+so the driver JIT-compiles them on first use: the capability probe took 292 s the
+first time and 10 s afterwards. The driver caches the compiled kernels in
+`%APPDATA%\NVIDIA\ComputeCache`. Do not set `CUDA_CACHE_DISABLE`; if the probe is slow
+every time, raise `CUDA_CACHE_MAXSIZE` (bytes, e.g. `setx CUDA_CACHE_MAXSIZE
+4294967296`). The probe waits up to `ODK_DENSE_PROBE_TIMEOUT_S` seconds (default 900).
+A probe that runs out of time is reported as "Not decided" and is not cached, so the
+next check tries again.
+
+**Measured with 4.0.4 on the development machine.** Environment Capabilities:
+Dense MVS yes. Run Reconstruction on 20 Aukerman frames at 2400 px (COLMAP engine,
+`standard` profile): 20 of 20 registered, 672,441 fused dense points, DSM 0.32 m/px,
+ortho 0.0625 m/px, EPSG:32617. Without dense MVS, the same 20 frames at full
+resolution gave 4,893 sparse points and a 3.76 m/px DSM. Dense MVS took about 25
+minutes of that run.
+`tests/test_dense_mvs_runs.py` repeats a 10-frame version when `ODK_DENSE_COLMAP` names
+a working `colmap.exe`; it passes with both the 4.0.4 archive and the conda-forge
+4.2.0 build.
 
 ## Windows notes
 
