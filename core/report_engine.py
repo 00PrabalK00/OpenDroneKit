@@ -165,6 +165,24 @@ class ReportReadiness:
 
 # ── Readiness ─────────────────────────────────────────────────────────────────
 
+def _failed_reconstructions(context: dict[str, Any]) -> list[tuple[str, str]]:
+    """(run name, error) for pipeline runs whose reconstruction was attempted and failed.
+
+    "No reconstruction was run" is false for these: one was run, and it failed.
+    """
+    return [(str(run.get("name", "")), str(run["reconstruction_error"]))
+            for run in context.get("pipeline_runs") or [] if run.get("reconstruction_error")]
+
+
+def _no_reconstruction_text(context: dict[str, Any]) -> str:
+    failed = _failed_reconstructions(context)
+    if not failed:
+        return "No reconstruction was run."
+    runs = "; ".join(f"pipeline run {name}: {error}" for name, error in failed)
+    return (f"Reconstruction was attempted {len(failed)} time(s) and failed ({runs}). "
+            "No 3D output was produced.")
+
+
 def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> ReportReadiness:
     """What a report of this type still needs, judged from what the project contains.
 
@@ -195,6 +213,11 @@ def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> Rep
     if not datasets and config.include_images and (
             "dataset_summary" in sections or "key_photos" in sections):
         warnings.append("No dataset imported — report will not include image gallery.")
+    for dataset in datasets:
+        if dataset.get("folder_missing") and config.include_images:
+            warnings.append(f"Dataset {dataset.get('name', '')!r}: its image folder "
+                            f"{dataset['folder_missing']} no longer exists, so the report "
+                            "cannot show or read any of its images.")
     if config.include_defects and not defect_runs and not pipeline_runs and (
             "defect_summary" in sections or "findings" in sections):
         warnings.append("No defect run found — the automated detection section will say "
@@ -208,7 +231,11 @@ def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> Rep
         warnings.append(f"{len(unreviewed)} model-proposed finding(s) are not reviewed; "
                         "the report will say so.")
     if not reconstructions and "reconstruction" in sections:
-        notes.append("No reconstruction output — the 3D section will say none was run.")
+        if _failed_reconstructions(context):
+            notes.append("No reconstruction output — the 3D section will say the pipeline's "
+                         "reconstruction was attempted and failed, and why.")
+        else:
+            notes.append("No reconstruction output — the 3D section will say none was run.")
     if not missions and "mission_map" in sections:
         notes.append("No mission saved — site map section will be sparse.")
 
@@ -235,10 +262,13 @@ def validate_report_readiness(config: ReportConfig) -> ReportReadiness:
     try:
         meta = mgr.load_project(config.project_id)
     except Exception:
-        return ReportReadiness(False, ["project"], [], [])
+        # A bare "project" code reached the checklist as the whole explanation.
+        return ReportReadiness(False, [f"project: no project {config.project_id!r} exists "
+                                       "in this workspace."], [], [])
     root = Path(str(meta.get("root_dir", "")))
     if not root.exists():
-        return ReportReadiness(False, ["project_folder"], [], [])
+        return ReportReadiness(False, [f"project_folder: the project folder {root} does not "
+                                       "exist; it was moved or deleted."], [], [])
     return readiness_from_context(build_report_context(config), config)
 
 
@@ -763,7 +793,7 @@ def derive_summary(context: dict[str, Any]) -> str:
     missions = context.get("missions") or []
     parts.append(f"{len(missions)} saved mission(s)." if missions else "No mission was saved.")
     recons = context.get("reconstructions") or []
-    parts.append(f"{len(recons)} reconstruction(s)." if recons else "No reconstruction was run.")
+    parts.append(f"{len(recons)} reconstruction(s)." if recons else _no_reconstruction_text(context))
     if findings:
         severity_text = ", ".join(
             f"{count} {sev}" for sev, count in sorted(
@@ -986,7 +1016,7 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
                        for name, path in (assets.get("orthomosaics") or {}).items()],
         }
     else:
-        blocks["reconstruction"] = {"paragraphs": ["No reconstruction was run."]}
+        blocks["reconstruction"] = {"paragraphs": [_no_reconstruction_text(context)]}
 
     prov_rows = []
     for recon in recons:

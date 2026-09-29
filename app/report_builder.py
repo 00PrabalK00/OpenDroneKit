@@ -103,6 +103,10 @@ def desktop_context(session: Any, config: ReportConfig) -> dict[str, Any]:
         folder = Path(str(row.get("path", "")))
         if folder.is_dir() and folder not in image_dirs:
             image_dirs.append(folder)
+        elif str(row.get("path", "")) and not folder.is_dir():
+            # Imported, then moved or deleted: readiness says so rather than letting the
+            # gallery and key photos come out silently empty.
+            datasets[-1]["folder_missing"] = str(folder)
         bounds = meta.get("bounds_lonlat")
         if isinstance(bounds, list) and len(bounds) == 4:
             lons += [float(bounds[0]), float(bounds[2])]
