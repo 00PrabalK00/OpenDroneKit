@@ -449,7 +449,9 @@ class StructuralFaultPipeline:
                         "paris_c": float(physics_cfg.paris_c),
                         "paris_m": float(physics_cfg.paris_m),
                     }
-                if metrics_payload:
+                # Geometric mode computes no physical quantities; recording zeros here
+                # made reports print "factor of safety 0.000" as if it were a result.
+                if metrics_payload and physics_cfg is not None:
                     last = metrics_payload[-1]
                     forecast_payload["physics_summary"] = {
                         "final_crack_length_m": float(last.get("crack_length_m", 0.0) or 0.0),
@@ -513,6 +515,18 @@ class StructuralFaultPipeline:
             coverage_payload=coverage_payload,
             history=history_rows,
         )
+        # Every input to this score is a heuristic pixel ratio or a forecast of one;
+        # say so in the file itself, so no reader takes its grade or failure
+        # probabilities for a structural assessment.
+        health_scoring["basis"] = {
+            "defect_evidence": "heuristic",
+            "calibrated": False,
+            "note": (
+                "Screening index from classical-image-processing crack/metal ratios and a "
+                "growth forecast of that mask. The condition grade and failure "
+                "probabilities are uncalibrated and are not a structural assessment."
+            ),
+        }
         health_scoring_path = write_json(run_dir / "health_scoring.json", health_scoring)
 
         _emit_progress(96, "Extracting measurements and scoring defect risk")

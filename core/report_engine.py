@@ -436,8 +436,10 @@ def find_pipeline_runs(root: Path) -> list[dict[str, Any]]:
                 for r in images
             ],
             "reconstruction_error": (summary.get("reconstruction") or {}).get("error", ""),
-            "health": {k: (summary.get("health_scoring") or {}).get(k)
-                       for k in ("integrity_score", "condition_grade", "condition_label")},
+            # Only the screening index: the run's grade and failure probabilities are
+            # derived from heuristic ratios and are not a structural assessment.
+            "screening_severity_index": (summary.get("health_scoring") or {}).get(
+                "severity_index"),
             "report_markdown": str(run / "inspection_report.md")
             if (run / "inspection_report.md").is_file() else "",
             "coverage": summary.get("coverage_validation") or {},
