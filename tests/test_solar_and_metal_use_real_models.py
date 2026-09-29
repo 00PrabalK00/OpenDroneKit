@@ -385,3 +385,36 @@ class TestTheSolarWorkflowStageRunsTheSolarModels:
         assert "structural" not in json.dumps(payload)
         assert any("No solar model for RGB photographs" in r for r in payload["refused_reasons"])
 
+
+class TestARefusedDetectorDoesNotPropUpTheScore:
+    def test_refused_solar_is_not_assessed_and_does_not_raise_integrity(self):
+        """A solar asset whose panels no model could read used to get solar_component
+        0.0 at 35% weight -- a clean bill for panels nobody looked at."""
+        from core.health_scoring import evaluate_asset_health
+
+        common = dict(asset_id="a", run_utc="2026-01-01T00:00:00Z", structure_type="solar",
+                      material_type="steel", forecast_payload={},
+                      reconstruction_payload={}, coverage_payload={})
+        cracked = {"crack_ratio": 0.02, "structural_ratio": 0.03}
+        refused = evaluate_asset_health(image_rows=[{**cracked, "solar_model_used": "refused",
+                                                     "metal_model_used": "refused"}], **common)
+        assert refused["components"]["solar_component"] is None
+        assert refused["components"]["metal_component"] is None
+        assert {"solar", "metal"} <= set(refused["components"]["not_assessed"])
+        # The same asset with a model reading clean panels scores better than unread ones
+        # only because the panels were read.
+        read = evaluate_asset_health(image_rows=[{**cracked, "solar_ratio": 0.0,
+                                                  "solar_model_used": "onnx:x.onnx"}], **common)
+        assert read["components"]["solar_component"] == 0.0
+        assert read["integrity_score"] > refused["integrity_score"]
+
+    def test_a_refused_image_does_not_dilute_the_model_average(self):
+        from core.health_scoring import evaluate_asset_health
+
+        rows = [{"solar_ratio": 0.025, "solar_model_used": "onnx:x.onnx"},
+                {"solar_model_used": "refused"}]
+        health = evaluate_asset_health(asset_id="a", run_utc="2026-01-01T00:00:00Z",
+                                       structure_type="solar", material_type="steel",
+                                       image_rows=rows, forecast_payload={},
+                                       reconstruction_payload={}, coverage_payload={})
+        assert health["components"]["solar_component"] == 1.0

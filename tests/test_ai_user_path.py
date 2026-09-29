@@ -324,8 +324,10 @@ class TestHeuristicsDoNotMoveTheHealthScore:
                       material_type="steel", forecast_payload={},
                       reconstruction_payload={}, coverage_payload={})
         scored = evaluate_asset_health(image_rows=self._rows("heuristic"), **common)
-        assert scored["components"]["solar_component"] == 0.0
-        assert scored["components"]["metal_component"] == 0.0
+        # Nothing a model read: not assessed (None), not a zero that props the score up.
+        assert scored["components"]["solar_component"] is None
+        assert scored["components"]["metal_component"] is None
+        assert {"metal", "solar"} <= set(scored["components"]["not_assessed"])
         assert scored["components"]["excluded_heuristic_images"] == {"metal": 1, "solar": 1}
         model = evaluate_asset_health(image_rows=self._rows("onnx:some_model.onnx"), **common)
         # A trained model's ratio still counts.
@@ -356,7 +358,11 @@ class TestHeuristicsDoNotMoveTheHealthScore:
         assert row["metal_model_used"] == "onnx:corrosion_severity_segmentation.onnx"
         health = summary["health_scoring"]
         assert health["structure_type"] == "solar"
-        assert health["components"]["solar_component"] == 0.0
+        # Refused solar is not assessed: a 0.0 at a solar asset's 35% weight made an
+        # unread panel look healthy.
+        assert health["components"]["solar_component"] is None
+        assert "solar" in health["components"]["not_assessed"]
+        assert health["components"]["metal_component"] is not None
         assert result["heuristic_images_not_scored"] == {"metal": 0, "solar": 0}
         assert result["detectors_run"]["solar"] == ["refused"]
         assert result["detectors_refused"]["solar"]["images"] == 1
