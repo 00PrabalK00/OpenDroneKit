@@ -664,13 +664,17 @@ class ColmapReconstructor:
     ):
         self.profile = _normalize_profile(profile)
         settings = COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"])
-        self.settings = dict(settings)
+        # The caller's explicit choices, kept apart from the profile so that naming a
+        # profile again in reconstruct() cannot reset them. It did: the server passes the
+        # job's profile there, and a cloud run's dense and image-size choices were lost.
+        self._overrides: dict[str, Any] = {}
         if max_image_size is not None:
-            self.settings["max_image_size"] = int(max_image_size)
+            self._overrides["max_image_size"] = int(max_image_size)
         if raster_px_per_m is not None:
-            self.settings["raster_px_per_m"] = float(raster_px_per_m)
+            self._overrides["raster_px_per_m"] = float(raster_px_per_m)
         if dense is not None:
-            self.settings["dense"] = bool(dense)
+            self._overrides["dense"] = bool(dense)
+        self.settings = {**settings, **self._overrides}
         self.use_gpu = bool(use_gpu)
         # Whether GPU SIFT actually ran, as opposed to whether it was asked for.
         self._used_gpu_sift = False
@@ -685,6 +689,17 @@ class ColmapReconstructor:
         self._should_cancel: Callable[[], bool] | None = None
 
     # -- helpers ---------------------------------------------------------
+
+    def _dense_advice(self, purpose: str) -> str:
+        """What to do about a sparse-only product, given whether dense MVS was asked for.
+
+        "Enable dense MVS" was said to operators who had enabled it and whose dense step
+        could not run; they are pointed at the reason instead.
+        """
+        if self.settings.get("dense", True):
+            return (f"Dense MVS was enabled but did not run (see 'Dense MVS skipped'); fix "
+                    f"that {purpose}.")
+        return f"Enable dense MVS {purpose}."
 
     def _warn(self, message: str) -> None:
         if message not in self.warnings:
@@ -1249,7 +1264,7 @@ class ColmapReconstructor:
                 "a finer grid. "
                 + ("More overlapping images registered, or a larger max image size, give "
                    "dense MVS more to fuse." if dense
-                   else "Enable dense MVS for full-resolution products.")
+                   else self._dense_advice("for full-resolution products"))
             )
             return density_floor
         return requested
@@ -1658,7 +1673,8 @@ class ColmapReconstructor:
             )
         if profile:
             self.profile = _normalize_profile(profile)
-            self.settings = dict(COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]))
+            self.settings = {**COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"]),
+                             **self._overrides}
         self.warnings = []
         # Whether the products below come from a fused dense cloud. The resolution and
         # orthophoto warnings used to call every cloud "sparse" and advise enabling
@@ -1962,7 +1978,7 @@ class ColmapReconstructor:
                     "relief between the points is not, so raised objects (trees, roofs) lean "
                     "and can be displaced. "
                     + ("A denser fused cloud (more registered overlap) reduces this."
-                       if self._cloud_is_dense else "Dense MVS removes this limit.")
+                       if self._cloud_is_dense else self._dense_advice("to remove this limit"))
                 )
             else:
                 ortho = self._true_orthophoto(raster, registered, camera_map, image_dir, anchor, progress)
@@ -2306,6 +2322,12 @@ def build_reconstructor(engine: str, **kwargs: Any):
             token=str(kwargs.get("cloud_token") or ""),
             engine=name,
             profile=kwargs.get("profile", "standard"),
+            dense=kwargs.get("dense"),
+            use_gpu=kwargs.get("use_gpu"),
+            max_image_size=kwargs.get("max_image_size"),
+            raster_px_per_m=kwargs.get("raster_px_per_m"),
+            target_epsg=kwargs.get("target_epsg"),
+            ground_control=kwargs.get("ground_control"),
         )
     if name == "auto":
         name = "colmap" if _HAS_PYCOLMAP else "custom"

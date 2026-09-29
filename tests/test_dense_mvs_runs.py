@@ -40,10 +40,19 @@ def test_a_coarse_dense_cloud_is_not_told_to_enable_dense_mvs():
 
 
 def test_a_sparse_cloud_still_points_at_dense_mvs():
-    engine = _reconstructor(dense_cloud=False)
+    engine = rc.ColmapReconstructor(profile="standard", dense=False)
     engine._raster_pixel_size(_thin_cloud(), georeferenced=True)
     text = " ".join(engine.warnings)
     assert "900 sparse points" in text and "Enable dense MVS" in text
+
+
+def test_a_sparse_cloud_from_a_skipped_dense_step_points_at_the_reason():
+    """Dense was on but could not run: "Enable dense MVS" told them to do what they did."""
+    engine = _reconstructor(dense_cloud=False)
+    engine._raster_pixel_size(_thin_cloud(), georeferenced=True)
+    text = " ".join(engine.warnings)
+    assert "900 sparse points" in text and "Enable dense MVS" not in text
+    assert "Dense MVS was enabled but did not run (see 'Dense MVS skipped')" in text
 
 
 @pytest.fixture(scope="module")
