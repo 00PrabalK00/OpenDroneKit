@@ -452,7 +452,12 @@ class TestFirstRender:
 
         webview.start(look)
         lines = [line.strip() for line in seen["structure"].splitlines() if line.strip()]
-        at = lines.index("Inspection Findings")
+        # The panel now lists the engine's real sections per report type; the findings
+        # section is titled "Findings" (core.report_engine.SECTION_TITLES) and carries
+        # the count. The old literal was "Inspection Findings 6".
+        at = lines.index("Findings")
         assert lines[at + 1] == "1", lines
-        assert "6" not in lines
-        assert seen["branding"] == "|", seen["branding"]
+        assert "Inspection Findings" not in lines
+        # Organisation, Client, Prepared by and Logo file: every one empty until typed.
+        values = seen["branding"].split("|")
+        assert len(values) >= 2 and all(v == "" for v in values), seen["branding"]
