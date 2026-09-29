@@ -10,8 +10,12 @@ Open it with `python main.py --ui cockpit` (or `ODK_UI=cockpit`, or
 default because every one of its controls and every native menu item is wired and
 exercised; the cockpit is bridged to the same `Api` (its toolbar actions call real
 methods, and the native menu maps to the same handlers) and is the interface this
-guide describes. `ODK_UI=classic` selects the classic shell explicitly, and an unknown
-value is refused rather than silently ignored.
+guide describes. `ODK_UI=classic` selects the classic shell explicitly. Case is ignored
+for both `--ui` and `ODK_UI`, a blank `ODK_UI` counts as unset, and `--ui` wins over
+`ODK_UI`. An unknown value is refused rather than silently ignored: the app does not
+open, and the reason (with the valid choices) is shown in a message box and written to
+`<data root>/logs/startup-error.log` -- also when started from `OpenDroneKit.bat`, which
+has no console.
 
 This document once said `python main.py` opened the cockpit while `app/shell.py`
 opened `index.html`; `tests/test_desktop_services.py` now pins the two together.

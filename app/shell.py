@@ -405,9 +405,11 @@ def resolve_ui(choice: str | None = None) -> str:
     menu bar is wired and exercised there. The cockpit (fourteen workspaces) is bridged
     to the same Api and opens with `--ui cockpit` or ODK_UI=cockpit. ODK_UI=classic was
     documented and did nothing special, and an unknown value fell back silently; both
-    are explicit now.
+    are explicit now. Case is ignored for both the flag and the variable, and a blank
+    ODK_UI (`set ODK_UI= ` in a batch file) means "not set", not a UI named "".
     """
-    raw = (choice or os.environ.get("ODK_UI") or DEFAULT_UI).strip().lower()
+    raw = ((choice or "").strip() or (os.environ.get("ODK_UI") or "").strip()
+           or DEFAULT_UI).lower()
     if raw not in UI_PAGES:
         raise ValueError(f"Unknown UI {raw!r}: choose one of {', '.join(UI_PAGES)}.")
     return raw
@@ -446,7 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true", help="Open developer tools.")
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=980)
-    parser.add_argument("--ui", choices=sorted(UI_PAGES), default=None,
+    parser.add_argument("--ui", type=lambda value: value.strip().lower(),
+                        choices=sorted(UI_PAGES), default=None,
                         help="Interface to open (default: ODK_UI, else classic).")
     args = parser.parse_args(argv)
 

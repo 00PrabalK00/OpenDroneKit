@@ -244,6 +244,81 @@ class TestUiSelection:
         with pytest.raises(ValueError, match="classic, cockpit"):
             resolve_ui()
 
+    def test_the_flag_and_the_variable_agree_on_case_and_blanks(self, monkeypatch):
+        """ODK_UI=Cockpit opened the cockpit while --ui Cockpit was refused, and a blank
+        ODK_UI (`set ODK_UI= ` in a batch file) was refused as a UI named ''. The flag is
+        read the way the variable is now, and a blank variable means unset."""
+        from app import shell
+
+        opened = []
+
+        class FakeShell:
+            def run(self, **kwargs):
+                opened.append(kwargs["ui"])
+
+        monkeypatch.setattr(shell, "Shell", FakeShell)
+        monkeypatch.setenv("ODK_UI", "   ")
+        assert shell.resolve_ui() == "classic"
+        assert shell.main([]) == 0
+        assert shell.main(["--ui", "Cockpit"]) == 0
+        monkeypatch.setenv("ODK_UI", "COCKPIT")
+        assert shell.main([]) == 0
+        assert shell.main(["--ui", "classic"]) == 0  # the flag wins over the variable
+        assert opened == ["classic", "cockpit", "cockpit", "classic"]
+        with pytest.raises(shell.UsageError, match="invalid choice"):
+            shell.main(["--ui", "fancy"])
+
+    @pytest.mark.skipif(__import__("os").environ.get("ODK_GUI_TESTS") != "1",
+                        reason="opens real WebView2 windows; set ODK_GUI_TESTS=1 on a desktop")
+    @pytest.mark.parametrize("how,page", [
+        ({}, "index.html"),
+        ({"ODK_UI": "classic"}, "index.html"),
+        ({"ODK_UI": "cockpit"}, "workspace.html"),
+        ({"argv": ["--ui", "cockpit"]}, "workspace.html"),
+        ({"ODK_UI": "cockpit", "argv": ["--ui", "classic"]}, "index.html"),
+    ], ids=["default", "env-classic", "env-cockpit", "flag-cockpit", "flag-wins"])
+    def test_each_documented_way_opens_the_page_it_says(self, tmp_path, how, page):
+        """Launch the real entry point under pythonw, the way OpenDroneKit.bat does, and
+        ask the WebView2 window itself (DevTools protocol) which page it loaded."""
+        import json
+        import os
+        import socket
+        import subprocess
+        import sys
+        import time
+        import urllib.request
+        from pathlib import Path
+
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        if not pythonw.is_file():
+            pytest.skip("no pythonw.exe beside this interpreter")
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        env = {k: v for k, v in os.environ.items() if k != "ODK_UI"}
+        env.update(ODK_DATA_DIR=str(tmp_path / "data"), ODK_NO_DIALOG="1", ODK_HUB="0",
+                   WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=f"--remote-debugging-port={port}")
+        if "ODK_UI" in how:
+            env["ODK_UI"] = how["ODK_UI"]
+        process = subprocess.Popen([str(pythonw), str(REPO_ROOT / "main.py"), *how.get("argv", [])],
+                                   cwd=str(tmp_path), env=env)
+        try:
+            url = ""
+            deadline = time.time() + 90
+            while time.time() < deadline and "127.0.0.1" not in url:
+                assert process.poll() is None, "the app exited instead of opening a window"
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=2) as r:
+                        targets = json.loads(r.read().decode("utf-8"))
+                    url = next((t["url"] for t in targets if t.get("type") == "page"), "")
+                except OSError:
+                    pass
+                time.sleep(0.5)
+            assert url.startswith("http://127.0.0.1:") and url.endswith("/" + page), url
+        finally:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                           capture_output=True)
+
     def test_the_command_line_refuses_an_unknown_ui(self):
         import subprocess
         import sys
@@ -256,6 +331,20 @@ class TestUiSelection:
         guide = (REPO_ROOT / "docs" / "UI_GUIDE.md").read_text(encoding="utf-8")
         assert "python main.py --ui cockpit" in guide
         assert "`python main.py` opens the classic" in guide
+        assert "Case is ignored" in guide and "blank `ODK_UI` counts as unset" in guide
+
+    def test_every_doc_names_the_same_default(self):
+        """The README quick start said only `python main.py` and described the cockpit as
+        marked "sample data in the status bar", a chip removed in favour of a banner."""
+        from app.shell import DEFAULT_UI
+
+        assert DEFAULT_UI == "classic"
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        install = (REPO_ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+        for text in (readme, install):
+            assert "python main.py --ui cockpit" in text
+            assert "sample data** in the status bar" not in text
+        assert "ODK_UI=cockpit" in readme and "ODK_UI=cockpit" in install
 
 
 class TestFirstRender:
