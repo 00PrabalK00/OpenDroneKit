@@ -108,7 +108,14 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     solar_rows = [r for r in image_rows if _model_backed(r, "solar")]
     metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in metal_rows)
                         / max(1, len(metal_rows)))
-    structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in image_rows) / n)
+    # An image the structural detector did not read (a solar asset's EL cell, say) is
+    # not a clean one; averaged only over the images it read, and not assessed at all
+    # when it read none. Older rows carry no flag and were all read.
+    structural_rows = [r for r in image_rows if r.get("structural_run", True) is not False]
+    structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in structural_rows)
+                             / max(1, len(structural_rows)))
+    # Crack segmentation skipped on every image (no surface it reads): not assessed.
+    crack_images = sum(1 for r in image_rows if r.get("crack_segmentation_run", True) is not False)
     solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in solar_rows)
                         / max(1, len(solar_rows)))
     metal_excluded = sum(1 for r in image_rows if "metal_ratio" in r and not _model_backed(r, "metal"))
@@ -127,6 +134,8 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
         "metal_heuristic_images_excluded": float(metal_excluded),
         "solar_heuristic_images_excluded": float(solar_excluded),
         "metal_model_images": float(len(metal_rows)),
+        "structural_model_images": float(len(structural_rows)),
+        "crack_segmentation_images": float(crack_images),
         "solar_model_images": float(len(solar_rows)),
     }
 
@@ -504,16 +513,17 @@ def evaluate_asset_health(
         image_metrics=image_metrics,
     )
 
-    crack_norm = _clip01(
+    crack_norm = (_clip01(
         0.70 * _clip01(image_metrics["crack_ratio_avg"] / 0.020)
         + 0.20 * _clip01(image_metrics["crack_max_width_avg_px"] / 8.0)
         + 0.10 * _clip01(image_metrics["crack_length_avg_px"] / 1800.0)
-    )
+    ) if image_metrics["crack_segmentation_images"] else None)
     # No model read any image for metal or solar (refused, heuristic or not run): the
     # component is not assessed, rather than a zero that would prop the score up.
     metal_norm = (_clip01(image_metrics["metal_ratio_avg"] / 0.015)
                   if image_metrics["metal_model_images"] else None)
-    structural_norm = _clip01(image_metrics["structural_ratio_avg"] / 0.030)
+    structural_norm = (_clip01(image_metrics["structural_ratio_avg"] / 0.030)
+                       if image_metrics["structural_model_images"] else None)
     solar_norm = (_clip01(image_metrics["solar_ratio_avg"] / 0.025)
                   if image_metrics["solar_model_images"] else None)
 
@@ -601,9 +611,9 @@ def evaluate_asset_health(
             ),
         },
         "components": {
-            "crack_component": float(crack_norm),
+            "crack_component": None if crack_norm is None else float(crack_norm),
             "metal_component": None if metal_norm is None else float(metal_norm),
-            "structural_component": float(structural_norm),
+            "structural_component": None if structural_norm is None else float(structural_norm),
             "solar_component": None if solar_norm is None else float(solar_norm),
             "growth_component": None if growth_norm is None else float(growth_norm),
             "criticality_component": None if critical_norm is None else float(critical_norm),

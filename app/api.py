@@ -6084,7 +6084,8 @@ class Api:
                 if opts.get(key):
                     setattr(config, key, str(opts[key]))
             for key in ("run_solar_detection", "run_metal_detection",
-                        "crack_presence_gate", "grade_corrosion"):
+                        "run_structural_detection", "crack_presence_gate",
+                        "grade_corrosion"):
                 if opts.get(key) is not None:
                     setattr(config, key, bool(opts[key]))
             pipeline = StructuralFaultPipeline(config, ground_control=control)
@@ -6141,6 +6142,16 @@ class Api:
                                              for r in reasons),
                     }
             payload["detectors_refused"] = refused
+            # The surface models (crack, structural, metal) left off images they do not
+            # read -- EL cells, IR module crops, a declared solar asset -- with the
+            # reason, so a solar run's message says why no crack or structural result.
+            not_run: dict[str, int] = {}
+            for r in summary.get("images", []) or []:
+                reason = str((r or {}).get("surface_models_not_run_reason") or "")
+                if reason:
+                    not_run[reason] = not_run.get(reason, 0) + 1
+            payload["surface_models_not_run"] = [
+                {"images": count, "reason": reason} for reason, count in not_run.items()]
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,
                 "report": Path(payload.get("report_markdown_path", "")).name,

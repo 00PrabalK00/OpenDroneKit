@@ -1536,6 +1536,11 @@ const inspection = {
         unit: "which solar model reads it" },
       { key: "run_metal_detection", label: "Metal detection", value: "auto",
         options: ["auto", "on", "off"], unit: "auto: steel / towers" },
+      /* The concrete crack and structural models. On a solar asset they read cells as
+         concrete ('Spallation' on an EL cell), so auto leaves them off there; on EL or
+         IR module images they never run. On runs them on a solar asset's photographs. */
+      { key: "run_structural_detection", label: "Structural detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: not on solar" },
       { key: "crack_presence_gate", label: "Crack presence gate", value: "off",
         options: ["off", "on"], unit: "on: skip segmenter when no tile flagged" },
     ], settingChanged) },

@@ -78,8 +78,14 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     # The heading names the evidence the section is built from: "(heuristic)" over a
     # basis line naming a trained model contradicted itself.
-    trained = (isinstance(health, dict)
-               and (health.get("basis") or {}).get("defect_evidence") == "trained_model")
+    evidence = ((health.get("basis") or {}).get("defect_evidence")
+                if isinstance(health, dict) else None)
+    components = ((health.get("components") or {}) if isinstance(health, dict) else {})
+    # No crack model read any image (a solar asset's EL cells): the index then rests on
+    # the solar and metal components, which count only trained-model output.
+    model_components = any(components.get(k) is not None
+                           for k in ("solar_component", "metal_component"))
+    trained = evidence == "trained_model" or (evidence == "not_assessed" and model_components)
     lines.append("## Structural Health Screening ("
                  + ("trained model, uncalibrated" if trained else "heuristic") + ")")
     lines.append("")
@@ -90,7 +96,15 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         # A condition grade and a failure probability derived from it would present
         # screening output as a structural assessment, so they are not printed.
         basis = health.get("basis") or {}
-        if basis.get("defect_evidence") == "trained_model":
+        if basis.get("defect_evidence") == "not_assessed":
+            lines.append(
+                "- Basis: no crack or structural model read these images "
+                f"(`{', '.join(basis.get('crack_sources') or [])}`), so those components are "
+                "not assessed; solar and metal count only where a trained model produced "
+                "them. This is an uncalibrated screening index for choosing what to "
+                "review, not a structural assessment."
+            )
+        elif basis.get("defect_evidence") == "trained_model":
             lines.append(
                 "- Basis: crack pixel ratios from a trained segmentation model "
                 f"(`{', '.join(basis.get('crack_sources') or [])}`), with metal and solar "
@@ -109,7 +123,7 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Material type (as configured): `{health.get('material_type', 'concrete')}`")
         lines.append(
             f"- Screening severity index "
-            f"({'uncalibrated' if basis.get('defect_evidence') == 'trained_model' else 'heuristic'}): "
+            f"({'uncalibrated' if trained else 'heuristic'}): "
             f"`{float(health.get('severity_index', 0.0)):.2f}/100`"
         )
         lines.append(
@@ -118,7 +132,7 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
             "inspector, or a georeferenced defect layer) and a hazard model calibrated "
             "for this asset; this run has only "
             + ("uncalibrated model pixel ratios, not confirmed measurements."
-               if basis.get("defect_evidence") == "trained_model" else "heuristic ratios.")
+               if trained else "heuristic ratios.")
         )
         excluded = (health.get("components", {}) or {}).get("excluded_heuristic_images", {}) or {}
         for detector in ("metal", "solar"):

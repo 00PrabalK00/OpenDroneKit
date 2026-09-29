@@ -884,6 +884,9 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
             asset_id=run.project_id,
             structure_type=str(cfg.get("structure_type", "generic")),
             material_type=str(cfg.get("material_type", "concrete")),
+            solar_imagery=str(cfg.get("solar_imagery", "auto")),
+            run_structural_detection=(None if cfg.get("run_structural_detection") is None
+                                      else bool(cfg.get("run_structural_detection"))),
         ))
         result = pipeline.run(
             image_dir=ds.root_dir,
