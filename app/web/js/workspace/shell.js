@@ -124,6 +124,9 @@ export class Shell {
    * the product on a machine with real projects still wants the demo.
    */
   async connect() {
+    // Drawn once from what is known now, so the frame never shows a stale literal
+    // while the bridge is being asked.
+    this.renderIndicators();
     const ready = await whenReady();
     if (!ready || !connected()) return;
     if (this.mode === "demo") return;
@@ -469,7 +472,13 @@ export class Shell {
       "analysis.pipeline": "Start",
       "analysis.models": "Run AI",
       "fly.upload": "Upload",
-      "tools.capabilities": "Preflight",
+      /* fly.connect only switched workspace, so the menu's Connect did nothing and the
+         cockpit had no way at all to reach an aircraft. */
+      "fly.connect": "Connect",
+      "fly.disconnect": "Disconnect",
+      /* The library list, which is what this menu item is named for. It used to share
+         the Preflight action, and Preflight now checks the aircraft. */
+      "tools.capabilities": "Capabilities",
       "mission.history": "Simulate",
     };
 
@@ -511,10 +520,20 @@ export class Shell {
           this.toast(`Terrain source: ${file.path}`, "ok");
           return;
         }
-        case "fly.disconnect":
-          await tryCall("disconnect_vehicle");
-          this.toast("Vehicle disconnected.", "ok");
+        case "fly.command": {
+          /* Arm / Start / Pause / RTL / Land from the Fly menu. The native menu passes
+             the Api's own command name; it was unhandled and fell to the default. */
+          const command = String((payload && payload.command) || "");
+          if (!command) return;
+          if (!this.confirmAll && !(await confirmAsk(`Send "${command}" to the aircraft?`))) return;
+          try {
+            const result = await this.runVehicle(command, command);
+            this.toast(result.message, "ok");
+          } catch (error) {
+            this.toast(`${command}: ${error.message || error}`, "error");
+          }
           return;
+        }
         case "view.zoom_aoi":
         case "view.zoom_mission":
           setView("map");
@@ -564,14 +583,25 @@ export class Shell {
       el("div", { class: "nav-right" }, [
         search,
         el("span", { class: "sep" }),
-        el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: " API" })]),
-        el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: " 3 workers" })]),
-        el("span", {}, [el("span", { class: "status-dot idle" }), el("span", { text: " offline mode" })]),
+        /* These were literals: a green "API", "3 workers", a "PK" avatar and the demo
+           organisation, drawn the same whether or not anything was running. Each now
+           reports what it is named for, and is refreshed with the state. */
+        this.apiIndicator = el("span", {}, [
+          this.apiDot = el("span", { class: "status-dot idle" }),
+          this.apiLabel = el("span", { text: " API: checking" }),
+        ]),
+        this.jobsIndicator = el("span", {}, [
+          this.jobsDot = el("span", { class: "status-dot idle" }),
+          this.jobsLabel = el("span", { text: " jobs: —" }),
+        ]),
+        this.vehicleIndicator = el("span", {}, [
+          this.vehicleDot = el("span", { class: "status-dot idle" }),
+          this.vehicleLabel = el("span", { text: " no aircraft" }),
+        ]),
         el("span", { class: "sep" }),
         this.clock = el("span", { class: "mono", text: "--:--:-- UTC" }),
         el("span", { class: "sep" }),
-        el("span", { class: "avatar", text: "PK" }),
-        el("span", { text: DEMO.ORG }),
+        this.orgLabel = el("span", { text: "local" }),
       ]),
     ]);
   }
@@ -579,7 +609,10 @@ export class Shell {
   buildStatus() {
     this.selectionLabel = el("span", { text: "no selection" });
     return el("footer", { class: "statusbar" }, [
-      el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: ` ${DEMO.SITES[0]}` })]),
+      el("span", {}, [
+        this.projectDot = el("span", { class: "status-dot idle" }),
+        this.projectLabel = el("span", { text: " no project open" }),
+      ]),
       el("span", { class: "sep" }),
       el("span", { class: "mono", text: "EPSG:4326" }),
       el("span", { class: "sep" }),
@@ -734,8 +767,11 @@ export class Shell {
   }
 
   async runVehicle(command, action) {
-    await call("vehicle_command", command);
-    return { message: `${action} sent.` };
+    /* What the vehicle answered, not that something was sent: call() throws on a
+       denial or on silence, and an acceptance says so. */
+    const result = await call("vehicle_command", command);
+    const answer = (result && result.result && result.result.message) || "accepted by the vehicle.";
+    return { message: `${action}: ${answer}`, refresh: true };
   }
 
   /** What the actions need from the shell, in one place they can all reach. */
@@ -861,7 +897,47 @@ export class Shell {
     }
     const jobs = await tryCall("list_jobs");
     this.jobs = (jobs && jobs.jobs) || [];
+    const telemetry = await tryCall("telemetry");
+    this.vehicle = (telemetry && telemetry.telemetry) || null;
     this.applyMode();
+    this.renderIndicators();
+  }
+
+  /** The top and status bar indicators, from the state just read. */
+  renderIndicators() {
+    const set = (dot, label, tone, text) => {
+      if (!dot || !label) return;
+      dot.className = `status-dot ${tone}`;
+      label.textContent = ` ${text}`;
+    };
+    if (this.mode === "demo") {
+      set(this.apiDot, this.apiLabel, "idle", "demo — no API");
+      set(this.projectDot, this.projectLabel, "idle", `${DEMO.SITES[0]} (demo)`);
+      if (this.orgLabel) this.orgLabel.textContent = `${DEMO.ORG} (demo)`;
+      return;
+    }
+    const bridge = connected();
+    set(this.apiDot, this.apiLabel, bridge ? "ok" : "warn", bridge ? "API" : "API not connected");
+
+    const running = (this.jobs || []).filter((job) =>
+      ["running", "queued", "pending"].includes(String(job.state || job.status || "")));
+    set(this.jobsDot, this.jobsLabel, running.length ? "ok" : "idle",
+        bridge ? `${running.length} job(s) running` : "jobs: —");
+
+    const v = this.vehicle;
+    if (v && v.link_lost) {
+      set(this.vehicleDot, this.vehicleLabel, "warn", "aircraft link lost");
+    } else if (v && v.connected) {
+      set(this.vehicleDot, this.vehicleLabel, v.is_simulated ? "warn" : "ok",
+          `${v.is_simulated ? "SIMULATED " : ""}${v.driver || "aircraft"} · ${v.flight_mode || "mode ?"}`);
+    } else {
+      set(this.vehicleDot, this.vehicleLabel, "idle", "no aircraft");
+    }
+
+    const project = this.state && this.state.project;
+    set(this.projectDot, this.projectLabel, project ? "ok" : "idle",
+        project ? (project.name || `project ${project.id}`) : "no project open");
+    if (this.orgLabel) this.orgLabel.textContent = "local";
   }
 
   /** Follow a background job to completion, reporting progress as it goes. */
@@ -988,12 +1064,21 @@ export class Shell {
       }
     });
 
-    const tick = () => {
+    let ticks = 0;
+    const tick = async () => {
       // The epoch while the shell is showing demo content. A live wall clock beside
       // synthetic sites is the detail that makes the whole screen read as a real shift
       // in progress, and it is the one number here that is genuinely true -- which is
       // exactly what makes it misleading in this company.
       this.clock.textContent = `${DEMO.CLOCK} UTC`;
+      // The aircraft indicator follows the link, so a lost link shows up in the frame
+      // on every screen, not only on the Flight workspace.
+      ticks += 1;
+      if (this.mode === "connected" && ticks % 3 === 0) {
+        const telemetry = await tryCall("telemetry");
+        this.vehicle = (telemetry && telemetry.telemetry) || null;
+        this.renderIndicators();
+      }
     };
     tick();
     setInterval(tick, 1000);

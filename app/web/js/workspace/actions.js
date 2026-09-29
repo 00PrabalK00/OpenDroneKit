@@ -228,9 +228,68 @@ export const ACTIONS = {
     },
   },
 
-  /* -- flight ------------------------------------------------------------- */
+  /* -- flight -------------------------------------------------------------
+     The cockpit could not connect an aircraft at all: fly.connect only switched
+     workspace and there was no Connect button, so every Flight panel stayed on "No
+     aircraft connected" forever. */
+  Connect: {
+    describe: "Connect to an aircraft over MAVLink, MAVSDK, or the simulator.",
+    async run(ctx) {
+      const driver = await ctx.choose("Connect vehicle", [
+        { label: "MAVLink autopilot (ArduPilot / PX4 via pymavlink)", value: "pymavlink",
+          hint: "real aircraft, SITL, or a Mission Planner forward" },
+        { label: "PX4 via MAVSDK", value: "mavsdk", hint: "needs the mavsdk package" },
+        { label: "Simulated vehicle", value: "mock", hint: "UI rehearsal; nothing is measured" },
+      ]);
+      if (driver === null) return { skipped: "Cancelled." };
+      const fallback = driver === "mavsdk" ? "udp://:14540"
+        : driver === "mock" ? "mock://" : "udpin:0.0.0.0:14550";
+      const uri = await ctx.prompt("Connection (udpin:0.0.0.0:14550, tcp:127.0.0.1:5760, COM3…)", fallback);
+      if (!uri) return { skipped: "No connection given." };
+      const result = await call("connect_vehicle", uri, driver);
+      const vehicle = result.vehicle || {};
+      /* connect_vehicle answers ok with connected:false and the reason when the link
+         fails, so the reason is what gets shown -- not "Connected". */
+      if (vehicle.connected === false) throw new Error(vehicle.last_error || "Connection failed.");
+      return {
+        message: `Connected to ${uri} via ${driver}`
+          + (vehicle.is_simulated ? " — SIMULATED vehicle." : "."),
+        refresh: true,
+      };
+    },
+  },
+  Disconnect: {
+    describe: "Close the vehicle link.",
+    async run() {
+      await call("disconnect_vehicle");
+      return { message: "Vehicle disconnected.", refresh: true };
+    },
+  },
+  /* Preflight listed the Python libraries this build has -- torch, colmap -- under a
+     button that sits beside Start on the screen that arms an aircraft. It now runs the
+     aircraft checks. The library list is still one menu item away, as Capabilities. */
   Preflight: {
-    describe: "What this build can and cannot do before flying.",
+    describe: "Check the aircraft and the planned mission before flying.",
+    async run() {
+      const result = await call("run_preflight");
+      return { message: describePreflight(result), refresh: true };
+    },
+  },
+  "Confirm Checks": {
+    describe: "Record that you checked the items nothing on the aircraft can report.",
+    async run(ctx) {
+      const result = await call("run_preflight");
+      const pending = (result.checks || []).filter((c) => c.requires_manual && !c.confirmed);
+      if (!pending.length) return { skipped: "Nothing is waiting for a manual check." };
+      const chosen = await ctx.choose("Confirm a check you have made yourself",
+        pending.map((c) => ({ label: c.name, value: c.id, hint: c.fix_action || c.message })));
+      if (chosen === null) return { skipped: "Cancelled." };
+      const after = await call("run_preflight", [chosen]);
+      return { message: `Confirmed. ${describePreflight(after)}`, refresh: true };
+    },
+  },
+  Capabilities: {
+    describe: "What this build can and cannot do.",
     async run() {
       const result = await call("capabilities");
       const missing = Object.entries(result.capabilities || result)
@@ -245,38 +304,58 @@ export const ACTIONS = {
   },
   Upload: {
     confirm: "Upload the mission to the connected aircraft?",
-    describe: "Send the mission over MAVLink.",
+    describe: "Send the mission, geofence and rally points over MAVLink.",
     async run() {
-      await call("upload_mission");
-      return { message: "Mission uploaded." };
+      /* call() throws on ok:false, so a vehicle that rejects the upload reaches the
+         operator as an error. It used to say "Mission uploaded." either way. */
+      const result = await call("upload_mission");
+      const upload = result.upload || {};
+      const extras = ["fence", "rally"]
+        .filter((key) => upload[key] && upload[key].success)
+        .map((key) => `${upload[key].count} ${key}`);
+      return {
+        message: `The vehicle accepted ${result.items ?? "?"} mission items`
+          + (extras.length ? ` and ${extras.join(", ")} items.` : "."),
+        refresh: true,
+      };
     },
   },
   Start_Flight: { alias: "Upload" },
+  /* Its own verb. The Flight toolbar's "Start" resolved to the pipeline action and
+     offered to run a reconstruction from the screen that flies the aircraft. */
+  "Start Mission": { vehicle: "start", confirm: "Arm and start the uploaded mission?" },
   Pause: { vehicle: "pause", confirm: "Pause the aircraft?" },
   Resume: { vehicle: "resume", confirm: "Resume the mission?" },
-  RTL: { vehicle: "rtl", confirm: "Return to launch?" },
+  RTL: { vehicle: "rth", confirm: "Return to launch?" },
   Land: { vehicle: "land", confirm: "Land now?" },
   Abort: { vehicle: "abort", confirm: "ABORT the flight?" },
   "Manual Override": {
     confirm: "Take manual control?",
     describe: "Hand control to the operator.",
     async run() {
-      await call("take_manual_control");
-      return { message: "Manual control taken." };
+      const result = await call("take_manual_control");
+      return { message: result.note || `The aircraft is in ${result.mode || "a pilot mode"}.` };
     },
   },
   "Capture Now": {
     describe: "Trigger the camera.",
     async run() {
-      await call("camera_command", "trigger");
-      return { message: "Camera triggered." };
+      /* "trigger" is not a camera action the Api knows; take_photo is. */
+      const result = await call("camera_command", "take_photo");
+      return { message: result.message || "The camera accepted the trigger." };
     },
   },
   "Load Flight": {
-    describe: "Resume a flight that was interrupted.",
+    describe: "Report a flight that was interrupted when this software last stopped.",
     async run() {
       const result = await call("check_interrupted_flight");
-      return { message: result.interrupted ? "Interrupted flight found." : "No interrupted flight." };
+      /* The Api answers `recovered`; reading `interrupted` said "No interrupted flight"
+         over a record saying a mission was on the aircraft. */
+      return {
+        message: result.recovered
+          ? (result.summary || `Interrupted flight found: ${result.state?.phase || "unknown phase"}.`)
+          : "No interrupted flight.",
+      };
     },
   },
 
@@ -362,9 +441,11 @@ export const ACTIONS = {
       /* Three points is a triangle and the minimum that encloses anything. The Api
          refuses below that, and saying so here means the operator learns it while
          still standing on site rather than afterwards. */
+      /* The Api reports area_hectares; reading area_m2 dropped the area every time. */
+      const hectares = result.area_hectares ?? (result.area_m2 ? result.area_m2 / 10000 : null);
       return {
         message: `Boundary closed from ${result.corner_count ?? "?"} corner(s)`
-          + (result.area_m2 ? `, ${(result.area_m2 / 10000).toFixed(2)} ha.` : "."),
+          + (hectares != null ? `, ${Number(hectares).toFixed(2)} ha.` : "."),
         refresh: true,
       };
     },
@@ -526,9 +607,14 @@ export const ACTIONS = {
     describe: "Write the recorded flight to CSV, JSON, GPX and KML.",
     async run() {
       const result = await call("export_flight_log");
-      const files = result.files || [];
+      /* files is {csv: path, json: path, …}, not an array: files.length was undefined,
+         so this reported "No flight has been recorded yet" after writing four files. */
+      const files = Object.values(result.files || {});
       if (!files.length) return { skipped: "No flight has been recorded yet." };
-      return { message: `Wrote ${files.length} file(s): ${files.join(", ")}` };
+      return {
+        message: (result.simulated ? "SIMULATED log — " : "")
+          + `Wrote ${files.length} file(s): ${files.join(", ")}`,
+      };
     },
   },
   "Check PPK": {
@@ -1068,6 +1154,23 @@ export const ACTIONS = {
  * that genuinely does not exist should say so here rather than failing silently.
  */
 export const UNWIRED = {};
+
+/** One line an operator can act on: can they start, and if not, why not. */
+function describePreflight(result) {
+  if (!result || !Array.isArray(result.checks)) return "Preflight ran.";
+  const blocking = result.checks.filter((c) => c.severity === "blocking" && !c.confirmed);
+  const pending = result.checks.filter((c) => c.requires_manual && !c.confirmed);
+  const lead = result.simulated ? "SIMULATED vehicle. " : "";
+  if (blocking.length) {
+    return `${lead}Not ready: ${blocking.map((c) => `${c.name} — ${c.message}`).slice(0, 2).join("; ")}`
+      + (blocking.length > 2 ? ` (+${blocking.length - 2} more)` : "");
+  }
+  if (pending.length) {
+    return `${lead}${pending.length} check(s) need your confirmation: `
+      + pending.map((c) => c.name).join(", ");
+  }
+  return `${lead}All preflight checks pass.`;
+}
 
 function describeMeasurement(result) {
   if (!result) return "No measurement returned.";

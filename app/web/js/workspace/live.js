@@ -28,8 +28,12 @@ import { tryCall } from "./api.js";
  * @param {Function} spec.render  (results) => Element. Called only when data arrived.
  * @param {string}   spec.empty   What to say when the application has nothing to show.
  * @param {Function} [spec.isEmpty] (results) => boolean. Defaults to "every result null".
+ * @param {number}   [spec.every]  Re-ask every this many milliseconds while on screen.
+ *                                 For panels showing something that changes on its own
+ *                                 -- an aircraft in flight -- where a reading taken when
+ *                                 the workspace opened is stale a second later.
  */
-export function live({ calls, render, empty, isEmpty }) {
+export function live({ calls, render, empty, isEmpty, every }) {
   /* Marks everything drawn inside as having come from the application.
    *
    * The shell decides whether to show the EXAMPLE DATA banner by looking for rows that
@@ -66,6 +70,17 @@ export function live({ calls, render, empty, isEmpty }) {
   };
 
   settle();
+  if (every && typeof setInterval === "function") {
+    const timer = setInterval(() => {
+      // Stop once the dock has replaced this panel; a detached panel polling the
+      // aircraft forever would pile up requests behind every workspace switch.
+      if (host.isConnected === false) {
+        clearInterval(timer);
+        return;
+      }
+      settle();
+    }, every);
+  }
   return host;
 }
 

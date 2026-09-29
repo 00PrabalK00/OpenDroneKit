@@ -49,9 +49,9 @@ import { tryCall } from "./api.js";
  * A fixed floor printed beside a measurement claims a precision the data may not support,
  * and it is exactly the figure a reader would cite to argue that a movement was real.
  */
-function readout({ calls, isEmpty, empty, render }) {
+function readout({ calls, isEmpty, empty, render, every }) {
   return live({
-    calls, isEmpty, empty,
+    calls, isEmpty, empty, every,
     render: (r) => el("div", { class: "canvas-readout" }, render(r)),
   });
 }
@@ -646,8 +646,11 @@ const flight = {
   id: "flight",
   title: "Flight",
   /* Clear Alerts sits with Preflight rather than among the flight commands: it is the
-     only non-vehicle verb here, and it must not end up adjacent to Abort. */
-  toolbar: ["Preflight", "Clear Alerts", "|", "Start", "Pause", "Resume", "Capture Now",
+     only non-vehicle verb here, and it must not end up adjacent to Abort.
+     Connect and Upload were missing, so this screen could neither reach an aircraft nor
+     put a mission on one; and "Start" here resolved to the processing pipeline. */
+  toolbar: ["Connect", "Disconnect", "|", "Preflight", "Confirm Checks", "Clear Alerts",
+            "|", "Upload", "Start Mission", "Pause", "Resume", "Capture Now",
             "|", "Mark Corner", "Close Boundary", "Clear Corners",
             "|", "Export Log", "Linked Progress",
             "|", "Manual Override", "RTL", "Land", "Abort"],
@@ -659,12 +662,17 @@ const flight = {
          nothing in the interface asked it. On the screen that hands control back and
          forth, that is the first thing an operator needs to read. */
       calls: ["telemetry", "control_state"],
-      empty: "No aircraft connected.",
-      isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
+      every: 2000,
+      empty: "No aircraft connected. Use Connect.",
+      /* A lost link still renders: where the aircraft was last heard, and that it has
+         gone quiet, is exactly what the operator needs on this screen. */
+      isEmpty: ([t]) => !(t && t.telemetry && (t.telemetry.connected || t.telemetry.link_lost)),
       render: ([t, ctl]) => {
         const tm = t.telemetry;
         const state = (ctl && ctl.state) || {};
         return properties([
+          ...(tm.link_lost ? [{ label: "Link", value: chip(
+            `LOST — last heard ${Math.round(tm.telemetry_age_s ?? 0)} s ago`, "warn") }] : []),
           { label: "Control", value: chip(
             state.pilot_has_control ? "pilot" : state.control || "unknown",
             state.pilot_has_control ? "warn" : "info") },
@@ -674,9 +682,9 @@ const flight = {
           ...(tm.is_simulated ? [{ label: "Vehicle", value: chip("SIMULATED", "warn") }] : []),
           { label: "Mode", value: chip(tm.flight_mode || "unknown", "info") },
           { label: "Armed", value: chip(tm.armed ? "yes" : "no", tm.armed ? "warn" : "ok") },
-          { label: "Link", value: tm.link_quality_pct !== undefined
+          ...(tm.link_lost ? [] : [{ label: "Link", value: tm.link_quality_pct !== undefined
             ? chip(`${Math.round(tm.link_quality_pct)}%`, tm.link_quality_pct > 70 ? "ok" : "warn")
-            : chip("not reported") },
+            : chip("not reported") }]),
         ]);
       },
     }) },
@@ -689,32 +697,24 @@ const flight = {
        Every item here is derived from what the vehicle reports, so it is now an actual
        preflight check. Items the telemetry cannot speak to are shown as unknown rather
        than passed -- an unanswered check is not a passed one. */
+    /* Was re-derived here from raw telemetry, which skipped compass, IMU, camera,
+       geofence and no-fly entirely and showed "Battery 0%" for a vehicle that had not
+       reported one. It is now core/preflight.py's report, via run_preflight: the same
+       checks the SDK runs, against the same aircraft and plan. pass / fail / needs you,
+       never a bare tick -- an unanswered check is not a passed one. */
     { id: "fly.checklist", title: "Preflight", render: () => live({
-      calls: ["telemetry"],
-      empty: "No aircraft connected. Preflight is checked against the aircraft.",
-      isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
-      render: ([t]) => {
-        const tm = t.telemetry;
-        /* pass / fail / unknown, never a bare tick. */
-        const mark = (ok) => (ok === null ? "\u25cb" : ok ? "\u2713" : "\u2717");
-        const items = [
-          ["Autopilot link", tm.connected === true],
-          [`GPS fix \u2014 ${["no GPS", "no fix", "2D", "3D", "RTK float", "RTK fixed"][tm.gps_fix] || "?"}`,
-           tm.gps_fix >= 3],
-          [`Satellites ${tm.satellites ?? 0}`, (tm.satellites ?? 0) >= 6],
-          [`HDOP ${tm.hdop ?? "?"}`, tm.hdop !== undefined ? tm.hdop < 2.0 : null],
-          ["Home position set", tm.home_set === true],
-          [`Battery ${Math.round(tm.battery_pct ?? 0)}%`, (tm.battery_pct ?? 0) >= 50],
-          ["Mission uploaded", tm.waypoint_total ? tm.waypoint_total > 0 : false],
-          [`Link ${tm.link_quality_pct !== undefined ? Math.round(tm.link_quality_pct) + "%" : "unknown"}`,
-           tm.link_quality_pct !== undefined ? tm.link_quality_pct > 50 : null],
-          /* Not derivable from telemetry, and deliberately left open rather than
-             quietly dropped: an operator has to acknowledge it. */
-          ["Weather acknowledged", null],
-        ];
-        return tree(items.map(([label, ok], i) => ({
-          id: `c${i}`, label, icon: mark(ok),
-          meta: ok === null ? "unknown" : ok ? "" : "check",
+      calls: ["run_preflight"],
+      every: 5000,
+      empty: "Preflight could not be run.",
+      isEmpty: ([r]) => !(r && Array.isArray(r.checks)),
+      render: ([r]) => {
+        const icon = (c) => (c.confirmed ? "\u2713" : c.severity === "pass" ? "\u2713"
+          : c.severity === "blocking" ? "\u2717" : "\u25cb");
+        const meta = (c) => (c.confirmed ? "confirmed by you"
+          : c.severity === "blocking" ? "blocks start"
+            : c.requires_manual ? "check yourself" : c.severity === "warning" ? "warning" : "");
+        return tree(r.checks.map((c, i) => ({
+          id: `c${i}`, label: `${c.name} \u2014 ${c.message}`, icon: icon(c), meta: meta(c),
         })));
       },
     }) },
@@ -748,6 +748,7 @@ const flight = {
          worth flying at all, so inventing one is worse than an empty corner. */
       { at: "tr", node: readout({
         calls: ["telemetry"],
+        every: 2000,
         empty: "No aircraft connected.",
         /* session.telemetry() returns {connected: false, reason} rather than nothing when
            there is no vehicle, so a plain null check would treat "not connected" as live
@@ -763,8 +764,10 @@ const flight = {
           return [
             chip(tm.flight_mode || "mode unknown"),
             chip(`${fix} \u00b7 ${tm.satellites ?? 0} sats`, tm.gps_fix >= 3 ? "ok" : "warn"),
-            chip(`battery ${Math.round(tm.battery_pct ?? 0)}%`,
-                 (tm.battery_pct ?? 0) < 25 ? "warn" : "ok"),
+            /* "battery 0%" was drawn for a vehicle that never reported one. */
+            tm.battery_pct !== undefined
+              ? chip(`battery ${Math.round(tm.battery_pct)}%`, tm.battery_pct < 25 ? "warn" : "ok")
+              : chip("battery not reported", "warn"),
             ...(tm.waypoint_total
               ? [chip(`waypoint ${tm.waypoint_index ?? 0} / ${tm.waypoint_total}`)]
               : []),
@@ -782,6 +785,7 @@ const flight = {
     /* Twelve readouts of an aircraft in flight, none of them from an aircraft. */
     { id: "fly.telemetry", title: "Telemetry", render: () => live({
       calls: ["telemetry"],
+      every: 1000,
       empty: "No aircraft connected.",
       isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected),
       render: ([t]) => {
@@ -812,7 +816,8 @@ const flight = {
     { id: "fly.progress", title: "Mission Progress", height: 120, grow: false, pad: true,
       render: () => live({
         calls: ["telemetry"],
-        empty: "No aircraft connected.",
+        every: 2000,
+        empty: "No mission progress: no aircraft connected, or it reports no mission loaded.",
         isEmpty: ([t]) => !(t && t.telemetry && t.telemetry.connected
                             && t.telemetry.waypoint_total),
         render: ([t]) => {
