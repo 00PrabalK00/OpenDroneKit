@@ -193,6 +193,13 @@ def _orb_overlap(prev_gray: np.ndarray, curr_gray: np.ndarray) -> tuple[float, i
 
 
 def _phase_shift(prev_gray: np.ndarray, curr_gray: np.ndarray) -> tuple[np.ndarray, float]:
+    if prev_gray.shape != curr_gray.shape:
+        # Phase correlation is only defined between frames of one size; cv2 asserts
+        # otherwise and took the whole pipeline down on a mixed-camera image set. Two
+        # frames of different shape have no measured shift, so the response is zero and
+        # the caller's fallback step is used -- which is what it does for any pair whose
+        # correlation is too weak to trust.
+        return np.zeros(2, dtype=np.float64), 0.0
     a = prev_gray.astype(np.float32)
     b = curr_gray.astype(np.float32)
     shift, response = cv2.phaseCorrelate(a, b)

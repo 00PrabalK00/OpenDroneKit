@@ -91,17 +91,20 @@ class Api:
 
     @guard
     def model_status(self) -> dict[str, Any]:
-        """Which detection models are present on disk, so the UI never implies AI it lacks."""
-        from core.models import model_status as status_for
+        """Which detection models are present on disk, so the UI never implies AI it lacks.
 
-        registry_path = Path("models/model_registry.json")
-        keys: list[str] = []
-        if registry_path.exists():
-            try:
-                registry = json.loads(registry_path.read_text(encoding="utf-8"))
-                keys = list(registry.get("models", registry).keys())
-            except json.JSONDecodeError:
-                keys = []
+        The registry is found through core.models rather than a path relative to the
+        working directory: launched from a shortcut, the relative path pointed nowhere
+        and the app reported "0 of 0" models on a machine with nine installed.
+
+        `detectors` answers the question a user actually has -- for each detector the
+        pipeline runs, is it a trained model or a heuristic -- because one global count
+        hid that solar and metal detection were heuristic on every machine.
+        """
+        from core.model_runner import detector_backends
+        from core.models import load_registry, model_status as status_for
+
+        keys = list((load_registry().get("models") or {}).keys())
         rows = []
         for key in keys:
             try:
@@ -110,7 +113,10 @@ class Api:
             except Exception as exc:  # noqa: BLE001
                 rows.append({"key": key, "exists": False, "error": str(exc)})
         available = sum(1 for r in rows if r.get("exists"))
-        return ok(models=rows, available=available, total=len(rows))
+        detectors = detector_backends()
+        heuristic = [d["detector"] for d in detectors if d["backend"] == "heuristic"]
+        return ok(models=rows, available=available, total=len(rows),
+                  detectors=detectors, heuristic_detectors=heuristic)
 
     @guard
     def verify_models(self) -> dict[str, Any]:
@@ -2140,11 +2146,14 @@ class Api:
         if fmt not in ("pdf", "docx"):
             return fail(f"Unknown report format {output_format!r}. Use pdf or docx.")
 
-        annotations = list_annotations(Path(root))
+        # Only what a reviewer has let into the report: a rejected finding, or a model
+        # pre-label nobody has accepted yet, is not a finding of this inspection.
+        annotations = [a for a in list_annotations(Path(root))
+                       if a.include_in_report and a.status != "dismissed"]
         if not annotations:
             return fail(
-                "No findings recorded yet, so there is nothing to report. Annotate the "
-                "imagery or run an AI inspection first."
+                "No reportable findings yet, so there is nothing to report. Annotate the "
+                "imagery, or run an AI inspection and accept the findings you agree with."
             )
 
         layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
@@ -2162,6 +2171,10 @@ class Api:
                 finding["tags"] = list(annotation.tags)
             if annotation.note:
                 finding["note"] = annotation.note
+            if annotation.model_key:
+                finding["model_key"] = annotation.model_key
+                finding["model_sha256"] = annotation.model_sha256
+                finding["confidence"] = annotation.confidence
             findings.append(finding)
 
         payload: dict[str, Any] = {
@@ -2213,15 +2226,20 @@ class Api:
 
     @guard
     def review_finding(self, annotation_id: str, decision: str,
-                       reviewer: str = "operator") -> dict[str, Any]:
-        """Accept, reject or flag a finding without overwriting what the model claimed."""
+                       reviewer: str = "operator", comment: str = "") -> dict[str, Any]:
+        """Accept, reject or flag a finding without overwriting what the model claimed.
+
+        Decisions append to the finding's review history; a rejection takes it out of
+        reports.
+        """
         from app import desktop_ops
 
         root = self._session.project_root()
         if not root:
             return fail("Open a project before reviewing findings.")
         try:
-            return ok(**desktop_ops.review_finding(root, annotation_id, decision, reviewer))
+            return ok(**desktop_ops.review_finding(root, annotation_id, decision, reviewer,
+                                                   comment))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -2943,24 +2961,172 @@ class Api:
 
     @guard
     def run_pipeline(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Start the full inspection pipeline as a background job."""
+        """Start the full inspection pipeline as a background job.
+
+        When it finishes, every detection a trained model made becomes a finding in
+        review, with the model key, file digest and confidence on the record, so the
+        Findings panel shows what the models found. Heuristic regions stay in the run's
+        summary and are counted, not recorded as findings.
+        """
         opts = dict(options or {})
         images = opts.get("image_dir") or self._session.active_dataset_dir
         if not images:
             return fail("Select a dataset before running the pipeline.")
-        output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
+        if not Path(images).exists():
+            return fail(f"Image folder not found: {images}")
+        root = self._session.project_root()
+        output = str(opts.get("output_dir") or (root / "analysis"))
+        project_id = str(self._session.project_id())
+        session = self._session
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from app import desktop_ops
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
 
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
+            if opts.get("dense") is not None:
+                config.reconstruction_dense = bool(opts["dense"])
+            for key in ("structure_type", "material_type", "asset_id"):
+                if opts.get(key):
+                    setattr(config, key, str(opts[key]))
+            for key in ("run_solar_detection", "run_metal_detection",
+                        "crack_presence_gate", "grade_corrosion"):
+                if opts.get(key) is not None:
+                    setattr(config, key, bool(opts[key]))
             pipeline = StructuralFaultPipeline(config)
-            result = pipeline.run(image_dir=images, output_root=output, progress_callback=progress)
-            return result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            # The keyword is output_dir. This call said output_root, so every Run AI and
+            # Start click failed with a TypeError three seconds in.
+            result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
+            payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            summary = json.loads(Path(payload["summary_json_path"]).read_text(encoding="utf-8"))
+            payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
+            payload["reconstruction_status"] = summary.get("reconstruction", {}).get("status", "ok")
+            session.audit("pipeline_complete", {
+                "run_dir": payload.get("run_dir"),
+                "findings_created": payload.get("findings_created", 0),
+            })
+            return payload
 
         return ok(job_id=self._jobs.submit("pipeline", work))
+
+    @guard
+    def prelabel_image(self, image_path: str,
+                       model_key: str = "structural_multiclass_detector") -> dict[str, Any]:
+        """Run an installed detector on one image; its detections become findings in review.
+
+        The desktop half of POST /projects/{id}/annotations/prelabel, which worked and
+        was reachable from no screen.
+        """
+        from app import desktop_ops
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = desktop_ops.prelabel_image(
+                self._session.project_root(), str(self._session.project_id()),
+                str(path), model_key)
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("prelabel_created", {"model_key": model_key, "count": result["count"]})
+        return ok(**result)
+
+    @guard
+    def run_model(self, model_key: str, image_path: str) -> dict[str, Any]:
+        """Run any installed model on one image and show what it said.
+
+        Every installed model is reachable here, including the six that had no path at
+        all. The result carries the registry's scope note, because several of them are
+        valid on one kind of imagery only and the result is where a user reads that.
+        """
+        from core.detection import load_image
+        from core.model_runner import ModelRunRefused, run_registered_model, save_overlay
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = run_registered_model(load_image(path), str(model_key))
+        except ModelRunRefused as exc:
+            return fail(str(exc))
+        out_dir = self._session.project_root() / "analysis" / "models" / str(model_key)
+        overlay_path = save_overlay(result, out_dir, path.stem)
+        self._session.audit("model_run", {"model_key": model_key, "image": str(path)})
+        return ok(**result.to_dict(), image=str(path), overlay_path=overlay_path,
+                  overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
+
+    @guard
+    def grade_corrosion(self, image_path: str) -> dict[str, Any]:
+        """Grade corrosion severity per pixel, or refuse with the reason.
+
+        There is no heuristic grade to fall back to. The grade is only meaningful on a
+        close-range photo of a corroded surface; the scope note says so and travels
+        with the result.
+        """
+        return self.run_model("corrosion_severity_segmentation", image_path)
+
+    @guard
+    def run_landcover(self, orthomosaic_path: str = "", allow_cpu: bool = False) -> dict[str, Any]:
+        """Land-cover segmentation of a georeferenced orthomosaic, as a background job.
+
+        Refuses on CPU unless asked, because a survey-sized orthomosaic on a CPU takes
+        long enough to look hung. The result lists which classes the model's holdout
+        says are usable; the others are still drawn and are marked as not usable.
+        """
+        source = orthomosaic_path or ""
+        if not source:
+            for layer in self._session.layers.values():
+                candidate = str(getattr(layer, "path", "") or "")
+                if "orthomosaic" in candidate.lower() and candidate.lower().endswith((".tif", ".tiff")):
+                    source = candidate
+                    break
+        if not source:
+            return fail("No orthomosaic: run a reconstruction or add an orthomosaic layer first.")
+        if not Path(source).is_file():
+            return fail(f"Orthomosaic not found: {source}")
+        output = self._session.project_root() / "analysis" / "landcover"
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.model_runner import run_landcover
+
+            progress(5, "Running land-cover model")
+            result = run_landcover(source, output, allow_cpu=bool(allow_cpu))
+            polygons = result.get("polygons_path")
+            if polygons and Path(polygons).exists():
+                session.register_vector_layer(polygons, name="Land cover (model)")
+            session.audit("landcover_complete", {"model_key": result["model_key"]})
+            return result
+
+        return ok(job_id=self._jobs.submit("landcover", work))
+
+    def _resolve_image(self, image_path: str) -> Path | None:
+        """An absolute path, or a name inside the active dataset."""
+        raw = str(image_path or "").strip()
+        if not raw:
+            return None
+        candidate = Path(raw)
+        if not candidate.is_absolute() and self._session.active_dataset_dir:
+            candidate = Path(self._session.active_dataset_dir) / raw
+        return candidate if candidate.is_file() else None
+
+    @staticmethod
+    def _data_uri(image: Any, max_size: int = 1200) -> str:
+        import base64
+
+        import cv2
+
+        height, width = image.shape[:2]
+        if max(height, width) > max_size:
+            scale = max_size / float(max(height, width))
+            image = cv2.resize(image, (int(width * scale), int(height * scale)),
+                               interpolation=cv2.INTER_AREA)
+        okay, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if not okay:
+            return ""
+        return "data:image/jpeg;base64," + base64.b64encode(buffer.tobytes()).decode("ascii")
 
     @guard
     def set_active_dataset(self, folder: str) -> dict[str, Any]:

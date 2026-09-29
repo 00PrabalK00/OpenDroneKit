@@ -74,7 +74,10 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     n = float(max(1, len(image_rows)))
     crack_ratio = float(sum(_safe_float(r.get("crack_ratio", 0.0)) for r in image_rows) / n)
     crack_len = float(sum(_safe_float(r.get("crack_length_px", 0.0)) for r in image_rows) / n)
-    crack_width = float(sum(_safe_float(r.get("crack_max_width_px", 0.0)) for r in image_rows) / n)
+    # The pipeline now names this for what it is -- the thickness of the mask, not a
+    # measured crack width -- and older runs still carry the old key.
+    crack_width = float(sum(_safe_float(r.get("crack_mask_thickness_px", r.get("crack_max_width_px", 0.0)))
+                            for r in image_rows) / n)
     metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in image_rows) / n)
     structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in image_rows) / n)
     solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in image_rows) / n)
@@ -93,6 +96,12 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
 
 
 def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float, dict[str, float]]:
+    if forecast_payload.get("basis") == "what_if_simulation":
+        # The forecast runs on assumed load, cycles and pixel size. Scoring a structure's
+        # health on a scenario someone configured would pass the assumption off as a
+        # finding, so a simulated forecast contributes nothing to the score.
+        return 0.0, {"initial_crack_ratio": 0.0, "final_crack_ratio": 0.0,
+                     "delta_crack_ratio": 0.0, "excluded_what_if_simulation": 1.0}
     metrics = forecast_payload.get("metrics", [])
     if not isinstance(metrics, list) or len(metrics) < 2:
         return 0.0, {"initial_crack_ratio": 0.0, "final_crack_ratio": 0.0, "delta_crack_ratio": 0.0}

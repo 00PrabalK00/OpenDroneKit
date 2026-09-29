@@ -69,6 +69,18 @@ class PipelineConfig:
     reconstruction_target_epsg: int | None = None
     run_structural_models: bool = True
     run_solar_models: bool = True
+    # Whether the solar and metal detectors run at all. None means "decide from the
+    # asset": solar on a solar structure, metal on steel. Both used to run on every
+    # image regardless -- 963 "solar defects" on a farmland photo, a third of a road
+    # marked as metal damage -- and with no trained model behind either on most
+    # machines, that output was heuristic noise attached to the wrong asset.
+    run_solar_detection: bool | None = None
+    run_metal_detection: bool | None = None
+    # crack_presence_classifier triages each image before the slower segmenter runs,
+    # which is how the registry says the two crack models are meant to be combined.
+    crack_presence_gate: bool = True
+    # Grade corrosion severity on images where the structural model found corrosion.
+    grade_corrosion: bool = True
     structural_model_key: str = "structural_multiclass_detector"
     solar_model_key: str = "solar_defect_detector"
     asset_id: str = ""
@@ -93,6 +105,37 @@ class PipelineResult:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+SOLAR_STRUCTURES = {"solar", "solar_farm", "solar_plant", "pv"}
+METAL_MATERIALS = {"steel", "reinforced_steel", "metal", "iron"}
+METAL_STRUCTURES = {"tower", "steel_tower", "pipeline"}
+CORROSION_LABELS = {"corrosionstain", "corrosion", "exposedbars", "rebar_exposure"}
+
+
+def _forecast_assumptions(config: "PipelineConfig") -> dict[str, Any]:
+    """What the crack forecast assumed, and that it assumed it.
+
+    Nothing in a photograph measures the load a structure carries, the number of stress
+    cycles it sees, or the size of a pixel on its surface. Every one of those is a
+    configured value -- the defaults are placeholders -- so the forecast is a what-if
+    simulation of the configured scenario, not a prediction about this structure.
+    """
+    return {
+        "basis": "what_if_simulation",
+        "note": ("Simulated from ASSUMED inputs, not measured ones: pixel size, nominal "
+                 "stress, stress range and cycles per year are configuration values, not "
+                 "readings from this structure. Treat the frames and metrics as a "
+                 "scenario, not a forecast."),
+        "assumed_inputs": {
+            "pixel_size_mm_per_px": float(config.propagation_pixel_size_mm),
+            "sigma_nominal_mpa": float(config.propagation_sigma_nominal_mpa),
+            "delta_sigma_mpa": float(config.propagation_delta_sigma_mpa),
+            "cycles_per_year": float(config.propagation_cycles_per_year),
+            "horizon_years": float(config.propagation_horizon_years),
+            "growth_px_per_step": float(config.forecast_growth_px_per_step),
+        },
+    }
 
 
 class StructuralFaultPipeline:
@@ -143,6 +186,17 @@ class StructuralFaultPipeline:
         if not images:
             raise ValueError(f"No supported images found in: {image_dir}")
         return images
+
+    def _solar_enabled(self) -> bool:
+        if self.config.run_solar_detection is not None:
+            return bool(self.config.run_solar_detection)
+        return str(self.config.structure_type or "").strip().lower() in SOLAR_STRUCTURES
+
+    def _metal_enabled(self) -> bool:
+        if self.config.run_metal_detection is not None:
+            return bool(self.config.run_metal_detection)
+        return (str(self.config.material_type or "").strip().lower() in METAL_MATERIALS
+                or str(self.config.structure_type or "").strip().lower() in METAL_STRUCTURES)
 
     def run(
         self,
@@ -242,63 +296,127 @@ class StructuralFaultPipeline:
 
         image_rows: list[dict] = []
         crack_candidates: list[tuple[float, Path]] = []
+        solar_enabled = self._solar_enabled()
+        metal_enabled = self._metal_enabled()
 
         total_images = max(1, len(image_paths))
         for idx, image_path in enumerate(image_paths):
             image_pct = 36 + int((30.0 * float(idx)) / float(total_images))
             _emit_progress(image_pct, f"Analyzing image {idx + 1}/{len(image_paths)}: {image_path.name}")
             image = load_image(image_path)
-            crack = detect_cracks(image, min_area_px=self.config.crack_min_area_px)
-            metal = detect_metal_defects(image, min_area_px=self.config.metal_min_area_px)
+            presence_row: dict[str, Any] = {}
+            run_crack_model = True
+            if self.config.crack_presence_gate:
+                from .model_runner import ModelRunRefused, crack_presence
+
+                try:
+                    presence = crack_presence(image)
+                    presence_row = presence.to_dict()
+                    run_crack_model = presence.any_crack
+                except ModelRunRefused as exc:
+                    # No classifier installed: the gate is skipped, not faked.
+                    presence_row = {"skipped": str(exc)}
+            # When the classifier flags no tile the segmenter is not asked, and the row
+            # says so: an empty mask there means nothing was looked for.
+            crack = (detect_cracks(image, min_area_px=self.config.crack_min_area_px)
+                     if run_crack_model else None)
             structural = detect_structural_defects(
                 image,
                 min_area_px=max(self.config.crack_min_area_px, self.config.metal_min_area_px),
                 model_key=str(self.config.structural_model_key or "structural_multiclass_detector"),
                 use_model=bool(self.config.run_structural_models),
             )
-            solar = detect_solar_defects(
+            metal = (detect_metal_defects(image, min_area_px=self.config.metal_min_area_px)
+                     if metal_enabled else None)
+            solar = (detect_solar_defects(
                 image,
                 thermal_gray=None,
                 min_area_px=max(self.config.crack_min_area_px, self.config.metal_min_area_px),
                 model_key=str(self.config.solar_model_key or "solar_defect_detector"),
                 use_model=bool(self.config.run_solar_models),
-            )
+            ) if solar_enabled else None)
+
+            corrosion_row: dict[str, Any] | None = None
+            if (self.config.grade_corrosion
+                    and str(structural.model_used).startswith("onnx:")
+                    and any(str(d.label).lower() in CORROSION_LABELS for d in structural.detections)):
+                from .detection import CorrosionGradingRefused, grade_corrosion_severity
+
+                try:
+                    graded = grade_corrosion_severity(image)
+                    corrosion_overlay_path = overlays_dir / f"{image_path.stem}_corrosion_grade_overlay.png"
+                    cv2.imwrite(str(corrosion_overlay_path), graded.overlay)
+                    corrosion_row = {**graded.to_summary(),
+                                     "overlay_path": str(corrosion_overlay_path)}
+                except CorrosionGradingRefused as exc:
+                    corrosion_row = {"refused": str(exc)}
 
             crack_mask_path = masks_dir / f"{image_path.stem}_crack_mask.png"
-            metal_mask_path = masks_dir / f"{image_path.stem}_metal_mask.png"
             structural_mask_path = masks_dir / f"{image_path.stem}_structural_mask.png"
-            solar_mask_path = masks_dir / f"{image_path.stem}_solar_mask.png"
             crack_overlay_path = overlays_dir / f"{image_path.stem}_crack_overlay.png"
-            metal_overlay_path = overlays_dir / f"{image_path.stem}_metal_overlay.png"
             structural_overlay_path = overlays_dir / f"{image_path.stem}_structural_overlay.png"
-            solar_overlay_path = overlays_dir / f"{image_path.stem}_solar_overlay.png"
-
-            cv2.imwrite(str(crack_mask_path), crack.mask)
-            cv2.imwrite(str(metal_mask_path), metal.mask)
+            if crack is not None:
+                cv2.imwrite(str(crack_mask_path), crack.mask)
+                cv2.imwrite(str(crack_overlay_path), crack.overlay)
+            else:
+                cv2.imwrite(str(crack_mask_path), np.zeros(image.shape[:2], dtype=np.uint8))
             cv2.imwrite(str(structural_mask_path), structural.mask)
-            cv2.imwrite(str(solar_mask_path), solar.mask)
-            cv2.imwrite(str(crack_overlay_path), crack.overlay)
-            cv2.imwrite(str(metal_overlay_path), metal.overlay)
             cv2.imwrite(str(structural_overlay_path), structural.overlay)
-            cv2.imwrite(str(solar_overlay_path), solar.overlay)
 
-            image_rows.append(
-                {
-                    "image": image_path.name,
-                    "crack_pixels": crack.crack_pixels,
-                    "crack_ratio": crack.crack_ratio,
-                    "crack_length_px": crack.estimated_length_px,
-                    "crack_max_width_px": crack.estimated_max_width_px,
+            row: dict[str, Any] = {
+                "image": image_path.name,
+                "image_path": str(image_path.resolve()),
+                "image_size": [int(image.shape[1]), int(image.shape[0])],
+                "crack_presence": presence_row,
+                "crack_segmentation_run": crack is not None,
+                "crack_pixels": crack.crack_pixels if crack is not None else 0,
+                "crack_ratio": crack.crack_ratio if crack is not None else 0.0,
+                "crack_length_px": crack.estimated_length_px if crack is not None else 0.0,
+                # The thickness of the MASK, in pixels. Not a crack width: at survey GSD a
+                # crack is usually under a pixel wide, and the segmenter's registry entry
+                # says width is not something it measures.
+                "crack_mask_thickness_px": crack.estimated_max_width_px if crack is not None else 0.0,
+                "crack_width_measured": False,
+                "crack_model_used": (crack.model_used if crack is not None
+                                     else "not_run:crack_presence_gate"),
+                "crack_model_key": crack.model_key if crack is not None else "",
+                "crack_model_sha256": crack.model_sha256 if crack is not None else "",
+                "structural_ratio": float(structural.defect_ratio),
+                "structural_pixels": int(structural.defect_pixels),
+                "structural_detection_count": int(len(structural.detections)),
+                "structural_class_ratio": {k: float(v) for k, v in structural.class_pixel_ratio.items()},
+                "structural_detections": [d.to_dict() for d in structural.detections],
+                "structural_model_used": str(structural.model_used),
+                "structural_model_available": bool(structural.model_available),
+                "structural_model_key": structural.model_key,
+                "structural_model_sha256": structural.model_sha256,
+                "crack_mask_path": str(crack_mask_path),
+                "crack_overlay_path": str(crack_overlay_path) if crack is not None else "",
+                "structural_mask_path": str(structural_mask_path),
+                "structural_overlay_path": str(structural_overlay_path),
+                "corrosion_severity": corrosion_row,
+            }
+            if metal is not None:
+                metal_mask_path = masks_dir / f"{image_path.stem}_metal_mask.png"
+                metal_overlay_path = overlays_dir / f"{image_path.stem}_metal_overlay.png"
+                cv2.imwrite(str(metal_mask_path), metal.mask)
+                cv2.imwrite(str(metal_overlay_path), metal.overlay)
+                row.update({
                     "metal_pixels": metal.defect_pixels,
                     "metal_ratio": metal.defect_ratio,
                     "metal_regions": metal.defect_regions,
-                    "structural_ratio": float(structural.defect_ratio),
-                    "structural_pixels": int(structural.defect_pixels),
-                    "structural_detection_count": int(len(structural.detections)),
-                    "structural_class_ratio": {k: float(v) for k, v in structural.class_pixel_ratio.items()},
-                    "structural_detections": [d.to_dict() for d in structural.detections],
-                    "structural_model_used": str(structural.model_used),
-                    "structural_model_available": bool(structural.model_available),
+                    "metal_model_used": metal.model_used,
+                    "metal_mask_path": str(metal_mask_path),
+                    "metal_overlay_path": str(metal_overlay_path),
+                })
+            else:
+                row["metal_model_used"] = "not_run"
+            if solar is not None:
+                solar_mask_path = masks_dir / f"{image_path.stem}_solar_mask.png"
+                solar_overlay_path = overlays_dir / f"{image_path.stem}_solar_overlay.png"
+                cv2.imwrite(str(solar_mask_path), solar.mask)
+                cv2.imwrite(str(solar_overlay_path), solar.overlay)
+                row.update({
                     "solar_ratio": float(solar.defect_ratio),
                     "solar_pixels": int(solar.defect_pixels),
                     "solar_detection_count": int(len(solar.detections)),
@@ -306,19 +424,17 @@ class StructuralFaultPipeline:
                     "solar_detections": [d.to_dict() for d in solar.detections],
                     "solar_model_used": str(solar.model_used),
                     "solar_model_available": bool(solar.model_available),
+                    "solar_model_key": solar.model_key,
+                    "solar_model_sha256": solar.model_sha256,
                     "solar_hotspot_max_temp_c": (
                         float(solar.hotspot_max_temp_c) if solar.hotspot_max_temp_c is not None else None
                     ),
-                    "crack_mask_path": str(crack_mask_path),
-                    "crack_overlay_path": str(crack_overlay_path),
-                    "metal_mask_path": str(metal_mask_path),
-                    "metal_overlay_path": str(metal_overlay_path),
-                    "structural_mask_path": str(structural_mask_path),
-                    "structural_overlay_path": str(structural_overlay_path),
                     "solar_mask_path": str(solar_mask_path),
                     "solar_overlay_path": str(solar_overlay_path),
-                }
-            )
+                })
+            else:
+                row["solar_model_used"] = "not_run"
+            image_rows.append(row)
             quality = quality_by_image.get(image_path.name, {})
             if quality:
                 image_rows[-1].update(
@@ -337,7 +453,7 @@ class StructuralFaultPipeline:
                     }
                 )
 
-            crack_candidates.append((crack.crack_ratio, crack_mask_path))
+            crack_candidates.append((crack.crack_ratio if crack is not None else 0.0, crack_mask_path))
         _emit_progress(67, "Image defect analysis complete")
 
         structural_class_sum: dict[str, float] = {}
@@ -361,6 +477,7 @@ class StructuralFaultPipeline:
             "fenicsx_message": "",
             "physics_config": {},
             "physics_summary": {},
+            **_forecast_assumptions(self.config),
         }
 
         _emit_progress(68, "Running crack propagation forecast")
@@ -458,16 +575,25 @@ class StructuralFaultPipeline:
             mapped = 74 + int((22.0 * float(max(0, min(100, int(percent))))) / 100.0)
             _emit_progress(mapped, f"Reconstruction: {message}")
 
-        recon = self.reconstructor.reconstruct(
-            image_dir=image_dir,
-            crack_mask_dir=masks_dir,
-            output_dir=recon_dir,
-            profile=self.config.reconstruction_profile,
-            execution_mode=self.config.reconstruction_execution_mode,
-            use_cache=self.config.reconstruction_use_cache,
-            cloud_endpoint=self.config.reconstruction_cloud_endpoint,
-            progress_callback=_recon_progress,
-        )
+        # Reconstruction is one stage of the run, not a precondition for the rest of it.
+        # Close-range inspection photos often share no overlap, COLMAP then registers
+        # nothing, and the whole run used to abort AFTER detection had finished -- no
+        # summary, no report, only loose masks. The failure is recorded as the stage's
+        # result instead, and nothing downstream pretends a model exists.
+        try:
+            recon = self.reconstructor.reconstruct(
+                image_dir=image_dir,
+                crack_mask_dir=masks_dir,
+                output_dir=recon_dir,
+                profile=self.config.reconstruction_profile,
+                execution_mode=self.config.reconstruction_execution_mode,
+                use_cache=self.config.reconstruction_use_cache,
+                cloud_endpoint=self.config.reconstruction_cloud_endpoint,
+                progress_callback=_recon_progress,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _emit_progress(95, f"Reconstruction failed: {type(exc).__name__}")
+            recon = _FailedReconstruction(f"{type(exc).__name__}: {exc}")
 
         _emit_progress(96, "Computing structural health score")
         history_rows = load_asset_health_history(
@@ -634,6 +760,19 @@ class StructuralFaultPipeline:
             structural_risk_score=float(health_scoring.get("structural_risk_score", 0.0)),
             condition_level=int(health_scoring.get("condition_level", 0)),
         )
+
+
+class _FailedReconstruction:
+    """What a reconstruction stage that failed contributes: its error, and no products."""
+
+    point_cloud_path = ""
+    crack_cloud_path = None
+
+    def __init__(self, error: str) -> None:
+        self.error = error
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"status": "failed", "error": self.error, "frame_count": 0}
 
 
 def run_pipeline(

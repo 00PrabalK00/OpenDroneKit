@@ -52,6 +52,17 @@ class Annotation:
     created_by: str = "user"
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
+    #: What a model claimed, kept apart from what a person decided. All empty for a
+    #: finding a person drew. `model_used` is the detector's own statement of what ran
+    #: ("onnx:<file>", "heuristic", ...); `confidence` is the model's score and is None
+    #: whenever nothing produced one -- a heuristic has no calibrated score to report.
+    model_used: str = ""
+    model_key: str = ""
+    model_sha256: str = ""
+    confidence: float | None = None
+    #: Every review decision, oldest first. Appended to and never rewritten, so a second
+    #: reviewer's decision cannot erase the first one's, and neither touches `note`.
+    review_history: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         validate_annotation(
@@ -179,6 +190,12 @@ def create_annotation(
     note: str | None = None,
     include_in_report: bool = True,
     created_by: str = "user",
+    *,
+    model_used: str = "",
+    model_key: str = "",
+    model_sha256: str = "",
+    confidence: float | None = None,
+    tags: Sequence[str] = (),
 ) -> Annotation:
     a = Annotation(
         id=str(uuid.uuid4()),
@@ -193,6 +210,11 @@ def create_annotation(
         note=note,
         include_in_report=include_in_report,
         created_by=created_by,
+        model_used=str(model_used or ""),
+        model_key=str(model_key or ""),
+        model_sha256=str(model_sha256 or ""),
+        confidence=None if confidence is None else float(confidence),
+        tags=[normalise_tag(t) for t in tags if normalise_tag(t)],
     )
     items = _load_store(project_root)
     items.append(a.to_dict())
@@ -232,7 +254,10 @@ def update_annotation(
     patch: dict[str, Any],
 ) -> Annotation | None:
     items = _load_store(project_root)
-    readonly = {"id", "project_id", "created_at", "created_by"}
+    # The model's claim is as fixed as who created the finding: a reviewer disagreeing
+    # with a model is evidence about the model, and editing the claim would erase it.
+    readonly = {"id", "project_id", "created_at", "created_by",
+                "model_used", "model_key", "model_sha256", "confidence"}
     for i, d in enumerate(items):
         if d.get("id") == annotation_id:
             for k, v in patch.items():
@@ -374,6 +399,8 @@ def export_annotations(project_root: Path, project_id: str, output_format: str =
             writer = csv.DictWriter(f, fieldnames=[
                 "id", "annotation_type", "label", "severity",
                 "source_type", "source_id", "note", "include_in_report", "created_at",
+                "status", "created_by", "model_used", "model_key", "model_sha256",
+                "confidence",
             ])
             writer.writeheader()
             for a in annotations:
@@ -383,6 +410,10 @@ def export_annotations(project_root: Path, project_id: str, output_format: str =
                     "source_type": a.source_type, "source_id": a.source_id,
                     "note": a.note or "", "include_in_report": a.include_in_report,
                     "created_at": a.created_at,
+                    "status": a.status, "created_by": a.created_by,
+                    "model_used": a.model_used, "model_key": a.model_key,
+                    "model_sha256": a.model_sha256,
+                    "confidence": "" if a.confidence is None else a.confidence,
                 })
         return out_path
 
@@ -395,5 +426,11 @@ def export_annotations(project_root: Path, project_id: str, output_format: str =
 
 
 def get_report_annotations(project_root: Path, project_id: str) -> list[Annotation]:
-    """Return only annotations marked for report inclusion."""
-    return [a for a in list_annotations(project_root, project_id) if a.include_in_report]
+    """Return only annotations marked for report inclusion.
+
+    A dismissed finding is excluded even if its flag was never cleared: a reviewer who
+    rejected a detection has said it is not a defect, and a report that printed it anyway
+    would be reporting the model's claim over the person's decision.
+    """
+    return [a for a in list_annotations(project_root, project_id)
+            if a.include_in_report and a.status != "dismissed"]
