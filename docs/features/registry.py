@@ -206,7 +206,8 @@ MISSION_PLANNING = [
       "Tower stack, four nacelle aspects, and per-blade stations captured from both "
       "faces at the parked rotor angles, skipping points below a safe altitude.",
       "implemented", ["tests/test_mission_types.py::TestWindTurbine",
-                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine"],
+                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine",
+                      "tests/test_structure_coverage_is_stated.py::TestTurbineWholePath"],
       "Each blade face looks across the blade at the opposite face; an unset stand-off "
       "uses 12 m instead of the 2 m floor it used to reach."),
     F("mp.type.magnetic", "Magnetic mapping", "core", "Mission types",
@@ -1612,7 +1613,9 @@ PLATFORM = [
       "verified", ["tests/test_exporters.py::test_every_registered_format_writes_a_file",
                    "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members",
                    "tests/test_mission_exports_carry_the_plan.py::TestFileStructure",
-                   "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile"],
+                   "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile",
+                   "tests/test_litchi_export_live.py::TestTheActionCodesAreLitchis",
+                   "tests/test_litchi_export_live.py::TestTheMenuItemExportsLitchi"],
       "Verified by parsing the written files after planning through the Api. Loading "
       "into QGroundControl, Mission Planner, DJI Pilot 2 and Litchi themselves has not "
       "been done here; the DJI drone enum (77/0, payload 66, Mavic 3 Enterprise) and "
