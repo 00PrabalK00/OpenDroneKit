@@ -188,6 +188,23 @@ export function fields(spec, onChange) {
   return wrap;
 }
 
+/* ---------------------------------------------------------------- reference */
+
+/**
+ * Mark a panel as reference content: a menu of choices or a statement true of every
+ * project, rather than data about this one.
+ *
+ * The banner counts rows no API call produced, and that is the right test for data. It
+ * also caught the Mission Types menu, the Measurements tool list and the Settings
+ * sections, so EXAMPLE DATA sat over a real project on five screens -- a banner over
+ * real data is how people learn to stop reading it. A reference panel names options and
+ * carries no figures; test_the_banner_can_see_every_fabrication holds every use to that.
+ */
+export function reference(node) {
+  node.setAttribute("data-reference", "");
+  return node;
+}
+
 /* ----------------------------------------------------------------- readouts */
 
 export function readouts(items) {
@@ -287,6 +304,9 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
           bar.querySelectorAll(".tool").forEach((t) => t.classList.remove("active"));
           button.classList.add("active");
           if (tool.onSelect) tool.onSelect();
+          // A map canvas answers its own tools (see the map block below). Before this the
+          // buttons only moved the highlight, and nothing listened for what they meant.
+          else root.dispatchEvent(new CustomEvent("odk:tool", { detail: tool.title }));
         };
         return button;
       })),
@@ -387,30 +407,80 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     // dock has put it in the document. Mounting synchronously gives a map 0px wide.
     queueMicrotask(async () => {
       if (!root.isConnected) return;
-      const { mountMap, showMission } = await import("./mapview.js");
-      const { DATA } = await import("./demo.js");
+      const { mountMap, showMission, showProject, fitTo, mapReady, whenMapReady } = await import("./mapview.js");
+      const { DATA, demoEnabled } = await import("./demo.js");
+      const { tryCall } = await import("./api.js");
+      const drawing = await import("./draw.js");
       const options = typeof map === "object" ? { ...map } : {};
 
-      // Centre on the site the data actually describes rather than a hardcoded city.
+      /* The bundled example's mission belongs on the map in demo mode only.
+       *
+       * It used to be drawn on every map canvas in every mode -- the example lawnmower
+       * and its capture dots over whatever project was open, with or without a mission.
+       * A connected map now shows the open project's own content, and says so when there
+       * is none, rather than borrowing a plausible flight plan. */
+      const demo = demoEnabled();
       const mission = DATA.mission || {};
       const footprint = DATA.footprint || {};
-      if (!options.centre && footprint.centre) options.centre = footprint.centre;
-      if (!options.zoom && footprint.centre) options.zoom = 17;
+      if (demo && !options.centre && footprint.centre) {
+        options.centre = footprint.centre;
+        options.zoom = options.zoom || 17;
+      }
+      if (!options.centre) {
+        options.centre = [0, 20];
+        options.zoom = options.zoom || 1.5;
+      }
 
       const instance = mountMap(root, options);
       if (!instance) return;
+      drawing.attachMap(instance);
 
-      // Draw the planned flight. showMission has existed since the map view was
-      // written and nothing ever called it, which is why every canvas was an empty
-      // basemap -- the path was computed and then thrown away.
-      if (options.mission !== false && (mission.line || []).length > 1) {
-        const draw = () => showMission(instance, {
-          line: mission.line,
-          captures: footprint.captures || [],
-        });
-        if (instance.isStyleLoaded()) draw();
-        else instance.once("load", draw);
-      }
+      const note = el("span", { class: "chip warn", text: "" });
+      const noteBox = el("div", { class: "canvas-overlay bl map-note hidden" }, [note]);
+      root.appendChild(noteBox);
+      const explain = (text) => {
+        note.textContent = text || "";
+        noteBox.classList.toggle("hidden", !text);
+      };
+
+      const drawContent = async (fit) => {
+        if (demo) {
+          if ((mission.line || []).length > 1) {
+            showMission(instance, { line: mission.line, captures: footprint.captures || [] });
+          }
+          instance._odkBounds = footprint.bounds || null;
+          explain("");
+          return;
+        }
+        const bounds = await showProject(instance, tryCall);
+        instance._odkBounds = bounds;
+        explain(bounds ? "" : "Nothing in this project to place on the map yet. Draw an area "
+          + "of interest with ⬠, or add a GeoTIFF or GeoJSON layer.");
+        if (fit && bounds) fitTo(instance, bounds);
+      };
+      whenMapReady(instance, () => drawContent(true));
+
+      // Redrawn when an action changes the project: a new AOI, a plan, an added layer.
+      const onRefresh = () => {
+        if (!root.isConnected) { window.removeEventListener("odk:refresh", onRefresh); return; }
+        if (mapReady(instance)) drawContent(false);
+      };
+      window.addEventListener("odk:refresh", onRefresh);
+
+      root.addEventListener("odk:tool", (event) => {
+        const title = event.detail;
+        if (title === "Fit view" || title === "Fit") {
+          if (!fitTo(instance, instance._odkBounds)) {
+            root.dispatchEvent(new CustomEvent("odk:say", { bubbles: true,
+              detail: { text: "Fit view: nothing in this project to fit to yet.", kind: "warn" } }));
+          }
+          return;
+        }
+        const tool = drawing.TOOL_BY_TITLE[title];
+        const said = tool ? drawing.armTool(tool) : null;
+        root.dispatchEvent(new CustomEvent("odk:say", { bubbles: true,
+          detail: { text: said ? `${title}: ${said}` : `${title}: not a map tool.`, kind: said ? "ok" : "warn" } }));
+      });
     });
   }
   return root;
