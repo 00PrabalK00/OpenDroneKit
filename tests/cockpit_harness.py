@@ -184,6 +184,8 @@ class Cockpit:
                     wanted = self.path.split("ms=", 1)[-1] if "ms=" in self.path else "50"
                     _time.sleep(min(float(wanted or 50), 400.0) / 1000.0)
                     return self._send(b"{}", "application/json")
+                if path == "/__tiles":
+                    return self._send(json.dumps(cockpit.tiles).encode(), "application/json")
                 if path == "/__calls":
                     return self._send(json.dumps(cockpit.calls, default=str).encode(), "application/json")
                 if path == "/__scenario.html":

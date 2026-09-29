@@ -43,6 +43,17 @@ SCENARIO = """
 """
 
 
+# The note comes from the cache's status, not from a tile request, so on a slow start
+# the map may not have asked for a tile yet when it appears. Wait for that in real time.
+_FIRST_TILE_ASKED = """
+    for (let i = 0; i < 60; i++) {
+      const asked = await fetch("/__tiles").then((r) => r.json()).catch(() => []);
+      if (asked.length) break;
+      await ODK.sleep(300);
+    }
+"""
+
+
 @pytest.fixture
 def tile_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("ODK_STORAGE_PATH", str(tmp_path / "storage"))
@@ -70,7 +81,7 @@ def test_a_fresh_install_offline_says_there_is_no_basemap_and_keeps_saying_it(
         tmp_path, tile_cache) -> None:
     api = make_api(tmp_path)
     with Cockpit(api, tmp_path / "profile", page="index.html", window_size="1600,900") as cockpit:
-        result = cockpit.run(SCENARIO % "")
+        result = cockpit.run(SCENARIO % _FIRST_TILE_ASKED)
     assert result["note"], result
     assert result["note"].startswith("No basemap: the offline tile cache is empty"), result
     assert result["visible"], result
