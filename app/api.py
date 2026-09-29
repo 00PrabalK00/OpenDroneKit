@@ -4695,6 +4695,9 @@ class Api:
         self._session.preflight_acknowledged = set()
         self._session.audit("mission_planned", {"template": template, "waypoints": len(plan.waypoints)})
         # Extended in place: plan_mission keeps appending to this same list afterwards.
+        # What the planner could not photograph as asked is said on the plan, not left
+        # to a count in the summary table.
+        warnings.extend(n for n in (getattr(plan, "coverage_notes", None) or []) if n not in warnings)
         warnings.extend(self._endurance_warnings(plan, options or {}))
         return {
             "summary": {
