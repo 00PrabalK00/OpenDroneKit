@@ -4759,7 +4759,10 @@ class Api:
                 center = _centroid(self._session.aoi_polygon)
             elements = opts.get("pylon_elements") or []
             if isinstance(elements, str):
-                elements = _parse_pylon_elements(elements)
+                try:
+                    elements = _parse_pylon_elements(elements)
+                except ValueError as exc:
+                    return fail(str(exc))
             return self.plan_pylon_mission(
                 list(center), list(elements),
                 standoff_m=float(opts.get("standoff_m") or 12.0),
@@ -4783,7 +4786,11 @@ class Api:
             return fail("A multispectral survey needs the multispectral payload it will carry.")
         panel = opts.get("calibration_panel_lonlat")
         if isinstance(panel, str):
-            panel = [float(v) for v in panel.replace(";", ",").split(",") if v.strip()] or None
+            try:
+                panel = [float(v) for v in panel.replace(";", ",").split(",") if v.strip()] or None
+            except ValueError:
+                return fail(f"The calibration panel position '{panel}' is not a lon, lat pair "
+                            "of numbers, e.g. '0.1174, 52.2048'.")
         return self.plan_multispectral_survey(
             str(opts.get("payload_key") or opts.get("payload")),
             camera=str(opts.get("camera") or "mavic3e"),
@@ -5905,9 +5912,15 @@ def _parse_pylon_elements(text: str) -> list[dict[str, Any]]:
             continue
         name, _, rest = chunk.partition("@")
         height, _, radius = rest.partition(":")
-        entry: dict[str, Any] = {"name": name.strip(), "height_m": float(height) if height.strip() else 0.0}
-        if radius.strip():
-            entry["radius_m"] = float(radius)
+        try:
+            entry: dict[str, Any] = {"name": name.strip(),
+                                     "height_m": float(height) if height.strip() else 0.0}
+            if radius.strip():
+                entry["radius_m"] = float(radius)
+        except ValueError:
+            raise ValueError(
+                f"{name.strip() or chunk}: '{chunk}' is not name@height or name@height:radius "
+                "with numbers in metres, e.g. 'crossarm@32' or 'insulator@28:4'.") from None
         elements.append(entry)
     return elements
 

@@ -199,3 +199,18 @@ class TestDomeUnderTheFloor:
             "dome_base_altitude_m": 25})
         assert "minimum altitude" not in " ".join(planned["warnings"])
 
+
+class TestTypedInputsAreRefusedByName:
+    def test_a_non_numeric_pylon_height_names_the_element(self, tmp_path):
+        api, _ = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned = api.plan_mission({"template": "pylon_inspection", "pylon_elements": "crossarm@abc, body@20"})
+        assert not planned["ok"]
+        assert "crossarm" in planned["error"] and "ValueError" not in planned["error"]
+
+    def test_a_non_numeric_panel_position_says_what_is_wanted(self, tmp_path):
+        api, _ = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        payload = next(p["key"] for p in api.list_payloads()["payloads"] if p.get("kind") == "multispectral")
+        planned = api.plan_mission({"template": "multispectral", "payload_key": payload,
+                                    "calibration_panel_lonlat": "no"})
+        assert not planned["ok"]
+        assert "lon, lat" in planned["error"] and "ValueError" not in planned["error"]
