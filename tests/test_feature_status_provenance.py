@@ -84,8 +84,28 @@ def test_it_says_so_when_there_are_no_weights(tmp_path, monkeypatch):
     import feature_status
 
     monkeypatch.setattr(feature_status, "REPO_ROOT", tmp_path)
+    monkeypatch.delenv("ODK_MODEL_WEIGHTS_DIR", raising=False)
     line = feature_status.evidence_base()
     assert "without the trained model weights" in line
     assert "fresh clone reproduces" in line
     # It must not claim a size or a model count it does not have.
     assert "GB" not in line
+
+
+def test_it_counts_weights_the_tests_find_through_the_override(tmp_path, monkeypatch):
+    """A worktree keeps its weights elsewhere and names them with ODK_MODEL_WEIGHTS_DIR.
+
+    The tests load models from there, so a document saying "without the trained model
+    weights" over that run would misstate its own evidence.
+    """
+    import feature_status
+
+    checkout = tmp_path / "checkout"
+    (checkout / "models").mkdir(parents=True)
+    weights = tmp_path / "weights" / "crack"
+    weights.mkdir(parents=True)
+    (weights / "model.onnx").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(feature_status, "REPO_ROOT", checkout)
+    monkeypatch.setenv("ODK_MODEL_WEIGHTS_DIR", str(tmp_path / "weights"))
+    line = feature_status.evidence_base()
+    assert "with 1 trained models installed" in line

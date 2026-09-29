@@ -276,8 +276,17 @@ def evidence_base(extra_reports=()) -> str:
     claimed, with nothing to explain it. A count that only one machine can reproduce has
     to say so on its face.
     """
-    models = REPO_ROOT / "models"
-    weights = sorted(models.rglob("*.onnx")) if models.is_dir() else []
+    # The tests find weights where core.models does: the models folder, then
+    # ODK_MODEL_WEIGHTS_DIR (a worktree or second checkout). Counting only the first
+    # would say "without the trained model weights" over a run that used them.
+    from core.models import extra_weights_root
+
+    found: dict[str, Path] = {}
+    for root in (REPO_ROOT / "models", extra_weights_root()):
+        if root is not None and root.is_dir():
+            for path in root.rglob("*.onnx"):
+                found.setdefault(path.relative_to(root).as_posix(), path)
+    weights = sorted(found.values())
     if not weights:
         return (
             "Computed **without the trained model weights**, which are gigabytes and are "
