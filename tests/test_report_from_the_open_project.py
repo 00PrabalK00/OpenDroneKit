@@ -339,3 +339,54 @@ def test_the_launcher_names_an_environment_that_can_write_reports(monkeypatch) -
                             "import reportlab, docx"], capture_output=True, text=True, timeout=300)
     if check.returncode != 0:
         assert "cannot write PDF/Word reports" in completed.stdout
+
+
+class TestPipelineDetectionsBecomeReviewableFindings:
+    """Only a trained model's detections become findings; heuristic output does not."""
+
+    def _summary(self, tmp_path: Path, image_dir: Path, used: str) -> Path:
+        run = tmp_path / "analysis" / "run_20260101_000000"
+        run.mkdir(parents=True)
+        summary = {
+            "input_image_dir": str(image_dir),
+            "images": [{
+                "image": "IMG_0000.jpg",
+                "structural_model_used": used,
+                "structural_detections": [
+                    {"label": "spalling", "confidence": 0.83, "bbox_xyxy": [10, 10, 60, 40],
+                     "area_px": 1500},
+                ],
+                "solar_model_used": "heuristic",
+                "solar_detections": [],
+            }],
+        }
+        path = run / "summary.json"
+        path.write_text(json.dumps(summary), encoding="utf-8")
+        return path
+
+    def test_model_detections_are_recorded_as_unreviewed_model_findings(self, surveyed,
+                                                                         tmp_path) -> None:
+        from app.report_builder import persist_pipeline_findings
+
+        root = root_of(surveyed)
+        summary = self._summary(root, tmp_path / "imagery", "onnx:structural.onnx")
+        assert persist_pipeline_findings(root, 1, summary)["created"] == 1
+        # Idempotent: the same run is not recorded twice.
+        assert persist_pipeline_findings(root, 1, summary)["already_recorded"]
+        found = surveyed.find_annotations()["annotations"]
+        assert len(found) == 1
+        finding = found[0]
+        assert finding["created_by"] == "model:onnx:structural.onnx"
+        assert finding["status"] == "open" and finding["severity"] == "info"
+        assert "0.83" in finding["note"]
+        text = pdf_text(surveyed.export_report("pdf")["path"])
+        assert "not been confirmed by an inspector" in text
+
+    def test_heuristic_detections_are_not_turned_into_findings(self, surveyed, tmp_path) -> None:
+        from app.report_builder import persist_pipeline_findings
+
+        root = root_of(surveyed)
+        summary = self._summary(root, tmp_path / "imagery", "heuristic")
+        result = persist_pipeline_findings(root, 1, summary)
+        assert result["created"] == 0 and result["skipped_heuristic"] == 1
+        assert surveyed.find_annotations()["annotations"] == []
