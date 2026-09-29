@@ -124,3 +124,49 @@ def test_this_machines_colmap_is_probed_for_real():
     assert probe["reason"], "the answer must say why"
     caps = rc.engine_capabilities()
     assert caps["dense_stereo"] == (probe["ok"] or (rc._pycolmap_has_dense() and rc.pycolmap_has_cuda()))
+
+
+def _stamped_binary(tmp_path: Path, release: str) -> Path:
+    """A file carrying the stamp nvcc writes into what it compiles."""
+    binary = tmp_path / "bin" / "colmap.exe"
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"\0" * 4096 + f"Cuda compilation tools, release {release}, V{release}.51".encode()
+                       + b"\0" * 4096)
+    return binary
+
+
+def test_the_toolkit_is_read_from_the_binary_and_the_bat_launcher_resolves_to_it(tmp_path):
+    binary = _stamped_binary(tmp_path, "13.2")
+    (tmp_path / "COLMAP.bat").write_text("@echo off\r\n", encoding="ascii")
+    assert rc.binary_cuda_toolchain(str(binary)) == "13.2"
+    assert rc.binary_cuda_toolchain(str(tmp_path / "COLMAP.bat")) == "13.2"
+    assert rc.binary_cuda_toolchain(str(tmp_path / "missing.exe")) == ""
+
+
+def test_a_toolkit_newer_than_the_driver_is_named_as_the_cause_with_the_fix(tmp_path, monkeypatch):
+    """The RTX 5060 box: official COLMAP 4.1.1 is CUDA 13.2, driver 592.15 supports 13.1."""
+    binary = _stamped_binary(tmp_path, "13.2")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("592.15", "13.1"))
+    advice = rc.explain_dense_failure(str(binary), "CUDA error ... unsupported toolchain.")
+    assert "compiled with CUDA 13.2" in advice
+    assert "driver 592.15 supports CUDA only up to 13.1" in advice
+    assert "ODK_COLMAP" in advice and "INSTALLATION.md" in advice
+
+
+def test_an_unknown_cause_is_not_guessed(tmp_path, monkeypatch):
+    binary = tmp_path / "colmap.exe"
+    binary.write_bytes(b"no stamp here")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("", ""))
+    advice = rc.explain_dense_failure(str(binary), "unsupported toolchain")
+    assert "13." not in advice and "compiled with CUDA" not in advice
+    assert rc.explain_dense_failure(str(binary), "out of memory") == ""
+
+
+def test_the_probe_reason_carries_the_explanation(tmp_path, monkeypatch):
+    binary = _fake_colmap(tmp_path, "ptx")
+    monkeypatch.setattr(rc, "binary_cuda_toolchain", lambda _b: "13.2")
+    monkeypatch.setattr(rc, "driver_cuda_version", lambda: ("592.15", "13.1"))
+    result = rc.native_dense_probe(str(binary), use_cache=False)
+    assert result["ok"] is False
+    assert "unsupported toolchain" in result["reason"]
+    assert "Cause: this COLMAP was compiled with CUDA 13.2" in result["reason"]

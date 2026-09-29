@@ -18,6 +18,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any, Callable, Sequence
@@ -135,9 +136,10 @@ def colmap_executable() -> str | None:
 
 
 # Dense stereo used to read True whenever a native binary existed. A CUDA build of
-# COLMAP that was not compiled for this GPU's architecture (an RTX 50-series card
-# against a build without sm_120 kernels) exists, prints "with CUDA", and fails every
-# patch-match run with "the provided PTX was compiled with an unsupported toolchain".
+# COLMAP whose kernels this GPU and driver cannot load (on the RTX 5060 dev box: built
+# with CUDA 13.2 under a driver that supports 13.1) exists, prints "with CUDA", and
+# fails every patch-match run with "the provided PTX was compiled with an unsupported
+# toolchain". explain_dense_failure() names that cause and the fix.
 # The capability is therefore established by running patch-match once on a tiny
 # fixture (native_dense_probe), and the reason is reported next to the answer.
 def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
@@ -172,7 +174,7 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
     return caps
 
 
-_DENSE_PROBE_VERSION = 1
+_DENSE_PROBE_VERSION = 2
 
 
 def _dense_probe_cache_file() -> Path:
@@ -296,11 +298,105 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
             if done.returncode != 0 or error:
                 lines = text.strip().splitlines()
                 detail = error or (lines[-1] if lines else f"exit {done.returncode}")
-                return {"ok": False, "reason": f"COLMAP {label} failed on this machine: {detail}"}
+                reason = f"COLMAP {label} failed on this machine: {detail}"
+                advice = explain_dense_failure(binary, reason)
+                return {"ok": False, "reason": f"{reason} {advice}".strip()}
         depth_maps = list((dense / "stereo" / "depth_maps").glob("*.bin"))
         if not depth_maps:
             return {"ok": False, "reason": "COLMAP patch_match_stereo ran but wrote no depth maps."}
     return {"ok": True, "reason": "Native COLMAP ran patch-match stereo on this GPU."}
+
+
+_TOOLCHAIN_PATTERN = re.compile(rb"Cuda compilation tools, release (\d+\.\d+)")
+
+
+def binary_cuda_toolchain(binary: str) -> str:
+    """The CUDA toolkit release a COLMAP build was compiled with, read from the binary.
+
+    nvcc stamps "Cuda compilation tools, release X.Y" into the objects it produces. The
+    official Windows archive links cudart statically into colmap.exe; conda-forge builds
+    ship it next to the executable, so the neighbouring DLLs are searched too. Returns
+    "" when no stamp is found -- an unknown is reported as unknown, never guessed.
+    """
+    path = Path(binary)
+    if path.suffix.lower() in (".bat", ".cmd"):
+        for candidate in (path.parent / "bin" / "colmap.exe", path.parent / "colmap.exe"):
+            if candidate.is_file():
+                path = candidate
+                break
+    if not path.is_file():
+        return ""
+    candidates = [path]
+    candidates += sorted(p for p in path.parent.glob("*.dll")
+                         if p.name.lower().startswith(("colmap", "cudart")))
+    for candidate in candidates:
+        try:
+            with candidate.open("rb") as handle:
+                tail = b""
+                while True:
+                    chunk = handle.read(8 << 20)
+                    if not chunk:
+                        break
+                    found = _TOOLCHAIN_PATTERN.search(tail + chunk)
+                    if found:
+                        return found.group(1).decode("ascii")
+                    tail = chunk[-64:]
+        except OSError:
+            continue
+    return ""
+
+
+def driver_cuda_version() -> tuple[str, str]:
+    """(driver version, highest CUDA version it supports) from nvidia-smi, or ("", "")."""
+    try:
+        done = subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    text = done.stdout or ""
+    driver = re.search(r"Driver Version:\s*([\d.]+)", text)
+    cuda = re.search(r"CUDA Version:\s*([\d.]+)", text)
+    return (driver.group(1) if driver else "", cuda.group(1) if cuda else "")
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text))
+
+
+def explain_dense_failure(binary: str, reason: str) -> str:
+    """Name the cause and the fix for a patch-match failure the user can act on.
+
+    "The provided PTX was compiled with an unsupported toolchain" is CUDA's
+    CUDA_ERROR_UNSUPPORTED_PTX_VERSION: the kernels in the build were produced by a
+    newer CUDA toolkit than the installed NVIDIA driver can load. On the RTX 5060 dev
+    box the official COLMAP 4.1.1 archive is built with CUDA 13.2 while driver 592.15
+    supports CUDA 13.1. Saying "no sm_120 kernels" there sent people after the wrong
+    fix, so the two versions are read and compared rather than assumed.
+    """
+    if "unsupported toolchain" not in reason.lower():
+        return ""
+    toolkit = binary_cuda_toolchain(binary)
+    driver, driver_cuda = driver_cuda_version()
+    if toolkit and driver_cuda and _version_tuple(toolkit) > _version_tuple(driver_cuda):
+        return (
+            f"Cause: this COLMAP was compiled with CUDA {toolkit}, but NVIDIA driver "
+            f"{driver} supports CUDA only up to {driver_cuda}, so the driver cannot load "
+            f"its GPU kernels. Fix: update the NVIDIA driver to one that supports CUDA "
+            f"{toolkit}, or install a COLMAP built with CUDA {driver_cuda} or older and "
+            "point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense reconstruction on "
+            "RTX 50-series')."
+        )
+    known = []
+    if toolkit:
+        known.append(f"compiled with CUDA {toolkit}")
+    if driver_cuda:
+        known.append(f"driver {driver} supports CUDA {driver_cuda}")
+    return (
+        "Cause: the build's GPU kernels cannot be loaded by this NVIDIA driver"
+        + (f" ({'; '.join(known)})" if known else "")
+        + ". Fix: install a COLMAP build compiled for this GPU with a CUDA toolkit the "
+        "driver supports, and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
+        "reconstruction on RTX 50-series')."
+    )
 
 
 def _first_error_line(text: str) -> str:
