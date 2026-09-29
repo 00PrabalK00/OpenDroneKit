@@ -632,6 +632,10 @@ def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, fi
 
 # Litchi refuses a mission of more than 99 waypoints.
 LITCHI_MAX_WAYPOINTS = 99
+LITCHI_ACTION_NONE = -1
+LITCHI_ACTION_STAY_MS = 0
+LITCHI_ACTION_TAKE_PHOTO = 1
+LITCHI_ACTION_TILT_CAMERA_DEG = 5
 
 
 def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
@@ -663,11 +667,16 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
     rows: list[str] = []
     for pose in viewpoints:
         actions: list[str] = []
-        # Litchi action type 1 is "stay for", 5 is "take photo".
+        # Litchi's action types (litchiutilities.com/docs/litchiCsv.php, and what Mission
+        # Hub itself writes): -1 none, 0 stay for (ms), 1 take photo, 2 start recording,
+        # 3 stop recording, 4 rotate aircraft (deg), 5 tilt camera (deg). This used to
+        # write 1 for the hover and 5 for the photo, so every structure mission tilted
+        # the camera to 0 deg at each point and took no photograph, and a dwell was a
+        # photo instead of a hover. The hover comes first so the shot is taken steady.
         if pose["dwell_s"] > 0.0:
-            actions.extend(["1", str(int(pose["dwell_s"] * 1000))])
+            actions.extend([str(LITCHI_ACTION_STAY_MS), str(int(round(pose["dwell_s"] * 1000)))])
         if spacing <= 0.0 and pose["trigger"]:
-            actions.extend(["5", "0"])
+            actions.extend([str(LITCHI_ACTION_TAKE_PHOTO), "0"])
         while len(actions) < 30:
             actions.extend(["-1", "0"])
         actions = actions[:30]
@@ -683,7 +692,8 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
         # make Litchi add its own terrain offset on top.
         row.extend([
             "0", f"{min(15.0, pose['speed_mps'] or speed):.2f}", "0", "0", "0", "0",
-            "0", f"{spacing:.2f}" if spacing > 0 else "0",
+            # -1 is Litchi's "not used" for the interval columns, as Mission Hub writes.
+            "-1", f"{spacing:.2f}" if spacing > 0 else "-1",
         ])
         rows.append(",".join(row))
 

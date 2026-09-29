@@ -762,7 +762,10 @@ export class Shell {
 
       const mapped = toAction[action];
       if (mapped) {
-        await this.runAction(mapped);
+        // The payload goes with the verb. "Export Litchi CSV" is mission.export with
+        // {format: "litchi"}; dropping the payload here made every one of the six
+        // single-format items write all six formats.
+        await this.runAction(mapped, payload);
         return;
       }
 
@@ -1089,7 +1092,7 @@ export class Shell {
    * appended to the console. The old version wrote to the status bar in 11px text at the
    * bottom of the screen, which is indistinguishable from the app doing nothing.
    */
-  async runAction(action) {
+  async runAction(action, payload = null) {
     const missing = UNWIRED[action];
     if (missing) {
       this.toast(`${action}: not available. ${missing}`, "warn");
@@ -1166,7 +1169,7 @@ export class Shell {
     try {
       const result = entry.vehicle
         ? await this.runVehicle(entry.vehicle, action)
-        : await entry.run(this.actionContext());
+        : await entry.run({ ...this.actionContext(), payload: payload || {} });
       if (result && result.skipped) {
         this.toast(`${action}: ${result.skipped}`);
         return;

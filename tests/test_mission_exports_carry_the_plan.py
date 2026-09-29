@@ -146,7 +146,8 @@ class TestSpeedAndDwellReachTheFile:
         assert len(loiters) == len(captures)
         assert {i["params"][0] for i in loiters} == {2.0}
         rows = list(csv.DictReader(open(written["litchi"])))
-        assert all(r["actiontype1"] == "1" and r["actionparam1"] == "2000" for r in rows[:5])
+        # Litchi action 0 is "stay for" (ms); 1 would be a photo, not a hover.
+        assert all(r["actiontype1"] == "0" and r["actionparam1"] == "2000" for r in rows[:5])
 
     def test_no_dwell_is_invented_when_none_was_asked_for(self, api, tmp_path):
         _, written = plan_and_export(api, tmp_path, {"template": "grid"})

@@ -359,7 +359,12 @@ export const ACTIONS = {
       // after it can never run. The first version of this used call() and the mission
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
-      const result = await tryCall("export_mission");
+      // A menu item names one format (Mission > Export Litchi CSV sends
+      // {format: "litchi"}); the toolbar button and Export All Formats name none.
+      const format = ctx.payload && ctx.payload.format;
+      const result = format
+        ? await tryCall("export_mission", [String(format)])
+        : await tryCall("export_mission");
       // export_mission answers ok(written={format: path | "failed: ..."}, directory).
       // Reading result.files found nothing, so a successful export of five mission files
       // fell through to revealing the reconstruction products and said so instead.
@@ -379,7 +384,9 @@ export const ACTIONS = {
       // yet" -- true, and about something the user was not looking at. If the project has
       // products, those are the exportable thing; the mission refusal is only the right
       // answer when there is nothing else to give.
-      const listed = await tryCall("list_layers");
+      // A request for one mission format is about the mission: revealing the
+      // products instead would answer a question that was not asked.
+      const listed = format ? null : await tryCall("list_layers");
       if (((listed && listed.layers) || []).some((l) => l.path)) {
         return ACTIONS["Export Products"].run(ctx);
       }
