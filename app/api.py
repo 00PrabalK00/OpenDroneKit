@@ -1944,9 +1944,38 @@ class Api:
         )
         return str(created["id"] if isinstance(created, dict) else created)
 
+    def _open_project_content(self) -> list[str]:
+        """What a report of the open desktop project could be about.
+
+        The engine judged readiness on its own mirror of the project, which never holds
+        anything, so a project with no images, findings or missions was declared ready
+        with "Nothing missing" and a report of empty sections was written -- a document
+        indistinguishable from a survey that found nothing.
+        """
+        from core.annotations import list_annotations
+
+        content: list[str] = []
+        if self._session.list_datasets():
+            content.append("dataset")
+        root = self._session.project_root()
+        if root is not None and list_annotations(Path(root)):
+            content.append("findings")
+        if self._session.store.list_mission_versions(self._session.project_id(), None, 1):
+            content.append("mission")
+        return content
+
+    _NOTHING_TO_REPORT = ("content: this project has no imported images, recorded findings "
+                          "or saved missions, so a report would have nothing to be about. "
+                          "Import a dataset, record a finding or save a mission first.")
+
     @guard
     def report_readiness(self, project_id: str = "", report_type: str = "standard") -> dict[str, Any]:
-        """What a report still needs, before anyone presses Generate."""
+        """What a report still needs, before anyone presses Generate.
+
+        The call's `ok` says the check ran; `ready` says whether a report can be written.
+        The engine's own "ok" used to be spread over the call's, so a refusal reached the
+        UI as an error with no message, and its warnings were dropped on the way.
+        """
         from app import desktop_ops
 
         try:
@@ -1954,9 +1983,31 @@ class Api:
         except Exception as exc:  # noqa: BLE001 - no project open yet
             return fail(str(exc))
         try:
-            return ok(**desktop_ops.report_readiness(target, report_type=report_type))
+            checklist = desktop_ops.report_readiness(target, report_type=report_type)
         except Exception as exc:  # noqa: BLE001 - the engine raises its own error type
             return fail(str(exc))
+        missing = list(checklist.get("missing") or [])
+        warnings = list(checklist.get("warnings") or [])
+        if not project_id:
+            content = self._open_project_content()
+            if not content:
+                missing.insert(0, self._NOTHING_TO_REPORT)
+            warnings.extend(self._engine_gaps(content))
+        return ok(ready=not missing, missing=missing, warnings=warnings,
+                  notes=list(checklist.get("notes") or []))
+
+    @staticmethod
+    def _engine_gaps(content: list[str]) -> list[str]:
+        """What the engine's report will leave out of the open project, said up front.
+
+        The engine reads its own mirror of the project, not the desktop project folder,
+        so recorded findings do not reach its Annotations section. Export Report
+        (export_report) builds the PDF/Word deliverable from this project's findings."""
+        if "findings" in content:
+            return ["The report engine does not read this project's recorded findings; "
+                    "its Annotations section will say none. Export Report (PDF/Word) "
+                    "writes them."]
+        return []
 
     @guard
     def generate_report(self, project_id: str = "", title: str = "Inspection report",
@@ -1968,9 +2019,17 @@ class Api:
             target = str(project_id) if project_id else self._report_project_id()
         except Exception as exc:  # noqa: BLE001 - no project open yet
             return fail(str(exc))
+        content = self._open_project_content() if not project_id else ["given"]
+        if not content:
+            return fail("Report not generated: " + self._NOTHING_TO_REPORT,
+                        missing=[self._NOTHING_TO_REPORT])
         try:
-            return ok(**desktop_ops.generate_report(
-                target, title=title, report_type=report_type, author=author))
+            built = desktop_ops.generate_report(
+                target, title=title, report_type=report_type, author=author)
+            gaps = self._engine_gaps(content)
+            if gaps:
+                built = {**built, "warnings": list(built.get("warnings") or []) + gaps}
+            return ok(**built)
         except Exception as exc:  # noqa: BLE001 - AppError carries the readiness detail
             return fail(str(exc))
 

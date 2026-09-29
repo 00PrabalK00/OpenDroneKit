@@ -1734,11 +1734,20 @@ const reports = {
       calls: ["report_readiness"],
       empty: "Open a project to check what a report still needs.",
       isEmpty: ([r]) => !r,
-      render: ([r]) => consoleView(
-        (r.missing || []).length
-          ? (r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "warn" }))
-          : [{ t: "ready", text: "Nothing missing. Generate writes the report and its "
-               + "provenance together.", level: "ok" }]),
+      /* Said "Nothing missing. Generate writes the report and its provenance
+         together." over an empty project, and the engine writes no provenance. The
+         engine's warnings -- sections that will be empty -- were dropped before they
+         reached this panel; they are shown now. */
+      render: ([r]) => consoleView([
+        ...(r.missing || []).map((item) => ({ t: "missing", text: String(item), level: "error" })),
+        ...(r.warnings || []).map((item) => ({ t: "warning", text: String(item), level: "warn" })),
+        ...(r.notes || []).map((item) => ({ t: "note", text: String(item), level: "info" })),
+        r.ready
+          ? { t: "ready", text: "Nothing blocks a report; Generate writes it into the project.",
+              level: "ok" }
+          : { t: "blocked", text: "Generate will refuse until the missing items exist.",
+              level: "error" },
+      ]),
     }) },
   ],
 };

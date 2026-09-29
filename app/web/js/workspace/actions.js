@@ -941,7 +941,7 @@ export const ACTIONS = {
     describe: "Build a report from what the project contains.",
     async run(ctx) {
       const readiness = await call("report_readiness");
-      if (!readiness.ok) {
+      if (!readiness.ready) {
         // The engine refuses rather than emitting empty sections, and the checklist is
         // the useful part -- it says exactly what to produce first.
         return { skipped: `Not ready: ${(readiness.missing || []).join(", ") || "unknown"}` };
@@ -961,7 +961,9 @@ export const ACTIONS = {
       const result = await call("generate_report", "", title,
                                 chosen.reportType || "standard",
                                 chosen.organization || "");
-      return { message: `Report built: ${result.id || "done"}.`, refresh: true };
+      // What the report says it left out travels with the confirmation, not after it.
+      const caveats = (result.warnings || []).length ? ` ${result.warnings.join(" ")}` : "";
+      return { message: `Report built: ${result.id || "done"}.${caveats}`, refresh: true };
     },
   },
   "Export Report": { alias: "Generate Report" },
