@@ -17,6 +17,25 @@ import { ask, askOne, choose as chooseModal, confirmAsk, labelBoxes, reveal, sho
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
+/**
+ * What a finished job produced, in the words a user acts on. "Job finished" said nothing
+ * about a Run AI whose reconstruction failed, or how many findings are waiting for review.
+ */
+function jobOutcome(result) {
+  if (!result || typeof result !== "object") return "";
+  const parts = [];
+  if (result.findings_created != null) parts.push(`${result.findings_created} model finding(s) to review`);
+  if (result.heuristic_regions_not_recorded) {
+    parts.push(`${result.heuristic_regions_not_recorded} heuristic region(s) not recorded as findings`);
+  }
+  if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
+  if (result.metrics && typeof result.metrics.map50 === "number") {
+    parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
+  }
+  if (result.parity_ok === true && result.key) parts.push(`installed as ${result.key}`);
+  return parts.length ? `: ${parts.join("; ")}` : "";
+}
+
 /* Safety-critical actions must never be one careless click from Save. They are styled
  * apart and listed here so the styling cannot drift from the meaning. */
 const DANGER = new Set(["Abort", "Land", "RTL", "Manual Override", "Cancel"]);
@@ -728,7 +747,10 @@ export class Shell {
       const message = (result && result.message) || `${action} done.`;
       this.toast(message, "ok");
       if (result && result.job) this.watchJob(result.job);
-      if (result && result.refresh) await this.refreshState();
+      if (result && result.refresh) {
+        await this.refreshState();
+        this.dock.refreshLive();
+      }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
       // application produces and it used to vanish into a rejected promise.
@@ -884,8 +906,9 @@ export class Shell {
       const state = status.state || status.status;
       const percent = status.progress ?? status.percent;
       if (state === "done" || state === "finished" || state === "complete") {
-        this.toast(`Job ${jobId} finished.`, "ok");
+        this.toast(`Job ${jobId} finished${jobOutcome(status.result)}.`, "ok");
         await this.refreshState();
+        this.dock.refreshLive();
         return;
       }
       if (state === "failed" || state === "error") {

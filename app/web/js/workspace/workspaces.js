@@ -1243,7 +1243,12 @@ function findingDetails() {
     ]));
   };
   draw(selection.get("finding"));
-  selection.on("finding", draw);
+  // Redrawn by refreshLive, which builds a new host; the old one stops listening once
+  // it has left the page rather than drawing into a detached node forever.
+  const off = selection.on("finding", (row) => {
+    if (host.isConnected === false) { off(); return; }
+    draw(row);
+  });
   return host;
 }
 
@@ -1266,7 +1271,7 @@ const inspection = {
        not. A count next to a defect class reads as "this project has four cracks", and
        the project had none. The vocabulary is real and comes from the shared taxonomy;
        the counts come from the project's own findings or are absent. */
-    { id: "ai.library", title: "Defect Library", render: () => live({
+    { id: "ai.library", title: "Defect Library", refresh: true, render: () => live({
       calls: ["asset_taxonomy", "find_annotations"],
       empty: "No defect vocabulary available.",
       isEmpty: ([t]) => !(t && (t.asset_types || []).length),
@@ -1338,7 +1343,7 @@ const inspection = {
        a coordinate in Madhya Pradesh, attributed to a real model with a real digest. The
        provenance being real is what made it dangerous -- it read as a measurement with a
        audit trail. Selection is what fills this panel. */
-    { id: "ai.finding", title: "Finding Details", render: () => findingDetails() },
+    { id: "ai.finding", title: "Finding Details", refresh: true, render: () => findingDetails() },
   ],
   bottom: [
     /* Four invented findings used to sit here -- F-118 through F-112, on a "Roof --
@@ -1349,7 +1354,7 @@ const inspection = {
 
        These are the project's own annotations. A finding a person drew and one a model
        proposed are different kinds of evidence, so the table says which. */
-    { id: "ai.findings", title: "Findings", flex: 4, render: () => live({
+    { id: "ai.findings", title: "Findings", flex: 4, refresh: true, render: () => live({
       calls: ["find_annotations"],
       empty: "No findings yet. Run AI, or annotate an image.",
       isEmpty: ([found]) => !(found && (found.annotations || []).length),
@@ -1375,9 +1380,9 @@ const inspection = {
     /* The class list was crack / corrosion / ponding -- three of the labels the sample
        table happened to use. Filtering is now done on the tags the project actually
        carries, which is what an inspector groups findings by, and the list is read from
-       the project rather than written here. Minimum confidence was removed: annotations
-       do not store a confidence, so the control filtered nothing. */
-    { id: "ai.filters", title: "Filter by tag", flex: 1, render: () => live({
+       the project rather than written here. Minimum confidence was removed when
+       annotations stored none; model findings now carry one, shown in Findings. */
+    { id: "ai.filters", title: "Filter by tag", flex: 1, refresh: true, render: () => live({
       calls: ["list_annotation_tags"],
       empty: "No tags yet. Select findings and tag them to group by elevation, "
              + "reflight or whatever the job needs.",
