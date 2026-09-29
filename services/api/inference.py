@@ -273,6 +273,25 @@ def _net(path: str):
     return net
 
 
+def _model_step(choice: ModelChoice, image_path: Path, step):
+    """Run one model call, refusing with the real cause when it fails.
+
+    Out-of-memory and runtime errors are reported as such, so a job that failed for
+    lack of RAM does not read as a model that looked and found nothing.
+    """
+    try:
+        return step()
+    except InferenceRefused:
+        raise
+    except MemoryError as exc:
+        raise InferenceRefused(
+            f"{choice.model_key} ran out of memory on {image_path.name}.") from exc
+    except Exception as exc:
+        raise InferenceRefused(
+            f"{choice.model_key} failed on {image_path.name}: "
+            f"{type(exc).__name__}: {str(exc).strip()[:300]}") from exc
+
+
 def _infer_one(choice: ModelChoice, image, image_path: Path, out_dir: Path,
                parameters: dict[str, Any]) -> tuple[dict[str, Any], list[Path]]:
     import cv2
@@ -293,10 +312,10 @@ def _infer_one(choice: ModelChoice, image, image_path: Path, out_dir: Path,
         else:
             _net(choice.path)  # a graph that will not load must fail, not return "no hits"
             threshold = float(parameters.get("score_threshold", choice.score_threshold))
-            hits = _run_onnx_yolo(
+            hits = _model_step(choice, image_path, lambda: _run_onnx_yolo(
                 image_bgr=image, model_path=Path(choice.path), labels=choice.labels,
                 score_threshold=threshold, iou_threshold=0.45, input_size=choice.input_size,
-            )
+            ))
         row["detections"] = [hit.to_dict() for hit in hits]
         if hits:
             overlay = image.copy()
@@ -321,19 +340,16 @@ def _infer_one(choice: ModelChoice, image, image_path: Path, out_dir: Path,
 
             _net(choice.path)
             threshold = float(parameters.get("score_threshold", choice.score_threshold or 0.5))
-            index_map = _run_onnx_segmentation(image, Path(choice.path), threshold, choice.input_size)
-            if index_map is None:
-                raise InferenceRefused(f"{choice.model_key} produced no usable mask.")
+            index_map = _model_step(choice, image_path, lambda: _run_onnx_segmentation(
+                image, Path(choice.path), threshold, choice.input_size, raise_errors=True))
             labels = choice.labels[:1]
         else:
             from core.detection import _run_onnx_segmentation_multiclass
 
             _net(choice.path)
-            index_map = _run_onnx_segmentation_multiclass(
-                image, Path(choice.path), choice.input_size, len(choice.labels))
-            if index_map is None:
-                raise InferenceRefused(
-                    f"{choice.model_key} output does not match its {len(choice.labels)} labels.")
+            index_map = _model_step(choice, image_path, lambda: _run_onnx_segmentation_multiclass(
+                image, Path(choice.path), choice.input_size, len(choice.labels),
+                raise_errors=True))
             labels = choice.labels
         total = float(index_map.size)
         if len(labels) == 1:
@@ -349,7 +365,7 @@ def _infer_one(choice: ModelChoice, image, image_path: Path, out_dir: Path,
         files.append(path)
 
     else:  # classification / anomaly
-        probabilities, classes = _classify(choice, image)
+        probabilities, classes = _model_step(choice, image_path, lambda: _classify(choice, image))
         order = np.argsort(-probabilities)
         top_k = int(parameters.get("top_k", 3))
         row["top"] = [{"label": classes[i], "probability": float(probabilities[i])}
