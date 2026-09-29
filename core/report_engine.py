@@ -165,14 +165,31 @@ class ReportReadiness:
 
 # ── Readiness ─────────────────────────────────────────────────────────────────
 
+NOTHING_TO_REPORT = ("content: this project has no imported images, recorded findings, "
+                     "saved missions or analysis runs, so a report would have nothing to be "
+                     "about. Import a dataset, record a finding or save a mission first.")
+
+# What counts as something for a report to be about. Any one of these is enough; a
+# project with none of them is refused whichever path asks (desktop Api, the engine's own
+# workspace, a processing run's report stage).
+CONTENT_KEYS = ("datasets", "missions", "findings", "defect_runs", "pipeline_runs",
+                "crack_runs", "reconstructions", "measurements")
+
+
 def readiness_from_context(context: dict[str, Any], config: ReportConfig) -> ReportReadiness:
     """What a report of this type still needs, judged from what the project contains.
 
     `missing` blocks generation: the report type has nothing to be about. `warnings` are
     sections that will state that something was not done. Both are shown to the user
     before they press Generate.
+
+    A project with no content at all is refused here rather than declared ready with a
+    list of warnings: every section of such a report would be empty, which reads as a
+    survey that found nothing rather than one that never happened.
     """
     missing: list[str] = []
+    if not any(context.get(key) for key in CONTENT_KEYS):
+        missing.append(NOTHING_TO_REPORT)
     warnings: list[str] = []
     notes: list[str] = []
 

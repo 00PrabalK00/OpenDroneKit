@@ -609,6 +609,11 @@
     (r.missing || []).forEach((m) => rows.push(`<div><span>Missing</span><b class="no">${esc(m)}</b></div>`));
     (r.warnings || []).forEach((m) => rows.push(`<div><span>Warning</span><b>${esc(m)}</b></div>`));
     (r.notes || []).forEach((m) => rows.push(`<div><span>Note</span><b>${esc(m)}</b></div>`));
+    // A refusal says so in words beside its reasons, before Generate is pressed, rather
+    // than leaving the missing items to be read as advice.
+    if (r.ready === false) {
+      rows.unshift('<div><span>Not ready</span><b class="no">Generate will refuse until the missing items exist.</b></div>');
+    }
     if (!rows.length) rows.push('<div><span>Ready</span><b class="yes">Nothing missing.</b></div>');
     return rows.join('');
   }
