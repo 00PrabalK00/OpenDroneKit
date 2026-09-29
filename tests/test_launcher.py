@@ -125,6 +125,34 @@ def test_a_missing_package_is_reported_not_swallowed(tmp_path) -> None:
     assert str(log) in done.stderr
 
 
+@pytest.mark.parametrize("how", [{"ODK_UI": "fancy"}, {"argv": "--ui=fancy"}], ids=["env", "flag"])
+def test_an_unknown_ui_is_refused_visibly_under_pythonw(tmp_path, how) -> None:
+    """The launcher runs pythonw, where stderr is None. argparse's refusal of a bad
+    ODK_UI / --ui went there, so the app closed with no window, no dialog and no log.
+    Run the real entry point under the real pythonw and require the refusal to land
+    in the startup log (the dialog is suppressed so the test cannot block on it)."""
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        pytest.skip("no pythonw.exe beside this interpreter")
+    data = tmp_path / "data"
+    env = dict(os.environ)
+    env.pop("ODK_UI", None)
+    env.update({"ODK_DATA_DIR": str(data), "ODK_NO_DIALOG": "1"})
+    argv = [str(pythonw), str(REPO_ROOT / "main.py")]
+    if "ODK_UI" in how:
+        env["ODK_UI"] = how["ODK_UI"]
+    else:
+        argv.append(how["argv"])
+    done = subprocess.run(argv, cwd=str(tmp_path), env=env, capture_output=True,
+                          text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert done.returncode == 2
+    log = data / "logs" / "startup-error.log"
+    assert log.is_file(), "an unknown UI closed the app without leaving any trace"
+    text = log.read_text(encoding="utf-8")
+    assert "fancy" in text and "classic" in text and "cockpit" in text
+    assert "ODK_UI" in text
+
+
 def test_environment_yml_installs_requirements_txt() -> None:
     spec = (REPO_ROOT / "environment.yml").read_text(encoding="utf-8")
     assert "name: odk" in spec

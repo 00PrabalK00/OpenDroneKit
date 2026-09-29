@@ -94,13 +94,22 @@ def main(argv: list[str] | None = None) -> int:
         return code
 
     try:
-        from app.shell import main as shell_main
+        from app.shell import UsageError, main as shell_main
     except ImportError as exc:
         report_startup_failure(_missing_dependency_message(exc))
         return 1
 
     try:
         return shell_main(args)
+    except UsageError as exc:
+        # A bad --ui or ODK_UI value. Refused, as before, but now visibly: under
+        # pythonw argparse's message went to a stderr that does not exist.
+        report_startup_failure(
+            f"OpenDroneKit was started with an option it does not understand.\n\n{exc}\n\n"
+            "Check the ODK_UI environment variable and the arguments passed to "
+            "OpenDroneKit.bat / main.py (valid interfaces: classic, cockpit)."
+        )
+        return 2
     except SystemExit:
         raise
     except BaseException as exc:  # noqa: BLE001 - a windowless crash must still be seen

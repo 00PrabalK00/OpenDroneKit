@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -390,10 +391,36 @@ def resolve_ui(choice: str | None = None) -> str:
     return raw
 
 
-def main(argv: list[str] | None = None) -> int:
+class UsageError(Exception):
+    """A command line or ODK_UI value the shell cannot honour.
+
+    argparse reports these by writing to stderr and exiting 2. Under `pythonw` -- the
+    way the launcher starts the app -- stderr is None, so a mistyped ODK_UI closed the
+    app with no window, no message and no log. Raising lets main.py route it through
+    report_startup_failure like every other startup failure.
+    """
+
+    def __init__(self, message: str, usage: str = "") -> None:
+        super().__init__(message)
+        self.message = message
+        self.usage = usage
+
+    def __str__(self) -> str:
+        return f"{self.usage}error: {self.message}" if self.usage else self.message
+
+
+def _parser():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Launch the OpenDroneKit desktop application.")
+    class _Parser(argparse.ArgumentParser):
+        def error(self, message: str):  # noqa: D401 - argparse hook
+            raise UsageError(message, self.format_usage())
+
+    return _Parser(description="Launch the OpenDroneKit desktop application.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
     parser.add_argument("--debug", action="store_true", help="Open developer tools.")
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=980)
@@ -409,4 +436,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except UsageError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(2)
