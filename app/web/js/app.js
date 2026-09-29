@@ -919,7 +919,10 @@
     },
 
     'analysis.pipeline': async () => {
-      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value });
+      // The Profile select sits above both buttons; Run Full Pipeline used to send only
+      // the engine, so a "Fast preview" choice still ran a standard reconstruction.
+      const result = await tryCall('run_pipeline', {
+        engine: $('#recon-engine').value, profile: $('#recon-profile').value });
       if (result) {
         status('Pipeline started.');
         pollJob(result.job_id, (job) => {
