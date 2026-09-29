@@ -230,7 +230,8 @@ def create_defect_overlay(
         if d.bbox and len(d.bbox) == 4 and any(d.bbox):
             x1, y1, x2, y2 = d.bbox
             cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
-            label = f"{d.defect_type} {d.confidence:.2f}"
+            label = (f"{d.defect_type} (heuristic)" if d.source == "classical"
+                     else f"{d.defect_type} {d.confidence:.2f}")
             cv2.putText(out, label, (x1, max(0, y1 - 6)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
         if d.mask_path and Path(d.mask_path).exists():
@@ -254,40 +255,50 @@ def detect_defects_classical(image_path: Path | str, config: DefectDetectionConf
     image_area = h * w
     rules = SeverityRules()
 
+    # Classical image processing gives a pixel ratio, not a probability. It used to be
+    # turned into one -- min(0.95, 0.4 + 50 * ratio) -- which printed "confidence 0.95,
+    # critical corrosion" over the whole frame of ordinary park photographs. The score is
+    # now 0.0 with the real ratio in the notes, and a "detection" whose extent is the
+    # whole frame is dropped: scattered threshold hits across an entire image locate
+    # nothing, and a bounding box equal to the image is not a defect location.
     defects: list[DetectedDefect] = []
-    crack = detect_cracks(image, min_area_px=config.min_area_px)
-    if crack.crack_pixels > 0:
-        bbox = _bbox_from_mask(crack.mask)
+    for defect_type, mask, pixels, ratio in (
+        ("crack", *_classical_crack(image, config)),
+        ("corrosion", *_classical_metal(image, config)),
+    ):
+        if pixels <= 0:
+            continue
+        bbox = _bbox_from_mask(mask)
+        if bbox and len(bbox) == 4:
+            box_area = max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1])
+            if box_area >= 0.9 * image_area:
+                continue
         d = DetectedDefect(
             id=str(uuid.uuid4()),
             image_id="",
             image_path=str(image_path),
-            defect_type="crack",
-            confidence=min(0.95, 0.4 + 50.0 * float(crack.crack_ratio)),
+            defect_type=defect_type,
+            confidence=0.0,
             severity=SEVERITY_LOW,
             bbox=bbox,
-            area_px=int(crack.crack_pixels),
-            source="classical",
-        )
-        d.severity = classify_defect_severity(d, image_area, rules)
-        defects.append(d)
-    metal = detect_metal_defects(image, min_area_px=config.min_area_px)
-    if metal.defect_pixels > 0:
-        bbox = _bbox_from_mask(metal.mask)
-        d = DetectedDefect(
-            id=str(uuid.uuid4()),
-            image_id="",
-            image_path=str(image_path),
-            defect_type="corrosion",
-            confidence=min(0.95, 0.4 + 50.0 * float(metal.defect_ratio)),
-            severity=SEVERITY_LOW,
-            bbox=bbox,
-            area_px=int(metal.defect_pixels),
+            area_px=int(pixels),
+            notes=(f"heuristic: classical image processing, pixel ratio {ratio:.5f}; "
+                   "no confidence is available"),
             source="classical",
         )
         d.severity = classify_defect_severity(d, image_area, rules)
         defects.append(d)
     return defects
+
+
+def _classical_crack(image: Any, config: DefectDetectionConfig) -> tuple[Any, int, float]:
+    crack = detect_cracks(image, min_area_px=config.min_area_px)
+    return crack.mask, int(crack.crack_pixels), float(crack.crack_ratio)
+
+
+def _classical_metal(image: Any, config: DefectDetectionConfig) -> tuple[Any, int, float]:
+    metal = detect_metal_defects(image, min_area_px=config.min_area_px)
+    return metal.mask, int(metal.defect_pixels), float(metal.defect_ratio)
 
 
 def detect_defects_ai(
