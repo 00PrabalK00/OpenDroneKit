@@ -135,3 +135,10 @@ def test_environment_yml_installs_requirements_txt() -> None:
     assert "cc-env" not in bat
     assert '--check-deps' in bat
     assert 'cd /d "%ROOT%"' in bat
+
+
+def test_installation_guide_matches_the_launcher() -> None:
+    guide = (REPO_ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    for fact in ("conda env create -f environment.yml", "python main.py --check-deps",
+                 "ODK_CONDA_ENV", "ODK_DATA_DIR", "--ui cockpit", "startup-error.log"):
+        assert fact in guide, fact
