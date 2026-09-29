@@ -419,7 +419,8 @@ def list_webhooks(organization_id: int) -> list[dict[str, Any]]:
 
 
 def generate_report(project_id: str, *, title: str = "Inspection report",
-                    report_type: str = "standard", author: str = "") -> dict[str, Any]:
+                    report_type: str = "standard", author: str = "",
+                    findings_root: str | Path = "", findings_project_id: str = "") -> dict[str, Any]:
     """Build a report from what the project actually contains.
 
     core.report_engine resolves the project root itself and REFUSES when the inputs are
@@ -434,6 +435,8 @@ def generate_report(project_id: str, *, title: str = "Inspection report",
         title=str(title),
         report_type=str(report_type),
         author=str(author),
+        findings_root=str(findings_root or ""),
+        findings_project_id=str(findings_project_id or ""),
     )
     result = build(config)
     return result.to_dict() if hasattr(result, "to_dict") else dict(result)

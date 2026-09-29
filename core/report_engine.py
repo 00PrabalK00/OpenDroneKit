@@ -59,6 +59,12 @@ class ReportConfig:
     include_annotations: bool = True
     author: str = ""
     notes: str = ""
+    # Where the findings (annotations) live, when that is not this engine's own
+    # project folder. The desktop app keeps its project (and every finding a model
+    # proposed and an inspector accepted) under its own root and id; without these the
+    # report read the engine's empty folder and printed "No annotations".
+    findings_root: str = ""
+    findings_project_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -192,8 +198,10 @@ def build_report_context(config: ReportConfig) -> dict[str, Any]:
                 if isinstance(data, dict):
                     reconstructions.append(data)
 
+    findings_root = Path(config.findings_root) if config.findings_root else root
+    findings_pid = str(config.findings_project_id or config.project_id)
     measurements = [m.to_dict() for m in list_measurements(root, config.project_id)] if config.include_measurements else []
-    annotations = [a.to_dict() for a in get_report_annotations(root, config.project_id)] if config.include_annotations else []
+    annotations = [a.to_dict() for a in get_report_annotations(findings_root, findings_pid)] if config.include_annotations else []
     audit = list_audit_events(config.project_id, limit=200) if config.include_audit_trail else []
 
     return {
