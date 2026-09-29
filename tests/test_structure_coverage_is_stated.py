@@ -262,3 +262,66 @@ class TestTurbineWholePath:
         assert not planned["ok"]
         assert "below the 70 m minimum altitude" in planned["error"]
 
+
+def _dome_check(items, origin, centre, radius, base, standoff, floor, ceiling):
+    points = nav_points(items, origin)[1:]
+
+    def clearance(q):
+        return math.hypot(float(np.linalg.norm(q[:2] - centre)), float(q[2]) - base) - radius
+    assert min(p[2] for p in points) >= floor - 0.05
+    assert max(p[2] for p in points) <= ceiling + 0.05
+    worst = min(clearance(q) for q in legs(points))
+    assert worst >= 0.97 * standoff, f"the path comes {worst:.1f} m from the dome"
+    taken = shots(items, origin)[1:]
+    assert taken
+    for position, heading, pitch in taken:
+        rho = float(np.linalg.norm(position[:2] - centre))
+        d = np.array([-math.cos(math.radians(pitch)), math.sin(math.radians(pitch))])
+        o = np.array([rho, float(position[2]) - base])
+        b, c = o @ d, o @ o - radius * radius
+        assert b * b - c >= 0.0, f"the camera at {rho:.1f} m / {position[2]:.1f} m looks past the dome"
+        hit = o + d * (-b - math.sqrt(b * b - c))
+        assert hit[1] >= -0.05, "the camera looks at the ground beside the dome"
+    return taken
+
+
+class TestDomeUnderTheCeiling:
+    """Rings above max_altitude_m were clamped down onto (R40, max 40) or into (R40,
+    max 30) the dome; and a crown inside the generic stand-off from the centre was
+    pushed sideways, still looking straight down, at the ground beside the dome."""
+
+    @pytest.mark.parametrize("ceiling", [40.0, 30.0])
+    def test_high_bands_are_looked_at_from_the_ceiling_and_said(self, tmp_path, ceiling):
+        footprint = rotated_rectangle(60.0, 30.0, 35.0)
+        api, origin = make_api(tmp_path, footprint)
+        planned, items = plan_export(api, tmp_path, {
+            "template": "dome_inspection", "altitude_m": 55, "min_altitude_m": 20,
+            "max_altitude_m": ceiling, "dome_radius_m": 40, "standoff_m": 8})
+        assert planned["summary"]["adjustments"]["altitude_clamps"] == 0
+        ring = footprint_in_frame(footprint, origin)
+        centre = np.array([np.mean([p[0] for p in ring]), np.mean([p[1] for p in ring])])
+        _dome_check(items, origin, centre, 40.0, 0.0, 8.0, 20.0, ceiling)
+        text = " ".join(planned["warnings"])
+        assert f"under the {ceiling:.0f} m maximum altitude" in text
+        assert "not photographed" in text and "Raise max_altitude_m" in text
+
+    def test_the_crown_is_looked_down_on_from_above_it(self, tmp_path):
+        footprint = rotated_rectangle(20.0, 20.0, 0.0)
+        api, origin = make_api(tmp_path, footprint)
+        planned, items = plan_export(api, tmp_path, {
+            "template": "dome_inspection", "altitude_m": 55, "min_altitude_m": 20,
+            "dome_radius_m": 15, "standoff_m": 20})
+        ring = footprint_in_frame(footprint, origin)
+        centre = np.array([np.mean([p[0] for p in ring]), np.mean([p[1] for p in ring])])
+        taken = _dome_check(items, origin, centre, 15.0, 0.0, 20.0, 20.0, 120.0)
+        top = max(taken, key=lambda s: s[0][2])
+        assert float(np.linalg.norm(top[0][:2] - centre)) < 0.5 and abs(top[0][2] - 35.0) < 0.1
+        assert top[2] == pytest.approx(-90.0)
+
+    def test_a_dome_above_the_ceiling_is_refused(self, tmp_path):
+        api, _ = make_api(tmp_path, rotated_rectangle(20.0, 20.0, 0.0))
+        planned = api.plan_mission({
+            "template": "dome_inspection", "altitude_m": 45, "max_altitude_m": 50,
+            "dome_radius_m": 20, "dome_base_altitude_m": 60, "standoff_m": 8})
+        assert not planned["ok"]
+        assert "above the 50 m maximum altitude" in planned["error"]

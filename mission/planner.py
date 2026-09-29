@@ -283,6 +283,10 @@ class _CapturePose:
     # structure). A pose the geofence or a no-fly zone moves is re-aimed at it, instead
     # of keeping a heading computed for a position it no longer occupies.
     look_at_xy: tuple[float, float] | None = None
+    # Set by a compiler that keeps its own poses clear of the structure (a dome's crown
+    # is right above the structure's centre); the generic push away from the centre
+    # would move such a pose off what it looks at.
+    clearance_planned: bool = False
 
 
 def _normalize_template(mode: str) -> str:
@@ -5272,6 +5276,7 @@ class MissionPlanner:
                         "standoff_m": float(standoff),
                         "base_altitude_m": float(dome_base_altitude_m),
                         "min_altitude_m": float(constraints.min_altitude_m),
+                        "max_altitude_m": float(constraints.max_altitude_m),
                         "rings": rings,
                         "points_per_orbit": points_per_ring,
                         "ground_offset_m": float(ground_offset_m),
@@ -6760,45 +6765,83 @@ class MissionPlanner:
 
         minimum_altitude = params.get("min_altitude_m")
         minimum_altitude = None if minimum_altitude is None else float(minimum_altitude)
+        maximum_altitude = params.get("max_altitude_m")
+        maximum_altitude = None if maximum_altitude is None else float(maximum_altitude)
         centre_alt = base_alt + ground_offset
+        offset_radius = dome_radius + standoff
 
-        # Rings whose flight height is below the minimum altitude cannot be flown on the
-        # normal. They are photographed instead from the lowest height allowed, out at
-        # the dome radius plus the stand-off (so the aircraft still clears the dome by
-        # the stand-off), with the camera aimed down at the band each ring was for. A
-        # band that cannot be seen from there is left out and said so. Clamping those
-        # poses onto the minimum altitude with their original pitch (as before) stacked
-        # most of a low dome onto one flat layer, looking past the dome.
-        low_bands: list[tuple[int, float]] = []
-        normal_rings: list[int] = []
-        unseen_rings: list[int] = []
-        low_ranges: list[float] = []
+        if maximum_altitude is not None and maximum_altitude < centre_alt:
+            # Every ring would be clamped down onto (or into) the dome.
+            self._coverage_notes.append(
+                f"The dome starts at {centre_alt:.0f} m, above the {maximum_altitude:.0f} m "
+                "maximum altitude: nothing of it can be flown at the stand-off, so no dome "
+                "inspection is planned. Raise max_altitude_m.")
+            return []
+
+        # Rings whose flight height is outside the altitude band cannot be flown on the
+        # normal. Clamping them onto the band's edge with their original pitch (as
+        # before) stacked most of a low dome onto one flat layer looking past it, and
+        # pushed a high ring down onto -- or into -- the dome. Instead the bands below
+        # the floor are photographed from one ring at the minimum altitude, out at the
+        # dome radius plus the stand-off, and the bands above the ceiling from one ring
+        # at the maximum altitude on the stand-off sphere (so the aircraft still clears
+        # the dome by the stand-off), with the camera aimed at each band's own surface
+        # point. A band that cannot be seen from there within 75 deg of square on is
+        # left out, and the plan says which.
         lift_alt = minimum_altitude if minimum_altitude is not None else 0.0
-        lift_radius = dome_radius + standoff
-        for ring_idx in range(rings):
-            elevation = (pi / 2.0) * (ring_idx / max(1, rings - 1))
-            alt = centre_alt + (dome_radius + standoff) * float(np.sin(elevation))
-            if minimum_altitude is None or alt >= minimum_altitude - 1e-6:
-                normal_rings.append(ring_idx)
-                continue
-            # The band's surface point, in (horizontal radius, height above centre).
+        lift_radius = offset_radius
+        ceiling_h = (maximum_altitude - centre_alt) if maximum_altitude is not None else float("inf")
+        cap_radius = (float(np.sqrt(max(0.0, offset_radius ** 2 - ceiling_h ** 2)))
+                      if ceiling_h < offset_radius else 0.0)
+
+        def aim_from(viewer: np.ndarray, elevation: float) -> tuple[float, float] | None:
+            # Pitch and range to a band's surface point from `viewer` (horizontal radius,
+            # height above centre); None when it cannot be seen within 75 deg of square
+            # on, or only by looking outward past the vertical.
             surface = np.array([dome_radius * np.cos(elevation), dome_radius * np.sin(elevation)])
-            viewer = np.array([lift_radius, lift_alt - centre_alt])
             sight = viewer - surface
             normal = np.array([np.cos(elevation), np.sin(elevation)])
             incidence = float(np.dot(sight, normal) / max(1e-9, float(np.linalg.norm(sight))))
-            if incidence < float(np.cos(np.radians(75.0))):
-                unseen_rings.append(ring_idx)
-                continue
-            pitch = float(np.clip(-np.degrees(np.arctan2(sight[1], sight[0])), -120.0, 30.0))
-            low_bands.append((ring_idx, pitch))
-            low_ranges.append(float(np.linalg.norm(sight)))
+            if incidence < float(np.cos(np.radians(75.0))) or sight[0] < -1e-6:
+                return None
+            pitch = -float(np.degrees(np.arctan2(sight[1], max(0.0, float(sight[0])))))
+            return float(np.clip(pitch, -90.0, 30.0)), float(np.linalg.norm(sight))
 
-        if minimum_altitude is not None and (low_bands or unseen_rings):
-            highest_low = max([r for r, _ in low_bands] + unseen_rings)
-            below = centre_alt + dome_radius * float(np.sin((pi / 2.0) * highest_low / max(1, rings - 1)))
+        low_bands: list[tuple[int, float]] = []
+        high_bands: list[tuple[int, float]] = []
+        normal_rings: list[int] = []
+        unseen_low: list[int] = []
+        unseen_high: list[int] = []
+        low_ranges: list[float] = []
+        high_ranges: list[float] = []
+        for ring_idx in range(rings):
+            elevation = (pi / 2.0) * (ring_idx / max(1, rings - 1))
+            alt = centre_alt + offset_radius * float(np.sin(elevation))
+            if minimum_altitude is not None and alt < minimum_altitude - 1e-6:
+                aim = aim_from(np.array([lift_radius, lift_alt - centre_alt]), elevation)
+                if aim is None:
+                    unseen_low.append(ring_idx)
+                else:
+                    low_bands.append((ring_idx, aim[0]))
+                    low_ranges.append(aim[1])
+            elif maximum_altitude is not None and alt > maximum_altitude + 1e-6:
+                aim = aim_from(np.array([cap_radius, ceiling_h]), elevation)
+                if aim is None:
+                    unseen_high.append(ring_idx)
+                else:
+                    high_bands.append((ring_idx, aim[0]))
+                    high_ranges.append(aim[1])
+            else:
+                normal_rings.append(ring_idx)
+
+        def band_height(ring_idx: int) -> float:
+            return centre_alt + dome_radius * float(np.sin((pi / 2.0) * ring_idx / max(1, rings - 1)))
+
+        if low_bands or unseen_low:
+            below = band_height(max([r for r, _ in low_bands] + unseen_low))
             if low_bands:
-                part = (f"The whole dome (to {centre_alt + dome_radius:.0f} m)" if not normal_rings
+                part = (f"The whole dome (to {centre_alt + dome_radius:.0f} m)"
+                        if not normal_rings and not high_bands and not unseen_high
                         else f"The dome below about {below:.0f} m")
                 self._coverage_notes.append(
                     f"{part} cannot be flown at the stand-off "
@@ -6808,13 +6851,31 @@ class MissionPlanner:
                     f"{min(p for _, p in low_bands):.0f} to {max(p for _, p in low_bands):.0f} deg "
                     f"from {min(low_ranges):.0f}-{max(low_ranges):.0f} m instead of {standoff:.0f} m, "
                     "so detail there is coarser. Lower min_altitude_m to fly them square on.")
-            if unseen_rings:
+            if unseen_low:
                 self._coverage_notes.append(
-                    f"{len(unseen_rings)} low band(s) of the dome cannot be seen from the "
+                    f"{len(unseen_low)} low band(s) of the dome cannot be seen from the "
                     f"{minimum_altitude:.0f} m minimum altitude and are not photographed. "
                     "Lower min_altitude_m to cover the base of the dome.")
+        if high_bands or unseen_high:
+            above = band_height(min([r for r, _ in high_bands] + unseen_high))
+            if high_bands:
+                self._coverage_notes.append(
+                    f"The dome above about {above:.0f} m cannot be flown at the stand-off under "
+                    f"the {maximum_altitude:.0f} m maximum altitude: {len(high_bands)} band(s) "
+                    f"of it are photographed from {maximum_altitude:.0f} m, {cap_radius:.0f} m "
+                    f"from the centre, looking at {min(p for _, p in high_bands):.0f} to "
+                    f"{max(p for _, p in high_bands):.0f} deg from "
+                    f"{min(high_ranges):.0f}-{max(high_ranges):.0f} m, obliquely rather than "
+                    "square on. Raise max_altitude_m to fly them on the normal.")
+            if unseen_high:
+                self._coverage_notes.append(
+                    f"{len(unseen_high)} upper band(s) of the dome (above about "
+                    f"{band_height(min(unseen_high)):.0f} m, up to the crown) cannot be seen from "
+                    f"the {maximum_altitude:.0f} m maximum altitude without flying closer than "
+                    "the stand-off, and are not photographed. Raise max_altitude_m to cover them.")
 
-        def pose_at(x: float, y: float, alt: float, pitch: float, name: str, looks: bool) -> _CapturePose:
+        def pose_at(x: float, y: float, alt: float, pitch: float, name: str, looks: bool,
+                    trigger: bool = True) -> _CapturePose:
             pt = np.asarray([x, y], dtype=np.float64)
             terrain_delta = (
                 _terrain_delta_m(pt, terrain_model if isinstance(terrain_model, dict) else None)
@@ -6824,23 +6885,29 @@ class MissionPlanner:
                    if looks else 0.0)
             return _CapturePose(
                 x_m=x, y_m=y, alt_m=max(1.0, float(alt + terrain_delta)),
-                yaw_deg=yaw, gimbal_pitch_deg=pitch, primitive=name, trigger=True,
+                yaw_deg=yaw, gimbal_pitch_deg=pitch, primitive=name, trigger=trigger,
                 dwell_s=0.0, camera_yaw_locked=True,
                 look_at_xy=(float(center[0]), float(center[1])) if looks else None,
+                clearance_planned=True,
             )
+
+        def tilt_ring(radius: float, alt: float, bands: list[tuple[int, float]], label: str) -> list[_CapturePose]:
+            # One ring; at each point the camera tilts through its bands, so the aircraft
+            # goes round once, not once a band.
+            out: list[_CapturePose] = []
+            count = 1 if radius < 0.5 else points_per_ring
+            for i in range(count):
+                theta = 2.0 * pi * (i / count)
+                x = float(center[0] + radius * np.cos(theta))
+                y = float(center[1] + radius * np.sin(theta))
+                tilts = bands if i % 2 == 0 else bands[::-1]
+                for ring_idx, pitch in tilts:
+                    out.append(pose_at(x, y, alt, pitch, f"dome_inspection_{label}_ring{ring_idx + 1}", count > 1))
+            return out
 
         poses: list[_CapturePose] = []
         if low_bands:
-            # One ring at the lowest allowed height; at each point the camera tilts
-            # through the bands below, so the aircraft goes round once, not once a band.
-            for i in range(points_per_ring):
-                theta = 2.0 * pi * (i / points_per_ring)
-                x = float(center[0] + lift_radius * np.cos(theta))
-                y = float(center[1] + lift_radius * np.sin(theta))
-                tilts = low_bands if i % 2 == 0 else low_bands[::-1]
-                for ring_idx, pitch in tilts:
-                    poses.append(pose_at(x, y, lift_alt, pitch,
-                                         "dome_inspection_low_ring%d" % (ring_idx + 1), True))
+            poses.extend(tilt_ring(lift_radius, lift_alt, low_bands, "low"))
 
         for ring_idx in normal_rings:
             # Spaced in ANGLE, not height. Equal height steps bunch the rings toward the
@@ -6861,7 +6928,40 @@ class MissionPlanner:
                 x = float(center[0] + flight_radius * np.cos(theta))
                 y = float(center[1] + flight_radius * np.sin(theta))
                 poses.append(pose_at(x, y, alt, pitch, f"dome_inspection_ring{ring_idx + 1}", count > 1))
-        return poses
+
+        if high_bands:
+            poses.extend(tilt_ring(cap_radius, float(maximum_altitude), high_bands, "high"))
+
+        # A straight leg between two points on (or outside) the stand-off sphere cuts
+        # inside it: between rings, or from the low ring to the cap, by up to metres on
+        # a big dome. Such legs are flown along the sphere instead, in steps of 5 deg.
+        dome_centre = np.array([float(center[0]), float(center[1]), centre_alt])
+        floor = minimum_altitude if minimum_altitude is not None else -float("inf")
+        ceiling = maximum_altitude if maximum_altitude is not None else float("inf")
+        routed: list[_CapturePose] = []
+        for item in poses:
+            if routed:
+                a = np.array([routed[-1].x_m, routed[-1].y_m, routed[-1].alt_m]) - dome_centre
+                b = np.array([item.x_m, item.y_m, item.alt_m]) - dome_centre
+                d = b - a
+                t = float(np.clip(-np.dot(a, d) / max(1e-9, float(np.dot(d, d))), 0.0, 1.0))
+                if float(np.linalg.norm(a + d * t)) < dome_radius + 0.98 * standoff:
+                    ra, rb = float(np.linalg.norm(a)), float(np.linalg.norm(b))
+                    ua, ub = a / max(1e-9, ra), b / max(1e-9, rb)
+                    angle = float(np.arccos(np.clip(np.dot(ua, ub), -1.0, 1.0)))
+                    steps = max(2, int(np.ceil(np.degrees(angle) / 5.0)))
+                    for k in range(1, steps):
+                        f = k / steps
+                        if angle > 1e-6:
+                            u = (np.sin((1 - f) * angle) * ua + np.sin(f * angle) * ub) / np.sin(angle)
+                        else:
+                            u = ua
+                        q = dome_centre + u * max(offset_radius, (1 - f) * ra + f * rb)
+                        routed.append(pose_at(float(q[0]), float(q[1]),
+                                              float(np.clip(q[2], floor, ceiling)), 0.0,
+                                              "dome_transit", True, trigger=False))
+            routed.append(item)
+        return routed
 
     def _compile_box_inspection_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """A rectangular circuit at stand-off, camera on the building centre throughout.
@@ -7805,7 +7905,7 @@ class MissionPlanner:
             alt = clamped_alt
 
             radius = sqrt(x * x + y * y)
-            if constraints.standoff_m > 0.0 and radius < constraints.standoff_m:
+            if constraints.standoff_m > 0.0 and radius < constraints.standoff_m and not pose.clearance_planned:
                 if radius < 1e-6:
                     x = constraints.standoff_m
                     y = 0.0
