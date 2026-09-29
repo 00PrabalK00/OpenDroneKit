@@ -614,7 +614,7 @@ PROCESSING = [
       "verified needs a COLMAP build that runs patch-match on the host GPU; that is a "
       "dependency, not code to write, and no post-processing turns a sparse cloud "
       "into a dense one."),
-    F("pr.mesh", "Textured mesh", "workers", "Processing",
+    F("pr.mesh", "Surface mesh", "workers", "Processing",
       "Poisson surface reconstruction with density trimming (untextured, and named "
       "mesh_obj_path rather than textured); the dependency-free engine drapes its "
       "orthomosaic over a DSM-grid mesh with no faces across nodata cells.",

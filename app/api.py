@@ -45,6 +45,31 @@ def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+
+def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> list[str]:
+    """Add a reconstruction's georeferenced products to the layer tree.
+
+    Only files that exist are registered, so a run that produced no DSM adds no DSM
+    layer. Returns the names that were added.
+    """
+    added: list[str] = []
+    for key, kind, label in (
+        ("orthomosaic_cog_path", "raster", "Orthomosaic"),
+        ("dsm_cog_path", "raster", "DSM"),
+        ("dtm_cog_path", "raster", "DTM"),
+        ("hillshade_path", "raster", "DSM hillshade"),
+    ):
+        path = payload.get(key)
+        if path and Path(path).exists():
+            session.register_raster_layer(path, name=label, kind=kind)
+            added.append(label)
+    track = payload.get("camera_track_geojson_path")
+    if track and Path(track).exists():
+        session.register_vector_layer(track, name="Camera positions")
+        added.append("Camera positions")
+    return added
+
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -2924,18 +2949,7 @@ class Api:
             payload = result.to_dict()
             # Reconstruction products become map layers immediately, which is the whole
             # point of doing this inside a GIS tool.
-            for key, kind, label in (
-                ("orthomosaic_cog_path", "raster", "Orthomosaic"),
-                ("dsm_cog_path", "raster", "DSM"),
-                ("dtm_cog_path", "raster", "DTM"),
-                ("hillshade_path", "raster", "DSM hillshade"),
-            ):
-                path = payload.get(key)
-                if path and Path(path).exists():
-                    session.register_raster_layer(path, name=label, kind=kind)
-            track = payload.get("camera_track_geojson_path")
-            if track and Path(track).exists():
-                session.register_vector_layer(track, name="Camera positions")
+            _register_reconstruction_layers(session, payload)
             session.audit("reconstruction_complete", {"engine": payload.get("engine"), "output": str(output)})
             return payload
 
@@ -2950,6 +2964,7 @@ class Api:
         if not images:
             return fail("Select a dataset before running the pipeline.")
         output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
+        session = self._session
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
@@ -2968,7 +2983,17 @@ class Api:
                 image_dir=images, output_dir=output, progress_callback=progress,
                 should_cancel=should_cancel,
             )
-            return result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            # The pipeline reconstructs too; its ortho, DSM and camera track belong on the
+            # map exactly as a standalone reconstruction's do. They used to be left on
+            # disk, so a full run ended with only the photo points visible.
+            summary_path = payload.get("summary_json_path")
+            recon: dict[str, Any] = {}
+            if summary_path and Path(summary_path).exists():
+                summary = json.loads(Path(summary_path).read_text(encoding="utf-8"))
+                recon = summary.get("reconstruction") or {}
+            payload["layers_registered"] = _register_reconstruction_layers(session, recon)
+            return payload
 
         return ok(job_id=self._jobs.submit("pipeline", work))
 

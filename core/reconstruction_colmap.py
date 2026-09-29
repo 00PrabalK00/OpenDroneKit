@@ -1873,7 +1873,10 @@ class ColmapReconstructor:
             ply_path = out_dir / "mesh.ply"
             obj_path = out_dir / "mesh.obj"
             o3d.io.write_triangle_mesh(str(ply_path), mesh)  # type: ignore[union-attr]
-            _write_obj_mesh(obj_path, np.asarray(mesh.vertices), np.asarray(mesh.triangles))
+            _write_obj_mesh(
+                obj_path, np.asarray(mesh.vertices), np.asarray(mesh.triangles),
+                generator="ColmapReconstructor (Poisson surface, untextured)",
+            )
             return {"mesh": str(ply_path), "mesh_obj": str(obj_path)}
         except Exception as exc:  # noqa: BLE001
             self._warn(f"Mesh generation failed: {exc}.")

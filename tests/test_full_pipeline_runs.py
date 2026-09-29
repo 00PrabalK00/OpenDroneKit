@@ -58,7 +58,7 @@ def _wait(api, job_id: str, timeout: float) -> dict:
 
 
 @pytest.fixture(scope="module")
-def pipeline_job(small_survey, tmp_path_factory):
+def pipeline_run(small_survey, tmp_path_factory):
     from app.api import Api
     from app.session import AppSession
     from app.store import ProjectStore
@@ -71,7 +71,12 @@ def pipeline_job(small_survey, tmp_path_factory):
     submitted = api.run_pipeline({"engine": "colmap", "profile": "fast", "dense": False})
     assert submitted["ok"], submitted
     job = _wait(api, submitted["job_id"], timeout=900)
-    return job
+    return api, job
+
+
+@pytest.fixture(scope="module")
+def pipeline_job(pipeline_run):
+    return pipeline_run[1]
 
 
 def test_run_full_pipeline_completes_from_the_api(pipeline_job):
@@ -108,6 +113,40 @@ def test_a_sparse_surface_refuses_to_report_a_volume(pipeline_job):
 def test_the_report_names_the_mesh_for_what_it_is(pipeline_job):
     report = Path(pipeline_job["result"]["report_markdown_path"]).read_text(encoding="utf-8")
     assert "Textured mesh OBJ" not in report, "the COLMAP mesh has no texture"
+
+
+def test_the_mesh_file_names_the_engine_that_built_it(pipeline_job):
+    """The COLMAP Poisson mesh shared a writer with the custom engine and said so."""
+    summary = json.loads(Path(pipeline_job["result"]["summary_json_path"]).read_text(encoding="utf-8"))
+    obj = summary["reconstruction"].get("mesh_obj_path")
+    if not obj:
+        pytest.skip("open3d produced no mesh on this machine")
+    header = Path(obj).read_text(encoding="utf-8").splitlines()[0]
+    assert "CustomDroneReconstructor" not in header
+    assert "Colmap" in header and "untextured" in header
+
+
+def test_the_pipeline_puts_its_reconstruction_on_the_map(pipeline_run):
+    """A full run used to leave the ortho, DSM and camera track on disk only.
+
+    The layers must be the files the run wrote, not whatever was registered before.
+    """
+    api, job = pipeline_run
+    assert job["status"] == "done"
+    summary = json.loads(Path(job["result"]["summary_json_path"]).read_text(encoding="utf-8"))
+    recon = summary["reconstruction"]
+    layers = {layer["name"]: layer for layer in api.list_layers()["layers"]}
+    expected = {
+        "Orthomosaic": recon.get("orthomosaic_cog_path"),
+        "DSM": recon.get("dsm_cog_path"),
+        "Camera positions": recon.get("camera_track_geojson_path"),
+    }
+    for name, path in expected.items():
+        assert path and Path(path).exists(), f"the run wrote no {name}"
+        assert name in layers, f"{name} was not registered; layers: {sorted(layers)}"
+        assert Path(layers[name]["path"]).resolve() == Path(path).resolve()
+    assert set(expected) <= set(job["result"]["layers_registered"])
+    assert layers["Orthomosaic"].get("crs_epsg") == recon["crs_epsg"]
 
 
 def test_cancel_stops_the_pipeline(small_survey, tmp_path):
