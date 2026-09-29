@@ -429,25 +429,85 @@ export class ModelViewer {
 
   /* -- picking -- */
 
-  /** The model vertex nearest the camera within a few pixels of (x, y), or null. */
+  /**
+   * The point of the model under (x, y), or null.
+   *
+   * A mesh is ray-cast: the camera ray through the pixel is intersected with every drawn
+   * triangle and the nearest hit is the picked point, so the point is the surface
+   * exactly under the cursor. A point cloud has no surface; the picked point is the one
+   * nearest the cursor among the points on the front layer within a few pixels.
+   */
   pick(x, y) {
+    return this.indices ? this.pickSurface(x, y) : this.pickPoint(x, y);
+  }
+
+  /** Camera ray through canvas pixel (x, y), in the local frame. */
+  ray(x, y) {
+    const width = this.canvas.clientWidth || 640;
+    const height = this.canvas.clientHeight || 400;
+    const eye = this.eye();
+    const back = norm(sub(eye, this.target));
+    const right = norm(cross(this.up, back));
+    const upward = cross(back, right);
+    const t = Math.tan((this.fov * Math.PI) / 360);
+    const nx = (x / width) * 2 - 1;
+    const ny = 1 - (y / height) * 2;
+    const dir = norm(add(add(scale(back, -1), scale(right, nx * t * (width / height))), scale(upward, ny * t)));
+    return { origin: eye, dir };
+  }
+
+  pickSurface(x, y) {
+    const { origin: o, dir: d } = this.ray(x, y);
+    const pos = this.positions;
+    const idx = this.indices;
+    let bestT = Infinity;
+    for (let k = 0; k < idx.length; k += 3) {
+      const a = idx[k] * 3; const b = idx[k + 1] * 3; const c = idx[k + 2] * 3;
+      // Moller-Trumbore, both faces.
+      const e1x = pos[b] - pos[a]; const e1y = pos[b + 1] - pos[a + 1]; const e1z = pos[b + 2] - pos[a + 2];
+      const e2x = pos[c] - pos[a]; const e2y = pos[c + 1] - pos[a + 1]; const e2z = pos[c + 2] - pos[a + 2];
+      const px = d[1] * e2z - d[2] * e2y; const py = d[2] * e2x - d[0] * e2z; const pz = d[0] * e2y - d[1] * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (Math.abs(det) < 1e-12) continue;
+      const inv = 1 / det;
+      const tx = o[0] - pos[a]; const ty = o[1] - pos[a + 1]; const tz = o[2] - pos[a + 2];
+      const u = (tx * px + ty * py + tz * pz) * inv;
+      if (u < 0 || u > 1) continue;
+      const qx = ty * e1z - tz * e1y; const qy = tz * e1x - tx * e1z; const qz = tx * e1y - ty * e1x;
+      const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+      if (v < 0 || u + v > 1) continue;
+      const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (t > 0 && t < bestT) bestT = t;
+    }
+    if (!Number.isFinite(bestT)) return null;
+    const local = add(o, scale(d, bestT));
+    return { local, file: add(local, this.center) };
+  }
+
+  pickPoint(x, y) {
     const { mvp, width, height } = this.matrices();
     const pos = this.positions;
     const radius = 8;
-    let best = -1;
-    let bestDepth = Infinity;
-    let bestDist = Infinity;
+    const near = [];
+    let front = Infinity;
     for (let i = 0; i < pos.length; i += 3) {
       const s = this.project([pos[i], pos[i + 1], pos[i + 2]], mvp, width, height);
       if (!s) continue;
       const d = Math.hypot(s[0] - x, s[1] - y);
       if (d > radius) continue;
-      // Nearest the camera first, so a click lands on the front surface, not through it.
-      if (s[2] < bestDepth - 1e-6 || (Math.abs(s[2] - bestDepth) <= 1e-6 && d < bestDist)) {
-        best = i; bestDepth = s[2]; bestDist = d;
-      }
+      near.push([i, d, s[2]]);
+      if (s[2] < front) front = s[2];
     }
-    if (best < 0) return null;
+    if (!near.length) return null;
+    // The front layer: points no deeper than the pick disc is wide at that depth (plus a
+    // sliver of the model), so a click does not go through to what lies behind.
+    const perPixel = (2 * front * Math.tan((this.fov * Math.PI) / 360)) / height;
+    const layer = front + Math.max(2 * radius * perPixel, 0.005 * (this.scene.radius || 1));
+    let best = -1;
+    let bestDist = Infinity;
+    for (const [i, d, depth] of near) {
+      if (depth <= layer && d < bestDist) { best = i; bestDist = d; }
+    }
     const local = [pos[best], pos[best + 1], pos[best + 2]];
     return { local, file: add(local, this.center) };
   }

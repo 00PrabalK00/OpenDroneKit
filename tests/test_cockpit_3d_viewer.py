@@ -74,8 +74,8 @@ const clickAt = async (file) => {
   viewer.overlay.dispatchEvent(new PointerEvent("pointerup", at));
   await ODK.sleep(400);
 };
-// Two model vertices that face the default camera: the picked point is the one nearest
-// the camera, so the test finds its own targets rather than assuming an orientation.
+// Model vertices that face the default camera: a click on one picks it (the surface under
+// the cursor), so the test finds its own targets rather than assuming an orientation.
 const frontVertices = () => {
   const { mvp, width, height } = viewer.matrices();
   const out = [];
@@ -84,11 +84,18 @@ const frontVertices = () => {
     const s = viewer.project(local, mvp, width, height);
     if (!s || s[0] < 20 || s[1] < 20 || s[0] > width - 20 || s[1] > height - 20) continue;
     const hit = viewer.pick(s[0], s[1]);
-    if (hit && Math.abs(hit.local[0] - local[0]) + Math.abs(hit.local[1] - local[1]) + Math.abs(hit.local[2] - local[2]) < 1e-6) {
+    if (hit && Math.abs(hit.local[0] - local[0]) + Math.abs(hit.local[1] - local[1]) + Math.abs(hit.local[2] - local[2]) < 1e-4) {
       out.push([local[0] + viewer.center[0], local[1] + viewer.center[1], local[2] + viewer.center[2]]);
     }
   }
   return out;
+};
+const clickPixel = async (x, y) => {
+  const rect = viewer.overlay.getBoundingClientRect();
+  const at = { clientX: rect.left + x, clientY: rect.top + y, button: 0, bubbles: true, pointerId: 1 };
+  viewer.overlay.dispatchEvent(new PointerEvent("pointerdown", at));
+  viewer.overlay.dispatchEvent(new PointerEvent("pointerup", at));
+  await ODK.sleep(400);
 };
 const litPixels = () => {
   const gl = viewer.gl;
@@ -132,12 +139,94 @@ def test_the_twin_draws_the_mesh_and_measures_between_picked_points(api, tmp_pat
     assert measured and measured[-1]["ok"], measured
     kind, points = measured[-1]["args"]
     assert kind == "length"
-    np.testing.assert_allclose(points[0], result["a"], atol=1e-4)
-    np.testing.assert_allclose(points[1], result["b"], atol=1e-4)
+    np.testing.assert_allclose(points[0], result["a"], atol=1e-3)
+    np.testing.assert_allclose(points[1], result["b"], atol=1e-3)
     expected = SCALE * float(np.linalg.norm(np.subtract(result["b"], result["a"])))
     assert f"Length {expected:.2f} m" in result["toast"], (expected, result["toast"])
     assert "RMSE 0.42 m" in result["toast"]
     assert f"{expected:.2f} m" in result["panel"]
+
+
+def _camera_ray(camera: dict, up, width: float, height: float, x: float, y: float):
+    """The ray through canvas pixel (x, y) for a pinhole camera, worked out here in NumPy."""
+    eye = np.asarray(camera["position"], float)
+    back = eye - np.asarray(camera["target"], float)
+    back /= np.linalg.norm(back)
+    right = np.cross(np.asarray(up, float), back)
+    right /= np.linalg.norm(right)
+    upward = np.cross(back, right)
+    t = np.tan(np.radians(camera["fov_deg"]) / 2)
+    d = -back + right * (x / width * 2 - 1) * t * width / height + upward * (1 - y / height * 2) * t
+    return eye, d / np.linalg.norm(d)
+
+
+def test_a_click_measures_the_surface_under_the_cursor(api, tmp_path) -> None:
+    """Pixels chosen without reference to any vertex: the picked points are where each
+    click's ray first meets the mesh (found independently with Open3D ray casting), so the
+    length shown is the length between the two spots clicked."""
+    import open3d as o3d
+
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        result = cockpit.run(f"""
+            await ODK.nav("Digital Twin");
+            {PICK}
+            await ODK.sleep(300);
+            const width = viewer.canvas.clientWidth, height = viewer.canvas.clientHeight;
+            // The box fills the middle of the fitted view; these two pixels are on it.
+            const [ax, ay] = screenOf([0.6, 0.5, 0.5]);
+            const [bx, by] = screenOf([1.9, 0.3, 0.5]);
+            const clicks = [[Math.round(ax) + 0.37, Math.round(ay) - 0.21], [Math.round(bx) - 0.44, Math.round(by) + 0.29]];
+            await ODK.press("Measure");
+            for (const [x, y] of clicks) await clickPixel(x, y);
+            const toast = await ODK.waitFor(() => ODK.toasts().find((t) => t.startsWith("Length")), 10000);
+            return {{ camera: viewer.cameraState(), up: viewer.up, width, height, clicks, toast }};
+        """)
+
+    mesh = o3d.t.geometry.TriangleMesh.from_legacy(
+        o3d.io.read_triangle_mesh(str(Path(api._session.project_root()) / "reconstruction" / "mesh.ply")))
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(mesh)
+    hits = []
+    for x, y in result["clicks"]:
+        eye, d = _camera_ray(result["camera"], result["up"], result["width"], result["height"], x, y)
+        t = float(scene.cast_rays(o3d.core.Tensor([[*eye, *d]], dtype=o3d.core.Dtype.Float32))["t_hit"].numpy()[0])
+        assert np.isfinite(t), "the chosen pixel is not on the model"
+        hits.append(eye + d * t)
+    measured = cockpit.called("measure_on_model")
+    assert measured and measured[-1]["ok"], measured
+    _, points = measured[-1]["args"]
+    np.testing.assert_allclose(points[0], hits[0], atol=2e-3)
+    np.testing.assert_allclose(points[1], hits[1], atol=2e-3)
+    expected = SCALE * float(np.linalg.norm(hits[1] - hits[0]))
+    shown = float(result["toast"].split("Length ")[1].split(" m")[0])
+    assert abs(shown - expected) <= 0.05, (shown, expected)
+
+
+def test_a_point_cloud_click_picks_the_point_under_the_cursor(api, tmp_path) -> None:
+    """Clicking a point of the cloud picks that point, not a neighbour nearer the camera."""
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        result = cockpit.run(f"""
+            await ODK.nav("Digital Twin");
+            await ODK.press("Point Cloud");
+            {PICK}
+            await ODK.waitFor(() => viewer3d.currentViewer() && viewer3d.currentViewer().scene.kind === "pointcloud", 10000);
+            const v = viewer3d.currentViewer();
+            const {{ mvp, width, height }} = v.matrices();
+            const out = [];
+            // Points in the middle of the top face, which faces the default camera.
+            for (let i = 0; i < v.positions.length; i += 3) {{
+              const f = [v.positions[i] + v.center[0], v.positions[i + 1] + v.center[1], v.positions[i + 2] + v.center[2]];
+              if (Math.abs(f[2] - 0.5) > 1e-4 || f[0] < 0.3 || f[0] > 1.7 || f[1] < 0.3 || f[1] > 0.7) continue;
+              const s = v.project([v.positions[i], v.positions[i + 1], v.positions[i + 2]], mvp, width, height);
+              const hit = v.pick(s[0], s[1]);
+              out.push({{ target: f, picked: hit && hit.file }});
+            }}
+            return out;
+        """)
+
+    assert len(result) >= 10
+    for row in result:
+        np.testing.assert_allclose(row["picked"], row["target"], atol=1e-4)
 
 
 def test_save_view_stores_the_viewer_camera_and_opens_it_again(api, tmp_path) -> None:
@@ -191,7 +280,7 @@ def test_clip_cuts_the_model_through_a_picked_point(api, tmp_path) -> None:
     clips = api.list_clips()["clips"]
     assert [c["name"] for c in clips] == ["half"]
     plane = clips[0]["plane"]
-    np.testing.assert_allclose(plane["point"], result["picked"], atol=1e-4)
+    np.testing.assert_allclose(plane["point"], result["picked"], atol=1e-3)
     # Looking along +X, the plane keeps what is beyond the picked point.
     np.testing.assert_allclose(plane["normal"], [1, 0, 0], atol=1e-3)
     assert result["clips"] == ["half"] and "clipped: half" in result["chip"]
@@ -214,7 +303,7 @@ def test_annotate_pins_a_finding_to_the_model(api, tmp_path) -> None:
 
     found = [a for a in api.find_annotations()["annotations"] if a["source_type"] == "3d"]
     assert len(found) == 1 and found[0]["label"] == "Spalling"
-    np.testing.assert_allclose(found[0]["geometry"]["coordinates"], result["target"], atol=1e-4)
+    np.testing.assert_allclose(found[0]["geometry"]["coordinates"], result["target"], atol=1e-3)
     assert "Spalling" in result["panel"]
 
 
