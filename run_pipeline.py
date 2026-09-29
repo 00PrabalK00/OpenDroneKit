@@ -6,13 +6,18 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    # The repository root, where `core` lives. This inserted parents[1] -- the folder
+    # *containing* the checkout -- ahead of the standard library, so any sibling folder
+    # named like a stdlib module (a worktree called "platform") broke pycolmap's import
+    # and the CLI reported "pycolmap is not installed" on a machine that had it.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.multisensor import build_capture_bundle_from_folders
 from core.pipeline import PipelineConfig, run_pipeline
-from core.reconstruction import available_reconstruction_profiles
+from core.reconstruction import available_reconstruction_profiles, refuse_cloud_mode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -124,7 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--recon-mode",
         choices=["local", "cloud"],
         default="local",
-        help="Reconstruction execution mode.",
+        help=(
+            "Reconstruction execution mode. 'cloud' is refused: this build is offline-first "
+            "and never uploads imagery; use a self-hosted server via the SDK for remote runs."
+        ),
     )
     parser.add_argument(
         "--recon-no-cache",
@@ -220,6 +228,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Structure category for risk modeling (e.g., bridge/building/tower/solar/pipeline/generic).",
     )
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Do not print stage progress to stderr.",
+    )
+    parser.add_argument(
         "--material-type",
         default="concrete",
         help="Material category for risk modeling (e.g., concrete/steel/masonry/composite/mixed).",
@@ -227,9 +240,36 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def stderr_progress(stream=None):
+    """Progress printer for the CLI.
+
+    A full run is many minutes of per-image analysis followed by SfM, and the CLI used
+    to print nothing until the very end -- indistinguishable from a hang. Each distinct
+    stage message is written once to stderr (stdout stays the JSON result), with the
+    elapsed time so a slow stage is visible as slow.
+    """
+    out = stream if stream is not None else sys.stderr
+    started = time.monotonic()
+    last = {"message": None}
+
+    def report(percent: int, message: str) -> None:
+        if message == last["message"]:
+            return
+        last["message"] = message
+        elapsed = time.monotonic() - started
+        out.write(f"[{int(percent):3d}%] {elapsed:7.1f}s  {message}\n")
+        out.flush()
+
+    return report
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        refuse_cloud_mode(args.recon_mode)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     capture_bundle = str(args.capture_bundle or "").strip()
     bundle_root = str(args.bundle_root or "").strip()
@@ -282,7 +322,12 @@ def main() -> None:
         structure_type=str(args.structure_type or "generic"),
         material_type=str(args.material_type or "concrete"),
     )
-    result = run_pipeline(image_dir=args.images, output_dir=args.output, config=config)
+    result = run_pipeline(
+        image_dir=args.images,
+        output_dir=args.output,
+        config=config,
+        progress_callback=None if args.quiet else stderr_progress(),
+    )
     print(json.dumps(result.to_dict(), indent=2))
 
     report_path = Path(result.report_markdown_path)

@@ -2282,10 +2282,10 @@ class Api:
             note=(
                 "Dense patch-match stereo is available; a dense cloud can be produced."
                 if dense else
-                "Dense point clouds are NOT available in this environment: no CUDA "
-                "COLMAP binary and no CUDA-enabled pycolmap. Sparse reconstruction, "
-                "mesh and orthomosaic still work. The sparse cloud is never inflated "
-                "to imitate a dense one."
+                "Dense point clouds are NOT available in this environment: "
+                f"{caps.get('dense_stereo_reason') or 'no working CUDA COLMAP.'} "
+                "Sparse reconstruction, mesh and orthomosaic still work. The sparse "
+                "cloud is never inflated to imitate a dense one."
             ),
         )
 
@@ -2918,7 +2918,8 @@ class Api:
                 target_epsg=opts.get("epsg"),
             )
             result = reconstructor.reconstruct(
-                image_dir=images, output_dir=str(output), progress_callback=progress
+                image_dir=images, output_dir=str(output), progress_callback=progress,
+                should_cancel=should_cancel,
             )
             payload = result.to_dict()
             # Reconstruction products become map layers immediately, which is the whole
@@ -2956,8 +2957,17 @@ class Api:
             config = PipelineConfig()
             config.reconstruction_engine = opts.get("engine", "auto")
             config.reconstruction_profile = opts.get("profile", "standard")
+            if opts.get("dense") is not None:
+                config.reconstruction_dense = bool(opts.get("dense"))
+            if opts.get("epsg"):
+                config.reconstruction_target_epsg = int(opts["epsg"])
             pipeline = StructuralFaultPipeline(config)
-            result = pipeline.run(image_dir=images, output_root=output, progress_callback=progress)
+            # `run` takes output_dir. This passed output_root, so every press of "Run Full
+            # Pipeline" failed with a TypeError two seconds in.
+            result = pipeline.run(
+                image_dir=images, output_dir=output, progress_callback=progress,
+                should_cancel=should_cancel,
+            )
             return result.to_dict() if hasattr(result, "to_dict") else dict(result)
 
         return ok(job_id=self._jobs.submit("pipeline", work))

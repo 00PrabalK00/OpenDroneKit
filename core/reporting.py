@@ -234,7 +234,11 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     if recon.get("dtm_path"):
         lines.append(f"- DTM: `{recon.get('dtm_path')}`")
     if recon.get("mesh_path"):
-        lines.append(f"- Mesh OBJ: `{recon.get('mesh_path')}`")
+        # mesh_path is a PLY from the COLMAP engine and an OBJ from the custom one, so
+        # the label names neither format.
+        lines.append(f"- Mesh: `{recon.get('mesh_path')}`")
+    if recon.get("mesh_obj_path"):
+        lines.append(f"- Mesh OBJ (untextured): `{recon.get('mesh_obj_path')}`")
     if recon.get("textured_mesh_obj_path"):
         lines.append(f"- Textured mesh OBJ: `{recon.get('textured_mesh_obj_path')}`")
     if recon.get("texture_image_path"):
@@ -279,7 +283,19 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
             f"{terrain.get('elevation_max_m')} m` (relief `{terrain.get('relief_m')} m`)"
         )
 
+    basis = measurements.get("surface_basis", {}) if isinstance(measurements, dict) else {}
+    if isinstance(basis, dict) and basis.get("reason"):
+        lines.append(
+            f"- Surface basis: {basis.get('reason')}. Terrain figures above describe the "
+            "measured cells only and are not survey-grade."
+        )
+
     volume = payload.get("volume_estimation", {}) or {}
+    if isinstance(volume, dict) and volume.get("refused"):
+        lines.append("")
+        lines.append("### Volume")
+        lines.append("")
+        lines.append(f"- {volume.get('reason')}")
     if isinstance(volume, dict) and volume.get("ok"):
         preferred = volume.get("preferred") or {}
         lines.append("")

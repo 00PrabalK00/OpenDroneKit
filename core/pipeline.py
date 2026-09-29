@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from .coverage_validation import CoverageValidationConfig, CoverageValidator
+from .errors import OperationCancelled
 from .detection import (
     detect_cracks,
     detect_metal_defects,
@@ -22,11 +23,45 @@ from .health_scoring import derive_asset_id, evaluate_asset_health, load_asset_h
 from .models import ensure_model_layout, migrate_legacy_models, model_status
 from .multisensor import MultiSensorConfig, MultiSensorProcessor
 from .propagation import CrackPropagationForecaster, PropagationPhysicsConfig, run_fenicsx_phasefield
-from .reconstruction import CustomDroneReconstructor
+from .reconstruction import CustomDroneReconstructor, refuse_cloud_mode
 from .reporting import write_json, write_markdown_report
 
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+# Coarsest DSM a volume is computed from. A 6 m cell averages a whole stockpile toe into
+# one height, so a cut/fill figure off it is interpolation dressed as a survey quantity.
+MAX_VOLUME_GSD_M = 0.5
+
+
+def surface_measurement_basis(recon: dict[str, Any]) -> dict[str, Any]:
+    """Whether the reconstruction surface supports volumetric measurement, and why not.
+
+    A DSM binned from a sparse SfM cloud has one height per several metres and holes in
+    most cells. Numbers derived from it -- "Cut 2453.83 m3" -- look like a survey result
+    and are not one, so they are refused with the reason rather than printed.
+    """
+    dense_points = int(recon.get("dense_point_count") or 0)
+    gsd = recon.get("ground_sample_distance_m")
+    reasons: list[str] = []
+    if dense_points <= 0:
+        reasons.append(
+            "the surface comes from the sparse SfM cloud only (no dense MVS points)"
+        )
+    if gsd is None:
+        reasons.append("the DSM has no metric ground sample distance")
+    elif float(gsd) > MAX_VOLUME_GSD_M:
+        reasons.append(
+            f"the DSM resolution is {float(gsd):.2f} m/px, coarser than the "
+            f"{MAX_VOLUME_GSD_M:.1f} m/px a volume needs"
+        )
+    return {
+        "volumetric_ok": not reasons,
+        "dense_point_count": dense_points,
+        "ground_sample_distance_m": gsd,
+        "reasons": reasons,
+        "reason": ("; ".join(reasons)) if reasons else "",
+    }
 
 
 @dataclass
@@ -149,15 +184,25 @@ class StructuralFaultPipeline:
         image_dir: str | Path,
         output_dir: str | Path,
         progress_callback: Callable[[int, str], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> PipelineResult:
         def _emit_progress(percent: int, message: str) -> None:
+            if should_cancel is not None and should_cancel():
+                raise OperationCancelled("Pipeline cancelled")
             if progress_callback is None:
                 return
             try:
                 progress_callback(int(max(0, min(100, int(percent)))), str(message))
+            except OperationCancelled:
+                # The job runner signals a cancel by raising from the callback. Swallowing
+                # that with the other callback errors made Cancel a no-op for the whole run.
+                raise
             except Exception:
                 pass
 
+        # Before any per-image work: a cloud request used to be discovered only after
+        # the whole analysis stage, and then silently run locally.
+        refuse_cloud_mode(self.config.reconstruction_execution_mode)
         _emit_progress(1, "Preparing model layout")
         ensure_model_layout()
         model_migration = migrate_legacy_models()
@@ -467,6 +512,7 @@ class StructuralFaultPipeline:
             use_cache=self.config.reconstruction_use_cache,
             cloud_endpoint=self.config.reconstruction_cloud_endpoint,
             progress_callback=_recon_progress,
+            should_cancel=should_cancel,
         )
 
         _emit_progress(96, "Computing structural health score")
@@ -520,14 +566,28 @@ class StructuralFaultPipeline:
         dtm_path = _georeferenced_raster("dtm_cog_path", "dtm_path")
         defects_geojson = recon_dict_early.get("defects_geojson_path")
 
+        basis = surface_measurement_basis(recon_dict_early)
         try:
             from .dsm_analysis import estimate_volume, extract_measurements
 
             measurements_payload = extract_measurements(
                 defects_geojson=defects_geojson, dsm_path=dsm_path, dtm_path=dtm_path
             )
+            if isinstance(measurements_payload, dict):
+                measurements_payload["surface_basis"] = basis
             if dsm_path and Path(dsm_path).exists():
-                volume_payload = estimate_volume(dsm_path, dtm_path=dtm_path)
+                if basis["volumetric_ok"]:
+                    volume_payload = estimate_volume(dsm_path, dtm_path=dtm_path)
+                else:
+                    volume_payload = {
+                        "ok": False,
+                        "refused": True,
+                        "reason": (
+                            "Volume not computed: " + basis["reason"] + ". Enable dense MVS "
+                            "(a CUDA COLMAP build for this GPU) to measure volumes."
+                        ),
+                        "surface_basis": basis,
+                    }
         except Exception as exc:  # noqa: BLE001
             measurements_payload = {"error": f"{type(exc).__name__}: {exc}"}
 
@@ -599,6 +659,7 @@ class StructuralFaultPipeline:
             "dsm_path",
             "dtm_path",
             "mesh_path",
+            "mesh_obj_path",
             "textured_mesh_obj_path",
             "textured_mesh_mtl_path",
             "texture_image_path",
@@ -641,10 +702,12 @@ def run_pipeline(
     output_dir: str | Path,
     config: PipelineConfig | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> PipelineResult:
     pipeline = StructuralFaultPipeline(config=config)
     return pipeline.run(
         image_dir=image_dir,
         output_dir=output_dir,
         progress_callback=progress_callback,
+        should_cancel=should_cancel,
     )

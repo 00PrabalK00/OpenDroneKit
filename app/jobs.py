@@ -15,12 +15,14 @@ import traceback
 from typing import Any, Callable
 import uuid
 
+from core.errors import OperationCancelled
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class JobCancelled(Exception):
+class JobCancelled(OperationCancelled):
     """Raised inside a job when the user cancels it."""
 
 
@@ -94,7 +96,9 @@ class JobManager:
                     job.status = "done"
                     job.percent = 100
                     job.message = job.message or "Complete"
-            except JobCancelled:
+            except OperationCancelled:
+                # Core code raises its own OperationCancelled when it sees the flag
+                # (a killed COLMAP subprocess, for one); both mean the operator stopped it.
                 with self._lock:
                     job.status = "cancelled"
                     job.message = "Cancelled"
