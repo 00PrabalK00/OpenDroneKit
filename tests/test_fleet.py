@@ -151,13 +151,16 @@ class TestBatteries:
         assert battery["retired"] is True
         assert any("should not be flown" in w for w in battery["warnings"])
 
-    def test_health_is_clamped_to_a_percentage(self, client, org):
+    def test_health_outside_a_percentage_is_refused_not_clamped(self, client, org):
+        # Clamping stored a reading of 150 as a measured 100%; the desktop refuses it.
         headers, organization_id = org
         battery_id = client.post(f"/organizations/{organization_id}/batteries", headers=headers,
                                  json={"serial_number": "BAT-004"}).json()["id"]
-        battery = client.post(f"/batteries/{battery_id}/cycles?health_pct=150",
+        refused = client.post(f"/batteries/{battery_id}/cycles?health_pct=150", headers=headers)
+        assert refused.status_code == 422
+        battery = client.post(f"/batteries/{battery_id}/cycles?health_pct=97.5",
                               headers=headers).json()
-        assert battery["health_pct"] == pytest.approx(100.0)
+        assert battery["health_pct"] == pytest.approx(97.5) and battery["cycle_count"] == 1
 
     def test_only_an_admin_can_retire_a_battery(self, client, org):
         headers, organization_id = org

@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -324,7 +324,9 @@ def create_battery(
 @router.post("/batteries/{battery_id}/cycles", response_model=BatteryOut)
 def log_battery_cycle(
     battery_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)],
-    health_pct: float | None = None,
+    # A reading outside 0-100 is refused (422), not clamped: 150 used to be stored as
+    # a measured 100%, and -3 as 0%. The desktop Api refuses the same values.
+    health_pct: Annotated[float | None, Query(ge=0.0, le=100.0, allow_inf_nan=False)] = None,
 ) -> BatteryOut:
     """Record one charge cycle, optionally updating measured health."""
     battery = db.get(Battery, battery_id)
@@ -335,7 +337,7 @@ def log_battery_cycle(
     battery.cycle_count += 1
     battery.last_used_at = datetime.now(timezone.utc)
     if health_pct is not None:
-        battery.health_pct = float(max(0.0, min(100.0, health_pct)))
+        battery.health_pct = float(health_pct)
 
     db.commit()
     return _battery_out(battery)

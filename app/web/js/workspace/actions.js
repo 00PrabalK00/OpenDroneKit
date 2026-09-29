@@ -192,6 +192,27 @@ function summarisePack(result) {
 }
 
 /** Actions that need images on disk. */
+/* Which aircraft Log Maintenance and Assign Mission act on. With a battery or pilot
+   picked last, the old fallback asked for an "Aircraft id" pre-filled with 1, so one
+   Enter logged maintenance against whichever aircraft happened to be number 1. The
+   last-picked row now has to be an aircraft; with nothing picked the id is asked for
+   with no default. */
+async function pickAircraft(ctx) {
+  const picked = ctx.selectedFleetRecord();
+  if (picked && picked.kind !== "aircraft") {
+    return { skipped: `The ${picked.kind} "${picked.name}" is selected. `
+      + "Select an aircraft in the Aircraft list first." };
+  }
+  const selected = ctx.selectedFleetId();
+  if (selected) return { id: selected };
+  const typed = await ctx.prompt("Aircraft id (the number shown in the Aircraft list)", "");
+  const id = Number(String(typed ?? "").trim());
+  if (!typed || !Number.isInteger(id) || id <= 0) {
+    return { skipped: "Select an aircraft in the fleet list first." };
+  }
+  return { id };
+}
+
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
                                "Open in 3D", "Label"]);
 
@@ -1680,23 +1701,23 @@ export const ACTIONS = {
   "Log Maintenance": {
     describe: "Record maintenance and reset the service clock.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
-      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
+      const id = await pickAircraft(ctx);
+      if (id.skipped) return id;
       const kind = await ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
       if (!kind) return { skipped: "Maintenance needs a kind." };
       const detail = await ctx.prompt("Detail (optional)", "") || "";
-      const result = await call("log_maintenance", id, kind, detail, "operator");
+      const result = await call("log_maintenance", id.id, kind, detail, "operator");
       return { message: `Logged ${result.kind} at ${result.hours_at_service} h.`, refresh: true };
     },
   },
   "Assign Mission": {
     describe: "Note which aircraft flies this mission.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
-      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
+      const id = await pickAircraft(ctx);
+      if (id.skipped) return id;
       const mission = await ctx.prompt("Mission name", "Mission");
       if (!mission) return { skipped: "No mission named." };
-      await call("assign_mission_to_aircraft", id, mission);
+      await call("assign_mission_to_aircraft", id.id, mission);
       return { message: `Assigned to ${mission}.`, refresh: true };
     },
   },

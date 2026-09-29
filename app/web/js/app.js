@@ -506,26 +506,28 @@
     const result = await tryCall('list_fleet', ORG);
     const list = $('#fleet-list');
     if (!result) return;
+    // Every value is escaped: names come from the operator and from the shared service
+    // database, and an aircraft called '<i id=x>Kite</i>' used to become a live element.
     const rows = (items, fmt) => items.length ? items.map(fmt).join('') : '<div><span>none registered</span></div>';
     list.innerHTML =
       '<div><b>Aircraft</b></div>' + rows(result.aircraft, (a) =>
-        `<div><span>#${a.id} ${a.name} ${a.model || ''}</span><b>${a.flight_hours} h · ${a.status}` +
-        `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}` +
-        `${a.assigned_mission ? ` · on ${a.assigned_mission}` : ''}</b></div>`) +
+        `<div><span>#${esc(a.id)} ${esc(a.name)} ${esc(a.model || '')}</span><b>${esc(a.flight_hours)} h · ${esc(a.status)}` +
+        `${a.hours_to_service == null ? '' : ` · service in ${esc(a.hours_to_service)} h`}` +
+        `${a.assigned_mission ? ` · on ${esc(a.assigned_mission)}` : ''}</b></div>`) +
       '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
-        `<div><span>#${b.id} ${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
-        ` · health ${b.health_pct == null ? 'not measured' : `${b.health_pct}%`}` +
+        `<div><span>#${esc(b.id)} ${esc(b.serial_number)}</span><b>${esc(b.cycle_count)}${b.cycle_limit ? ` / ${esc(b.cycle_limit)}` : ''} cycles` +
+        ` · health ${b.health_pct == null ? 'not measured' : `${esc(b.health_pct)}%`}` +
         `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
       '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
-        `<div><span>#${p.id} ${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`) +
+        `<div><span>#${esc(p.id)} ${esc(p.display_name)} ${esc(p.licence_number || '')}</span><b>${esc(p.licence_expires_on || 'no expiry recorded')}</b></div>`) +
       '<div><b>Maintenance</b></div>' + rows(result.maintenance || [], (m) =>
-        `<div><span>${String(m.performed_at || '').slice(0, 10)} ${m.aircraft} — ${m.kind}` +
-        `${m.description ? `: ${m.description}` : ''}</span><b>at ${m.hours_at_service} h</b></div>`);
+        `<div><span>${esc(String(m.performed_at || '').slice(0, 10))} ${esc(m.aircraft)} — ${esc(m.kind)}` +
+        `${m.description ? `: ${esc(m.description)}` : ''}</span><b>at ${esc(m.hours_at_service)} h</b></div>`);
   }
 
   function fleetForm(title, fields, submit) {
     modal(title, `<div class="form">${fields.map(([id, label, value]) =>
-      `<label>${label}<input id="${id}" value="${value || ''}" /></label>`).join('')}</div>`, [
+      `<label>${esc(label)}<input id="${id}" value="${esc(value)}" /></label>`).join('')}</div>`, [
       { label: 'Cancel' },
       {
         label: 'Save', primary: true, onClick: async () => {
