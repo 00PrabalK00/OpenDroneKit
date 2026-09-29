@@ -168,32 +168,61 @@ def add_pilot(organization_id: int, display_name: str, licence_number: str = "",
         }
 
 
+ASSIGNMENT_KIND = "assignment"
+_ASSIGNMENT_PREFIX = "Assigned to mission: "
+
+
+def _aircraft_id(aircraft_id: Any) -> int:
+    try:
+        return int(aircraft_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{aircraft_id!r} is not an aircraft id; select an aircraft in "
+                         "the fleet list.") from None
+
+
+def _performer(performed_by: Any) -> tuple[int | None, str]:
+    """The user id column holds a user id; a name goes into the description.
+
+    "operator" used to be written into the integer performed_by column, which SQLite
+    stores without complaint and PostgreSQL rejects.
+    """
+    text = str(performed_by or "").strip()
+    return (int(text), "") if text.isdigit() else (None, text)
+
+
 def log_maintenance(aircraft_id: int, kind: str, description: str = "",
-                    performed_by: str = "") -> dict[str, Any]:
+                    performed_by: str = "", *, resets_service_clock: bool = True
+                    ) -> dict[str, Any]:
     """Record maintenance, and reset the aircraft's service clock.
 
     Both halves matter. A maintenance record that does not move hours_at_last_service
     leaves the aircraft permanently overdue, which trains an operator to ignore the
-    warning.
+    warning. A record that is not service (an assignment) must not move it: that would
+    mark an overdue airframe as serviced.
     """
     from services.api.models import Aircraft, Maintenance
 
     if not str(kind).strip():
         raise ValueError("Maintenance needs a kind, so the record can be read later.")
+    user_id, name = _performer(performed_by)
+    detail = str(description).strip()
+    if name:
+        detail = f"{detail} (by {name})" if detail else f"by {name}"
     with _session() as db:
-        aircraft = db.get(Aircraft, int(aircraft_id))
+        aircraft = db.get(Aircraft, _aircraft_id(aircraft_id))
         if aircraft is None:
             raise ValueError(f"No aircraft with id {aircraft_id}.")
         record = Maintenance(
             aircraft_id=aircraft.id,
             kind=str(kind).strip(),
-            description=str(description).strip(),
+            description=detail,
             hours_at_service=float(aircraft.flight_hours or 0.0),
-            performed_by=str(performed_by).strip(),
+            performed_by=user_id,
             performed_at=_utc_now(),
         )
-        aircraft.hours_at_last_service = float(aircraft.flight_hours or 0.0)
-        aircraft.last_service_at = record.performed_at
+        if resets_service_clock:
+            aircraft.hours_at_last_service = float(aircraft.flight_hours or 0.0)
+            aircraft.last_service_at = record.performed_at
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -267,6 +296,15 @@ def list_fleet(organization_id: int) -> dict[str, Any]:
             .order_by(Maintenance.performed_at.desc()).limit(50)
         )) if ids else []
         names = {a.id: a.name for a in aircraft}
+        # The latest assignment per aircraft, so the screen can say what it is flying.
+        assigned: dict[int, str] = {}
+        if ids:
+            for m in db.scalars(select(Maintenance).where(
+                    Maintenance.aircraft_id.in_(ids), Maintenance.kind == ASSIGNMENT_KIND)
+                    .order_by(Maintenance.performed_at.desc(), Maintenance.id.desc())):
+                text = str(m.description or "")
+                if m.aircraft_id not in assigned and text.startswith(_ASSIGNMENT_PREFIX):
+                    assigned[m.aircraft_id] = text[len(_ASSIGNMENT_PREFIX):]
 
         def hours_to_service(a: Any) -> float | None:
             if not a.service_interval_hours:
@@ -287,6 +325,7 @@ def list_fleet(organization_id: int) -> dict[str, Any]:
                 # None means no interval is configured, which is not the same as
                 # "not due" and must not be rendered as a comfortable number.
                 "hours_to_service": hours_to_service(a),
+                "assigned_mission": assigned.get(a.id),
             } for a in aircraft],
             "batteries": [{
                 "id": b.id,
@@ -326,11 +365,18 @@ def assign_mission(aircraft_id: int, mission_name: str) -> dict[str, Any]:
     schema has no assignment concept, and adding one here would put the desktop app and
     the service on different schemas.
     """
-    return log_maintenance(
+    mission = str(mission_name or "").strip()
+    if not mission:
+        raise ValueError("Name the mission the aircraft is assigned to.")
+    record = log_maintenance(
         aircraft_id,
-        kind="assignment",
-        description=f"Assigned to mission: {mission_name}",
+        kind=ASSIGNMENT_KIND,
+        description=f"{_ASSIGNMENT_PREFIX}{mission}",
+        # Assigning an aircraft is not servicing it: the clock that says it is overdue
+        # must keep running.
+        resets_service_clock=False,
     )
+    return {**record, "mission": mission}
 
 
 # ------------------------------------------------------------------- sharing

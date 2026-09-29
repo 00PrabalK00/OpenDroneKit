@@ -475,8 +475,13 @@ export class Shell {
       case "battery":
       case "pilot": {
         // The fleet buttons take an id. Selecting the row is how you choose it.
-        this.selectedFleetId = value.id || null;
-        this.toast(`${kind} ${name} selected${this.selectedFleetId ? ` (id ${this.selectedFleetId})` : ""}.`, "ok");
+        // The tree's node id is "a3" (unique across the lists), which the Api cannot
+        // read as an aircraft; the record's own number travels as fleetId. Only an
+        // aircraft is remembered for Log Maintenance and Assign Mission: selecting
+        // battery 1 used to log maintenance against aircraft 1.
+        const recordId = Number.isInteger(value.fleetId) ? value.fleetId : null;
+        if (kind === "aircraft") this.selectedFleetId = recordId;
+        this.toast(`${kind} ${name} selected${recordId ? ` (id ${recordId})` : ""}.`, "ok");
         return;
       }
       case "project": {

@@ -510,12 +510,16 @@
     list.innerHTML =
       '<div><b>Aircraft</b></div>' + rows(result.aircraft, (a) =>
         `<div><span>#${a.id} ${a.name} ${a.model || ''}</span><b>${a.flight_hours} h · ${a.status}` +
-        `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}</b></div>`) +
+        `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}` +
+        `${a.assigned_mission ? ` · on ${a.assigned_mission}` : ''}</b></div>`) +
       '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
         `<div><span>${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
         `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
       '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
-        `<div><span>${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`);
+        `<div><span>${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`) +
+      '<div><b>Maintenance</b></div>' + rows(result.maintenance || [], (m) =>
+        `<div><span>${String(m.performed_at || '').slice(0, 10)} ${m.aircraft} — ${m.kind}` +
+        `${m.description ? `: ${m.description}` : ''}</span><b>at ${m.hours_at_service} h</b></div>`);
   }
 
   function fleetForm(title, fields, submit) {

@@ -1820,7 +1820,7 @@ const fleet = {
       empty: "No aircraft registered. Add Aircraft to start a fleet.",
       isEmpty: ([f]) => !(f && (f.aircraft || []).length),
       render: ([f]) => tree((f.aircraft || []).map((a) => ({
-        id: `a${a.id}`, label: a.name, icon: "\u25b2",
+        id: `a${a.id}`, fleetId: a.id, label: a.name, icon: "\u25b2",
         /* Hours remaining until service, because that is the number that decides
            whether this airframe flies today. null means no interval is configured,
            which is not the same as "not due". */
@@ -1835,7 +1835,7 @@ const fleet = {
       empty: "No pilots registered.",
       isEmpty: ([f]) => !(f && (f.pilots || []).length),
       render: ([f]) => tree((f.pilots || []).map((p) => ({
-        id: `p${p.id}`, label: p.display_name || "(unnamed)", icon: "\u25c9",
+        id: `p${p.id}`, fleetId: p.id, label: p.display_name || "(unnamed)", icon: "\u25c9",
         meta: `${p.flight_hours} h`,
       })), { selectKind: "pilot" }),
     }) },
@@ -1861,6 +1861,7 @@ const fleet = {
             ["Firmware", a.firmware],
             ["Flight hours", a.flight_hours],
             ["Flights", a.flight_count || undefined],
+            ["Assigned mission", a.assigned_mission || undefined],
           ]),
           { label: "Next service", value: due === null
             ? chip("no interval set", "warn")
@@ -1885,6 +1886,7 @@ const fleet = {
          { title: "Limit", key: "l", num: true }, { title: "Health", key: "h", num: true },
          { title: "State", key: "st" }],
         (f.batteries || []).map((b) => ({
+          fleetId: b.id,
           s: b.serial_number || `#${b.id}`,
           n: b.cycle_count,
           l: b.cycle_limit || "\u2014",
