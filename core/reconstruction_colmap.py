@@ -174,7 +174,7 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
     return caps
 
 
-_DENSE_PROBE_VERSION = 2
+_DENSE_PROBE_VERSION = 3
 
 
 def _dense_probe_cache_file() -> Path:
@@ -224,16 +224,33 @@ def native_dense_probe(binary: str, *, run: bool = True, use_cache: bool = True)
                 "reason": "Dense stereo has not been tested on this machine yet."}
 
     result = _run_dense_probe(binary)
-    if use_cache:
+    # A timeout is not an answer: the build may simply still be JIT-compiling its
+    # kernels for this GPU. Caching it would report "no" forever for a working build.
+    if use_cache and not result.get("undecided"):
         cache[key] = {"ok": bool(result["ok"]), "reason": str(result["reason"])}
         try:
             cache_file.write_text(json.dumps(cache, indent=2), encoding="utf-8")
         except OSError:
             pass
+    result.pop("undecided", None)
     return dict(result, probed=True)
 
 
-def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
+def _dense_probe_timeout() -> float:
+    """Seconds the probe waits for each COLMAP step (ODK_DENSE_PROBE_TIMEOUT_S, default 900).
+
+    A build whose kernels are older than the GPU (COLMAP 4.0.4 on an RTX 5060) is
+    JIT-compiled by the driver on its first patch-match: 292 s measured on the dev box,
+    then 10 s once the driver's compute cache holds the result. The old 180 s limit
+    killed that first run and reported a working build as broken.
+    """
+    try:
+        return max(1.0, float(os.environ.get("ODK_DENSE_PROBE_TIMEOUT_S", "") or 900.0))
+    except ValueError:
+        return 900.0
+
+
+def _run_dense_probe(binary: str, timeout: float | None = None) -> dict[str, Any]:
     """Undistort and patch-match a two-view synthetic scene with the native binary.
 
     The scene is a textured plane two units in front of two rectified pinhole views, so
@@ -242,6 +259,8 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
     """
     import tempfile
 
+    if timeout is None:
+        timeout = _dense_probe_timeout()
     size, focal = 96, 90.0
     baseline, depth = 0.2, 2.0
     rng = np.random.default_rng(7)
@@ -291,6 +310,14 @@ def _run_dense_probe(binary: str, timeout: float = 180.0) -> dict[str, Any]:
         for label, command in steps:
             try:
                 done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return {"ok": False, "undecided": True, "reason": (
+                    f"Not decided: COLMAP {label} was still running after {timeout:.0f} s. "
+                    "A build whose GPU kernels predate this GPU is JIT-compiled by the "
+                    "NVIDIA driver on its first run (about 5 minutes for COLMAP 4.0.4 on "
+                    "an RTX 5060), and the driver caches the result. Raise "
+                    "ODK_DENSE_PROBE_TIMEOUT_S and check capabilities again; the result "
+                    "was not cached.")}
             except (OSError, subprocess.SubprocessError) as exc:
                 return {"ok": False, "reason": f"COLMAP {label} could not run: {exc}"}
             text = (done.stdout or "") + (done.stderr or "")
@@ -377,13 +404,19 @@ def explain_dense_failure(binary: str, reason: str) -> str:
     toolkit = binary_cuda_toolchain(binary)
     driver, driver_cuda = driver_cuda_version()
     if toolkit and driver_cuda and _version_tuple(toolkit) > _version_tuple(driver_cuda):
+        # Measured on the RTX 5060 dev box (driver 592.15, CUDA 13.1): the official
+        # COLMAP 4.0.4 Windows CUDA archive, built with CUDA 12.9, runs patch-match.
+        known_good = (
+            " (the official COLMAP 4.0.4 Windows CUDA archive is built with CUDA 12.9)"
+            if _version_tuple(driver_cuda) >= (12, 9) else ""
+        )
         return (
             f"Cause: this COLMAP was compiled with CUDA {toolkit}, but NVIDIA driver "
             f"{driver} supports CUDA only up to {driver_cuda}, so the driver cannot load "
             f"its GPU kernels. Fix: update the NVIDIA driver to one that supports CUDA "
-            f"{toolkit}, or install a COLMAP built with CUDA {driver_cuda} or older and "
-            "point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense reconstruction on "
-            "RTX 50-series')."
+            f"{toolkit}, or install a COLMAP built with CUDA {driver_cuda} or older"
+            f"{known_good} and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
+            "reconstruction on RTX 50-series')."
         )
     known = []
     if toolkit:
@@ -1086,8 +1119,9 @@ class ColmapReconstructor:
                 "Dense MVS skipped: "
                 + str(probe.get("reason") or "the native COLMAP build cannot run patch-match here").rstrip(". ")
                 + ". "
-                "Derived products come from the sparse cloud. Install a COLMAP build compiled "
-                "for this GPU (CUDA 12.8+ for RTX 50-series) for full-resolution dense output."
+                "Derived products come from the sparse cloud. See docs/INSTALLATION.md, "
+                "'Dense reconstruction on RTX 50-series', for a COLMAP build that runs "
+                "patch-match on this GPU and driver."
             )
             return empty
 
