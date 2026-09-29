@@ -2040,9 +2040,35 @@ class Api:
         except MissionTypeRefused as exc:
             return fail(str(exc))
         extra = {k: v for k, v in plan.items() if k != "plan"}
-        adopted = self._adopt_plan(plan["plan"], "multispectral", list(plan.get("limits") or []),
+        warnings = list(plan.get("limits") or [])
+        captures = list(extra.get("calibration_captures") or [])
+        # The panel shots are what makes this survey calibrated, but they are taken over
+        # the panel on the ground before take-off and after landing, not flown as survey
+        # waypoints. Say so on the plan, with the position, or nobody takes them.
+        for capture in captures:
+            lon, lat = capture["lonlat"][:2]
+            step = "before take-off" if capture.get("when") == "before" else "after landing"
+            warnings.append(
+                f"Calibration step {step}: photograph the reflectance panel at "
+                f"{lat:.6f}, {lon:.6f} from about {float(capture.get('altitude_m', 2.0)):g} m "
+                "directly above it, panel filling the frame and no shadow on it. This shot "
+                "is not in the flight file; without it the indices are not calibrated.")
+        adopted = self._adopt_plan(plan["plan"], "multispectral", warnings,
                                    extra={"multispectral": extra, "payload": plan.get("payload")},
                                    options=options)
+        panel_features = [{
+            "type": "Feature",
+            "properties": {"role": "calibration_panel", "when": c.get("when"),
+                           "note": c.get("note", "")},
+            "geometry": {"type": "Point", "coordinates": [float(c["lonlat"][0]), float(c["lonlat"][1])]},
+        } for c in captures]
+        if panel_features:
+            for geojson in (self._session.mission_plan_dict.get("geojson"), adopted.get("geojson")):
+                if isinstance(geojson, dict):
+                    features = geojson.setdefault("features", [])
+                    if not any((f.get("properties") or {}).get("role") == "calibration_panel"
+                               for f in features):
+                        features.extend(panel_features)
         self._session.audit("multispectral_planned", {"payload": payload_key})
         return ok(plan=extra, **adopted)
 
