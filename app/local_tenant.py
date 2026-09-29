@@ -21,7 +21,12 @@ holds for it, and the Api says so when the link is issued.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
+
+# Held while the organisation and service project are looked up or created, so two of
+# this process's threads cannot both create them (see Api._service_ids).
+CREATE_LOCK = threading.Lock()
 
 LOCAL_ORG_NAME = "This desktop installation"
 LOCAL_ORG_SLUG = "local-desktop"

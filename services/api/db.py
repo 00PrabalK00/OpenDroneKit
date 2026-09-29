@@ -180,6 +180,7 @@ def _apply_additive_migrations(engine) -> None:
     not add columns to an existing table, so the immutable assisted-review fields need
     an idempotent, narrowly-scoped migration here instead of failing after upgrade.
     """
+    _relax_battery_health(engine)
     inspector = inspect(engine)
     if not inspector.has_table("annotations"):
         return
@@ -199,6 +200,56 @@ def _apply_additive_migrations(engine) -> None:
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_annotations_origin ON annotations (origin)"
         ))
+
+
+def _relax_battery_health(engine) -> None:
+    """Let batteries.health_pct be NULL in a database made before it could be.
+
+    The column used to be NOT NULL with a default of 100, so every pack nobody had
+    measured showed "Health 100%". It is nullable now, and NULL means "not measured".
+    A database created earlier still has the NOT NULL, and without this every new
+    battery would fail to insert.
+
+    One stored value is provably the old default and is cleared: 100 on a pack with
+    no cycles. Nothing could have measured it -- the only writer of health_pct is the
+    service's cycle endpoint, which adds a cycle as it records the reading. Every other
+    stored value may be a real reading and is left alone.
+    """
+    inspector = inspect(engine)
+    if not inspector.has_table("batteries"):
+        return
+    column = next((c for c in inspector.get_columns("batteries")
+                   if c["name"] == "health_pct"), None)
+    if column is None or column.get("nullable", True):
+        return
+    if is_postgres():
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE batteries ALTER COLUMN health_pct DROP NOT NULL"))
+            connection.execute(text(_CLEAR_DEFAULT_HEALTH))
+        return
+
+    # SQLite cannot drop a NOT NULL constraint in place: rebuild the table from the
+    # model, which is how SQLite's own documentation says to change a column.
+    from .models import Battery  # noqa: PLC0415
+
+    table = Battery.__table__
+    present = {col["name"] for col in inspector.get_columns("batteries")}
+    names = ", ".join(c.name for c in table.columns if c.name in present)
+    old_indexes = [index["name"] for index in inspector.get_indexes("batteries")]
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE batteries RENAME TO _batteries_before_nullable"))
+        for name in old_indexes:
+            connection.execute(text(f'DROP INDEX IF EXISTS "{name}"'))
+        table.create(connection)
+        connection.execute(text(
+            f"INSERT INTO batteries ({names}) SELECT {names} FROM _batteries_before_nullable"))
+        connection.execute(text("DROP TABLE _batteries_before_nullable"))
+        connection.execute(text(_CLEAR_DEFAULT_HEALTH))
+
+
+_CLEAR_DEFAULT_HEALTH = ("UPDATE batteries SET health_pct = NULL "
+                         "WHERE health_pct = 100.0 AND cycle_count = 0")
 
 
 

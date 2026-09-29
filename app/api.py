@@ -2545,6 +2545,20 @@ class Api:
             return fail(str(exc))
 
     @guard
+    def log_battery_cycle(self, organization_id: int, battery_id: int, cycles: Any = 1,
+                          health_pct: Any = "") -> dict[str, Any]:
+        """Add charge cycles to a pack and, if measured, record its health."""
+        from app import desktop_ops
+
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            row = desktop_ops.log_battery_cycle(org, battery_id, cycles, health_pct)
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+        self._session.audit("battery_cycle_logged", row)
+        return ok(**row)
+
+    @guard
     def add_pilot(self, organization_id: int, display_name: str, licence_number: str = "",
                   licence_expires_on: str = "") -> dict[str, Any]:
         """Add a pilot, refusing an unparseable licence expiry rather than defaulting it."""
@@ -2605,6 +2619,42 @@ class Api:
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
+    @guard
+    def remove_fleet_record(self, organization_id: int, kind: str,
+                            record_id: int) -> dict[str, Any]:
+        """Delete one aircraft (with its maintenance log), battery or pilot."""
+        from app import desktop_ops
+
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            removed = desktop_ops.remove_fleet_record(org, kind, record_id)
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+        self._session.audit("fleet_record_removed", removed)
+        return ok(**removed)
+
+    @guard
+    def export_fleet(self, organization_id: int = 1, directory: str = "") -> dict[str, Any]:
+        """Write the fleet register (aircraft, batteries, pilots, full maintenance log).
+
+        Fleet's Export button exported the MISSION, and on the Fleet screen answered
+        "No mission has been planned yet". Unset, the files go under the data root's
+        exports folder in a timestamped directory, so a second export never overwrites
+        the first.
+        """
+        from app import desktop_ops
+        from core.paths import data_root
+
+        target = str(directory or "").strip()
+        if not target:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target = str(data_root() / "exports" / f"fleet-{stamp}")
+        try:
+            _, org = self._service_ids(organization_id=organization_id)
+            return ok(**desktop_ops.export_fleet(org, target))
+        except (ValueError, RuntimeError) as exc:
+            return fail(str(exc))
+
     # -------------------------------------------------------------- sharing
 
     def _service_ids(self, desktop_project_id: int | None = None,
@@ -2614,21 +2664,36 @@ class Api:
         The cockpit sends DESKTOP project ids, and share links reference the service
         database's projects -- a different table in a different file -- so every Share
         failed with a foreign-key error. See app/local_tenant.py.
+
+        Serialised, and retried once on a unique-key clash: on a fresh install the Fleet
+        screen and the Home tile ask at the same moment, pywebview runs each call on its
+        own thread, and both created the local organisation. The loser failed with
+        "UNIQUE constraint failed: organizations.slug". The retry covers a second process
+        (the Hub service) creating it in between; the second pass finds the winner's row.
         """
+        from sqlalchemy.exc import IntegrityError
+
         from app import desktop_ops, local_tenant
 
-        with desktop_ops._session() as db:
-            org = local_tenant.organization_id(db, organization_id)
-            project = None
-            if desktop_project_id is not None:
-                wanted = int(desktop_project_id)
-                desktop = next((p for p in self._session.store.list_projects()
-                                if int(p["id"]) == wanted), None)
-                if desktop is None:
-                    raise ValueError(f"No project with id {desktop_project_id} on this machine.")
-                project = local_tenant.service_project_id(db, desktop)
-            db.commit()
-        return project, org
+        for attempt in (1, 2):
+            try:
+                with local_tenant.CREATE_LOCK, desktop_ops._session() as db:
+                    org = local_tenant.organization_id(db, organization_id)
+                    project = None
+                    if desktop_project_id is not None:
+                        wanted = int(desktop_project_id)
+                        desktop = next((p for p in self._session.store.list_projects()
+                                        if int(p["id"]) == wanted), None)
+                        if desktop is None:
+                            raise ValueError(
+                                f"No project with id {desktop_project_id} on this machine.")
+                        project = local_tenant.service_project_id(db, desktop)
+                    db.commit()
+                return project, org
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
 
     @guard
     def create_share_link(self, project_id: int, note: str = "",
@@ -4699,6 +4764,8 @@ class Api:
         # to a count in the summary table.
         warnings.extend(n for n in (getattr(plan, "coverage_notes", None) or []) if n not in warnings)
         warnings.extend(self._endurance_warnings(plan, options or {}))
+        # The same list, so warnings appended after this point reach preflight too.
+        self._session.mission_plan_warnings = warnings
         return {
             "summary": {
                 "template": template,
@@ -5321,16 +5388,29 @@ class Api:
         return ok(items=len(items), result=report["mission"], upload=report)
 
     @guard
-    def vehicle_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
+    def vehicle_command(self, command: str, options: dict[str, Any] | None = None,
+                        **kwargs: Any) -> dict[str, Any]:
         """Arm / start / pause / resume / RTL / abort against the connected vehicle.
 
         Reports what the vehicle answered: ok only when it acknowledged the command.
         Every command used to return ok with "Command sent." inside, so a denied RTL
         looked exactly like an accepted one.
+
+        "start" is held to the preflight checklist: it is refused while a check blocks
+        or a manual check is unconfirmed, naming them. The pilot in command can still
+        start with ``override_preflight=True`` (from the page, ``{"override_preflight":
+        true}`` as `options`), and that override is written to the audit log with the
+        checks it overrode. Before this the checklist was advisory: Start Mission armed
+        and flew with the battery check blocking.
         """
+        kwargs = {**(options or {}), **kwargs}
         client = self._session._drone_client
         if client is None:
             return fail("No vehicle connected.")
+        if str(command).lower() == "start":
+            held = self._preflight_hold(bool(kwargs.get("override_preflight")))
+            if held is not None:
+                return held
         # The command set a ground station is expected to offer. Anything the
         # connected driver does not implement is reported as unsupported rather than
         # failing silently, because a pilot pressing a button needs to know whether
@@ -5396,6 +5476,36 @@ class Api:
                         result=payload)
         return ok(result=payload)
 
+    def _preflight_hold(self, override: bool) -> dict[str, Any] | None:
+        """The refusal that keeps Start Mission behind the checklist, or None to go."""
+        report = self.run_preflight()
+        if not report.get("ok"):
+            # The checklist itself could not be computed; that is not a pass.
+            blocking, pending = [f"the checklist could not run: {report.get('error')}"], []
+        elif report.get("can_start"):
+            return None
+        else:
+            checks = report.get("checks") or []
+            blocking = [f"{c.get('name') or c.get('id')}: {c.get('message', '')}".rstrip(": ")
+                        for c in checks if c.get("severity") == "blocking"
+                        and not c.get("confirmed") and not c.get("requires_manual")]
+            pending = [str(c.get("name") or c.get("id")) for c in checks
+                       if c.get("requires_manual") and not c.get("confirmed")]
+        if override:
+            self._session.audit("preflight_override", {
+                "command": "start", "blocking": blocking, "unconfirmed": pending})
+            return None
+        parts = []
+        if blocking:
+            parts.append("blocking -- " + "; ".join(blocking))
+        if pending:
+            parts.append("not confirmed -- " + ", ".join(pending))
+        return fail(
+            "Preflight is not ready, so the mission was not started ("
+            + " | ".join(parts or ["not ready"]) + "). Fix or confirm these in Preflight, "
+            "or start anyway as pilot in command (recorded as an override).",
+            preflight_blocked=True, blocking=blocking, unconfirmed=pending)
+
     @guard
     def flight_session(self) -> dict[str, Any]:
         """The live flight session: state, warnings, and the commands sent so far."""
@@ -5438,8 +5548,12 @@ class Api:
                     setattr(profile, key, float(constraints[key]))
             mission_summary = (MissionManager.summarize_plan(plan) if plan is not None
                                else {"waypoints": len(plan_dict.get("waypoints") or [])})
-            mission_summary["issues"] = ([] if mission_summary.get("waypoints")
-                                         else ["error: the plan has no waypoints"])
+            # "Mission validated." used to rest on the waypoint count alone, ticking
+            # a plan the planner had just qualified -- flat ground assumed, three
+            # batteries needed, a route it had to guess. Those are carried as warnings.
+            mission_summary["issues"] = (
+                ([] if mission_summary.get("waypoints") else ["error: the plan has no waypoints"])
+                + [f"warning: {w}" for w in getattr(self._session, "mission_plan_warnings", [])])
             geofence, no_fly = plan_airspace(plan_dict, self._session.no_fly_polygons)
 
         report = run_preflight(
@@ -5453,6 +5567,10 @@ class Api:
             geofence=geofence,
             no_fly_zones=no_fly,
             free_storage_mb=free_storage_mb,
+            rth_source=("the plan's setting" if plan_dict and (plan_dict.get("safety_constraints")
+                                                              or {}).get("rth_altitude_m") is not None
+                        else f"drone profile '{profile.name}' default; no plan yet"
+                        if not plan_dict else f"drone profile '{profile.name}'"),
         )
         # Confirmations persist for this connection and plan, so confirming the weather
         # once is not undone by the next refresh of the checklist.
@@ -5470,9 +5588,17 @@ class Api:
         payload["pending_confirmation"] = [
             c["id"] for c in payload["checks"] if c.get("requires_manual") and not c.get("confirmed")
         ]
-        self._session.audit("preflight_run", {
-            "can_start": payload["can_start"], "blocking": payload["blocking_count"],
-        })
+        # The cockpit's checklist re-runs this every 5 s; one audit row per refresh
+        # buried every other entry. A run is recorded when the operator confirms
+        # something or the outcome changes.
+        outcome = (payload["can_start"], payload["blocking_count"],
+                   tuple(payload["pending_confirmation"]))
+        if acknowledged or outcome != getattr(self._session, "_last_preflight_audit", None):
+            self._session._last_preflight_audit = outcome
+            self._session.audit("preflight_run", {
+                "can_start": payload["can_start"], "blocking": payload["blocking_count"],
+                "confirmed": sorted(confirmed & known),
+            })
         return ok(**payload)
 
     # -- datasets and processing ----------------------------------------

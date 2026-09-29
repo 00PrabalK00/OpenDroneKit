@@ -192,6 +192,27 @@ function summarisePack(result) {
 }
 
 /** Actions that need images on disk. */
+/* Which aircraft Log Maintenance and Assign Mission act on. With a battery or pilot
+   picked last, the old fallback asked for an "Aircraft id" pre-filled with 1, so one
+   Enter logged maintenance against whichever aircraft happened to be number 1. The
+   last-picked row now has to be an aircraft; with nothing picked the id is asked for
+   with no default. */
+async function pickAircraft(ctx) {
+  const picked = ctx.selectedFleetRecord();
+  if (picked && picked.kind !== "aircraft") {
+    return { skipped: `The ${picked.kind} "${picked.name}" is selected. `
+      + "Select an aircraft in the Aircraft list first." };
+  }
+  const selected = ctx.selectedFleetId();
+  if (selected) return { id: selected };
+  const typed = await ctx.prompt("Aircraft id (the number shown in the Aircraft list)", "");
+  const id = Number(String(typed ?? "").trim());
+  if (!typed || !Number.isInteger(id) || id <= 0) {
+    return { skipped: "Select an aircraft in the fleet list first." };
+  }
+  return { id };
+}
+
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
                                "Open in 3D", "Label"]);
 
@@ -1629,10 +1650,41 @@ export const ACTIONS = {
     async run(ctx) {
       const serial = await ctx.prompt("Battery serial number", "");
       if (!serial) return { skipped: "A battery is tracked by serial; none given." };
-      const capacity = parseInt(await ctx.prompt("Capacity mAh (optional)", "0") || "0", 10) || 0;
-      const limit = parseInt(await ctx.prompt("Cycle limit (optional)", "0") || "0", 10) || 0;
+      // Passed as typed: the Api refuses a negative or non-numeric value by name. Coercing
+      // here let -1 through as a cycle limit and turned "abc" silently into 0.
+      const capacity = await ctx.prompt("Capacity mAh (optional)", "0");
+      if (capacity === null) return { skipped: "Nothing registered." };
+      const limit = await ctx.prompt("Cycle limit (optional)", "0");
+      if (limit === null) return { skipped: "Nothing registered." };
       const result = await call("add_battery", ctx.organizationId(), serial, capacity, limit);
-      return { message: `Battery ${result.serial_number} registered.`, refresh: true };
+      return {
+        message: `Battery ${result.serial_number} registered. Health is blank until you `
+          + "measure it (Log Battery Cycle).",
+        refresh: true,
+      };
+    },
+  },
+  /* Without this a registered pack never moved: Cycles stayed 0 and Health had no way
+     to be entered, which is how every pack came to show the default 100%. */
+  "Log Battery Cycle": {
+    describe: "Add charge cycles to the selected battery and, if measured, its health.",
+    async run(ctx) {
+      const picked = ctx.selectedFleetRecord();
+      if (!picked || picked.kind !== "battery") {
+        return { skipped: "Select a battery in the Batteries list first." };
+      }
+      const cycles = await ctx.prompt(`Cycles to add to ${picked.name}`, "1");
+      if (cycles === null) return { skipped: "Nothing recorded." };
+      const health = await ctx.prompt(
+        "Measured health % (leave blank if you did not measure it)", "");
+      if (health === null) return { skipped: "Nothing recorded." };
+      const result = await call("log_battery_cycle", ctx.organizationId(), picked.id,
+        cycles, health);
+      return {
+        message: `${result.serial_number}: ${result.cycle_count} cycles`
+          + (result.health_pct === null ? ", health not measured." : `, health ${result.health_pct}%.`),
+        refresh: true,
+      };
     },
   },
   "Add Pilot": {
@@ -1649,24 +1701,58 @@ export const ACTIONS = {
   "Log Maintenance": {
     describe: "Record maintenance and reset the service clock.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
-      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
+      const id = await pickAircraft(ctx);
+      if (id.skipped) return id;
       const kind = await ctx.prompt("What was done (propeller, motor, inspection…)", "inspection");
       if (!kind) return { skipped: "Maintenance needs a kind." };
       const detail = await ctx.prompt("Detail (optional)", "") || "";
-      const result = await call("log_maintenance", id, kind, detail, "operator");
+      const result = await call("log_maintenance", id.id, kind, detail, "operator");
       return { message: `Logged ${result.kind} at ${result.hours_at_service} h.`, refresh: true };
     },
   },
   "Assign Mission": {
     describe: "Note which aircraft flies this mission.",
     async run(ctx) {
-      const id = ctx.selectedFleetId() || parseInt(await ctx.prompt("Aircraft id", "1") || "0", 10);
-      if (!id) return { skipped: "Select an aircraft in the fleet list first." };
+      const id = await pickAircraft(ctx);
+      if (id.skipped) return id;
       const mission = await ctx.prompt("Mission name", "Mission");
       if (!mission) return { skipped: "No mission named." };
-      await call("assign_mission_to_aircraft", id, mission);
+      await call("assign_mission_to_aircraft", id.id, mission);
       return { message: `Assigned to ${mission}.`, refresh: true };
+    },
+  },
+
+  "Remove Record": {
+    describe: "Delete the selected aircraft (with its maintenance log), battery or pilot.",
+    async run(ctx) {
+      const picked = ctx.selectedFleetRecord();
+      if (!picked) return { skipped: "Select an aircraft, battery or pilot in the fleet lists first." };
+      const what = `${picked.kind} "${picked.name}"`
+        + (picked.kind === "aircraft" ? " and its maintenance log" : "");
+      if (!(await ctx.confirm(`Remove ${what}? This cannot be undone.`))) {
+        return { skipped: "Nothing removed." };
+      }
+      const result = await call("remove_fleet_record", ctx.organizationId(), picked.kind, picked.id);
+      return {
+        message: `Removed ${result.kind} ${result.label}`
+          + (result.removed_maintenance ? ` and ${result.removed_maintenance} maintenance record(s).` : "."),
+        refresh: true,
+      };
+    },
+  },
+  /* Fleet's toolbar had the generic Export, which exports the MISSION: on the Fleet
+     screen it answered "No mission has been planned yet". */
+  "Export Fleet": {
+    describe: "Write the fleet register (aircraft, batteries, pilots, maintenance) to CSV and JSON.",
+    async run(ctx) {
+      const result = await call("export_fleet", ctx.organizationId(), "");
+      const c = result.counts || {};
+      await tryCall("open_path", result.directory);
+      return {
+        message: `Exported ${c.aircraft || 0} aircraft, ${c.batteries || 0} batteries, `
+          + `${c.pilots || 0} pilots and ${c.maintenance || 0} maintenance records to ${result.directory}`,
+        files: Object.values(result.files || {}),
+      };
     },
   },
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -70,8 +70,8 @@ class AircraftOut(BaseModel):
 
 class BatteryCreate(BaseModel):
     serial_number: str = Field(min_length=1, max_length=120)
-    capacity_mah: int = 0
-    cycle_limit: int = DEFAULT_CYCLE_LIMIT
+    capacity_mah: int = Field(default=0, ge=0)
+    cycle_limit: int = Field(default=DEFAULT_CYCLE_LIMIT, ge=0)
 
 
 class BatteryOut(BaseModel):
@@ -81,7 +81,8 @@ class BatteryOut(BaseModel):
     capacity_mah: int
     cycle_count: int
     cycle_limit: int
-    health_pct: float
+    # None: never measured. Not 100.
+    health_pct: float | None
     retired: bool
     past_cycle_limit: bool
     warnings: list[str]
@@ -138,7 +139,7 @@ def _battery_out(battery: Battery) -> BatteryOut:
         warnings.append(
             f"{battery.cycle_count} cycles against a limit of {battery.cycle_limit}."
         )
-    if battery.health_pct < HEALTH_WARNING_PCT:
+    if battery.health_pct is not None and battery.health_pct < HEALTH_WARNING_PCT:
         warnings.append(f"Health is {battery.health_pct:.0f}%.")
     if battery.retired:
         warnings.append("Marked retired; it should not be flown.")
@@ -147,7 +148,8 @@ def _battery_out(battery: Battery) -> BatteryOut:
         id=battery.id, organization_id=battery.organization_id,
         serial_number=battery.serial_number, capacity_mah=battery.capacity_mah,
         cycle_count=battery.cycle_count, cycle_limit=battery.cycle_limit,
-        health_pct=round(battery.health_pct, 1), retired=battery.retired,
+        health_pct=None if battery.health_pct is None else round(battery.health_pct, 1),
+        retired=battery.retired,
         past_cycle_limit=past_limit, warnings=warnings,
         last_used_at=battery.last_used_at,
     )
@@ -322,7 +324,9 @@ def create_battery(
 @router.post("/batteries/{battery_id}/cycles", response_model=BatteryOut)
 def log_battery_cycle(
     battery_id: int, user: CurrentUser, db: Annotated[Session, Depends(get_db)],
-    health_pct: float | None = None,
+    # A reading outside 0-100 is refused (422), not clamped: 150 used to be stored as
+    # a measured 100%, and -3 as 0%. The desktop Api refuses the same values.
+    health_pct: Annotated[float | None, Query(ge=0.0, le=100.0, allow_inf_nan=False)] = None,
 ) -> BatteryOut:
     """Record one charge cycle, optionally updating measured health."""
     battery = db.get(Battery, battery_id)
@@ -333,7 +337,7 @@ def log_battery_cycle(
     battery.cycle_count += 1
     battery.last_used_at = datetime.now(timezone.utc)
     if health_pct is not None:
-        battery.health_pct = float(max(0.0, min(100.0, health_pct)))
+        battery.health_pct = float(health_pct)
 
     db.commit()
     return _battery_out(battery)

@@ -38,7 +38,11 @@
     const fn = window.pywebview.api[method];
     if (!fn) throw new Error(`Unknown API method: ${method}`);
     const result = await fn(...args);
-    if (result && result.ok === false) throw new Error(result.error || 'Unknown error');
+    if (result && result.ok === false) {
+      const error = new Error(result.error || 'Unknown error');
+      error.result = result;
+      throw error;
+    }
     return result;
   }
 
@@ -493,7 +497,10 @@
     const result = await tryCall('run_preflight', acknowledged || []);
     const list = $('#preflight-list');
     if (!result) return;
-    const mark = (c) => (c.confirmed || c.severity === 'pass') ? '<b class="yes">pass</b>'
+    // A manual check the operator ticked is their word, not a measurement: it reads
+    // "confirmed", not "pass".
+    const mark = (c) => c.confirmed ? '<b class="yes">confirmed</b>'
+      : c.severity === 'pass' ? '<b class="yes">pass</b>'
       : c.severity === 'blocking' ? '<b class="no">BLOCKS</b>' : '<b>check</b>';
     list.innerHTML =
       `<div><span>${result.simulated ? 'SIMULATED vehicle — ' : ''}Ready to start</span>${flag(result.can_start)}</div>` +
@@ -516,21 +523,28 @@
     const result = await tryCall('list_fleet', ORG);
     const list = $('#fleet-list');
     if (!result) return;
+    // Every value is escaped: names come from the operator and from the shared service
+    // database, and an aircraft called '<i id=x>Kite</i>' used to become a live element.
     const rows = (items, fmt) => items.length ? items.map(fmt).join('') : '<div><span>none registered</span></div>';
     list.innerHTML =
       '<div><b>Aircraft</b></div>' + rows(result.aircraft, (a) =>
-        `<div><span>#${a.id} ${a.name} ${a.model || ''}</span><b>${a.flight_hours} h · ${a.status}` +
-        `${a.hours_to_service == null ? '' : ` · service in ${a.hours_to_service} h`}</b></div>`) +
+        `<div><span>#${esc(a.id)} ${esc(a.name)} ${esc(a.model || '')}</span><b>${esc(a.flight_hours)} h · ${esc(a.status)}` +
+        `${a.hours_to_service == null ? '' : ` · service in ${esc(a.hours_to_service)} h`}` +
+        `${a.assigned_mission ? ` · on ${esc(a.assigned_mission)}` : ''}</b></div>`) +
       '<div><b>Batteries</b></div>' + rows(result.batteries, (b) =>
-        `<div><span>${b.serial_number}</span><b>${b.cycle_count}${b.cycle_limit ? ` / ${b.cycle_limit}` : ''} cycles` +
+        `<div><span>#${esc(b.id)} ${esc(b.serial_number)}</span><b>${esc(b.cycle_count)}${b.cycle_limit ? ` / ${esc(b.cycle_limit)}` : ''} cycles` +
+        ` · health ${b.health_pct == null ? 'not measured' : `${esc(b.health_pct)}%`}` +
         `${b.over_cycle_limit ? ' — over limit' : ''}</b></div>`) +
       '<div><b>Pilots</b></div>' + rows(result.pilots, (p) =>
-        `<div><span>${p.display_name} ${p.licence_number || ''}</span><b>${p.licence_expires_on || 'no expiry recorded'}</b></div>`);
+        `<div><span>#${esc(p.id)} ${esc(p.display_name)} ${esc(p.licence_number || '')}</span><b>${esc(p.licence_expires_on || 'no expiry recorded')}</b></div>`) +
+      '<div><b>Maintenance</b></div>' + rows(result.maintenance || [], (m) =>
+        `<div><span>${esc(String(m.performed_at || '').slice(0, 10))} ${esc(m.aircraft)} — ${esc(m.kind)}` +
+        `${m.description ? `: ${esc(m.description)}` : ''}</span><b>at ${esc(m.hours_at_service)} h</b></div>`);
   }
 
   function fleetForm(title, fields, submit) {
     modal(title, `<div class="form">${fields.map(([id, label, value]) =>
-      `<label>${label}<input id="${id}" value="${value || ''}" /></label>`).join('')}</div>`, [
+      `<label>${esc(label)}<input id="${id}" value="${esc(value)}" /></label>`).join('')}</div>`, [
       { label: 'Cancel' },
       {
         label: 'Save', primary: true, onClick: async () => {
@@ -548,8 +562,11 @@
       (v) => tryCall('add_aircraft', ORG, v['f-name'], v['f-model'], v['f-serial']));
     $('#btn-fleet-battery').onclick = () => fleetForm('Add battery',
       [['f-serial', 'Serial'], ['f-cap', 'Capacity mAh', '0'], ['f-limit', 'Cycle limit', '0']],
-      (v) => tryCall('add_battery', ORG, v['f-serial'], parseInt(v['f-cap'] || '0', 10) || 0,
-                     parseInt(v['f-limit'] || '0', 10) || 0));
+      (v) => tryCall('add_battery', ORG, v['f-serial'], v['f-cap'], v['f-limit']));
+    $('#btn-fleet-cycle').onclick = () => fleetForm('Log battery cycle',
+      [['f-id', 'Battery id (the # in the list)'], ['f-cycles', 'Cycles to add', '1'],
+       ['f-health', 'Measured health % (blank if not measured)']],
+      (v) => tryCall('log_battery_cycle', ORG, parseInt(v['f-id'] || '0', 10), v['f-cycles'], v['f-health']));
     $('#btn-fleet-pilot').onclick = () => fleetForm('Add pilot',
       [['f-name', 'Name'], ['f-licence', 'Licence number'], ['f-expires', 'Licence expires (YYYY-MM-DD)']],
       (v) => tryCall('add_pilot', ORG, v['f-name'], v['f-licence'], v['f-expires']));
@@ -559,6 +576,18 @@
     $('#btn-fleet-assign').onclick = () => fleetForm('Assign mission',
       [['f-id', 'Aircraft id'], ['f-mission', 'Mission name', 'Mission']],
       (v) => tryCall('assign_mission_to_aircraft', parseInt(v['f-id'] || '0', 10), v['f-mission']));
+    // The ids are the #numbers in the list above; an aircraft takes its maintenance log with it.
+    $('#btn-fleet-remove').onclick = () => fleetForm('Remove record',
+      [['f-kind', 'What (aircraft, battery or pilot)', 'aircraft'], ['f-id', 'Id (the # in the list)']],
+      (v) => tryCall('remove_fleet_record', ORG, v['f-kind'], parseInt(v['f-id'] || '0', 10)));
+    $('#btn-fleet-export').onclick = async () => {
+      const result = await tryCall('export_fleet', ORG, '');
+      if (!result) return;
+      const c = result.counts || {};
+      status(`Export fleet: ${c.aircraft || 0} aircraft, ${c.batteries || 0} batteries, ` +
+             `${c.pilots || 0} pilots, ${c.maintenance || 0} maintenance records written to ${result.directory}`);
+      await tryCall('open_path', result.directory);
+    };
   }
 
   /* ---------- tabs and tools ---------- */
@@ -922,7 +951,28 @@
       status(`Vehicle accepted ${result.items} mission items${extras.length ? ` and ${extras.join(', ')} items` : ''}.`);
     },
     'fly.command': async (payload) => {
-      const result = await tryCall('vehicle_command', payload.command);
+      // Start is held to the preflight checklist; the pilot may override, on the record.
+      let result = null;
+      try {
+        result = await call('vehicle_command', payload.command);
+      } catch (err) {
+        if (!(err.result && err.result.preflight_blocked)) {
+          status(`vehicle_command: ${err.message}`);
+          return;
+        }
+        // The app's own dialog: WebView2 under pywebview does not show window.confirm.
+        const go = await new Promise((resolve) => modal('Preflight is not ready',
+          `<p>${esc(err.message)}</p><p>Start the mission anyway? This is recorded as ` +
+          'your preflight override.</p>', [
+            { label: 'Do not start', onClick: () => resolve(false) },
+            { label: 'Start anyway', primary: true, onClick: () => resolve(true) },
+          ]));
+        if (!go) {
+          status(`Not started: ${err.message}`);
+          return;
+        }
+        result = await tryCall('vehicle_command', payload.command, { override_preflight: true });
+      }
       if (result) status(`Command ${payload.command}: ${(result.result && result.result.message) || 'accepted'}`);
     },
 

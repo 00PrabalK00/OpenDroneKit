@@ -117,23 +117,95 @@ def add_battery(organization_id: int, serial: str, capacity_mah: int = 0,
 
     if not str(serial).strip():
         raise ValueError("A battery needs a serial number; it is how cycles are tracked.")
+    capacity = _whole_number(capacity_mah, "Capacity (mAh)")
+    limit = _whole_number(cycle_limit, "Cycle limit")
     with _session() as db:
         battery = Battery(
             organization_id=_organization(db, organization_id),
             serial_number=str(serial).strip(),
-            capacity_mah=int(capacity_mah or 0),
-            cycle_limit=int(cycle_limit or 0),
+            capacity_mah=capacity,
+            cycle_limit=limit,
+            # Not measured yet. Left empty rather than 100: nobody has tested this pack.
+            health_pct=None,
         )
         db.add(battery)
         db.commit()
         db.refresh(battery)
-        return {
-            "id": battery.id,
-            "serial_number": battery.serial_number,
-            "capacity_mah": battery.capacity_mah,
-            "cycle_count": battery.cycle_count,
-            "cycle_limit": battery.cycle_limit,
-        }
+        return _battery_row(battery)
+
+
+def _whole_number(value: Any, label: str) -> int:
+    """A count that cannot be negative, from a prompt's text or a number.
+
+    Blank means 0 (not recorded). A negative cycle limit made a new 0-cycle pack read
+    "past cycle limit"; a negative capacity is not a battery.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return 0
+    try:
+        number = float(text)
+    except ValueError:
+        raise ValueError(f"{label} must be a whole number, not {text!r}.") from None
+    if number != int(number):
+        raise ValueError(f"{label} must be a whole number, not {text!r}.")
+    if number < 0:
+        raise ValueError(f"{label} cannot be negative (got {text}).")
+    return int(number)
+
+
+def _battery_row(battery) -> dict[str, Any]:
+    return {
+        "id": battery.id,
+        "serial_number": battery.serial_number,
+        "capacity_mah": battery.capacity_mah,
+        "cycle_count": int(battery.cycle_count or 0),
+        "cycle_limit": int(battery.cycle_limit or 0),
+        "health_pct": None if battery.health_pct is None else round(float(battery.health_pct), 1),
+    }
+
+
+def log_battery_cycle(organization_id: int, battery_id: Any, cycles: Any = 1,
+                      health_pct: Any = "") -> dict[str, Any]:
+    """Count charge cycles on a pack, and record its health if someone measured it.
+
+    The desktop could register a pack but never move its cycle count or enter a
+    health reading, so the Cycles column stayed 0 and Health had nothing to show.
+    Health is optional here and is only ever what the operator typed: blank leaves
+    the stored value (or its absence) as it was. A reading outside 0-100 is refused,
+    not clamped, because a clamped number is not what was measured.
+    """
+    from services.api.models import Battery
+
+    try:
+        number = int(battery_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{battery_id!r} is not a battery id; select a battery in the "
+                         "fleet list.") from None
+    count = _whole_number(cycles, "Cycles")
+    reading: float | None = None
+    text = str(health_pct if health_pct is not None else "").strip().rstrip("%").strip()
+    if text:
+        try:
+            reading = float(text)
+        except ValueError:
+            raise ValueError(f"Health must be a percentage, not {text!r}.") from None
+        if not 0.0 <= reading <= 100.0:
+            raise ValueError(f"Health must be between 0 and 100 % (got {text}).")
+    if count == 0 and reading is None:
+        raise ValueError("Nothing to record: give a number of cycles or a measured health.")
+    with _session() as db:
+        battery = db.get(Battery, number)
+        if battery is None or int(battery.organization_id) != int(organization_id):
+            raise ValueError(f"No battery with id {number} in this fleet.")
+        battery.cycle_count = int(battery.cycle_count or 0) + count
+        if count:
+            battery.last_used_at = _utc_now()
+        if reading is not None:
+            battery.health_pct = reading
+        db.commit()
+        db.refresh(battery)
+        return _battery_row(battery)
 
 
 def add_pilot(organization_id: int, display_name: str, licence_number: str = "",
@@ -168,32 +240,61 @@ def add_pilot(organization_id: int, display_name: str, licence_number: str = "",
         }
 
 
+ASSIGNMENT_KIND = "assignment"
+_ASSIGNMENT_PREFIX = "Assigned to mission: "
+
+
+def _aircraft_id(aircraft_id: Any) -> int:
+    try:
+        return int(aircraft_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{aircraft_id!r} is not an aircraft id; select an aircraft in "
+                         "the fleet list.") from None
+
+
+def _performer(performed_by: Any) -> tuple[int | None, str]:
+    """The user id column holds a user id; a name goes into the description.
+
+    "operator" used to be written into the integer performed_by column, which SQLite
+    stores without complaint and PostgreSQL rejects.
+    """
+    text = str(performed_by or "").strip()
+    return (int(text), "") if text.isdigit() else (None, text)
+
+
 def log_maintenance(aircraft_id: int, kind: str, description: str = "",
-                    performed_by: str = "") -> dict[str, Any]:
+                    performed_by: str = "", *, resets_service_clock: bool = True
+                    ) -> dict[str, Any]:
     """Record maintenance, and reset the aircraft's service clock.
 
     Both halves matter. A maintenance record that does not move hours_at_last_service
     leaves the aircraft permanently overdue, which trains an operator to ignore the
-    warning.
+    warning. A record that is not service (an assignment) must not move it: that would
+    mark an overdue airframe as serviced.
     """
     from services.api.models import Aircraft, Maintenance
 
     if not str(kind).strip():
         raise ValueError("Maintenance needs a kind, so the record can be read later.")
+    user_id, name = _performer(performed_by)
+    detail = str(description).strip()
+    if name:
+        detail = f"{detail} (by {name})" if detail else f"by {name}"
     with _session() as db:
-        aircraft = db.get(Aircraft, int(aircraft_id))
+        aircraft = db.get(Aircraft, _aircraft_id(aircraft_id))
         if aircraft is None:
             raise ValueError(f"No aircraft with id {aircraft_id}.")
         record = Maintenance(
             aircraft_id=aircraft.id,
             kind=str(kind).strip(),
-            description=str(description).strip(),
+            description=detail,
             hours_at_service=float(aircraft.flight_hours or 0.0),
-            performed_by=str(performed_by).strip(),
+            performed_by=user_id,
             performed_at=_utc_now(),
         )
-        aircraft.hours_at_last_service = float(aircraft.flight_hours or 0.0)
-        aircraft.last_service_at = record.performed_at
+        if resets_service_clock:
+            aircraft.hours_at_last_service = float(aircraft.flight_hours or 0.0)
+            aircraft.last_service_at = record.performed_at
         db.add(record)
         db.commit()
         db.refresh(record)
@@ -267,6 +368,15 @@ def list_fleet(organization_id: int) -> dict[str, Any]:
             .order_by(Maintenance.performed_at.desc()).limit(50)
         )) if ids else []
         names = {a.id: a.name for a in aircraft}
+        # The latest assignment per aircraft, so the screen can say what it is flying.
+        assigned: dict[int, str] = {}
+        if ids:
+            for m in db.scalars(select(Maintenance).where(
+                    Maintenance.aircraft_id.in_(ids), Maintenance.kind == ASSIGNMENT_KIND)
+                    .order_by(Maintenance.performed_at.desc(), Maintenance.id.desc())):
+                text = str(m.description or "")
+                if m.aircraft_id not in assigned and text.startswith(_ASSIGNMENT_PREFIX):
+                    assigned[m.aircraft_id] = text[len(_ASSIGNMENT_PREFIX):]
 
         def hours_to_service(a: Any) -> float | None:
             if not a.service_interval_hours:
@@ -287,6 +397,7 @@ def list_fleet(organization_id: int) -> dict[str, Any]:
                 # None means no interval is configured, which is not the same as
                 # "not due" and must not be rendered as a comfortable number.
                 "hours_to_service": hours_to_service(a),
+                "assigned_mission": assigned.get(a.id),
             } for a in aircraft],
             "batteries": [{
                 "id": b.id,
@@ -326,11 +437,113 @@ def assign_mission(aircraft_id: int, mission_name: str) -> dict[str, Any]:
     schema has no assignment concept, and adding one here would put the desktop app and
     the service on different schemas.
     """
-    return log_maintenance(
+    mission = str(mission_name or "").strip()
+    if not mission:
+        raise ValueError("Name the mission the aircraft is assigned to.")
+    record = log_maintenance(
         aircraft_id,
-        kind="assignment",
-        description=f"Assigned to mission: {mission_name}",
+        kind=ASSIGNMENT_KIND,
+        description=f"{_ASSIGNMENT_PREFIX}{mission}",
+        # Assigning an aircraft is not servicing it: the clock that says it is overdue
+        # must keep running.
+        resets_service_clock=False,
     )
+    return {**record, "mission": mission}
+
+
+FLEET_KINDS = ("aircraft", "battery", "pilot")
+
+
+def remove_fleet_record(organization_id: int, kind: str, record_id: Any) -> dict[str, Any]:
+    """Delete one aircraft, battery or pilot from this organisation's register.
+
+    The register could only grow: a mistyped aircraft, a pack that was sold, or rows a
+    test tool once wrote into the user's database stayed on the Fleet screen for good.
+    An aircraft goes with its maintenance log, which describes nothing once the airframe
+    is gone. A record belonging to another organisation is refused, not deleted.
+    """
+    from sqlalchemy import delete, func, select
+
+    from services.api.models import Aircraft, Battery, Maintenance, PilotProfile
+
+    models = {"aircraft": Aircraft, "battery": Battery, "pilot": PilotProfile}
+    wanted = str(kind or "").strip().lower()
+    if wanted not in models:
+        raise ValueError(f"Choose what to remove: {', '.join(FLEET_KINDS)} (got {kind!r}).")
+    try:
+        number = int(record_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"{record_id!r} is not a {wanted} id; select one in the fleet "
+                         "list.") from None
+    with _session() as db:
+        row = db.get(models[wanted], number)
+        if row is None or int(row.organization_id) != int(organization_id):
+            raise ValueError(f"No {wanted} with id {number} in this fleet.")
+        label = (getattr(row, "name", None) or getattr(row, "serial_number", None)
+                 or getattr(row, "display_name", None) or f"#{number}")
+        removed_log = 0
+        if wanted == "aircraft":
+            removed_log = int(db.scalar(select(func.count()).select_from(Maintenance).where(
+                Maintenance.aircraft_id == number)) or 0)
+            db.execute(delete(Maintenance).where(Maintenance.aircraft_id == number))
+        db.delete(row)
+        db.commit()
+        return {"kind": wanted, "id": number, "label": str(label),
+                "removed_maintenance": removed_log}
+
+
+def export_fleet(organization_id: int, directory: str | Path) -> dict[str, Any]:
+    """Write the fleet register as CSV files plus one JSON file, and say where.
+
+    Every maintenance record is written, not the latest fifty the screen shows: an
+    export is what an operator hands to an auditor.
+    """
+    import csv
+    import json
+
+    from sqlalchemy import select
+
+    from services.api.models import Maintenance
+
+    register = list_fleet(organization_id)
+    ids = [a["id"] for a in register["aircraft"]]
+    names = {a["id"]: a["name"] for a in register["aircraft"]}
+    log: list[dict[str, Any]] = []
+    if ids:
+        with _session() as db:
+            log = [{
+                "aircraft_id": m.aircraft_id,
+                "aircraft": names.get(m.aircraft_id, f"#{m.aircraft_id}"),
+                "kind": m.kind,
+                "description": m.description or "",
+                "hours_at_service": round(float(m.hours_at_service or 0.0), 1),
+                "performed_at": str(m.performed_at or ""),
+            } for m in db.scalars(select(Maintenance).where(Maintenance.aircraft_id.in_(ids))
+                                  .order_by(Maintenance.performed_at, Maintenance.id))]
+    register["maintenance"] = log
+    sections = ("aircraft", "batteries", "pilots", "maintenance")
+
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    files: dict[str, str] = {}
+    for key in sections:
+        rows = register[key]
+        path = out / f"{key}.csv"
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            columns = list(rows[0].keys()) if rows else []
+            writer.writerow(columns)
+            writer.writerows([[row[c] for c in columns] for row in rows])
+        files[key] = str(path)
+    summary = out / "fleet.json"
+    summary.write_text(json.dumps({
+        "organization_id": int(organization_id),
+        "exported_at": _utc_now().isoformat(),
+        **{key: register[key] for key in sections},
+    }, indent=2, default=str), encoding="utf-8")
+    files["json"] = str(summary)
+    return {"directory": str(out), "files": files,
+            "counts": {key: len(register[key]) for key in sections}}
 
 
 # ------------------------------------------------------------------- sharing

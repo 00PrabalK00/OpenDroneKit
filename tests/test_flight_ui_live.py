@@ -242,7 +242,7 @@ class TestTheDefaultUiFliesTheAircraft:
         browser.wait_for("!!document.querySelector('[data-confirm=weather]')", 15)
         browser.js("document.querySelector('[data-confirm=weather]').click(); true")
         browser.wait_for("[...document.querySelectorAll('#preflight-list div')]"
-                         ".some((d) => d.innerText.includes('Weather') && d.innerText.includes('pass'))", 15)
+                         ".some((d) => d.innerText.includes('Weather') && d.innerText.includes('confirmed'))", 15)
 
         # Fleet was absent from this UI, and failed on a fresh database.
         browser.js("document.querySelector('.tab[data-tab=fleet]').click(); true")

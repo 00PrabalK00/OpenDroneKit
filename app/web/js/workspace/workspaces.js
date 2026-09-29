@@ -26,7 +26,7 @@ import { emptyState, live, reported } from "./live.js";
 /* The layer panel writes as well as reads: toggling visibility calls the application.
    tryCall returns null rather than throwing, which is what lets the checkbox revert
    instead of showing a state the application never accepted. */
-import { tryCall } from "./api.js";
+import { lastError, tryCall } from "./api.js";
 import { modelMeasurements } from "./viewer3d.js";
 
 /* One audit_log row as a console line.
@@ -775,9 +775,23 @@ const flight = {
         const meta = (c) => (c.confirmed ? "confirmed by you"
           : c.severity === "blocking" ? "blocks start"
             : c.requires_manual ? "check yourself" : c.severity === "warning" ? "warning" : "");
-        return tree(r.checks.map((c, i) => ({
-          id: `c${i}`, label: `${c.name} \u2014 ${c.message}`, icon: icon(c), meta: meta(c),
-        })));
+        // A simulated vehicle's "RTK fix, 14 sats" is the simulator's, and a tick
+        // beside it with nothing saying so reads as a real aircraft's reading.
+        const rows = r.checks.map((c, i) => ({
+          id: `c${i}`, label: `${c.name} \u2014 ${c.message}`, icon: icon(c),
+          meta: r.simulated && !c.confirmed && c.severity === "pass" ? "SIMULATED" : meta(c),
+        }));
+        if (r.simulated) {
+          rows.unshift({ id: "sim", icon: "!", meta: "SIMULATED",
+            label: "SIMULATED vehicle \u2014 these readings come from the simulator, not an aircraft" });
+        }
+        // Start Mission is held to this list; say so at the top rather than leave
+        // the pilot to find out from the button.
+        if (!r.can_start) {
+          rows.unshift({ id: "gate", icon: "\u2717", meta: "Start Mission will ask",
+            label: "Not ready to start" });
+        }
+        return tree(rows);
       },
     }) },
     /* Two missions that do not exist, one of them marked active. */
@@ -1819,18 +1833,35 @@ function profileChart(row) {
 
 /* -------------------------------------------------------------------- FLEET */
 
+/* A Fleet panel whose read FAILED said "No batteries registered" -- an empty fleet
+   stated as fact over a register that could not be read. A failed read now says so,
+   with the reason; only a read that came back empty shows the empty text. */
+function fleetLive(config) {
+  return live({
+    ...config,
+    isEmpty: ([f]) => f != null && config.isEmpty([f]),
+    render: ([f]) => {
+      if (f == null) {
+        throw new Error(`the fleet register (${lastError.get("list_fleet") || "no answer"})`);
+      }
+      return config.render([f]);
+    },
+  });
+}
+
 const fleet = {
   id: "fleet",
   title: "Fleet",
-  toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance", "Export"],
+  toolbar: ["Add Aircraft", "Add Battery", "Add Pilot", "|", "Assign Mission", "Log Maintenance",
+            "Log Battery Cycle", "Remove Record", "|", "Export Fleet"],
   left: [
     /* Four aircraft that do not exist, one of them "flying". */
-    { id: "fl.aircraft", title: "Aircraft", render: () => live({
+    { id: "fl.aircraft", title: "Aircraft", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No aircraft registered. Add Aircraft to start a fleet.",
       isEmpty: ([f]) => !(f && (f.aircraft || []).length),
       render: ([f]) => tree((f.aircraft || []).map((a) => ({
-        id: `a${a.id}`, label: a.name, icon: "\u25b2",
+        id: `a${a.id}`, fleetId: a.id, label: a.name, icon: "\u25b2",
         /* Hours remaining until service, because that is the number that decides
            whether this airframe flies today. null means no interval is configured,
            which is not the same as "not due". */
@@ -1840,12 +1871,12 @@ const fleet = {
       })), { selectKind: "aircraft" }),
     }) },
     /* Two named people who do not work here, with flight hours. */
-    { id: "fl.pilots", title: "Pilots", render: () => live({
+    { id: "fl.pilots", title: "Pilots", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No pilots registered.",
       isEmpty: ([f]) => !(f && (f.pilots || []).length),
       render: ([f]) => tree((f.pilots || []).map((p) => ({
-        id: `p${p.id}`, label: p.display_name || "(unnamed)", icon: "\u25c9",
+        id: `p${p.id}`, fleetId: p.id, label: p.display_name || "(unnamed)", icon: "\u25c9",
         meta: `${p.flight_hours} h`,
       })), { selectKind: "pilot" }),
     }) },
@@ -1854,7 +1885,7 @@ const fleet = {
   right: [
     /* A serial number, a firmware version and a service interval for an airframe
        that does not exist. "Next service in 7.4 h" is an airworthiness statement. */
-    { id: "fl.details", title: "Aircraft Details", render: () => live({
+    { id: "fl.details", title: "Aircraft Details", render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "Select an aircraft to see its serial, firmware, hours and service state.",
       isEmpty: ([f]) => !(f && (f.aircraft || []).length),
@@ -1871,6 +1902,7 @@ const fleet = {
             ["Firmware", a.firmware],
             ["Flight hours", a.flight_hours],
             ["Flights", a.flight_count || undefined],
+            ["Assigned mission", a.assigned_mission || undefined],
           ]),
           { label: "Next service", value: due === null
             ? chip("no interval set", "warn")
@@ -1886,7 +1918,7 @@ const fleet = {
        a link the desktop app does not have -- so the columns are the ones the record
        really holds. Inventing a temperature for a lithium pack is not a neutral
        placeholder. */
-    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => live({
+    { id: "fl.batteries", title: "Batteries", flex: 3, render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No batteries registered. Add Battery to track cycles and health.",
       isEmpty: ([f]) => !(f && (f.batteries || []).length),
@@ -1895,6 +1927,8 @@ const fleet = {
          { title: "Limit", key: "l", num: true }, { title: "Health", key: "h", num: true },
          { title: "State", key: "st" }],
         (f.batteries || []).map((b) => ({
+          fleetId: b.id,
+          label: b.serial_number || `#${b.id}`,
           s: b.serial_number || `#${b.id}`,
           n: b.cycle_count,
           l: b.cycle_limit || "\u2014",
@@ -1906,7 +1940,7 @@ const fleet = {
     }) },
     /* Two maintenance records for aircraft that do not exist. A maintenance log is
        the document an operator points at to say the airframe was airworthy. */
-    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => live({
+    { id: "fl.maint", title: "Maintenance", flex: 2, render: () => fleetLive({
       calls: ["list_fleet"],
       empty: "No maintenance recorded. Log Maintenance writes a record and resets the "
              + "aircraft's service clock.",

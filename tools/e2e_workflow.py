@@ -66,7 +66,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reconstruct", action="store_true",
                         help="Include COLMAP. Minutes, not seconds, and memory-hungry.")
     parser.add_argument("--images", default="training/data/aukerman_subset")
+    parser.add_argument("--into-my-data", action="store_true",
+                        help="Write the E2E project, aircraft and battery into your real "
+                             "application data instead of a throwaway folder.")
     args = parser.parse_args(argv)
+
+    # Every run used to add an "E2E aircraft", a battery and a maintenance record to the
+    # user's own fleet database, and an E2E project to their project list, so the Fleet
+    # screen of a real install filled up with test rows. A run is isolated unless asked.
+    workspace = REPO_ROOT / "demo_project" / "e2e"
+    if not args.into_my_data:
+        import os
+        import tempfile
+
+        scratch = Path(tempfile.mkdtemp(prefix="odk_e2e_"))
+        (scratch / "hub").mkdir(parents=True, exist_ok=True)
+        os.environ["ODK_DATA_DIR"] = str(scratch / "data")
+        os.environ["ODK_HUB_HOME"] = str(scratch / "hub")
+        os.environ["ODK_DATABASE_URL"] = f"sqlite:///{(scratch / 'hub' / 'e2e.db').as_posix()}"
+        workspace = scratch / "project"
+        print(f"E2E data is written under {scratch} (pass --into-my-data to use your own).")
 
     from app.api import Api
     from app.session import AppSession
@@ -77,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     # -- project and data ----------------------------------------------------
     step("capabilities", lambda: api.capabilities())
     project = step("create project", lambda: api.create_project(
-        f"E2E {time.strftime('%H%M%S')}", str(REPO_ROOT / "demo_project" / "e2e")))
+        f"E2E {time.strftime('%H%M%S')}", str(workspace)))
     if project and project.get("ok"):
         # The id is nested under project=, which is the same shape the UI got wrong.
         step("set active project", lambda: api.set_active_project(

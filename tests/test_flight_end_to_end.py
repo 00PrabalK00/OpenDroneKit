@@ -273,6 +273,9 @@ class TestCommandsReportTheVehiclesAnswer:
         plan(api)
         assert api.upload_mission()["ok"]
         vehicle.accept_modes = True
+        # Start is held to the checklist: confirm the manual checks, as a pilot would.
+        pending = api.run_preflight()["pending_confirmation"]
+        assert api.run_preflight(acknowledged=pending)["can_start"] is True
         result = api.vehicle_command("start")
         assert result["ok"] is True
         # The fake arms and enters AUTO on MISSION_START; the session follows the
