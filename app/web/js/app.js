@@ -1174,7 +1174,12 @@
     const c = result.capabilities;
     const html = kv([
       ['pycolmap', flag(c.pycolmap)],
-      ['CUDA (COLMAP)', flag(c.pycolmap_cuda)],
+      ['CUDA (pycolmap)', flag(c.pycolmap_cuda)],
+      // Dense MVS runs through the native binary when the pycolmap wheel has no CUDA,
+      // so which binary was probed is part of the answer.
+      ['COLMAP binary', c.colmap_binary
+        ? String(c.colmap_binary).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]))
+        : 'not found'],
       // The reason matters as much as the flag: a CUDA build that cannot run on this
       // GPU used to read "yes" here and then fail every dense run.
       ['Dense MVS', flag(c.dense_stereo) + (c.dense_stereo_reason

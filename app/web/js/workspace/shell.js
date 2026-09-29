@@ -832,8 +832,11 @@ export class Shell {
         await this.runAction(payload.mode === "area" ? "Area" : "Distance");
         return;
       case "tools.capabilities": {
-        const caps = await call("capabilities");
-        const lines = Object.entries(caps || {})
+        const result = await call("capabilities");
+        /* The payload is {ok, capabilities: {...}}; listing the envelope printed one
+           line of JSON with the dense-stereo reason buried in it. One key per line. */
+        const caps = (result && result.capabilities) || result || {};
+        const lines = Object.entries(caps)
           .filter(([key]) => key !== "ok")
           .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`);
         await reveal("Environment capabilities", lines.join("\n") || "Nothing reported.");

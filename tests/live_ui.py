@@ -157,7 +157,8 @@ def _free_port() -> int:
 class LiveUI:
     """The workspace page, served against `api`, open in headless Chromium."""
 
-    def __init__(self, api: Any, workspace: str) -> None:
+    def __init__(self, api: Any, workspace: str, page: str = "workspace.html",
+                 ready: str = "!!document.querySelector('button.tbtn')") -> None:
         import requests
         import websocket
 
@@ -184,7 +185,7 @@ class LiveUI:
         self.socket = websocket.create_connection(
             pages[0]["webSocketDebuggerUrl"], timeout=1800, suppress_origin=True)
         self.counter = 0
-        url = f"http://127.0.0.1:{self.server.server_port}/workspace.html"
+        url = f"http://127.0.0.1:{self.server.server_port}/{page}"
         self._send("Page.navigate", url=url)
         self.js(f"(async () => {{ await new Promise((r) => setTimeout(r, 1500)); "
                 f"localStorage.setItem('odk.workspace.last', '{workspace}'); return true; }})()")
@@ -192,8 +193,7 @@ class LiveUI:
         deadline = time.time() + 60
         while time.time() < deadline:
             try:
-                if self.js("document.readyState === 'complete' && "
-                           "!!document.querySelector('button.tbtn')"):
+                if self.js(f"document.readyState === 'complete' && ({ready})"):
                     break
             except RuntimeError:
                 pass
