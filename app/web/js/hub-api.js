@@ -64,12 +64,31 @@
       return body;
     }
 
+    // Sign-in returns a session token; the caller keeps it in this instance only.
+    async login(email, password) {
+      const body = await this.request('POST', '/auth/login', { email, password });
+      this.token = body.access_token;
+      return body;
+    }
+    async register(email, password, organizationName) {
+      const body = await this.request('POST', '/auth/register', {
+        email, password, organization_name: organizationName || ''
+      });
+      this.token = body.access_token;
+      return body;
+    }
+    me() { return this.request('GET', '/auth/me'); }
+    listOrganizations() { return this.request('GET', '/organizations'); }
     listProjects(orgId) { return this.request('GET', `/organizations/${orgId}/projects`); }
     createProject(orgId, project) { return this.request('POST', `/organizations/${orgId}/projects`, project); }
     getProject(projectId) { return this.request('GET', `/projects/${projectId}`); }
     listAssets(orgId) { return this.request('GET', `/organizations/${orgId}/assets`); }
     createAsset(orgId, asset) { return this.request('POST', `/organizations/${orgId}/assets`, asset); }
     listJobs(projectId) { return this.request('GET', `/projects/${projectId}/jobs`); }
+    submitJob(projectId, job) { return this.request('POST', `/projects/${projectId}/jobs`, job); }
+    getJob(jobId) { return this.request('GET', `/jobs/${jobId}`); }
+    listAiJobs(projectId) { return this.request('GET', `/projects/${projectId}/ai-jobs`); }
+    createAiJob(projectId, job) { return this.request('POST', `/projects/${projectId}/ai-jobs`, job); }
     listMissions(projectId) { return this.request('GET', `/projects/${projectId}/missions`); }
     getMissionPlan(missionId) { return this.request('GET', `/missions/${missionId}/plan`); }
     getMissionSimulation(missionId) { return this.request('GET', `/missions/${missionId}/simulation`); }

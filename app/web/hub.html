@@ -25,6 +25,13 @@
       <button id="hub-connect">Connect</button>
       <span id="hub-connection-state" class="badge muted">not connected</span>
     </div>
+    <form id="hub-login-form" class="login-fields" autocomplete="on">
+      <label>Email <input id="hub-email" type="email" autocomplete="username" required /></label>
+      <label>Password <input id="hub-password" type="password" autocomplete="current-password" minlength="8" required /></label>
+      <label>New organization <input id="hub-new-org" placeholder="for a new account" /></label>
+      <button id="hub-sign-in" type="submit">Sign in</button>
+      <button id="hub-sign-up" type="button">Create account</button>
+    </form>
   </header>
   <div class="hub-shell">
     <nav class="hub-nav" aria-label="Hub sections">

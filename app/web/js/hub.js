@@ -90,6 +90,34 @@
     }, 0);
   }
 
+  // Email/password sign-in against the API's own /auth routes, so a user never has to
+  // fetch a token by hand. The token lives in the Token field for this page only.
+  async function signIn(event, create) {
+    if (event) event.preventDefault();
+    const email = $('#hub-email').value.trim();
+    const password = $('#hub-password').value;
+    try {
+      if (!email || password.length < 8) throw new Error('Enter an email and a password of at least 8 characters.');
+      const api = new ODKHubApi.HubApi($('#hub-api-url').value, '');
+      if (create) await api.register(email, password, $('#hub-new-org').value.trim());
+      else await api.login(email, password);
+      $('#hub-token').value = api.token;
+      $('#hub-password').value = '';
+      const orgs = await api.listOrganizations();
+      const wanted = Number($('#hub-org-id').value);
+      if (!orgs.some((org) => org.id === wanted)) {
+        if (!orgs.length) throw new Error('Signed in, but this account belongs to no organization yet. Create an account with a new organization name, or ask an admin to add you.');
+        $('#hub-org-id').value = String(orgs[0].id);
+      }
+      status(`${create ? 'Account created' : 'Signed in'} as ${email}.`, 'success');
+      await connect();
+    } catch (error) {
+      const chip = $('#hub-connection-state');
+      chip.textContent = 'not connected'; chip.classList.add('muted');
+      status(`${create ? 'Sign-up' : 'Sign-in'} failed: ${error.message}`, 'error');
+    }
+  }
+
   async function connect() {
     try {
       state.orgId = Number($('#hub-org-id').value);
@@ -716,6 +744,8 @@
   function wire() {
     $$('.hub-nav button').forEach((button) => { button.onclick = () => switchPanel(button.dataset.panel); });
     $('#hub-connect').onclick = connect;
+    $('#hub-login-form').onsubmit = (event) => signIn(event, false);
+    $('#hub-sign-up').onclick = (event) => signIn(event, true);
     $('#refresh-projects').onclick = loadProjects;
     $('#refresh-assets').onclick = loadAssets;
     $('#project-form').onsubmit = createProject;
