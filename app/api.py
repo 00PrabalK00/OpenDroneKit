@@ -4228,6 +4228,165 @@ class Api:
         removed = delete_measurement(self._session.project_root(), str(measurement_id))
         return ok(removed=True) if removed else fail(f"No measurement {measurement_id}.")
 
+    def _dataset_image(self, name: str) -> tuple[Path | None, str]:
+        """A photograph in the active dataset, contained the way image_preview checks it."""
+        folder = self._session.active_dataset_dir
+        if not folder:
+            return None, "Select a dataset first."
+        root = Path(folder).resolve()
+        target = (root / str(name)).resolve()
+        if root not in target.parents:
+            return None, "That image is outside the active dataset."
+        if not target.is_file():
+            return None, f"No such image in the dataset: {name}"
+        return target, ""
+
+    @staticmethod
+    def _image_scale(scale_mm_per_px: Any, reference_pixels: Any,
+                     reference_length_mm: Any) -> tuple[float | None, dict[str, Any], str]:
+        """The photograph's scale, either typed or taken from a reference of known length.
+
+        A photograph has no scale of its own. It is the operator's: a number they know
+        (a calibrated camera at a known stand-off) or a feature of known size clicked on
+        the same photograph. Neither is guessed here.
+        """
+        import math
+
+        caveat = ("A single scale is only right in the plane of the reference and at its "
+                  "distance from the camera; parts of the photograph nearer or farther, "
+                  "or seen obliquely, are mis-scaled by the perspective.")
+        if reference_pixels:
+            points = [[float(v) for v in list(p)[:2]] for p in list(reference_pixels)[:2]]
+            try:
+                known = float(reference_length_mm)
+            except (TypeError, ValueError):
+                known = float("nan")
+            if len(points) != 2 or any(len(p) != 2 for p in points) or not (known > 0) \
+                    or math.isinf(known):
+                return None, {}, ("A reference needs two points on the photograph and its "
+                                  "real length in millimetres.")
+            span = math.dist(points[0], points[1])
+            if span < 2.0:
+                return None, {}, "The two reference points are the same pixel; click both ends."
+            scale = known / span
+            return scale, {"scale_source": "reference", "reference_pixels": points,
+                           "reference_length_mm": known, "reference_span_px": span,
+                           "scale_mm_per_px": scale, "caveat": caveat}, ""
+        try:
+            scale = float(scale_mm_per_px)
+        except (TypeError, ValueError):
+            scale = float("nan")
+        if not (scale > 0) or math.isinf(scale):
+            return None, {}, ("A photograph has no scale of its own: give millimetres per "
+                              "pixel, or click a reference of known length.")
+        return scale, {"scale_source": "entered", "scale_mm_per_px": scale,
+                       "caveat": caveat}, ""
+
+    @guard
+    def measure_on_image(self, kind: str, image_name: str, pixels: list[list[float]],
+                         scale_mm_per_px: Any = None, reference_pixels: Any = None,
+                         reference_length_mm: Any = None, label: str = "") -> dict[str, Any]:
+        """A distance or area on one photograph of the dataset, kept in the history.
+
+        ``pixels`` are in the source frame's pixels (the cockpit maps a click through the
+        downscaled preview). The scale is the operator's: typed, or from a reference of
+        known length on the same photograph -- and the record says which.
+        """
+        from PIL import Image
+
+        from core.measurements import measure_image_distance, measure_polygon_area
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        kind = str(kind or "").lower()
+        if kind not in ("distance", "area"):
+            return fail(f"Photographs are measured by distance or area, not {kind!r}.")
+        target, why = self._dataset_image(image_name)
+        if target is None:
+            return fail(why)
+        with Image.open(target) as image:
+            width, height = image.size
+        points = [[float(v) for v in list(p)[:2]] for p in (pixels or [])]
+        if any(len(p) != 2 for p in points):
+            return fail("Each point is [x, y] in the photograph's pixels.")
+        need = 2 if kind == "distance" else 3
+        if len(points) < need:
+            return fail(f"A {kind} on a photograph needs at least {need} points.")
+        if kind == "distance":
+            points = points[:2]
+        outside = [p for p in points if not (0 <= p[0] <= width and 0 <= p[1] <= height)]
+        if outside:
+            return fail(f"A point lies outside the {width}x{height} photograph: {outside[0]}.")
+        scale, details, why = self._image_scale(scale_mm_per_px, reference_pixels,
+                                                reference_length_mm)
+        if scale is None:
+            return fail(why)
+        details.update({"image": str(target), "image_width": width, "image_height": height})
+        common = dict(project_root=Path(root), project_id=str(self._session.project_id()),
+                      source_id=str(target), scale_mm_per_px=scale, label=str(label or ""),
+                      details=details)
+        if kind == "distance":
+            m = measure_image_distance(p1=tuple(points[0]), p2=tuple(points[1]), **common)
+        else:
+            m = measure_polygon_area(vertices=[tuple(p) for p in points], **common)
+        self._session.audit("image_measured", {"kind": kind, "image": str(target)})
+        return ok(measurement=m.to_dict(), measurement_id=m.id, value=m.value, unit=m.unit,
+                  scale_mm_per_px=scale, scale_source=details["scale_source"],
+                  caveat=details["caveat"])
+
+    @guard
+    def measure_crack_on_image(self, image_name: str, mask_path: str,
+                               scale_mm_per_px: Any = None, reference_pixels: Any = None,
+                               reference_length_mm: Any = None,
+                               label: str = "") -> dict[str, Any]:
+        """Crack length from a binary crack mask drawn over one dataset photograph.
+
+        The mask is skeletonised to its centre line and the line's pixels are scaled.
+        A mask that is not the photograph's size is refused rather than stretched onto it.
+        """
+        import cv2
+        from PIL import Image
+
+        from core.measurements import measure_crack_length
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        target, why = self._dataset_image(image_name)
+        if target is None:
+            return fail(why)
+        mask_file = Path(str(mask_path or ""))
+        if not mask_file.is_file():
+            return fail(f"No crack mask at {mask_path!r}.")
+        mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return fail(f"Could not read {mask_file.name} as an image mask.")
+        with Image.open(target) as image:
+            width, height = image.size
+        if (mask.shape[1], mask.shape[0]) != (width, height):
+            return fail(f"The mask is {mask.shape[1]}x{mask.shape[0]} but {target.name} is "
+                        f"{width}x{height}; a crack mask must be drawn on the photograph "
+                        "it measures.")
+        if not (mask > 0).any():
+            return fail(f"{mask_file.name} marks no crack pixels.")
+        scale, details, why = self._image_scale(scale_mm_per_px, reference_pixels,
+                                                reference_length_mm)
+        if scale is None:
+            return fail(why)
+        details.update({"image": str(target), "mask": str(mask_file),
+                        "image_width": width, "image_height": height,
+                        "method": "skeleton (scikit-image) centre-line pixel count"})
+        try:
+            m = measure_crack_length(Path(root), str(self._session.project_id()), str(target),
+                                     mask, scale, label=str(label or ""), details=details)
+        except RuntimeError as exc:
+            return fail(str(exc))
+        self._session.audit("crack_measured", {"image": str(target), "mask": str(mask_file)})
+        return ok(measurement=m.to_dict(), measurement_id=m.id, value=m.value, unit=m.unit,
+                  scale_mm_per_px=scale, scale_source=details["scale_source"],
+                  caveat=details["caveat"])
+
     @guard
     def compare_survey_volumes(self, earlier_path: str, later_path: str,
                                polygon_lonlat: list[list[float]] | None = None,

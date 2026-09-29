@@ -1390,6 +1390,16 @@ INSPECTION = [
                       "tests/test_raster_measurement.py::TestRefusals",
                       "tests/test_raster_measurement.py::TestHonestReporting"],
       "core/raster_measurement.py; Api.measure_on_raster."),
+    F("me.photo", "Measuring on a photograph", "hub", "Measurement",
+      "Distance, area and crack length (from a crack mask) on a dataset photograph, "
+      "clicked on the photograph in the cockpit, scaled by an operator-given mm/px or a "
+      "reference of known length on the same photograph, never by an assumed scale, and "
+      "kept in the project's measurement history with the scale and its perspective "
+      "caveat.",
+      "implemented", ["tests/test_photo_measurements.py"],
+      "core/measurements.py (measure_image_distance, measure_polygon_area, "
+      "measure_crack_length); Api.measure_on_image, Api.measure_crack_on_image; cockpit "
+      "Measurements: Photo Distance, Photo Area, Crack Length."),
     F("me.3d", "3D measurements", "hub", "Measurement",
       "Length, height, area and volume inside the 3D model, exact on a mesh of known "
       "size, with the horizontal and vertical parts of a run reported separately, "

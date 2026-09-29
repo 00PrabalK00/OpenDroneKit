@@ -1748,7 +1748,8 @@ const measurements = {
   id: "measurements",
   title: "Measurements",
   toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
-            "Ponding", "Measure in 3D", "|", "Compare Dates", "Survey Packs", "Export"],
+            "Ponding", "Measure in 3D", "Photo Distance", "Photo Area", "Crack Length", "|",
+            "Compare Dates", "Survey Packs", "Export"],
   left: [
     { id: "ms.tools", title: "Tools", render: () => reference(tree([
       { id: "t1", label: "Distance", icon: "↔", action: "Distance" },
@@ -1759,6 +1760,9 @@ const measurements = {
       { id: "t6", label: "Slope", icon: "◺", action: "Slope" },
       { id: "t7", label: "Profile line", icon: "∿", action: "Profile" },
       { id: "t8", label: "Ponding", icon: "≈", action: "Ponding" },
+      { id: "t9", label: "Distance on a photo", icon: "↔", action: "Photo Distance" },
+      { id: "t10", label: "Area on a photo", icon: "▭", action: "Photo Area" },
+      { id: "t11", label: "Crack length on a photo", icon: "≀", action: "Crack Length" },
     ], { selectKind: "tool" })) },
     /* Measurement works on rasters -- orthomosaic, DSM, DTM -- so this filters rather
        than listing every layer in the project. */

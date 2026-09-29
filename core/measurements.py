@@ -268,6 +268,7 @@ def measure_image_distance(
     p2: tuple[int, int],
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_pixel_distance(p1, p2, scale_mm_per_px)
     return create_measurement(
@@ -280,6 +281,7 @@ def measure_image_distance(
         value=value,
         unit="m",
         label=label or f"Distance {round(value, 3)} m",
+        details=details,
     )
 
 
@@ -290,6 +292,7 @@ def measure_polygon_area(
     vertices: list[tuple[int, int]],
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_polygon_area_px(vertices, scale_mm_per_px)
     return create_measurement(
@@ -302,6 +305,7 @@ def measure_polygon_area(
         value=value,
         unit="m2",
         label=label or f"Area {round(value, 4)} m²",
+        details=details,
     )
 
 
@@ -312,6 +316,7 @@ def measure_crack_length(
     mask: "np.ndarray",
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_crack_length_from_mask(mask, scale_mm_per_px)
     return create_measurement(
@@ -324,4 +329,5 @@ def measure_crack_length(
         value=value,
         unit="m",
         label=label or f"Crack length {round(value, 4)} m",
+        details=details,
     )
