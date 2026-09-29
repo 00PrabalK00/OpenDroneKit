@@ -182,12 +182,20 @@ class TestTheUiGuideMatchesTheUi:
             assert title in source
             assert title in guide, f"{title} is a workspace but is undocumented"
 
-    def test_it_says_the_data_is_not_measured(self) -> None:
-        # The shell says so permanently; the guide must not imply otherwise.
-        assert "sample data" in read("UI_GUIDE.md")
+    def test_it_says_when_what_is_on_screen_is_not_measured(self) -> None:
+        # These used to require "sample data" and "not wired" -- pinning a section that
+        # said the status bar read "sample data" permanently and that no toolbar action
+        # reached the API, long after both had stopped being true. What must hold is that
+        # the guide says when the screen is showing the bundled sample and that it says so
+        # with a banner; test_the_guide_describes_the_frame checks that against the page.
+        guide = read("UI_GUIDE.md")
+        assert "structural sample" in guide and "banner" in guide and "?demo=1" in guide
+        assert "sample data" not in guide
 
-    def test_it_admits_the_toolbar_is_not_wired(self) -> None:
-        assert "not wired" in read("UI_GUIDE.md")
+    def test_it_says_what_the_toolbar_actually_does(self) -> None:
+        guide = read("UI_GUIDE.md")
+        assert "Toolbar actions call the `Api`" in guide
+        assert "not wired" not in guide
 
 
 class TestTheGuidesCarryTheProjectsRule:
