@@ -5331,9 +5331,17 @@ class Api:
         payload["pending_confirmation"] = [
             c["id"] for c in payload["checks"] if c.get("requires_manual") and not c.get("confirmed")
         ]
-        self._session.audit("preflight_run", {
-            "can_start": payload["can_start"], "blocking": payload["blocking_count"],
-        })
+        # The cockpit's checklist re-runs this every 5 s; one audit row per refresh
+        # buried every other entry. A run is recorded when the operator confirms
+        # something or the outcome changes.
+        outcome = (payload["can_start"], payload["blocking_count"],
+                   tuple(payload["pending_confirmation"]))
+        if acknowledged or outcome != getattr(self._session, "_last_preflight_audit", None):
+            self._session._last_preflight_audit = outcome
+            self._session.audit("preflight_run", {
+                "can_start": payload["can_start"], "blocking": payload["blocking_count"],
+                "confirmed": sorted(confirmed & known),
+            })
         return ok(**payload)
 
     # -- datasets and processing ----------------------------------------

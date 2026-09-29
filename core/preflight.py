@@ -270,6 +270,13 @@ def check_mission_valid(mission_summary: dict[str, Any] | None) -> CheckResult:
 
 def check_mission_uploaded(uploaded: bool, drone_connected: bool) -> CheckResult:
     if not drone_connected:
+        if uploaded:
+            # Said "upload pending" for a mission the vehicle had already accepted,
+            # which is wrong either way: nothing can say what it holds now.
+            return CheckResult("mission_uploaded", "Mission Uploaded", SEVERITY_WARN,
+                               "Uploaded earlier, but the aircraft cannot be reached to "
+                               "confirm it still holds this mission.",
+                               fix_action="Restore the link; upload again if it rebooted.")
         return CheckResult("mission_uploaded", "Mission Uploaded", SEVERITY_WARN,
                            "Drone not connected — upload pending.",
                            fix_action="Connect drone, then upload mission.")
@@ -349,9 +356,18 @@ def check_weather_acknowledged(acknowledged: bool = False) -> CheckResult:
 
 
 def check_obstacle_avoidance(profile: DroneProfile) -> CheckResult:
+    """What the drone profile declares -- nothing reads avoidance state off the aircraft.
+
+    A declared "medium" used to pass as "medium OA enabled.", a tick for a sensor
+    nobody queried. The declaration is shown as one, for the operator to confirm.
+    """
     mode = (profile.obstacle_avoidance or "off").lower()
     if mode in ("medium", "high"):
-        return CheckResult("obstacle_avoidance", "Obstacle Avoidance", SEVERITY_PASS, f"{mode} OA enabled.")
+        return CheckResult("obstacle_avoidance", "Obstacle Avoidance", SEVERITY_WARN,
+                           f"The drone profile '{profile.name}' declares {mode} obstacle "
+                           "avoidance; the aircraft does not report whether it is on.",
+                           fix_action="Confirm avoidance is enabled on the aircraft.",
+                           requires_manual=True)
     if mode == "low":
         return CheckResult("obstacle_avoidance", "Obstacle Avoidance", SEVERITY_WARN,
                            "Low OA — verify clear flight path.",

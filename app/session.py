@@ -165,6 +165,7 @@ class AppSession:
         self.mission_plan = None
         self.mission_plan_dict = {}
         self.mission_uploaded = False
+        self.preflight_acknowledged = set()
         self.layers.clear()
         self.active_dataset_dir = ""
         # The drawn area and no-fly zones are held in memory, not per project, so they
@@ -512,6 +513,8 @@ class AppSession:
         self._drone_client = None
         self.vehicle = VehicleLink()
         self.mission_uploaded = False
+        # "Camera checked by eye" was about the aircraft that was on the link.
+        self.preflight_acknowledged = set()
 
     def _record_telemetry(self, data: Any) -> None:
         """Append one sample to this connection's flight log, if it is new and live.
