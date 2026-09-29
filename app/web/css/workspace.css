@@ -74,8 +74,8 @@ button, input, select, textarea { font-family: inherit; font-size: inherit; colo
   white-space: nowrap;
 }
 .topnav .brand .mark {
-  width: 14px; height: 14px; border-radius: 2px;
-  background: linear-gradient(135deg, var(--accent), #22d3ee);
+  width: 17px; height: 16px; flex: none;
+  background: url("../assets/brand/derived/mark-on-dark-64.png") center / contain no-repeat;
 }
 
 .nav-items { display: flex; align-items: stretch; overflow-x: auto; scrollbar-width: none; }
