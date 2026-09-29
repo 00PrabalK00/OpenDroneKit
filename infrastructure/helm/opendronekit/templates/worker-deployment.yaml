@@ -20,7 +20,10 @@ spec:
         - name: worker
           image: "{{ .Values.worker.repository }}:{{ .Values.worker.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "services.worker.tasks"]
           env:
+            - name: ODK_BROKER_URL
+              value: {{ .Values.worker.brokerUrl | quote }}
             - name: ODK_DATABASE_URL
               value: "postgresql+psycopg://{{ .Values.postgis.user }}:$(POSTGRES_PASSWORD)@{{ include "odk.fullname" . }}-postgis:5432/{{ .Values.postgis.database }}"
             - name: POSTGRES_PASSWORD

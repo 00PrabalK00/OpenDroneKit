@@ -1,8 +1,9 @@
 """Measurements, report snapshots and AI inference-job resources.
 
-These endpoints persist real request and project data. They do not claim that an AI
-worker ran: a submitted AI job remains ``pending_worker`` until an inference worker
-claims it. Likewise, a measurement is accepted only with geometry, CRS, source and
+These endpoints persist real request and project data. An AI job is refused up front
+unless the named model is installed and can answer the task; it then stays
+``pending_worker`` until an inference worker (services/api/ai_jobs.py) claims it, and
+no result is claimed before the worker records one. Likewise, a measurement is accepted only with geometry, CRS, source and
 method; a bare number cannot enter the API looking like a survey measurement.
 """
 
@@ -15,13 +16,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..audit import record
 from ..db import dumps_geometry, get_db, loads_geometry
 from ..models import Dataset, Defect, Job, Measurement, Project, Report, Role, utcnow
 from ..security import CurrentUser, require_project_role
+from .events import emit
 
 router = APIRouter(tags=["resources"])
 
@@ -208,19 +210,16 @@ def list_reports(
     return [_report_out(row) for row in rows]
 
 
-@router.post("/projects/{project_id}/reports", response_model=ReportOut, status_code=201)
-def create_report(
-    project_id: int, request: ReportCreate,
-    user: CurrentUser, db: Annotated[Session, Depends(get_db)],
-) -> ReportOut:
-    project = _project_or_404(db, project_id)
-    require_project_role(db, user, project, Role.inspector)
-    all_defects = list(db.scalars(select(Defect).where(Defect.project_id == project_id)))
-    defects = all_defects if request.include_unreviewed else [
+def build_report_payload(
+    db: Session, project: Project, *, include_unreviewed: bool = False,
+) -> dict[str, Any]:
+    """The structured report snapshot, shared by the report endpoint and report jobs."""
+    all_defects = list(db.scalars(select(Defect).where(Defect.project_id == project.id)))
+    defects = all_defects if include_unreviewed else [
         row for row in all_defects if row.review_state == "accepted"
     ]
     measurements = list(
-        db.scalars(select(Measurement).where(Measurement.project_id == project_id))
+        db.scalars(select(Measurement).where(Measurement.project_id == project.id))
     )
     payload = {
         "project": {"id": project.id, "name": project.name, "client": project.client},
@@ -233,7 +232,8 @@ def create_report(
             {
                 "id": row.id, "category": row.category, "severity": row.severity,
                 "review_state": row.review_state, "source": row.source,
-                "confidence": row.confidence,
+                "confidence": row.confidence, "area_m2": row.area_m2,
+                "length_m": row.length_m,
             } for row in defects
         ],
         "measurements": [
@@ -243,8 +243,28 @@ def create_report(
                 "method": row.method,
             } for row in measurements
         ],
-        "include_unreviewed": request.include_unreviewed,
+        "include_unreviewed": include_unreviewed,
+        "excluded_not_accepted_count": len(all_defects) - len(defects),
     }
+    excluded = payload["excluded_not_accepted_count"]
+    if excluded:
+        # Stated so an empty findings list is never read as "nothing was found".
+        payload["findings_note"] = (
+            f"{excluded} defect(s) without an accepted review (unreviewed, rejected or "
+            "reclassified) were excluded. "
+            "Review them, or request the report with include_unreviewed=true."
+        )
+    return payload
+
+
+@router.post("/projects/{project_id}/reports", response_model=ReportOut, status_code=201)
+def create_report(
+    project_id: int, request: ReportCreate,
+    user: CurrentUser, db: Annotated[Session, Depends(get_db)],
+) -> ReportOut:
+    project = _project_or_404(db, project_id)
+    require_project_role(db, user, project, Role.inspector)
+    payload = build_report_payload(db, project, include_unreviewed=request.include_unreviewed)
     row = Report(
         project_id=project_id, title=request.title.strip(), format="structured_json",
         status="complete", payload_json=json.dumps(payload), created_by=user.id,
@@ -255,7 +275,12 @@ def create_report(
            organization_id=project.organization_id, resource=f"report:{row.id}",
            detail={"title": row.title, "format": row.format})
     db.commit()
-    return _report_out(row)
+    out = _report_out(row)
+    emit(project.organization_id, "report.generated", {
+        "report_id": out.id, "project_id": out.project_id, "title": out.title,
+        "format": out.format, "status": out.status,
+    })
+    return out
 
 
 @router.get("/reports/{report_id}", response_model=ReportOut)
@@ -273,6 +298,8 @@ def get_report(
 class AIJobCreate(BaseModel):
     task: str
     model_key: str = Field(min_length=1, max_length=120)
+    # "dataset:<id>" for every image in a dataset, "dataset:<id>/frame:<file>" for one,
+    # or a file name (or "*") together with dataset_id.
     input_ref: str = Field(min_length=1, max_length=1000)
     dataset_id: int | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
@@ -287,27 +314,54 @@ class AIJobOut(BaseModel):
     input_ref: str
     parameters: dict[str, Any]
     status: str
+    percent: int
+    message: str
+    error: str
+    artifacts: list[str]
+    result: dict[str, Any] | None
     created_at: datetime
+    started_at: datetime | None
     finished_at: datetime | None
     note: str
 
 
 def _ai_job_out(row: Job) -> AIJobOut:
+    from ..ai_jobs import read_results
+
     try:
         options = json.loads(row.options_json or "{}")
     except json.JSONDecodeError:
         options = {}
+    try:
+        artifacts = json.loads(row.artifacts_json or "[]")
+    except json.JSONDecodeError:
+        artifacts = []
+    result = read_results(row)
+    if result is not None:
+        note = ("Model output from the named model, recorded unreviewed. Download "
+                "results.json from artifacts for per-image detail.")
+    elif row.status in {"pending_worker", "running", "cancelling"}:
+        note = "No result yet. None is claimed until the worker records a terminal status."
+    else:
+        note = "No result was produced; see error and message."
     return AIJobOut(
         id=row.id, project_id=row.project_id, dataset_id=row.dataset_id,
         task=row.kind.removeprefix("ai:"), model_key=str(options.get("model_key", "")),
         input_ref=str(options.get("input_ref", "")),
         parameters=options.get("parameters", {}) if isinstance(options.get("parameters", {}), dict) else {},
-        status=row.status, created_at=_utc(row.created_at), finished_at=_utc(row.finished_at),
-        note=(
-            "Persistent inference request only. No result is claimed until an AI worker "
-            "records a terminal status and attributable artifacts."
-        ),
+        status=row.status, percent=int(row.percent or 0), message=row.message or "",
+        error=row.error or "", artifacts=artifacts if isinstance(artifacts, list) else [],
+        result=result, created_at=_utc(row.created_at), started_at=_utc(row.started_at),
+        finished_at=_utc(row.finished_at), note=note,
     )
+
+
+@router.get("/ai-models")
+def list_ai_models(user: CurrentUser) -> dict[str, Any]:
+    """The models an AI or detection job may name, per task, and whether each can run."""
+    from ..inference import model_catalogue  # noqa: PLC0415
+
+    return {"models": model_catalogue()}
 
 
 @router.get("/projects/{project_id}/ai-jobs", response_model=list[AIJobOut])
@@ -327,6 +381,16 @@ def create_ai_job(
     project_id: int, request: AIJobCreate,
     user: CurrentUser, db: Annotated[Session, Depends(get_db)],
 ) -> AIJobOut:
+    """Record an inference request and hand it to a worker.
+
+    Everything that would make the worker refuse -- an unknown model, one that cannot
+    answer the task, weights not installed, an input that names no uploaded image -- is
+    refused here with the reason, rather than accepted and failed later.
+    """
+    from ..ai_jobs import dispatch, worker_mode
+    from ..inference import InferenceRefused, choose_model, dataset_images, parse_input_ref
+    from ..paths import storage_root
+
     project = _project_or_404(db, project_id)
     require_project_role(db, user, project, Role.engineer)
     if request.task not in AI_TASKS:
@@ -334,19 +398,31 @@ def create_ai_job(
             status_code=422,
             detail=f"Unknown AI task. Supported: {', '.join(sorted(AI_TASKS))}.",
         )
-    if request.dataset_id is not None:
-        dataset = db.get(Dataset, request.dataset_id)
-        if dataset is None or dataset.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Dataset not found in this project.")
+    try:
+        choose_model(request.task, request.model_key, verify_digest=False)
+        dataset_id, selector = parse_input_ref(request.input_ref, request.dataset_id)
+    except InferenceRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    dataset = db.get(Dataset, dataset_id)
+    if dataset is None or dataset.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Dataset not found in this project.")
+    try:
+        dataset_images(storage_root() / "datasets" / str(dataset_id), selector)
+    except InferenceRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     row = Job(
-        project_id=project_id, dataset_id=request.dataset_id, kind=f"ai:{request.task}",
+        project_id=project_id, dataset_id=dataset_id, kind=f"ai:{request.task}",
         engine="inference_worker", profile="api",
         options_json=json.dumps({
             "model_key": request.model_key, "input_ref": request.input_ref,
             "parameters": request.parameters,
         }),
         status="pending_worker", percent=0,
-        message="Waiting for an inference worker; no inference result exists yet.",
+        message=(
+            "Waiting for an inference worker; no inference result exists yet."
+            if worker_mode() == "external" else "Queued for the in-process inference worker."
+        ),
         created_by=user.id,
     )
     db.add(row)
@@ -355,7 +431,9 @@ def create_ai_job(
            organization_id=project.organization_id, resource=f"job:{row.id}",
            detail={"task": request.task, "model_key": request.model_key})
     db.commit()
-    return _ai_job_out(row)
+    out = _ai_job_out(row)
+    dispatch(row.id)
+    return out
 
 
 @router.get("/ai-jobs/{job_id}", response_model=AIJobOut)
@@ -367,6 +445,7 @@ def get_ai_job(
         raise HTTPException(status_code=404, detail="AI job not found.")
     project = _project_or_404(db, row.project_id)
     require_project_role(db, user, project, Role.viewer)
+    db.refresh(row)
     return _ai_job_out(row)
 
 
@@ -379,12 +458,26 @@ def cancel_ai_job(
         raise HTTPException(status_code=404, detail="AI job not found.")
     project = _project_or_404(db, row.project_id)
     require_project_role(db, user, project, Role.engineer)
-    if row.status != "pending_worker":
-        raise HTTPException(status_code=409, detail=f"AI job is {row.status} and cannot be cancelled.")
-    row.status = "cancelled"
-    row.message = "Cancelled before an inference worker claimed the request."
-    row.finished_at = utcnow()
+    # Conditional updates: the worker may claim the job between the read and the write.
+    cancelled = db.execute(
+        update(Job).where(Job.id == job_id, Job.status == "pending_worker").values(
+            status="cancelled", finished_at=utcnow(),
+            message="Cancelled before an inference worker claimed the request.",
+        )
+    ).rowcount == 1
+    if not cancelled:
+        stopping = db.execute(
+            update(Job).where(Job.id == job_id, Job.status == "running").values(
+                status="cancelling", message="Cancelling at the next image boundary...",
+            )
+        ).rowcount == 1
+        if not stopping:
+            db.rollback()
+            db.refresh(row)
+            raise HTTPException(status_code=409,
+                                detail=f"AI job is {row.status} and cannot be cancelled.")
     record(db, action="ai_job_cancelled", user_id=user.id,
            organization_id=project.organization_id, resource=f"job:{row.id}")
     db.commit()
+    db.refresh(row)
     return _ai_job_out(row)

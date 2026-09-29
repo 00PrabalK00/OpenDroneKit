@@ -76,6 +76,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       ODK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-odk}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-opendronekit}
       ODK_SECRET_KEY: ${ODK_SECRET_KEY:?set ODK_SECRET_KEY in .env}
@@ -87,6 +89,11 @@ services:
       ODK_S3_SECRET_KEY: ${ODK_S3_SECRET_KEY}
       ODK_CORS_ORIGINS: ${ODK_CORS_ORIGINS:-}
       ODK_LOG_LEVEL: ${ODK_LOG_LEVEL:-INFO}
+      # Processing jobs go to the Celery worker below, AI jobs to ai-worker; the API
+      # process only records and serves them.
+      ODK_JOB_BACKEND: celery
+      ODK_BROKER_URL: redis://redis:6379/0
+      ODK_AI_WORKER: external
     volumes:
       - api_storage:/data/storage
     # Readiness verifies the live database and object store, not only ASGI liveness.
@@ -144,6 +151,30 @@ services:
     command: ["python", "-m", "services.worker.tasks"]
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import core.geo' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  ai-worker:
+    # Claims pending AI jobs from the shared database and runs them. Needs model weights
+    # under /app/models; a job naming a model whose weights are absent is refused at
+    # submission with the missing path, never run on a substitute.
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      ODK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-odk}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB:-opendronekit}
+      ODK_STORAGE_PATH: /data/storage
+    volumes:
+      - api_storage:/data/storage
+    command: ["python", "-m", "services.worker.ai_worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import services.api.inference' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

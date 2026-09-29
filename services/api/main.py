@@ -9,6 +9,9 @@ Configuration is entirely environmental, so a deployment never needs a rebuild:
     ODK_DATABASE_URL   postgresql+psycopg://user:pass@host/db   (SQLite if unset)
     ODK_SECRET_KEY     JWT signing secret; required in deployment
     ODK_CORS_ORIGINS   comma-separated origins for the browser client
+    ODK_CORS_LOOPBACK  "0" to stop allowing http(s)://127.0.0.1|localhost:<any port>
+    ODK_JOB_BACKEND    "thread" (default) or "celery" for processing jobs
+    ODK_AI_WORKER      "inline" (default) or "external" for AI jobs
 """
 
 from __future__ import annotations
@@ -40,6 +43,12 @@ VERSION = "0.1.0"
 async def lifespan(_app: FastAPI):
     configure_logging()
     init_db()
+    # AI jobs accepted by a previous inline process would otherwise wait forever.
+    from .ai_jobs import resume_pending  # noqa: PLC0415
+
+    resumed = resume_pending()
+    if resumed:
+        LOGGER.info("resumed pending AI jobs", extra={"event": "ai.resumed", "jobs": resumed})
     LOGGER.info("API started", extra={"event": "api.started"})
     yield
     LOGGER.info("API stopped", extra={"event": "api.stopped"})
@@ -55,13 +64,20 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Same-origin by default: a permissive default would be a security decision made on
-# the operator's behalf without asking.
+# Explicit origins come from ODK_CORS_ORIGINS. Loopback origins on any port are also
+# allowed by default: the desktop shell serves the Hub page from 127.0.0.1 on an
+# ephemeral port, and without this every call it made to a local API was blocked by
+# the browser's preflight. Loopback is the same machine, and the API authenticates
+# with bearer tokens rather than cookies, so this admits no ambient credentials.
+# ODK_CORS_LOOPBACK=0 turns it off for a deployment that wants same-origin only.
+LOOPBACK_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$"
 _origins = [o.strip() for o in os.environ.get("ODK_CORS_ORIGINS", "").split(",") if o.strip()]
-if _origins:
+_loopback = os.environ.get("ODK_CORS_LOOPBACK", "1").strip().lower() not in {"0", "false", "no"}
+if _origins or _loopback:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
+        allow_origin_regex=LOOPBACK_ORIGIN_REGEX if _loopback else None,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

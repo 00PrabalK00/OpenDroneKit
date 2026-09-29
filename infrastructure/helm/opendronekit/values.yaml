@@ -13,7 +13,14 @@ image:
 worker:
   repository: opendronekit/worker
   tag: ""
-  replicas: 2
+  # The chart ships no Redis. With no broker the API runs jobs on its own threads
+  # (ODK_JOB_BACKEND=thread) and a Celery worker would only crash-loop, so none is
+  # started. Point brokerUrl at a Redis you run and raise replicas to use workers; the
+  # API then enqueues jobs instead. Workers read uploads and write outputs under
+  # ODK_STORAGE_PATH, so they also need a volume shared with the API (ReadWriteMany),
+  # which this chart does not create.
+  replicas: 0
+  brokerUrl: ""
   resources:
     # Photogrammetry is memory-bound before it is CPU-bound: feature matching holds the
     # match graph for the whole block. A worker without a memory limit will be evicted
@@ -25,7 +32,10 @@ worker:
       memory: 16Gi
 
 api:
-  replicas: 2
+  # One replica until uploads and job outputs move to a volume every pod can read: a
+  # chunked upload split across two pods' local disks cannot be assembled, and a job's
+  # artifacts are only downloadable from the pod that wrote them.
+  replicas: 1
   port: 8000
   resources:
     requests:

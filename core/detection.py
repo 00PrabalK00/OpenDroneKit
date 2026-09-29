@@ -377,15 +377,23 @@ def _run_onnx_segmentation(
     model_path: Path,
     threshold: float,
     input_size: int,
+    *,
+    raise_errors: bool = False,
 ) -> np.ndarray | None:
     """Run a binary segmentation ONNX model and return a full-resolution 0/1 mask.
 
     The exporter folds the upsample and sigmoid into the graph, so the output is
     already a probability map at input resolution and only needs thresholding and a
     resize back to the source image size.
+
+    With ``raise_errors`` a failure raises with its real cause (a graph that will
+    not load, a forward pass that ran out of memory, an output of the wrong shape)
+    instead of returning ``None``, which callers can only report as "no mask".
     """
     net = _load_onnx_net(model_path)
     if net is None:
+        if raise_errors:
+            raise RuntimeError(f"The ONNX runtime could not load {model_path.name}.")
         return None
 
     size = int(max(64, input_size))
@@ -402,10 +410,17 @@ def _run_onnx_segmentation(
     try:
         output = np.asarray(net.forward())
     except Exception:
+        if raise_errors:
+            raise
         return None
 
     probability = np.squeeze(output)
     if probability.ndim != 2:
+        if raise_errors:
+            raise ValueError(
+                f"{model_path.name} returned an output of shape {tuple(output.shape)}, "
+                "not a single-channel probability map."
+            )
         return None
     if probability.min() < 0.0 or probability.max() > 1.0:
         # A graph exported without the sigmoid still yields logits; apply it here
@@ -461,8 +476,12 @@ def _run_onnx_segmentation_multiclass(
     model_path: Path,
     input_size: int,
     class_count: int,
+    *,
+    raise_errors: bool = False,
 ) -> np.ndarray | None:
     """Run a multiclass segmentation graph and return a full-resolution class index map.
+
+    ``raise_errors`` behaves as in :func:`_run_onnx_segmentation`.
 
     The graph ends in a softmax over the channel axis, so the answer is the argmax and
     not a threshold: the classes are mutually exclusive and only interpretable against
@@ -471,6 +490,8 @@ def _run_onnx_segmentation_multiclass(
     """
     net = _load_onnx_net(model_path)
     if net is None:
+        if raise_errors:
+            raise RuntimeError(f"The ONNX runtime could not load {model_path.name}.")
         return None
 
     size = int(max(64, input_size))
@@ -485,12 +506,19 @@ def _run_onnx_segmentation_multiclass(
     try:
         output = np.asarray(net.forward())
     except Exception:
+        if raise_errors:
+            raise
         return None
 
     probabilities = np.squeeze(output, axis=0) if output.ndim == 4 else np.squeeze(output)
     if probabilities.ndim != 3 or probabilities.shape[0] != class_count:
         # A graph whose channel count disagrees with the registered labels would map
         # every pixel onto the wrong name. Refusing the array is the only safe answer.
+        if raise_errors:
+            raise ValueError(
+                f"{model_path.name} returned an output of shape {tuple(output.shape)}, "
+                f"which does not match its {class_count} labels."
+            )
         return None
 
     grade = probabilities.argmax(axis=0).astype(np.uint8)

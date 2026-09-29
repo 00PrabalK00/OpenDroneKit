@@ -15,22 +15,25 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Iterator
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 def default_sqlite_url() -> str:
-    """The development/desktop fallback: an absolute file under the one data root.
+    """SQLite under the hub home (the one data root), not the working directory.
 
     This was `sqlite:///./opendronekit.db`, relative to the working directory, so the
     desktop app's fleet, share links and webhooks lived in whichever folder it happened
-    to be started from.
+    to be started from. An install that already has ./opendronekit.db from the old
+    default keeps using it until the new database exists, so upgrading never makes
+    existing fleet and project records disappear.
     """
-    from core.paths import data_root, service_sqlite_url
+    from .paths import hub_data_dir, legacy_or  # noqa: PLC0415
 
-    data_root().mkdir(parents=True, exist_ok=True)
-    return service_sqlite_url()
+    path = legacy_or(Path("opendronekit.db"), hub_data_dir() / "opendronekit.db")
+    return f"sqlite:///{path.resolve().as_posix()}"
 
 
 def database_url() -> str:

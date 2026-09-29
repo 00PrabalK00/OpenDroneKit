@@ -29,6 +29,7 @@ from ..audit import record
 from ..db import get_db
 from ..models import Defect, Mission, Project, Role, ShareLink, ShareAccess
 from ..security import CurrentUser, hash_password, require_project_role, verify_password
+from .events import emit
 
 router = APIRouter(tags=["sharing"])
 
@@ -132,6 +133,8 @@ def create_share(
     db.commit()
 
     result = _share_out(link).model_dump()
+    # The token is a credential and is never put in an event; receivers get the link id.
+    emit(project.organization_id, "project.shared", _share_out(link).model_dump(mode="json"))
     return ShareCreated(**result, url_token=token)
 
 

@@ -104,8 +104,47 @@ Dataset uploads are resumable, and upload paths are contained: a key that would 
 the storage root is rejected rather than normalised. Do not rely on the client to
 sanitise paths — the server does not trust it either.
 
+### Processing jobs and AI jobs
+
+`POST /projects/{id}/jobs` accepts four kinds, each with a worker behind it:
+
+| kind | needs | produces |
+|---|---|---|
+| `reconstruction` | `dataset_id` | rasters, mesh, point cloud under `runs/job_<id>/`, with `crs_epsg` |
+| `detection` | `dataset_id`, `options.model_key` (or `"heuristic"`) | unreviewed defects attributed to the model file, severity `unassessed` until a reviewer grades them |
+| `measurement` | `options.measurement`, `options.source_job_id` (a finished reconstruction), `polygon_xy` (volume) or `pixels` | a Measurement in the raster's projected CRS |
+| `report` | nothing | a PDF and JSON snapshot of accepted findings (`include_unreviewed` to add the rest) |
+
+Artifacts are storage-relative references; fetch one with
+`GET /jobs/{id}/artifacts/{ref}`. A job finishes as `done`, `failed` or `cancelled`.
+
+`POST /projects/{id}/ai-jobs` runs one registered model over uploaded images:
+`input_ref` is `dataset:<id>` or `dataset:<id>/frame:<file>`. The request is refused
+with the reason if the model is unknown, cannot answer the task, or its weights are
+not installed; nothing is substituted. `ODK_AI_WORKER=external` leaves jobs for
+`python -m services.worker.ai_worker`, and `ODK_JOB_BACKEND=celery` sends processing
+jobs to a Celery worker. `GET /ai-models` lists each model a job may name, per task,
+with the reason when it cannot run on this server. A job that fails says why (for
+example, running out of memory) rather than reporting an empty result. Events from a
+worker in another process reach WebSocket clients too, because the live-event buffer
+is the shared database.
+
+In the browser Hub, the "Data and jobs" panel does the same: create a dataset, upload
+images (chunked and checksummed), submit any job kind or an AI job, then watch,
+cancel and download the results.
+
+Without `ODK_DATABASE_URL` and `ODK_STORAGE_PATH` the server keeps its database and
+files under the application's data root (`ODK_DATA_DIR`, default
+`final_toolkit_outputs/` beside the toolkit; `ODK_HUB_HOME` overrides it for the server
+alone), not the directory it was started from, so the desktop app and the server share
+the same fleet, share-link and webhook records. Browser pages on `127.0.0.1`/`localhost` may call the API from any port;
+set `ODK_CORS_LOOPBACK=0` to turn that off.
+
 ## Webhooks and realtime
 
-Webhooks carry a secret; only its prefix is ever returned after creation. Realtime
-updates are available for processing progress. Neither is required — the toolkit is
+Webhooks carry a secret; only its prefix is ever returned after creation. Each
+subscribable event is sent by the action it names (a defect created or reviewed, an
+upload completed, a job or AI job finished, a report generated, a share or mission
+created, a flight logged, telemetry published), after that action commits. The same
+events go to the organisation's WebSocket stream. Neither is required — the toolkit is
 offline-first, and nothing calls out unless you configure it to.

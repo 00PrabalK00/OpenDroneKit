@@ -20,12 +20,14 @@ label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; }
 h1, h2, p { margin-top: 0; }
 h1 { font-size: 25px; margin-bottom: 5px; }
 h2 { font-size: 15px; color: #cfe3ed; }
-.hub-header { height: 64px; display: flex; align-items: center; gap: 28px; padding: 5px 18px; border-bottom: 1px solid var(--line); background: #0a151e; }
+.hub-header { min-height: 64px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 28px; padding: 5px 18px; border-bottom: 1px solid var(--line); background: #0a151e; }
 .brand { display: inline-flex; align-items: center; gap: 6px; color: white; text-decoration: none; font-size: 18px; font-weight: 750; white-space: nowrap; }
 .brand img { display: block; width: 72px; height: 54px; object-fit: contain; flex: none; }
 .brand span { color: var(--accent); font-weight: 550; }
-.connection-fields { display: grid; grid-template-columns: minmax(210px, 1fr) minmax(160px, .8fr) 100px auto auto; align-items: end; gap: 8px; width: 100%; }
+.connection-fields { flex: 1 1 600px; display: grid; grid-template-columns: minmax(210px, 1fr) minmax(160px, .8fr) 100px auto auto; align-items: end; gap: 8px; }
 .connection-fields label { gap: 2px; }
+.login-fields { flex: 1 1 100%; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(150px, .8fr) minmax(150px, .8fr) auto auto; align-items: end; gap: 8px; width: 100%; }
+.login-fields label { gap: 2px; }
 .badge { padding: 6px 9px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: 12px; white-space: nowrap; }
 .badge.muted { border-color: var(--line); color: var(--muted); }
 .hub-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); min-height: calc(100vh - 94px); }
@@ -97,6 +99,15 @@ footer { height: 30px; display: flex; justify-content: space-between; align-item
 .success { color: var(--accent); }
 @media (max-width: 1150px) {
   .connection-fields { grid-template-columns: 1fr 1fr 90px auto; }
+  .login-fields { grid-template-columns: 1fr 1fr; }
   #hub-connection-state { display: none; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.job-fields { display: grid; gap: 11px; }
+.job-fields[hidden] { display: none; }
+label.check { display: flex; align-items: center; gap: 8px; }
+label.check input { width: auto; }
+.job-artifacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.job-artifacts button { font-size: 12px; padding: 4px 8px; }
+.job-error { color: var(--danger, #ff8a8a); }
