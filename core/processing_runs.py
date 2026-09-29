@@ -563,6 +563,45 @@ def _reconstruction_artifacts(run: ProcessingRun) -> dict[str, str]:
     return found
 
 
+def run_solar_defect_stage(
+    project_root: Path | str,
+    dataset_id: str,
+    output_dir: Path | str,
+    *,
+    imagery: str = "auto",
+    model_key: str | None = None,
+    min_area_px: int = 30,
+) -> Path:
+    """Run `detect_solar_defects` over a dataset and write `solar_defects.json`.
+
+    Every image gets a row: the model's detections with its identity, or `refused` with
+    the reason. A refused image was not looked at; it is never written as clean.
+    """
+    from .data_library import get_image_assets
+    from .detection import detect_solar_defects, load_image
+
+    ds = get_dataset(project_root, dataset_id)
+    if ds is None:
+        raise AppError(ERR_DATASET_MISSING, f"Dataset not found: {dataset_id}")
+    rows: list[dict[str, Any]] = []
+    for asset in get_image_assets(project_root, dataset_id, page=0, page_size=10**6):
+        result = detect_solar_defects(load_image(asset.file_path), min_area_px=min_area_px,
+                                      model_key=model_key, imagery=imagery)
+        rows.append({"image_id": asset.id, "image_path": asset.file_path,
+                     **result.to_summary()})
+    refused = [r for r in rows if r["model_used"] == "refused"]
+    out = Path(output_dir) / "solar_defects.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
+        "dataset_id": dataset_id,
+        "imagery": imagery,
+        "images": rows,
+        "images_refused": len(refused),
+        "refused_reasons": sorted({r["refused_reason"] for r in refused}),
+    }, indent=2), encoding="utf-8")
+    return out
+
+
 def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage) -> list[str]:
     """Dispatch known stages to underlying engines. Returns artifact paths."""
     sid = stage.id.lower()
@@ -577,7 +616,16 @@ def _execute_stage(project_root: Path, run: ProcessingRun, stage: PipelineStage)
         artifact.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
         return [str(artifact)]
 
-    if sid in ("defect_detection", "structural_detection", "crack_detection", "solar_defect_detection"):
+    if sid == "solar_defect_detection":
+        # The solar models, not the structural detector under a solar name: each image
+        # goes to the model trained on its declared imagery, or is refused with the reason.
+        return [str(run_solar_defect_stage(
+            project_root, ds_id, Path(run.output_dir),
+            imagery=str(cfg.get("solar_imagery", "auto") or "auto"),
+            model_key=str(cfg.get("solar_model_key", "") or "") or None,
+            min_area_px=int(cfg.get("min_area_px", 30))))]
+
+    if sid in ("defect_detection", "structural_detection", "crack_detection"):
         d_cfg = DefectDetectionConfig(
             mode=str(cfg.get("defect_mode", "hybrid")),
             model_key=str(cfg.get("structural_model_key", "structural_multiclass_detector")),

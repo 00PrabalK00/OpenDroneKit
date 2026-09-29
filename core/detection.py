@@ -79,10 +79,18 @@ class CrackDetectionResult:
 class MetalDefectResult:
     """Result bundle for metal defect detection.
 
-    There is no trained metal-surface model. This is a texture-discontinuity heuristic
-    and says so in `model_used`, with no model identity, so nothing downstream can read
-    its regions as a model's findings. On an aerial photo of farmland it marks a third
-    of the pixels; it is a screening aid for close-range metal surfaces and nothing more.
+    Metal defects are read by the trained corrosion model (corrosion_severity_segmentation,
+    SegFormer-B2 on close-range photos of corroded steel). Every pixel it grades fair,
+    poor or severe is a defect pixel; `good` is sound surface. It finds corrosion and
+    nothing else -- not fatigue cracks, section loss or missing fasteners.
+
+    When the model is not installed, or cannot run, nothing is guessed: `model_used` is
+    `refused`, the mask is empty and `refused_reason` says why. An empty refused result
+    means "not looked at", which is not the same as "no corrosion".
+
+    The texture-discontinuity rule that used to answer here marked a third of an aerial
+    farmland photo as metal damage. It survives only as `metal_texture_heuristic`, for
+    the classical modes that label their output as classical.
     """
 
     mask: np.ndarray
@@ -94,6 +102,29 @@ class MetalDefectResult:
     model_used: str = "heuristic"
     model_key: str = ""
     model_sha256: str = ""
+    class_pixel_ratio: dict[str, float] = field(default_factory=dict)
+    worst_present_grade: str = ""
+    refused_reason: str = ""
+    scope: str = ""
+
+    @property
+    def refused(self) -> bool:
+        return self.model_used == "refused"
+
+    def to_summary(self) -> dict[str, Any]:
+        return {
+            "defect_pixels": int(self.defect_pixels),
+            "total_pixels": int(self.total_pixels),
+            "defect_ratio": float(self.defect_ratio),
+            "defect_regions": int(self.defect_regions),
+            "class_pixel_ratio": {k: float(v) for k, v in self.class_pixel_ratio.items()},
+            "worst_present_grade": self.worst_present_grade,
+            "model_used": self.model_used,
+            "model_key": self.model_key,
+            "model_sha256": self.model_sha256,
+            "refused_reason": self.refused_reason,
+            "scope": self.scope,
+        }
 
 
 @dataclass
@@ -149,7 +180,16 @@ class StructuralDefectResult:
 
 @dataclass
 class SolarDefectResult:
-    """Solar-specific defect result."""
+    """Solar-specific defect result.
+
+    Produced by one of the two installed solar models, chosen by what the image IS:
+    `el_cell` (electroluminescence image of cells -> solar_cell_defect_detector, boxes
+    with detector scores) or `thermal_module` (one infrared module crop ->
+    solar_thermal_anomaly_classifier, a module-level class with its probability). There
+    is no model for RGB photographs of panels unless one is installed under an RGB
+    solar key; otherwise, and whenever the model is missing, the result is `refused`
+    with the reason and an empty mask. Nothing here is a colour or edge rule.
+    """
 
     mask: np.ndarray
     overlay: np.ndarray
@@ -159,11 +199,22 @@ class SolarDefectResult:
     total_pixels: int = 0
     defect_ratio: float = 0.0
     class_pixel_ratio: dict[str, float] = field(default_factory=dict)
-    model_used: str = "heuristic"
+    model_used: str = "refused"
     model_available: bool = False
     model_key: str = ""
     model_sha256: str = ""
+    # Only a radiometric reading could fill this, and no path here has one; kept so a
+    # consumer can tell "not measured" (None) from a temperature.
     hotspot_max_temp_c: float | None = None
+    imagery: str = ""
+    refused_reason: str = ""
+    scope: str = ""
+    # thermal_module only: the classifier's probability for every class.
+    class_probabilities: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def refused(self) -> bool:
+        return self.model_used == "refused"
 
     def to_summary(self) -> dict[str, Any]:
         return {
@@ -177,6 +228,10 @@ class SolarDefectResult:
             "model_key": self.model_key,
             "model_sha256": self.model_sha256,
             "hotspot_max_temp_c": self.hotspot_max_temp_c,
+            "imagery": self.imagery,
+            "refused_reason": self.refused_reason,
+            "scope": self.scope,
+            "class_probabilities": {k: float(v) for k, v in self.class_probabilities.items()},
         }
 
 
@@ -731,8 +786,13 @@ def _crack_mask_heuristic(image_bgr: np.ndarray, min_area_px: int) -> np.ndarray
     return (mask > 0).astype(np.uint8)
 
 
-def detect_metal_defects(image_bgr: np.ndarray, min_area_px: int = 40) -> MetalDefectResult:
-    """Detect metal surface anomalies using texture discontinuity cues."""
+def metal_texture_heuristic(image_bgr: np.ndarray, min_area_px: int = 40) -> MetalDefectResult:
+    """Texture-discontinuity rule. Classical, and labelled so: `model_used='heuristic'`.
+
+    Not a metal defect detector -- it marks sharp texture of any kind (a third of an aerial
+    farmland photo). Kept only for the classical modes, which report their output as
+    classical with no confidence. `detect_metal_defects` never calls it.
+    """
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     lap = cv2.Laplacian(blur, cv2.CV_32F, ksize=3)
@@ -764,6 +824,86 @@ def detect_metal_defects(image_bgr: np.ndarray, min_area_px: int = 40) -> MetalD
         total_pixels=total_pixels,
         defect_ratio=defect_ratio,
         defect_regions=regions,
+        model_used="heuristic",
+    )
+
+
+#: The trained model that answers for metal: corrosion condition state on steel.
+METAL_MODEL_KEY = "corrosion_severity_segmentation"
+
+
+def _model_scope(model_key: str) -> str:
+    spec = get_model_spec(model_key)
+    return str(getattr(spec, "description", "") or "") if spec is not None else ""
+
+
+def _refused_metal(image_bgr: np.ndarray, reason: str, model_key: str) -> MetalDefectResult:
+    h, w = image_bgr.shape[:2]
+    return MetalDefectResult(
+        mask=np.zeros((h, w), dtype=np.uint8),
+        overlay=image_bgr.copy(),
+        defect_pixels=0,
+        total_pixels=int(h * w),
+        defect_ratio=0.0,
+        defect_regions=0,
+        model_used="refused",
+        refused_reason=reason,
+        scope=_model_scope(model_key),
+    )
+
+
+def detect_metal_defects(
+    image_bgr: np.ndarray,
+    min_area_px: int = 40,
+    *,
+    model_key: str = METAL_MODEL_KEY,
+    use_model: bool = True,
+) -> MetalDefectResult:
+    """Metal (corrosion) defects from the trained corrosion model, or an honest refusal.
+
+    Every pixel the model grades above `good` on its ordinal scale is a defect pixel;
+    regions smaller than `min_area_px` are dropped. `worst_present_grade` and the
+    per-grade ratios travel with the result. There is no fallback: a missing model, or
+    `use_model=False`, returns `model_used='refused'` with the reason and an empty mask.
+    """
+    if not use_model:
+        return _refused_metal(
+            image_bgr,
+            "Metal detection was asked to run without a model. There is no trained-free "
+            "metal detector: the texture rule that used to answer here marks texture, not "
+            "defects, so nothing is reported.",
+            model_key,
+        )
+    try:
+        graded = grade_corrosion_severity(image_bgr, model_key=model_key)
+    except CorrosionGradingRefused as exc:
+        return _refused_metal(image_bgr, f"Metal detection refused: {exc}", model_key)
+
+    labels = list(graded.labels)
+    defect = (graded.grade_index > 0).astype(np.uint8) * 255
+    mask = _filter_connected_components(defect, min_area_px=max(1, int(min_area_px)))
+    count, _, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    regions = sum(1 for idx in range(1, count) if stats[idx, cv2.CC_STAT_AREA] >= min_area_px)
+    defect_pixels = int((mask > 0).sum())
+    total = int(mask.size)
+    by_grade = {
+        label: ((graded.grade_index == index) & (mask > 0)).astype(np.uint8) * 255
+        for index, label in enumerate(labels) if index > 0
+    }
+    by_grade = {label: m for label, m in by_grade.items() if m.any()}
+    return MetalDefectResult(
+        mask=(mask > 0).astype(np.uint8),
+        overlay=_overlay_by_masks(image_bgr, by_grade),
+        defect_pixels=defect_pixels,
+        total_pixels=total,
+        defect_ratio=float(defect_pixels / max(total, 1)),
+        defect_regions=int(regions),
+        model_used=graded.model_used,
+        model_key=graded.model_key,
+        model_sha256=graded.model_sha256,
+        class_pixel_ratio=dict(graded.class_pixel_ratio),
+        worst_present_grade=graded.worst_present_grade,
+        scope=_model_scope(model_key),
     )
 
 
@@ -820,7 +960,7 @@ def _structural_fallback(image_bgr: np.ndarray, min_area_px: int) -> tuple[dict[
         mask_by_class["crack"] = crack.mask
         detections.extend(_mask_to_hits(crack.mask, "crack", min_area_px))
 
-    metal = detect_metal_defects(image_bgr, min_area_px=max(40, min_area_px))
+    metal = metal_texture_heuristic(image_bgr, min_area_px=max(40, min_area_px))
     if int(metal.defect_pixels) > 0:
         mask_by_class["corrosion"] = metal.mask
         detections.extend(_mask_to_hits(metal.mask, "corrosion", min_area_px))
@@ -928,165 +1068,230 @@ def detect_structural_defects(
     )
 
 
-def _detect_soiling_mask(image_bgr: np.ndarray, min_area_px: int) -> np.ndarray:
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    low_value = (hsv[:, :, 2] < np.percentile(hsv[:, :, 2], 35)).astype(np.uint8) * 255
-    low_sat = (hsv[:, :, 1] < np.percentile(hsv[:, :, 1], 45)).astype(np.uint8) * 255
-    mask = cv2.bitwise_and(low_value, low_sat)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8), iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8), iterations=1)
-    return _filter_connected_components(mask, min_area_px=max(120, min_area_px))
+#: What a solar image can be, and which installed model reads each kind. The two
+#: shipping models answer different questions about different imagery, and neither
+#: reads an RGB photograph: the EL detector's registry entry says it "must not be
+#: applied to drone photographs", and the thermal classifier is a per-module classifier
+#: that "cannot find modules in a survey image".
+SOLAR_IMAGERY = ("auto", "el_cell", "thermal_module", "rgb_photo")
+SOLAR_MODELS_BY_IMAGERY: dict[str, tuple[str, ...]] = {
+    "el_cell": ("solar_cell_defect_detector",),
+    "thermal_module": ("solar_thermal_anomaly_classifier",),
+    # Registered RGB panel detectors. Neither has weights today; if one is installed
+    # it answers for photographs, and until then photographs are refused.
+    "rgb_photo": ("solar_defect_detector", "solar_pv_multidefect_detector"),
+}
+#: The thermal classifier was trained on 24x40 px crops of single modules. A frame this
+#: much larger holds many modules, which the classifier cannot separate.
+THERMAL_MODULE_MAX_SIDE_PX = 256
+#: The EL detector was trained on 1024x1024 PVEL-AD cell images; EL cell images from
+#: any camera are hundreds of pixels a side. A picture this small is not one -- the
+#: 24x40 px infrared module crops are the usual mix-up -- and the detector's
+#: "no defects" on it would read exactly like a real clean cell.
+EL_CELL_MIN_SIDE_PX = 128
 
 
-def _detect_solar_crack_mask(image_bgr: np.ndarray, min_area_px: int) -> np.ndarray:
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enh = clahe.apply(gray)
-    edges = cv2.Canny(enh, 40, 120)
-    edges = cv2.morphologyEx(edges, cv2.MORPH_DILATE, np.ones((3, 3), np.uint8), iterations=1)
-    return _filter_connected_components(edges, min_area_px=max(30, min_area_px // 2))
+def _is_grayscale(image_bgr: np.ndarray) -> bool:
+    """True when the three channels carry the same picture (EL and IR crops do)."""
+    if image_bgr.ndim == 2 or image_bgr.shape[2] == 1:
+        return True
+    step_y = max(1, image_bgr.shape[0] // 256)
+    step_x = max(1, image_bgr.shape[1] // 256)
+    sample = image_bgr[::step_y, ::step_x].astype(np.int16)
+    spread = np.maximum(np.abs(sample[..., 0] - sample[..., 1]),
+                        np.abs(sample[..., 1] - sample[..., 2]))
+    return float(np.mean(spread > 6)) < 0.01
 
 
-def _detect_hotspot_mask(
-    image_bgr: np.ndarray,
-    thermal_gray: np.ndarray | None,
-    min_area_px: int,
-) -> tuple[np.ndarray, float | None]:
-    if thermal_gray is not None and thermal_gray.size > 0:
-        t = thermal_gray.astype(np.float32)
-        thr = float(max(np.percentile(t, 99.0), np.mean(t) + 2.0 * np.std(t)))
-        raw = (t >= thr).astype(np.uint8) * 255
-        out = _filter_connected_components(raw, min_area_px=max(20, min_area_px // 2))
-        max_temp = float(np.max(t))
-        return out, max_temp
-
-    hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-    warm1 = cv2.inRange(hsv, (0, 90, 170), (15, 255, 255))
-    warm2 = cv2.inRange(hsv, (160, 90, 170), (179, 255, 255))
-    warm = cv2.bitwise_or(warm1, warm2)
-    warm = cv2.morphologyEx(warm, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
-    warm = cv2.morphologyEx(warm, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=1)
-    return _filter_connected_components(warm, min_area_px=max(40, min_area_px)), None
+def _imagery_of_model(model_key: str) -> str:
+    for imagery, keys in SOLAR_MODELS_BY_IMAGERY.items():
+        if model_key in keys:
+            return imagery
+    return ""
 
 
-def _detect_solar_delamination_mask(image_bgr: np.ndarray, min_area_px: int) -> np.ndarray:
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (7, 7), 0)
-    resid = cv2.absdiff(gray, blur)
-    _, mask = cv2.threshold(resid, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
-    return _filter_connected_components(mask, min_area_px=max(80, min_area_px))
+def _solar_refusal(image_bgr: np.ndarray, reason: str, imagery: str,
+                   model_key: str = "") -> SolarDefectResult:
+    h, w = image_bgr.shape[:2]
+    return SolarDefectResult(
+        mask=np.zeros((h, w), dtype=np.uint8),
+        overlay=image_bgr.copy(),
+        total_pixels=int(h * w),
+        model_used="refused",
+        model_available=bool(model_key) and bool(model_status(model_key).get("exists")),
+        imagery=imagery,
+        refused_reason=reason,
+        scope=_model_scope(model_key) if model_key else "",
+    )
 
 
-def _solar_fallback(
-    image_bgr: np.ndarray,
-    thermal_gray: np.ndarray | None,
-    min_area_px: int,
-) -> tuple[dict[str, np.ndarray], list[DefectHit], float | None]:
-    mask_by_class: dict[str, np.ndarray] = {}
-    detections: list[DefectHit] = []
-
-    hotspot_mask, hotspot_max = _detect_hotspot_mask(image_bgr, thermal_gray=thermal_gray, min_area_px=min_area_px)
-    if int(np.sum(hotspot_mask > 0)) > 0:
-        mask_by_class["hotspot"] = hotspot_mask
-        detections.extend(_mask_to_hits(hotspot_mask, "hotspot", min_area_px=max(20, min_area_px // 2)))
-
-    for label, mask in (
-        ("cell_crack", _detect_solar_crack_mask(image_bgr, min_area_px=min_area_px)),
-        ("soiling", _detect_soiling_mask(image_bgr, min_area_px=min_area_px)),
-        ("delamination", _detect_solar_delamination_mask(image_bgr, min_area_px=min_area_px)),
-    ):
-        pixels = int(np.sum(mask > 0))
-        if pixels <= 0:
-            continue
-        mask_by_class[label] = mask
-        detections.extend(_mask_to_hits(mask, label, min_area_px=max(20, min_area_px // 2)))
-
-    return mask_by_class, detections, hotspot_max
+def _thermal_to_bgr(thermal: np.ndarray) -> np.ndarray:
+    """A radiometric array as the 8-bit grey picture the classifier was trained on."""
+    t = np.asarray(thermal, dtype=np.float32)
+    if t.ndim == 3:
+        t = t[..., 0]
+    lo, hi = float(np.nanmin(t)), float(np.nanmax(t))
+    scaled = np.zeros_like(t) if hi - lo < 1e-6 else (t - lo) / (hi - lo) * 255.0
+    gray = np.nan_to_num(scaled).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
 
 def detect_solar_defects(
     image_bgr: np.ndarray,
     thermal_gray: np.ndarray | None = None,
     min_area_px: int = 40,
-    model_key: str = "solar_defect_detector",
+    model_key: str | None = None,
     use_model: bool = True,
+    imagery: str = "auto",
 ) -> SolarDefectResult:
-    """
-    Detect solar inspection defects (hotspots, soiling, cell cracks, delamination).
+    """Solar defects from an installed solar model, or a refusal that says why.
 
-    If the model named by `model_key` is installed, ONNX detection runs and its answer --
-    including an empty one -- is the result. Only when no model is installed, or it
-    failed to run, does the classical path run, and it is reported as `heuristic` (or
-    `onnx_fallback_heuristic`) with no confidence on any region.
+    `imagery` says what the picture is: `el_cell`, `thermal_module` or `rgb_photo`.
+    `auto` reads it from the input -- a `thermal_gray` array is a thermal module, a
+    colour picture is an RGB photograph, and a grey picture is refused because an EL
+    cell image and an IR module crop are both grey and need different models. A named
+    `model_key` also settles it. Each kind goes to the model trained on it; a model
+    applied to imagery it was not trained on is refused, not run, because its answer
+    would read exactly like a real one.
+
+    The classical colour/edge rules that used to answer here (963 "defects" on a
+    farmland photo) are gone. `use_model=False` is a refusal.
     """
     h, w = image_bgr.shape[:2]
-    total = int(max(1, h * w))
-    model_info = model_status(model_key)
+    requested = str(imagery or "auto").strip().lower()
+    if requested not in SOLAR_IMAGERY:
+        return _solar_refusal(image_bgr, f"Unknown solar imagery {imagery!r}; expected one "
+                              f"of {', '.join(SOLAR_IMAGERY)}.", requested)
+    key = str(model_key or "").strip()
+    grey = _is_grayscale(image_bgr)
 
-    mask_by_class: dict[str, np.ndarray] = {}
-    hits: list[DefectHit] = []
-    model_used = "heuristic"
-    model_available = bool(model_info.get("exists", False))
-    hotspot_max_temp_c: float | None = None
-    model_ran = False
+    if requested != "auto":
+        kind = requested
+    elif thermal_gray is not None:
+        kind = "thermal_module"
+    elif key and _imagery_of_model(key):
+        kind = _imagery_of_model(key)
+    elif not grey:
+        kind = "rgb_photo"
+    else:
+        return _solar_refusal(
+            image_bgr,
+            "This is a greyscale image, and both an electroluminescence cell image and an "
+            "infrared module crop are greyscale; they need different models. Declare the "
+            "solar imagery (el_cell or thermal_module) to run one.",
+            "auto")
 
-    if use_model and model_available:
-        spec = get_model_spec(model_key)
-        path_str = str(model_info.get("path", ""))
-        if spec is not None and path_str and spec.kind in DETECTION_KINDS:
-            try:
-                model_hits = _run_onnx_yolo(
-                    image_bgr=image_bgr,
-                    model_path=Path(path_str),
-                    labels=spec.labels,
-                    score_threshold=float(spec.score_threshold),
-                    iou_threshold=float(spec.iou_threshold),
-                    input_size=int(spec.input_size),
-                )
-                model_ran = True
-            except Exception as exc:
-                model_hits = []
-                LOGGER.warning("ONNX solar inference failed (%s: %s); using heuristic.",
-                               type(exc).__name__, exc)
-            if model_ran:
-                # Ran: its answer stands, empty or not.
-                hits = model_hits
-                mask_by_class = _hits_to_masks((h, w), hits)
-                model_used = f"onnx:{Path(path_str).name}"
+    if not use_model:
+        return _solar_refusal(
+            image_bgr,
+            "Solar detection was asked to run without a model. There is no model-free "
+            "solar detector: the colour and edge rules that used to answer here marked "
+            "texture, not panel defects, so nothing is reported.", kind)
 
-    if not model_ran:
-        mask_by_class, hits, hotspot_max_temp_c = _solar_fallback(
-            image_bgr=image_bgr,
-            thermal_gray=thermal_gray,
-            min_area_px=min_area_px,
-        )
-        if use_model and model_available:
-            model_used = "onnx_fallback_heuristic"
+    if key and _imagery_of_model(key) and _imagery_of_model(key) != kind:
+        return _solar_refusal(
+            image_bgr,
+            f"{key} reads {_imagery_of_model(key).replace('_', ' ')} imagery, and this "
+            f"input is {kind.replace('_', ' ')}. Its answer on the wrong imagery would look "
+            "exactly like a real one, so it was not run.", kind, key)
+
+    if kind in ("el_cell", "thermal_module") and not grey and thermal_gray is None:
+        return _solar_refusal(
+            image_bgr,
+            f"Declared as {kind.replace('_', ' ')} imagery, but the image is in colour. EL "
+            "cell images and the infrared module crops the thermal classifier was trained "
+            "on are greyscale; a colour-palette thermal image or an RGB photo is not what "
+            "either model reads.", kind)
+
+    if kind == "el_cell" and max(h, w) < EL_CELL_MIN_SIDE_PX:
+        return _solar_refusal(
+            image_bgr,
+            f"Declared as an EL cell image, but it is only {w}x{h} px. The EL detector was "
+            "trained on 1024x1024 px cell images; an image this small is not one (single "
+            "infrared module crops are 24x40 px -- declare those as thermal_module).",
+            kind, key or SOLAR_MODELS_BY_IMAGERY["el_cell"][0])
+
+    candidates = (key,) if key else SOLAR_MODELS_BY_IMAGERY[kind]
+    chosen = next((c for c in candidates if model_status(c).get("exists")), "")
+    if not chosen:
+        if kind == "rgb_photo":
+            reason = (
+                "No solar model for RGB photographs is installed "
+                f"({', '.join(candidates)} have no weights). The installed solar models read "
+                "electroluminescence cell images (solar_cell_defect_detector) and single "
+                "infrared module crops (solar_thermal_anomaly_classifier); declare that "
+                "imagery to use them.")
         else:
-            model_used = "heuristic"
+            reason = (f"{', '.join(candidates)} is not installed on this machine, and there "
+                      "is no model-free solar detector to use instead.")
+        return _solar_refusal(image_bgr, reason, kind, candidates[0] if candidates else "")
+
+    spec = get_model_spec(chosen)
+    path = Path(str(model_status(chosen)["path"]))
+    used = f"onnx:{path.name}"
+    identity = model_identity(chosen)
+    scope = _model_scope(chosen)
+    probabilities: dict[str, float] = {}
+
+    if spec is not None and spec.kind == "onnx_classification":
+        crop = _thermal_to_bgr(thermal_gray) if thermal_gray is not None else image_bgr
+        if max(crop.shape[:2]) > THERMAL_MODULE_MAX_SIDE_PX:
+            return _solar_refusal(
+                image_bgr,
+                f"{chosen} classifies ONE module per image (trained on 24x40 px crops). "
+                f"This image is {crop.shape[1]}x{crop.shape[0]} px, a frame holding many "
+                "modules; the classifier cannot locate modules, so crop them first.",
+                kind, chosen)
+        from .model_runner import ModelRunRefused, classify_image
+
+        try:
+            probabilities = classify_image(crop, chosen)
+        except ModelRunRefused as exc:
+            return _solar_refusal(image_bgr, str(exc), kind, chosen)
+        top = max(probabilities, key=probabilities.get)
+        hits: list[DefectHit] = []
+        mask_by_class: dict[str, np.ndarray] = {}
+        if top != "No-Anomaly":
+            # Module-level answer: the whole crop is the module the class is about.
+            hits = [DefectHit(label=top, confidence=float(probabilities[top]),
+                              bbox_xyxy=(0, 0, w, h), area_px=int(h * w))]
+            mask_by_class = {top: np.full((h, w), 255, dtype=np.uint8)}
+    elif spec is not None and spec.kind in DETECTION_KINDS:
+        if _load_onnx_net(path) is None:
+            return _solar_refusal(image_bgr, f"{chosen}: the graph at {path} would not load.",
+                                  kind, chosen)
+        try:
+            hits = _run_onnx_yolo(
+                image_bgr=image_bgr, model_path=path, labels=spec.labels,
+                score_threshold=float(spec.score_threshold),
+                iou_threshold=float(spec.iou_threshold), input_size=int(spec.input_size))
+        except Exception as exc:  # a broken graph must not read as a clean panel
+            return _solar_refusal(image_bgr, f"{chosen} failed to run: "
+                                  f"{type(exc).__name__}: {exc}", kind, chosen)
+        mask_by_class = _hits_to_masks((h, w), hits)
+    else:
+        return _solar_refusal(
+            image_bgr, f"{chosen} has kind {getattr(spec, 'kind', '?')!r}, which the solar "
+            "pass has no runner for.", kind, chosen)
 
     union = _union_mask(mask_by_class, (h, w))
+    total = int(max(1, h * w))
     defect_pixels = int(np.sum(union > 0))
-    defect_ratio = float(defect_pixels / total)
-    class_pixel_ratio: dict[str, float] = {}
-    for label, mask in mask_by_class.items():
-        class_pixel_ratio[label] = float(np.sum(mask > 0) / total)
-    overlay = _overlay_by_masks(image_bgr, mask_by_class)
-
-    identity = _identity_for(model_used, model_key)
     return SolarDefectResult(
         mask=union,
-        overlay=overlay,
+        overlay=_overlay_by_masks(image_bgr, mask_by_class),
         mask_by_class=mask_by_class,
         detections=hits,
         defect_pixels=defect_pixels,
         total_pixels=total,
-        defect_ratio=defect_ratio,
-        class_pixel_ratio=class_pixel_ratio,
-        model_used=model_used,
-        model_available=model_available,
+        defect_ratio=float(defect_pixels / total),
+        class_pixel_ratio={label: float(np.sum(m > 0) / total)
+                           for label, m in mask_by_class.items()},
+        model_used=used,
+        model_available=True,
         model_key=identity["model_key"],
         model_sha256=identity["model_sha256"],
-        hotspot_max_temp_c=hotspot_max_temp_c,
+        imagery=kind,
+        scope=scope,
+        class_probabilities=dict(probabilities),
     )

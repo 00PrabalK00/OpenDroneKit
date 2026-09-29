@@ -16,7 +16,7 @@ import numpy as np
 from .data_library import get_dataset, get_image_assets
 from .detection import (
     detect_cracks,
-    detect_metal_defects,
+    metal_texture_heuristic,
     detect_solar_defects,
     detect_structural_defects,
     load_image,
@@ -55,6 +55,9 @@ class DefectDetectionConfig:
     structure_type: str = "generic"
     material_type: str = "concrete"
     solar_model_key: str | None = None
+    # What the solar pictures are (el_cell | thermal_module | rgb_photo | auto). Grey
+    # EL and IR images need different models, so 'auto' refuses a grey picture.
+    solar_imagery: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -297,7 +300,8 @@ def _classical_crack(image: Any, config: DefectDetectionConfig) -> tuple[Any, in
 
 
 def _classical_metal(image: Any, config: DefectDetectionConfig) -> tuple[Any, int, float]:
-    metal = detect_metal_defects(image, min_area_px=config.min_area_px)
+    # Classical mode: the labelled texture rule, not the corrosion model.
+    metal = metal_texture_heuristic(image, min_area_px=config.min_area_px)
     return metal.mask, int(metal.defect_pixels), float(metal.defect_ratio)
 
 
@@ -305,6 +309,7 @@ def detect_defects_ai(
     image_path: Path | str,
     config: DefectDetectionConfig,
     structural: bool = True,
+    solar_imagery: str | None = None,
 ) -> list[DetectedDefect]:
     image = load_image(image_path)
     h, w = image.shape[:2]
@@ -338,14 +343,17 @@ def detect_defects_ai(
             image,
             thermal_gray=None,
             min_area_px=config.min_area_px,
-            model_key=str(config.solar_model_key or config.model_key or "solar_defect_detector"),
+            model_key=(config.solar_model_key or None),
             use_model=True,
+            imagery=str(solar_imagery or config.solar_imagery or "auto"),
         )
-        if not result_s.model_available:
+        if result_s.refused:
             raise AppError(
                 ERR_MODEL_MISSING,
-                f"Solar model {config.solar_model_key!r} not available.",
-                recovery_action="Configure solar model path in Developer Tools.",
+                f"Solar detection refused: {result_s.refused_reason}",
+                technical_message=f"imagery={result_s.imagery}",
+                recovery_action="Install the solar model for this imagery, or declare "
+                                "what the imagery is.",
             )
         for hit in result_s.detections:
             if config.classes and hit.label not in config.classes:
@@ -425,41 +433,36 @@ def run_defect_detection(
         except Exception as exc:
             continue
 
-        # Classical leg
+        # Classical leg. A classical rule gives a pixel ratio, not a probability: the
+        # score is 0.0 with the ratio in the notes (as in detect_defects_classical), and
+        # a hit whose extent is the whole frame locates nothing and is dropped.
         classical_defects: list[DetectedDefect] = []
         if config.mode in ("classical", "hybrid"):
             crack = detect_cracks(image, min_area_px=config.min_area_px)
-            metal = detect_metal_defects(image, min_area_px=config.min_area_px)
-            if crack.crack_pixels > 0:
-                mask_path = out_dir / "masks" / f"{asset.id}_crack.png"
-                _save_mask(crack.mask, mask_path)
+            metal = metal_texture_heuristic(image, min_area_px=config.min_area_px)
+            for defect_type, mask, pixels, ratio in (
+                ("crack", crack.mask, int(crack.crack_pixels), float(crack.crack_ratio)),
+                ("corrosion", metal.mask, int(metal.defect_pixels), float(metal.defect_ratio)),
+            ):
+                if pixels <= 0:
+                    continue
+                bbox = _bbox_from_mask(mask)
+                if bbox and len(bbox) == 4 and                         max(0, bbox[2] - bbox[0]) * max(0, bbox[3] - bbox[1]) >= 0.9 * image_area:
+                    continue
+                mask_path = out_dir / "masks" / f"{asset.id}_{defect_type}.png"
+                _save_mask(mask, mask_path)
                 d = DetectedDefect(
                     id=str(uuid.uuid4()),
                     image_id=asset.id,
                     image_path=asset.file_path,
-                    defect_type="crack",
-                    confidence=min(0.95, 0.4 + 50.0 * float(crack.crack_ratio)),
+                    defect_type=defect_type,
+                    confidence=0.0,
                     severity=SEVERITY_LOW,
-                    bbox=_bbox_from_mask(crack.mask),
-                    area_px=int(crack.crack_pixels),
+                    bbox=bbox,
+                    area_px=pixels,
                     mask_path=str(mask_path),
-                    source="classical",
-                )
-                d.severity = classify_defect_severity(d, image_area, rules)
-                classical_defects.append(d)
-            if metal.defect_pixels > 0:
-                mask_path = out_dir / "masks" / f"{asset.id}_corrosion.png"
-                _save_mask(metal.mask, mask_path)
-                d = DetectedDefect(
-                    id=str(uuid.uuid4()),
-                    image_id=asset.id,
-                    image_path=asset.file_path,
-                    defect_type="corrosion",
-                    confidence=min(0.95, 0.4 + 50.0 * float(metal.defect_ratio)),
-                    severity=SEVERITY_LOW,
-                    bbox=_bbox_from_mask(metal.mask),
-                    area_px=int(metal.defect_pixels),
-                    mask_path=str(mask_path),
+                    notes=(f"heuristic: classical image processing, pixel ratio {ratio:.5f}; "
+                           "no confidence is available"),
                     source="classical",
                 )
                 d.severity = classify_defect_severity(d, image_area, rules)

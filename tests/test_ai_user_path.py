@@ -85,26 +85,28 @@ class TestTheModelManagerFindsTheRegistryFromAnyDirectory:
     def test_it_says_which_detectors_are_heuristic(self, api):
         status = api.model_status()
         by_name = {d["detector"]: d for d in status["detectors"]}
-        # No metal model exists anywhere, so this must read heuristic on every machine.
-        assert by_name["metal"]["backend"] == "heuristic"
-        assert "metal" in status["heuristic_detectors"]
-        # The solar routing key has no weights; the row says so and says why.
-        assert by_name["solar"]["backend"] == ("model" if _installed("solar_defect_detector")
-                                               else "heuristic")
+        # Metal is the corrosion model, and refuses (never a heuristic) without it.
+        assert by_name["metal"]["model_key"] == "corrosion_severity_segmentation"
+        assert by_name["metal"]["backend"] == (
+            "model" if _installed("corrosion_severity_segmentation") else "unavailable")
+        assert "metal" not in status["heuristic_detectors"]
+        # Solar answers from the model for the declared imagery, and says which it reads.
+        assert "solar" not in status["heuristic_detectors"]
+        assert by_name["solar"]["backend"] in ("model", "unavailable")
+        if _installed("solar_cell_defect_detector"):
+            assert "el_cell" in by_name["solar"]["status_note"]
         assert by_name["solar"]["status_note"]
 
 
 class TestHeuristicsCarryNoScore:
     """Area-derived 'confidence' of 0.35..0.95 read as a model score and meant nothing."""
 
-    def test_solar_heuristic_regions_have_no_confidence(self):
+    def test_solar_without_a_model_refuses_rather_than_inventing_regions(self):
         from core.detection import detect_solar_defects, load_image
 
         result = detect_solar_defects(load_image(FIXTURE), use_model=False)
-        assert result.model_used == "heuristic"
-        assert result.detections, "the heuristic should still report its regions"
-        assert all(hit.confidence is None for hit in result.detections)
-        assert all(d["confidence"] is None for d in result.to_summary()["detections"])
+        assert result.model_used == "refused" and result.refused_reason
+        assert result.detections == []
         assert result.model_key == "" and result.model_sha256 == ""
 
     def test_structural_heuristic_regions_have_no_confidence(self):
@@ -114,12 +116,15 @@ class TestHeuristicsCarryNoScore:
         assert result.model_used == "heuristic"
         assert all(hit.confidence is None for hit in result.detections)
 
-    def test_metal_says_it_is_a_heuristic(self):
+    def test_metal_is_the_corrosion_model_or_a_refusal(self):
         from core.detection import detect_metal_defects, load_image
 
         result = detect_metal_defects(load_image(FIXTURE))
-        assert result.model_used == "heuristic"
-        assert result.model_key == "" and result.model_sha256 == ""
+        if _installed("corrosion_severity_segmentation"):
+            assert result.model_used == "onnx:corrosion_severity_segmentation.onnx"
+            assert result.model_key == "corrosion_severity_segmentation"
+        else:
+            assert result.model_used == "refused" and result.refused_reason
 
 
 class TestSolarReachesItsInstalledModel:
@@ -128,14 +133,18 @@ class TestSolarReachesItsInstalledModel:
         """kind 'onnx_detection' was rejected, so the EL model fell back to the heuristic."""
         from core.detection import detect_solar_defects, load_image
 
-        result = detect_solar_defects(load_image(FIXTURE), model_key="solar_cell_defect_detector")
+        # It reads EL cell images: a grey input declared as EL runs it.
+        grey = cv2.cvtColor(cv2.cvtColor(load_image(FIXTURE), cv2.COLOR_BGR2GRAY),
+                            cv2.COLOR_GRAY2BGR)
+        result = detect_solar_defects(grey, imagery="el_cell")
         assert result.model_used == "onnx:solar_cell_defect_detector.onnx"
         # Identity was computed and then dropped on the floor; now it is on the result.
         assert result.model_key == "solar_cell_defect_detector"
         assert len(result.model_sha256) == 64
-        # A concrete wall is not an EL cell: whatever the model says, its answer stands,
-        # and nothing it returns is a confidence-free heuristic region.
         assert all(hit.confidence is not None for hit in result.detections)
+        # A colour photograph is not an EL cell, so the model is not run on one.
+        assert detect_solar_defects(load_image(FIXTURE),
+                                    model_key="solar_cell_defect_detector").refused
 
 
 class TestMixedSizeImagesDoNotCrashCoverage:
@@ -315,8 +324,10 @@ class TestHeuristicsDoNotMoveTheHealthScore:
                       material_type="steel", forecast_payload={},
                       reconstruction_payload={}, coverage_payload={})
         scored = evaluate_asset_health(image_rows=self._rows("heuristic"), **common)
-        assert scored["components"]["solar_component"] == 0.0
-        assert scored["components"]["metal_component"] == 0.0
+        # Nothing a model read: not assessed (None), not a zero that props the score up.
+        assert scored["components"]["solar_component"] is None
+        assert scored["components"]["metal_component"] is None
+        assert {"metal", "solar"} <= set(scored["components"]["not_assessed"])
         assert scored["components"]["excluded_heuristic_images"] == {"metal": 1, "solar": 1}
         model = evaluate_asset_health(image_rows=self._rows("onnx:some_model.onnx"), **common)
         # A trained model's ratio still counts.
@@ -325,10 +336,12 @@ class TestHeuristicsDoNotMoveTheHealthScore:
 
     def test_run_ai_on_a_declared_solar_steel_asset_says_what_was_not_scored(self, api, tmp_path):
         """Driven through Api.run_pipeline with the options the Run AI Settings panel
-        sends. The solar routing key and metal have no weights, so both run as
-        heuristics, and the score, the report and the finished-job result say so."""
-        if _installed("solar_defect_detector"):
-            pytest.skip("the solar routing model is installed here")
+        sends. No model reads an RGB photo of panels, so solar refuses with its reason;
+        metal is the corrosion model and is scored as a model result."""
+        if _installed("solar_defect_detector") or _installed("solar_pv_multidefect_detector"):
+            pytest.skip("an RGB solar model is installed here")
+        if not _installed("corrosion_severity_segmentation"):
+            pytest.skip("corrosion_severity_segmentation weights not on this machine")
         folder = tmp_path / "solar_images"
         folder.mkdir()
         cv2.imwrite(str(folder / "a.jpg"), cv2.imread(str(FIXTURE)))
@@ -341,16 +354,20 @@ class TestHeuristicsDoNotMoveTheHealthScore:
         result = job["result"]
         summary = json.loads(Path(result["summary_json_path"]).read_text(encoding="utf-8"))
         row = summary["images"][0]
-        assert row["solar_model_used"] == "heuristic" and row["solar_ratio"] > 0
-        assert row["metal_model_used"] == "heuristic"
+        assert row["solar_model_used"] == "refused" and "solar_ratio" not in row
+        assert row["metal_model_used"] == "onnx:corrosion_severity_segmentation.onnx"
         health = summary["health_scoring"]
         assert health["structure_type"] == "solar"
-        assert health["components"]["solar_component"] == 0.0
-        assert health["components"]["metal_component"] == 0.0
-        assert result["heuristic_images_not_scored"] == {"metal": 1, "solar": 1}
-        assert result["detectors_run"]["solar"] == ["heuristic"]
+        # Refused solar is not assessed: a 0.0 at a solar asset's 35% weight made an
+        # unread panel look healthy.
+        assert health["components"]["solar_component"] is None
+        assert "solar" in health["components"]["not_assessed"]
+        assert health["components"]["metal_component"] is not None
+        assert result["heuristic_images_not_scored"] == {"metal": 0, "solar": 0}
+        assert result["detectors_run"]["solar"] == ["refused"]
+        assert result["detectors_refused"]["solar"]["images"] == 1
         report = Path(result["report_markdown_path"]).read_text(encoding="utf-8")
-        assert "Solar detection on 1 image(s) came from a heuristic" in report
+        assert "Solar detection refused on 1 image(s)" in report
         # Heuristic regions still never become findings.
         found = api.find_annotations()["annotations"]
         assert all(f.get("model_key") != "" for f in found)

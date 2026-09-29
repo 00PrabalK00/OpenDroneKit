@@ -7,6 +7,46 @@ import json
 from pathlib import Path
 
 
+def refusal_reasons(rows: list, detector: str) -> list[dict]:
+    """Every distinct reason `detector` refused, with how many images each covers.
+
+    A mixed folder (RGB photos plus undeclared grey images) refuses for different
+    reasons; naming only the first would give the wrong reason for the rest.
+    """
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        if isinstance(row, dict) and row.get(f"{detector}_model_used") == "refused":
+            reason = str(row.get(f"{detector}_refused_reason", "") or "no reason recorded")
+            counts[reason] = counts.get(reason, 0) + 1
+    return [{"reason": r, "images": n} for r, n in counts.items()]
+
+
+def solar_models_used(rows: list) -> list[dict]:
+    """The solar models that actually read images in this run, one entry per model.
+
+    The solar model is chosen per image from the declared imagery, so no single
+    configured key describes the run.
+    """
+    used: dict[str, dict] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        model = str(row.get("solar_model_used", ""))
+        if not model.startswith("onnx:"):
+            continue
+        entry = used.setdefault(model, {
+            "model_used": model,
+            "key": str(row.get("solar_model_key", "")),
+            "sha256": str(row.get("solar_model_sha256", "")),
+            "imagery": set(),
+            "images": 0,
+        })
+        entry["images"] += 1
+        if row.get("solar_imagery"):
+            entry["imagery"].add(str(row["solar_imagery"]))
+    return [{**e, "imagery": sorted(e["imagery"])} for e in used.values()]
+
+
 def write_json(path: str | Path, payload: dict) -> str:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,9 +143,17 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("Each detector column names what produced it. `heuristic` means a classical "
                  "image rule, not a trained model, and its regions carry no confidence; "
-                 "`not_run` means the detector was not applicable to this asset. Mask "
+                 "`not_run` means the detector was not applicable to this asset; `refused` "
+                 "means no installed model reads this imagery, so it was not looked at (see "
+                 "below), which is not the same as no defects. Mask "
                  "thickness is the width of the crack MASK in pixels, not a measured crack width.")
     lines.append("")
+    for detector in ("solar", "metal"):
+        for entry in refusal_reasons(images, detector):
+            lines.append(f"- {detector.capitalize()} detection refused on "
+                         f"{entry['images']} image(s): {entry['reason']}")
+    if any(item.get(f"{d}_model_used") == "refused" for item in images for d in ("solar", "metal")):
+        lines.append("")
     lines.append("| Image | Crack Ratio | Crack Length (px) | Mask Thickness (px) | Crack Model | Structural Hits | Structural Model | Metal Ratio | Metal | Solar Ratio | Solar | Corrosion Grade |")
     lines.append("|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
     for item in images:
@@ -137,9 +185,25 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Structural model key: `{struct.get('key', '')}`")
         lines.append(f"- Structural model available: `{bool(struct.get('exists', False))}`")
         lines.append(f"- Structural model path: `{struct.get('path', '')}`")
-        lines.append(f"- Solar model key: `{solar.get('key', '')}`")
-        lines.append(f"- Solar model available: `{bool(solar.get('exists', False))}`")
-        lines.append(f"- Solar model path: `{solar.get('path', '')}`")
+        if solar.get("key"):
+            lines.append(f"- Solar model key (forced): `{solar.get('key', '')}`")
+            lines.append(f"- Solar model available: `{bool(solar.get('exists', False))}`")
+            lines.append(f"- Solar model path: `{solar.get('path', '')}`")
+        else:
+            lines.append("- Solar model: chosen per image from the declared solar imagery")
+        # What actually read the images, from the rows -- not the configured key.
+        used = defect_models.get("solar_models_used")
+        if used is None:
+            used = solar_models_used(images)
+        for entry in used:
+            lines.append(
+                f"- Solar model used: `{entry.get('model_used', '')}` (key "
+                f"`{entry.get('key', '')}`, sha256 `{str(entry.get('sha256', ''))[:12]}`, "
+                f"imagery `{', '.join(entry.get('imagery', []))}`) on "
+                f"{entry.get('images', 0)} image(s)")
+        if not used and any(item.get("solar_model_used") not in (None, "", "not_run")
+                            for item in images):
+            lines.append("- Solar model used: none -- every solar pass was refused (see above)")
         lines.append(f"- Legacy model migration attempted: `{bool(migration.get('migrated', False))}`")
         lines.append(f"- Legacy migration target: `{migration.get('target', '')}`")
         struct_avg = defect_models.get("structural_class_ratio_avg", {})

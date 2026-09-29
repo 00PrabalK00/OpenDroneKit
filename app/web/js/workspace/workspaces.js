@@ -1507,9 +1507,9 @@ const inspection = {
     { id: "ai.finding", title: "Finding Details", refresh: true, render: () => findingDetails() },
     /* What Run AI is inspecting. Solar and metal detection run on the asset they belong
        to, and nothing on any screen could say what the asset was, so both passes were
-       unreachable from the app. Declared here, sent with Run AI. On this machine both are
-       classical heuristics (the Detectors panel says so); their regions are never
-       findings and never move the health score. */
+       unreachable from the app. Declared here, sent with Run AI. Both answer from
+       trained models (metal: corrosion_severity_segmentation; solar: the model for the
+       declared imagery) or refuse with the reason, which the finished-job message shows. */
     { id: "ai.runsettings", title: "Run AI Settings", render: () => fields([
       { key: "structure_type", label: "Structure", value: "generic",
         options: ["generic", "bridge", "building", "tower", "pipeline", "solar"] },
@@ -1517,6 +1517,12 @@ const inspection = {
         options: ["concrete", "steel", "reinforced_steel", "masonry", "composite", "mixed"] },
       { key: "run_solar_detection", label: "Solar detection", value: "auto",
         options: ["auto", "on", "off"], unit: "auto: solar assets" },
+      /* The installed solar models each read one kind of image: EL cell images, or one
+         infrared module per image. Photographs have no solar model and are refused with
+         the reason; nothing guesses in their place. */
+      { key: "solar_imagery", label: "Solar imagery", value: "auto",
+        options: ["auto", "el_cell", "thermal_module", "rgb_photo"],
+        unit: "which solar model reads it" },
       { key: "run_metal_detection", label: "Metal detection", value: "auto",
         options: ["auto", "on", "off"], unit: "auto: steel / towers" },
       { key: "crack_presence_gate", label: "Crack presence gate", value: "off",

@@ -53,14 +53,17 @@ def session(tmp_path_factory):
 
 class TestTheDetectorsPanelNamesTheHeuristics:
     def test_metal_and_solar_are_marked_heuristic(self, session):
-        """One global model count said nothing about metal and solar being rules."""
+        """One global model count said nothing about metal and solar being rules. Both
+        now answer from a model or refuse; neither is ever listed as a heuristic."""
         _, ui = session
         text = ui.js("T.until(() => [...document.querySelectorAll('.tree')]"
-                     ".map((t) => t.textContent).join(' ').includes('HEURISTIC') && "
+                     ".map((t) => t.textContent).join(' ').includes('corrosion_severity') && "
                      "[...document.querySelectorAll('.tree')].map((t) => t.textContent).join(' '),"
                      " 240000, 'the detectors list')")
-        assert "metalHEURISTIC" in text
         assert "structuralmodel" in text or "structuralHEURISTIC" in text
+        assert "metalHEURISTIC" not in text and "solarHEURISTIC" not in text
+        assert ("metalmodel" if _installed("corrosion_severity_segmentation")
+                else "metalunavailable") in text
 
 
 class TestTheLabellingCanvasIsReachable:
@@ -134,8 +137,8 @@ class TestRunAISendsWhatTheAssetIs:
     def test_a_solar_asset_declared_on_screen_runs_the_solar_pass(self, session):
         """Run AI sent only engine, profile and dense, so no screen could declare a solar
         or steel asset and the solar and metal passes were unreachable. The Run AI
-        Settings panel declares it, and the finished-job message says those passes ran
-        as heuristics and were not scored."""
+        Settings panel declares it. Solar refuses a photograph (no model reads one) and
+        the finished-job message says so and why; metal is the corrosion model."""
         api, ui = session
         ui.js("""(() => {
             const field = (label) => [...document.querySelectorAll('.field')]
@@ -149,13 +152,38 @@ class TestRunAISendsWhatTheAssetIs:
         ui.js("T.ok('Confirm')")
         message = ui.js("T.toast('finished|failed', 1800000)")
         assert "finished" in message, message
-        if not _installed("solar_defect_detector"):
-            assert "solar ran as a heuristic on 1 image(s), not scored" in message
-        assert "metal ran as a heuristic on 1 image(s), not scored" in message
+        if not (_installed("solar_defect_detector") or _installed("solar_pv_multidefect_detector")):
+            # A photograph: no solar model reads it, and the message says so and why.
+            assert "solar refused on 1 image(s): No solar model for RGB photographs" in message
+        assert "ran as a heuristic" not in message
 
         runs = sorted((Path(api._session.project_root()) / "analysis").glob("run_*/summary.json"))
         summary = json.loads(runs[-1].read_text(encoding="utf-8"))
         assert summary["health_scoring"]["structure_type"] == "solar"
         row = summary["images"][0]
         assert row["solar_model_used"] != "not_run"
-        assert row["metal_model_used"] == "heuristic"
+        assert row["metal_model_used"] == (
+            "onnx:corrosion_severity_segmentation.onnx"
+            if _installed("corrosion_severity_segmentation") else "refused")
+
+    def test_the_declared_solar_imagery_reaches_the_solar_pass(self, session):
+        """Solar imagery = el_cell on a colour photo: the EL model is not run on it, and
+        the message names that refusal -- proof the setting reaches the pipeline."""
+        api, ui = session
+        ui.js("""(() => {
+            const field = (label) => [...document.querySelectorAll('.field')]
+              .find((f) => f.querySelector('label').textContent === label).querySelector('select');
+            for (const [label, value] of [['Structure', 'solar'], ['Solar imagery', 'el_cell']]) {
+              const pick = field(label); pick.value = value;
+              pick.dispatchEvent(new Event('change'));
+            }
+            return true; })()""")
+        ui.js("T.tool('Run AI')")
+        ui.js("T.ok('Confirm')")
+        # Matched on this run's refusal, so an earlier run's toast cannot answer.
+        message = ui.js("T.toast('Declared as el cell|Job [0-9a-f]+ failed', 1800000)")
+        assert "finished" in message, message
+        assert "solar refused on 1 image(s): Declared as el cell imagery" in message
+        runs = sorted((Path(api._session.project_root()) / "analysis").glob("run_*/summary.json"))
+        row = json.loads(runs[-1].read_text(encoding="utf-8"))["images"][0]
+        assert row["solar_imagery"] == "el_cell" and row["solar_model_used"] == "refused"

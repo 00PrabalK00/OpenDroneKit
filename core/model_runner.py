@@ -279,8 +279,8 @@ def detector_backends() -> list[dict[str, Any]]:
     """For each detector the application runs, whether a model or a heuristic answers.
 
     Computed from the registry and the files on disk, never written down: the point is
-    to show a user that metal detection is a heuristic on every machine and solar
-    detection is one until its model is installed.
+    to show a user which detectors answer from a model, which fall back to a labelled
+    heuristic, and which refuse (solar and metal) when their model is absent.
     """
     def row(detector: str, key: str, *, heuristic_fallback: bool, note: str = "") -> dict[str, Any]:
         info = model_status(key) if key else {"exists": False}
@@ -300,14 +300,35 @@ def detector_backends() -> list[dict[str, Any]]:
             "status_note": (spec.status_note if spec is not None else "") or note,
         }
 
+    def solar_row() -> dict[str, Any]:
+        # Solar answers from whichever model reads the declared imagery; there is no
+        # heuristic behind it any more, so "unavailable" is the honest state without one.
+        from .detection import SOLAR_MODELS_BY_IMAGERY
+
+        installed = {imagery: [k for k in keys if model_status(k).get("exists")]
+                     for imagery, keys in SOLAR_MODELS_BY_IMAGERY.items()}
+        readable = [imagery for imagery, keys in installed.items() if keys]
+        keys = [k for ks in installed.values() for k in ks]
+        return {
+            "detector": "solar",
+            "model_key": ", ".join(keys),
+            "installed": bool(keys),
+            "backend": "model" if keys else "unavailable",
+            "status_note": (
+                ("Reads " + ", ".join(readable) + " imagery"
+                 + ("" if "rgb_photo" in readable else
+                    "; RGB photographs have no installed model and are refused")
+                 + ". Declare the imagery in Run AI Settings.")
+                if keys else "No solar model is installed; solar detection refuses."),
+        }
+
     return [
         row("crack", "crack_segmentation", heuristic_fallback=True),
         row("crack_presence", "crack_presence_classifier", heuristic_fallback=False),
         row("structural", "structural_multiclass_detector", heuristic_fallback=True),
-        row("solar", "solar_defect_detector", heuristic_fallback=True),
-        {"detector": "metal", "model_key": "", "installed": False, "backend": "heuristic",
-         "status_note": "No trained metal-surface model exists. Texture-discontinuity "
-                        "heuristic; its regions carry no confidence."},
+        solar_row(),
+        row("metal", "corrosion_severity_segmentation", heuristic_fallback=False,
+            note="Metal defects are read by the corrosion model; refuses when it is absent."),
         row("corrosion_severity", "corrosion_severity_segmentation", heuristic_fallback=False,
             note="Refuses rather than guessing a grade."),
         row("solar_cell_el", "solar_cell_defect_detector", heuristic_fallback=False),

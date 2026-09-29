@@ -102,11 +102,15 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     # defect" on a concrete wall -- and folding that into the score moved a condition
     # grade from 3 to 4 with nothing on the report saying why. Heuristic images are
     # counted so the report can say what was left out.
-    metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in image_rows
-                            if _model_backed(r, "metal")) / n)
+    # Averaged over the images a model actually read: an image where the detector was
+    # refused or not run was not looked at, and must not dilute the average as "clean".
+    metal_rows = [r for r in image_rows if _model_backed(r, "metal")]
+    solar_rows = [r for r in image_rows if _model_backed(r, "solar")]
+    metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in metal_rows)
+                        / max(1, len(metal_rows)))
     structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in image_rows) / n)
-    solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in image_rows
-                            if _model_backed(r, "solar")) / n)
+    solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in solar_rows)
+                        / max(1, len(solar_rows)))
     metal_excluded = sum(1 for r in image_rows if "metal_ratio" in r and not _model_backed(r, "metal"))
     solar_excluded = sum(1 for r in image_rows if "solar_ratio" in r and not _model_backed(r, "solar"))
     quality_fail = float(sum(1.0 for r in image_rows if bool(r.get("quality_ok", True)) is False) / n)
@@ -122,6 +126,8 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
         "low_overlap_ratio": low_overlap,
         "metal_heuristic_images_excluded": float(metal_excluded),
         "solar_heuristic_images_excluded": float(solar_excluded),
+        "metal_model_images": float(len(metal_rows)),
+        "solar_model_images": float(len(solar_rows)),
     }
 
 
@@ -495,9 +501,13 @@ def evaluate_asset_health(
         + 0.20 * _clip01(image_metrics["crack_max_width_avg_px"] / 8.0)
         + 0.10 * _clip01(image_metrics["crack_length_avg_px"] / 1800.0)
     )
-    metal_norm = _clip01(image_metrics["metal_ratio_avg"] / 0.015)
+    # No model read any image for metal or solar (refused, heuristic or not run): the
+    # component is not assessed, rather than a zero that would prop the score up.
+    metal_norm = (_clip01(image_metrics["metal_ratio_avg"] / 0.015)
+                  if image_metrics["metal_model_images"] else None)
     structural_norm = _clip01(image_metrics["structural_ratio_avg"] / 0.030)
-    solar_norm = _clip01(image_metrics["solar_ratio_avg"] / 0.025)
+    solar_norm = (_clip01(image_metrics["solar_ratio_avg"] / 0.025)
+                  if image_metrics["solar_model_images"] else None)
 
     w = _weights_for_structure(structure_type)
     measured = {
@@ -584,17 +594,17 @@ def evaluate_asset_health(
         },
         "components": {
             "crack_component": float(crack_norm),
-            "metal_component": float(metal_norm),
+            "metal_component": None if metal_norm is None else float(metal_norm),
             "structural_component": float(structural_norm),
-            "solar_component": float(solar_norm),
+            "solar_component": None if solar_norm is None else float(solar_norm),
             "growth_component": None if growth_norm is None else float(growth_norm),
             "criticality_component": None if critical_norm is None else float(critical_norm),
             "quality_penalty_component": float(coverage_norm),
             "not_assessed": sorted(k for k, v in measured.items() if v is None),
             "weights": {k: float(v) for k, v in w.items()},
             # Images whose metal or solar output came from a heuristic and so carried
-            # no weight above. Zero components with a non-zero count here mean "not
-            # scored", not "no defects".
+            # no weight above. A None component means no model read any image for it
+            # (listed in not_assessed): "not scored", not "no defects".
             "excluded_heuristic_images": {
                 "metal": int(image_metrics["metal_heuristic_images_excluded"]),
                 "solar": int(image_metrics["solar_heuristic_images_excluded"]),

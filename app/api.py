@@ -5954,7 +5954,7 @@ class Api:
             config.coverage_aoi_lonlat = aoi or None
             if opts.get("dense") is not None:
                 config.reconstruction_dense = bool(opts["dense"])
-            for key in ("structure_type", "material_type", "asset_id"):
+            for key in ("structure_type", "material_type", "asset_id", "solar_imagery"):
                 if opts.get(key):
                     setattr(config, key, str(opts[key]))
             for key in ("run_solar_detection", "run_metal_detection",
@@ -5997,6 +5997,24 @@ class Api:
                 name: sorted({str(r.get(f"{name}_model_used", "not_run"))
                               for r in summary.get("images", []) if isinstance(r, dict)})
                 for name in ("crack", "structural", "solar", "metal")}
+            # Solar and metal refuse rather than guess when no model reads this imagery;
+            # the finished-job message names the refusal and its reason.
+            # Every distinct reason, each with its own count: a mixed folder refuses for
+            # different reasons, and one reason for all of them would be wrong.
+            from core.reporting import refusal_reasons
+
+            refused: dict[str, dict[str, Any]] = {}
+            for name in ("solar", "metal"):
+                reasons = refusal_reasons(summary.get("images", []), name)
+                if reasons:
+                    refused[name] = {
+                        "images": sum(r["images"] for r in reasons),
+                        "reasons": reasons,
+                        "reason": " | ".join(f"{r['images']} image(s): {r['reason']}"
+                                             if len(reasons) > 1 else r["reason"]
+                                             for r in reasons),
+                    }
+            payload["detectors_refused"] = refused
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,
                 "report": Path(payload.get("report_markdown_path", "")).name,

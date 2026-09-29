@@ -31,7 +31,7 @@ from .propagation import (
 )
 from .reconstruction import CustomDroneReconstructor
 from .reconstruction_remote import check_cloud_request
-from .reporting import write_json, write_markdown_report
+from .reporting import refusal_reasons, solar_models_used, write_json, write_markdown_report
 
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -134,7 +134,13 @@ class PipelineConfig:
     # Grade corrosion severity on images where the structural model found corrosion.
     grade_corrosion: bool = True
     structural_model_key: str = "structural_multiclass_detector"
-    solar_model_key: str = "solar_defect_detector"
+    # Empty: the solar pass picks the installed model trained on `solar_imagery`.
+    solar_model_key: str = ""
+    # What the solar images ARE: "el_cell" (electroluminescence cell images),
+    # "thermal_module" (one infrared module per image), "rgb_photo", or "auto" (read
+    # from the image). The installed solar models each read one kind and are refused on
+    # the others; there is no model-free solar pass.
+    solar_imagery: str = "auto"
     asset_id: str = ""
     structure_type: str = "generic"
     material_type: str = "concrete"
@@ -305,7 +311,10 @@ class StructuralFaultPipeline:
         ensure_model_layout()
         model_migration = migrate_legacy_models()
         structural_model_info = model_status(self.config.structural_model_key)
-        solar_model_info = model_status(self.config.solar_model_key)
+        solar_model_info = (model_status(self.config.solar_model_key)
+                            if self.config.solar_model_key else
+                            {"key": "", "exists": False,
+                             "note": "chosen per image from the declared solar imagery"})
 
         _emit_progress(5, "Loading input dataset")
         image_paths = self._images_in_dir(image_dir)
@@ -426,8 +435,9 @@ class StructuralFaultPipeline:
                 image,
                 thermal_gray=None,
                 min_area_px=max(self.config.crack_min_area_px, self.config.metal_min_area_px),
-                model_key=str(self.config.solar_model_key or "solar_defect_detector"),
+                model_key=str(self.config.solar_model_key or "") or None,
                 use_model=bool(self.config.run_solar_models),
+                imagery=str(self.config.solar_imagery or "auto"),
             ) if solar_enabled else None)
 
             corrosion_row: dict[str, Any] | None = None
@@ -490,7 +500,12 @@ class StructuralFaultPipeline:
                 "structural_overlay_path": str(structural_overlay_path),
                 "corrosion_severity": corrosion_row,
             }
-            if metal is not None:
+            if metal is not None and metal.refused:
+                # Not looked at. No ratio is written, so nothing can read this image as
+                # "no metal defects"; the reason travels with the row.
+                row.update({"metal_model_used": "refused",
+                            "metal_refused_reason": metal.refused_reason})
+            elif metal is not None:
                 metal_mask_path = masks_dir / f"{image_path.stem}_metal_mask.png"
                 metal_overlay_path = overlays_dir / f"{image_path.stem}_metal_overlay.png"
                 cv2.imwrite(str(metal_mask_path), metal.mask)
@@ -500,12 +515,20 @@ class StructuralFaultPipeline:
                     "metal_ratio": metal.defect_ratio,
                     "metal_regions": metal.defect_regions,
                     "metal_model_used": metal.model_used,
+                    "metal_model_key": metal.model_key,
+                    "metal_model_sha256": metal.model_sha256,
+                    "metal_grade_ratio": {k: float(v) for k, v in metal.class_pixel_ratio.items()},
+                    "metal_worst_grade": metal.worst_present_grade,
                     "metal_mask_path": str(metal_mask_path),
                     "metal_overlay_path": str(metal_overlay_path),
                 })
             else:
                 row["metal_model_used"] = "not_run"
-            if solar is not None:
+            if solar is not None and solar.refused:
+                row.update({"solar_model_used": "refused",
+                            "solar_imagery": solar.imagery,
+                            "solar_refused_reason": solar.refused_reason})
+            elif solar is not None:
                 solar_mask_path = masks_dir / f"{image_path.stem}_solar_mask.png"
                 solar_overlay_path = overlays_dir / f"{image_path.stem}_solar_overlay.png"
                 cv2.imwrite(str(solar_mask_path), solar.mask)
@@ -520,6 +543,8 @@ class StructuralFaultPipeline:
                     "solar_model_available": bool(solar.model_available),
                     "solar_model_key": solar.model_key,
                     "solar_model_sha256": solar.model_sha256,
+                    "solar_imagery": solar.imagery,
+                    "solar_class_probabilities": dict(solar.class_probabilities),
                     "solar_hotspot_max_temp_c": (
                         float(solar.hotspot_max_temp_c) if solar.hotspot_max_temp_c is not None else None
                     ),
@@ -833,6 +858,8 @@ class StructuralFaultPipeline:
                 "migration": model_migration,
                 "structural_model": structural_model_info,
                 "solar_model": solar_model_info,
+                "solar_models_used": solar_models_used(image_rows),
+                "solar_refusals": refusal_reasons(image_rows, "solar"),
                 "run_structural_models": bool(self.config.run_structural_models),
                 "run_solar_models": bool(self.config.run_solar_models),
                 "structural_class_ratio_avg": structural_class_avg,

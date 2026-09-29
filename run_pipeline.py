@@ -221,8 +221,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--solar-model-key",
-        default="solar_defect_detector",
-        help="Model registry key for solar defect detector.",
+        default="",
+        help="Model registry key for the solar pass. Empty: the installed model trained on "
+        "--solar-imagery is chosen per image.",
+    )
+    parser.add_argument(
+        "--solar-imagery",
+        default="auto",
+        choices=["auto", "el_cell", "thermal_module", "rgb_photo"],
+        help="What the solar images are. el_cell -> solar_cell_defect_detector, "
+        "thermal_module (one IR module per image) -> solar_thermal_anomaly_classifier; "
+        "rgb_photo has no installed model and is refused with the reason.",
     )
     parser.add_argument(
         "--asset-id",
@@ -325,7 +334,8 @@ def main() -> None:
         run_structural_models=not bool(args.disable_structural_models),
         run_solar_models=not bool(args.disable_solar_models),
         structural_model_key=str(args.structural_model_key or "structural_multiclass_detector"),
-        solar_model_key=str(args.solar_model_key or "solar_defect_detector"),
+        solar_model_key=str(args.solar_model_key or ""),
+        solar_imagery=str(args.solar_imagery or "auto"),
         asset_id=str(args.asset_id or ""),
         structure_type=str(args.structure_type or "generic"),
         material_type=str(args.material_type or "concrete"),
