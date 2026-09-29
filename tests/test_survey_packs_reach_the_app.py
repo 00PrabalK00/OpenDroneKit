@@ -213,3 +213,62 @@ def test_survey_packs_in_the_cockpit(api, land, tmp_path):
     assert "layer(s) added" in results["land"]
     assert "[ok]" in results["encroach"] and "total(s)" in results["encroach"], results
     assert any(name.startswith("land_encroachment:") for name in layer_names(api))
+
+
+def test_thermal_anomaly_and_corridor_packs_in_the_cockpit(api, tmp_path):
+    """The cockpit paths the Api tests could not see.
+
+    Module temperatures passed nine positional arguments to a method whose last five were
+    keyword-only (a TypeError on every press), and its chooser offered only .tif while
+    the pack reads a radiometric .json sidecar. Anomaly baseline sent one raster where
+    the pack needs two. The corridor prompt suggested a capture geometry the pack refuses.
+    """
+    from cockpit_actions_in_a_browser import run_actions
+    from test_india_anomaly import write_features
+    from test_solar_thermal import _write_inputs, _write_modules
+    from training.verification.test_india_assets import _validated_properties
+
+    rgb, thermal, tie_points = _write_inputs(tmp_path)
+    modules = _write_modules(tmp_path / "modules.geojson")
+    rows, columns = np.indices((20, 20))
+    normal = 10.0 + ((rows + columns) % 4)
+    first = write_features(tmp_path / "normal-a.tif", normal)
+    second = write_features(tmp_path / "normal-b.tif", np.roll(normal, 1, axis=1))
+    centreline = write_geojson(tmp_path / "corridor.geojson",
+                               [feature(line(((0, 5), (10, 5))), corridor="C1")])
+    detections = write_geojson(tmp_path / "power.geojson", [feature(point(2, 5), **_validated_properties(
+        asset_class="insulator", finding="corrosion", finding_validated=True))])
+
+    picks: list = []
+    results = run_actions(api, tmp_path, [
+        {"name": "thermal", "action": "Survey Packs", "choose": "Module temperatures",
+         "answers": ["field thermographer", "5", "10", "10", "IEC TS 62446-3"]},
+        {"name": "baseline", "action": "Survey Packs",
+         "choose": ["Anomaly baseline", "Add another", "Done"],
+         "answers": ["two-person field review", "concrete deck, dry season"]},
+        {"name": "power", "action": "Survey Packs",
+         "choose": ["Power corridor", "close_range_oblique"],
+         "answers": ["insulator model, 2cm GSD, oblique captures"]},
+    ], picks=[str(thermal), str(rgb), str(tie_points), str(modules),
+              str(first), str(second),
+              str(detections), str(centreline)], pick_log=picks)
+
+    assert "[ok] Module temperatures:" in results["thermal"], results
+    assert "layer(s) added" in results["thermal"]
+    assert "[ok] Anomaly baseline:" in results["baseline"], results
+    assert "baseline written to" in results["baseline"]
+    assert "[ok] Power corridor:" in results["power"], results
+    assert "surveyed distance m 10" in results["power"]
+    # Every file handed over is one the real chooser would have let the operator pick.
+    for offered, path in picks:
+        assert Path(path).suffix.lower().lstrip(".") in offered, (offered, path)
+
+    baseline = next((Path(api._session.project_root()) / "survey_packs").rglob("baseline.json"))
+    observed = normal.copy()
+    observed[6:10, 8:12] = 30.0
+    target = write_features(tmp_path / "observed.tif", observed)
+    found = run_actions(api, tmp_path, [
+        {"name": "find", "action": "Survey Packs", "choose": "Find anomalies", "answers": ["5"]},
+    ], picks=[str(target), str(baseline)])
+    assert "[ok] Find anomalies:" in found["find"], found
+    assert "candidate count 1" in found["find"]

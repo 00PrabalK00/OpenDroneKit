@@ -3525,11 +3525,15 @@ class Api:
 
     @guard
     def india_module_temperatures(self, thermal_path: str, rgb_path: str,
-                                  control_points_path: str, modules_path: str, *,
+                                  control_points_path: str, modules_path: str,
                                   validated_by: str, warning_delta_c: float,
                                   critical_delta_c: float, hot_cell_delta_c: float,
                                   threshold_basis: str) -> dict[str, Any]:
-        """Measured module temperatures, after the RGB/thermal tie points are checked."""
+        """Measured module temperatures, after the RGB/thermal tie points are checked.
+
+        Positional on purpose: the bridge calls with positional arguments only, and
+        keyword-only parameters made the cockpit's call a TypeError every time.
+        """
         from core.india_thermal import associate_module_temperatures, score_rgb_thermal_registration
 
         def run(out: Path):

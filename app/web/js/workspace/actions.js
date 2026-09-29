@@ -115,7 +115,10 @@ const SURVEY_PACKS = {
     return call("india_solar_inventory", raster, scope, (layout && layout.path) || "");
   },
   "Module temperatures": async (ctx) => {
-    const thermal = await pickPath(["tif", "tiff"], "radiometric thermal raster");
+    // The pack reads a radiometric sidecar (raw counts + calibration + georeferencing,
+    // core/india_thermal.py); a rendered .tif is refused there as "not measurements",
+    // and the chooser offering only .tif made the one accepted file unselectable.
+    const thermal = await pickPath(["json"], "radiometric thermal sidecar (.json)");
     const rgb = await pickPath(["tif", "tiff", "jpg", "png"], "RGB image");
     const points = await pickPath(["json", "csv"], "RGB/thermal tie points");
     const modules = await pickPath(["geojson", "json"], "module polygons");
@@ -127,10 +130,18 @@ const SURVEY_PACKS = {
     return call("india_module_temperatures", thermal, rgb, points, modules, by, warning, critical, hot, basis);
   },
   "Anomaly baseline": async (ctx) => {
-    const raster = await pickPath(["tif", "tiff"], "raster confirmed normal");
+    // A baseline is fitted to at least two independently captured normal rasters; one
+    // file was all this button could ever send, so it was refused every time.
+    const rasters = [await pickPath(["tif", "tiff"], "raster confirmed normal")];
+    for (;;) {
+      const more = await ctx.choose(`Anomaly baseline: ${rasters.length} normal raster(s) chosen`,
+        ["Add another raster confirmed normal", "Done choosing rasters"]);
+      if (!more || more.startsWith("Done")) break;
+      rasters.push(await pickPath(["tif", "tiff"], "raster confirmed normal"));
+    }
     const by = await required(ctx, "Confirmed normal by");
     const scope = await required(ctx, "Where and when this baseline applies");
-    return call("india_anomaly_baseline", [raster], by, scope);
+    return call("india_anomaly_baseline", rasters, by, scope);
   },
   "Find anomalies": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "feature raster");
@@ -140,10 +151,18 @@ const SURVEY_PACKS = {
   },
 };
 
+const CAPTURE_GEOMETRIES = {
+  power: ["close_range_oblique", "close_range_orbit"],
+  rail: ["corridor_nadir", "corridor_nadir_oblique"],
+};
+
 async function corridor(ctx, kind) {
   const detections = await pickPath(["geojson", "json"], `${kind} detections`);
   const centreline = await pickPath(["geojson", "json"], "corridor centreline");
-  const geometry = await required(ctx, "Capture geometry (for example oblique_close_range)");
+  // The values the pack accepts (core/india_assets.py); the prompt used to suggest
+  // "oblique_close_range", which it refuses.
+  const geometry = await ctx.choose("Capture geometry", CAPTURE_GEOMETRIES[kind]);
+  if (!geometry) throw new Error("No capture geometry chosen.");
   const scope = await required(ctx, "Validation scope of the detector");
   return call("india_corridor_inspection", kind, detections, centreline, geometry, scope);
 }

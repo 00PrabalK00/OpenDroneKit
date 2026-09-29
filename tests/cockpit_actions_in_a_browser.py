@@ -121,8 +121,14 @@ try {
 
 
 def run_actions(api: Any, tmp_path: Path, plan: list[dict], *, picks: list[str] = (),
-                workspace: str = "measurements", virtual_time_ms: int = 15000) -> dict:
-    """Run each step of ``plan`` in the real Shell; return the final toast per step."""
+                workspace: str = "measurements", virtual_time_ms: int = 15000,
+                pick_log: list | None = None) -> dict:
+    """Run each step of ``plan`` in the real Shell; return the final toast per step.
+
+    ``pick_log``, when given, receives (extensions the chooser offered, path answered)
+    for every file choice -- the harness answers regardless of the filter, and a real
+    chooser would not.
+    """
     page = (PAGE.replace("__PLAN__", json.dumps(plan))
             .replace("__WORKSPACE__", json.dumps(workspace))).encode("utf-8")
     queue = list(picks)
@@ -158,6 +164,8 @@ def run_actions(api: Any, tmp_path: Path, plan: list[dict], *, picks: list[str] 
             elif name in ("pick_file", "pick_folder"):
                 # The native chooser, answered in order.
                 result = {"ok": True, "path": queue.pop(0) if queue else ""}
+                if pick_log is not None:
+                    pick_log.append((list(args[0]) if args and args[0] else [], result["path"]))
             else:
                 result = getattr(api, name)(*args)
             return self._send(json.dumps(result, default=str).encode("utf-8"),
