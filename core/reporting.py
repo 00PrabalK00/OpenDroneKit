@@ -50,6 +50,16 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         )
         if health.get("index_basis"):
             lines.append(f"- Basis: {health.get('index_basis')}")
+        excluded = (health.get("components", {}) or {}).get("excluded_heuristic_images", {}) or {}
+        for detector in ("metal", "solar"):
+            count = int(excluded.get(detector, 0) or 0)
+            if count:
+                lines.append(
+                    f"- {detector.capitalize()} detection on {count} image(s) came from a "
+                    "heuristic, not a trained model, and was left out of these scores: "
+                    f"the {detector} component is not scored, which is not the same as "
+                    "no defects."
+                )
         failure = health.get("probabilistic_failure", {})
         if isinstance(failure, dict) and failure.get("available") is False:
             lines.append(f"- Failure probability: not computed. {failure.get('reason', '')}")
@@ -69,19 +79,30 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## Crack and Defect Summary")
     lines.append("")
-    lines.append("| Image | Crack Ratio | Crack Length (px) | Max Crack Width (px) | Metal Defect Ratio | Defect Regions | Structural Ratio | Solar Ratio |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("Each detector column names what produced it. `heuristic` means a classical "
+                 "image rule, not a trained model, and its regions carry no confidence; "
+                 "`not_run` means the detector was not applicable to this asset. Mask "
+                 "thickness is the width of the crack MASK in pixels, not a measured crack width.")
+    lines.append("")
+    lines.append("| Image | Crack Ratio | Crack Length (px) | Mask Thickness (px) | Crack Model | Structural Hits | Structural Model | Metal Ratio | Metal | Solar Ratio | Solar | Corrosion Grade |")
+    lines.append("|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
     for item in images:
+        corrosion = item.get("corrosion_severity") or {}
+        grade = corrosion.get("worst_present_grade") or ("refused" if corrosion.get("refused") else "")
         lines.append(
-            "| {name} | {cr:.4f} | {cl:.1f} | {cw:.1f} | {mr:.4f} | {dr} | {sr:.4f} | {solr:.4f} |".format(
+            "| {name} | {cr:.4f} | {cl:.1f} | {cw:.1f} | {cm} | {sh} | {sm} | {mr} | {mm} | {solr} | {som} | {grade} |".format(
                 name=item.get("image", ""),
                 cr=float(item.get("crack_ratio", 0.0)),
                 cl=float(item.get("crack_length_px", 0.0)),
-                cw=float(item.get("crack_max_width_px", 0.0)),
-                mr=float(item.get("metal_ratio", 0.0)),
-                dr=int(item.get("metal_regions", 0)),
-                sr=float(item.get("structural_ratio", 0.0)),
-                solr=float(item.get("solar_ratio", 0.0)),
+                cw=float(item.get("crack_mask_thickness_px", item.get("crack_max_width_px", 0.0))),
+                cm=item.get("crack_model_used", ""),
+                sh=int(item.get("structural_detection_count", 0)),
+                sm=item.get("structural_model_used", ""),
+                mr=f"{float(item['metal_ratio']):.4f}" if "metal_ratio" in item else "-",
+                mm=item.get("metal_model_used", ""),
+                solr=f"{float(item['solar_ratio']):.4f}" if "solar_ratio" in item else "-",
+                som=item.get("solar_model_used", ""),
+                grade=grade or "-",
             )
         )
     lines.append("")
@@ -186,6 +207,11 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## Crack Propagation Forecast")
     lines.append("")
+    if forecast.get("basis") == "what_if_simulation":
+        lines.append(f"- **What-if simulation, not a measurement.** {forecast.get('note', '')}")
+        assumed = forecast.get("assumed_inputs", {})
+        if isinstance(assumed, dict) and assumed:
+            lines.append("- Assumed inputs: " + ", ".join(f"{k}={v}" for k, v in assumed.items()))
     if forecast.get("target_image"):
         if forecast.get("disclaimer"):
             lines.append(f"- **{forecast.get('disclaimer')}**")
@@ -225,6 +251,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("")
     lines.append("## 3D Reconstruction")
     lines.append("")
+    if recon.get("status") == "failed":
+        lines.append(f"- Reconstruction FAILED: `{recon.get('error', '')}`. Detection results "
+                     "above are complete; nothing below was produced.")
     lines.append(f"- Frames: `{recon.get('frame_count', 0)}`")
     lines.append(f"- Processed pairs: `{recon.get('processed_pairs', 0)}`")
     lines.append(f"- Failed pairs: `{recon.get('failed_pairs', 0)}`")

@@ -455,7 +455,8 @@ def list_webhooks(organization_id: int) -> list[dict[str, Any]]:
 
 
 def generate_report(project_id: str, *, title: str = "Inspection report",
-                    report_type: str = "standard", author: str = "") -> dict[str, Any]:
+                    report_type: str = "standard", author: str = "",
+                    findings_root: str | Path = "", findings_project_id: str = "") -> dict[str, Any]:
     """Build a report from what the project actually contains.
 
     core.report_engine resolves the project root itself and REFUSES when the inputs are
@@ -470,6 +471,8 @@ def generate_report(project_id: str, *, title: str = "Inspection report",
         title=str(title),
         report_type=str(report_type),
         author=str(author),
+        findings_root=str(findings_root or ""),
+        findings_project_id=str(findings_project_id or ""),
     )
     result = build(config)
     return result.to_dict() if hasattr(result, "to_dict") else dict(result)
@@ -496,38 +499,164 @@ def report_readiness(project_id: str, *, report_type: str = "standard") -> dict[
 
 
 def review_finding(project_root: str | Path, annotation_id: str, decision: str,
-                   reviewer: str = "operator") -> dict[str, Any]:
+                   reviewer: str = "operator", comment: str = "") -> dict[str, Any]:
     """Accept, reject or flag a finding.
 
-    The decision moves the annotation's STATUS and records who moved it. The model's own
-    claim -- geometry, label, confidence, model key and digest -- is left untouched,
-    because ai.human_validation requires a prediction to survive alongside the human
-    answer rather than being overwritten by it. A reviewer's disagreement is evidence
-    about the model, and erasing what the model said destroys it.
-    """
-    from core.annotations import update_annotation
+    The decision moves the annotation's STATUS and appends to its review history. The
+    model's own claim -- geometry, label, confidence, model key and digest -- is left
+    untouched, because ai.human_validation requires a prediction to survive alongside the
+    human answer rather than being overwritten by it. The inspector's note is left alone
+    too: it is their observation about the defect, not a log line.
 
+    History is appended, never replaced, so a second reviewer cannot erase the first.
+    A rejection takes the finding out of reports (include_in_report False), and an
+    acceptance puts it back: a rejected detection printed in a report would be the
+    model's claim overriding the person who looked at it.
+    """
+    from core.annotations import get_annotation, update_annotation
+
+    key = str(decision).lower()
     status = {
         "accept": "resolved",
         "reject": "dismissed",
         "flag": "in_review",
-    }.get(str(decision).lower())
+    }.get(key)
     if status is None:
         raise ValueError(f"Unknown review decision: {decision!r}. Use accept, reject or flag.")
 
-    # The reviewer goes in the note, not a reviewed_by field: Annotation has no such
-    # field and update_annotation silently drops unknown keys, so a reviewer recorded
-    # that way would disappear without an error and the audit trail would read as though
-    # nobody had looked at it.
-    stamp = f"{decision} by {reviewer} at {_utc_now().isoformat(timespec='seconds')}"
-    updated = update_annotation(
-        Path(project_root),
-        str(annotation_id),
-        {"status": status, "note": stamp},
-    )
+    root = Path(project_root)
+    current = get_annotation(root, str(annotation_id))
+    if current is None:
+        raise ValueError(f"No annotation with id {annotation_id!r} in this project.")
+
+    entry = {
+        "decision": key,
+        "reviewer": str(reviewer or "operator"),
+        "at": _utc_now().isoformat(timespec="seconds"),
+        "previous_status": current.status,
+        "status": status,
+    }
+    if str(comment or "").strip():
+        entry["comment"] = str(comment).strip()
+    patch: dict[str, Any] = {
+        "status": status,
+        "review_history": list(current.review_history or []) + [entry],
+    }
+    if key == "reject":
+        patch["include_in_report"] = False
+    elif key == "accept":
+        patch["include_in_report"] = True
+    updated = update_annotation(root, str(annotation_id), patch)
     if updated is None:
         raise ValueError(f"No annotation with id {annotation_id!r} in this project.")
     return updated.to_dict() if hasattr(updated, "to_dict") else dict(updated)
+
+
+# ------------------------------------------------------------------ findings
+#
+# Model detections used to stop at masks and overlays on disk. Nothing wrote them into
+# the annotation store, so the Findings and Review panels could only ever show what a
+# person had drawn, and "review a model's findings" had nothing to review.
+#
+# The contract matches the REST pre-label path: only a detector that ran and gave each
+# region its own score becomes a finding; it arrives in review, out of the report, with
+# the model key, the digest of the file that ran and its confidence fixed on the record.
+# Heuristic regions are never turned into findings -- they have no score and no model,
+# and a finding list full of them is what made solar look like it worked.
+
+
+def _is_model_output(model_used: str) -> bool:
+    return str(model_used or "").startswith("onnx:")
+
+
+def findings_from_detections(project_root: str | Path, project_id: str, image_path: str,
+                             *, model_used: str, model_key: str, model_sha256: str,
+                             detections: list[dict[str, Any]],
+                             run_tag: str = "") -> list[dict[str, Any]]:
+    """Write one reviewable finding per model detection; refuse unattributable ones."""
+    from core.annotations import create_annotation
+
+    if not _is_model_output(model_used) or not model_key or not model_sha256:
+        raise ValueError(
+            f"Detections from {model_used or 'an unknown source'} carry no model identity; "
+            "only a trained model's scored detections become findings.")
+    created = []
+    for hit in detections:
+        confidence = hit.get("confidence")
+        if confidence is None:
+            raise ValueError("A model detection without a confidence cannot become a finding.")
+        x1, y1, x2, y2 = (int(v) for v in hit["bbox_xyxy"])
+        if x2 <= x1 or y2 <= y1:
+            continue
+        geometry = {"type": "Polygon", "coordinates": [[
+            [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]]}
+        tags = ["model-prelabel"] + ([run_tag] if run_tag else [])
+        annotation = create_annotation(
+            Path(project_root), str(project_id), "image", str(image_path), "rectangle",
+            geometry, str(hit["label"]), "info", "in_review",
+            note=(f"Machine pre-label from {model_used}, awaiting review. Severity is a "
+                  "review default, not an assessment."),
+            include_in_report=False, created_by="model",
+            model_used=model_used, model_key=model_key, model_sha256=model_sha256,
+            confidence=float(confidence), tags=tags,
+        )
+        created.append(annotation.to_dict())
+    return created
+
+
+def findings_from_pipeline(project_root: str | Path, project_id: str,
+                           summary: dict[str, Any]) -> dict[str, Any]:
+    """Turn a finished pipeline run's model detections into reviewable findings."""
+    run_tag = "run " + str(Path(str(summary.get("artifacts", {}).get("run_dir", ""))).name or "")
+    created = 0
+    heuristic_regions = 0
+    for row in summary.get("images", []) or []:
+        image = str(row.get("image_path") or row.get("image") or "")
+        for prefix in ("structural", "solar"):
+            detections = row.get(f"{prefix}_detections") or []
+            used = str(row.get(f"{prefix}_model_used", ""))
+            if not detections:
+                continue
+            if not _is_model_output(used):
+                heuristic_regions += len(detections)
+                continue
+            created += len(findings_from_detections(
+                project_root, project_id, image, model_used=used,
+                model_key=str(row.get(f"{prefix}_model_key", "")),
+                model_sha256=str(row.get(f"{prefix}_model_sha256", "")),
+                detections=detections, run_tag=run_tag.strip()))
+    return {"findings_created": created,
+            "heuristic_regions_not_recorded": heuristic_regions}
+
+
+def prelabel_image(project_root: str | Path, project_id: str, image_path: str,
+                   model_key: str = "structural_multiclass_detector") -> dict[str, Any]:
+    """Run an installed detector on one image and store its detections as findings."""
+    from core.detection import DETECTION_KINDS, load_image
+    from core.model_runner import ModelRunRefused, run_registered_model
+    from core.models import get_model_spec
+
+    spec = get_model_spec(model_key)
+    if spec is None:
+        raise ValueError(f"{model_key!r} is not in the model registry.")
+    if spec.kind not in DETECTION_KINDS:
+        raise ValueError(
+            f"{model_key} is a {spec.kind}; only detectors give each region its own "
+            "confidence, which a pre-label needs. Run it from Run Model instead.")
+    target = Path(image_path)
+    if not target.is_file():
+        raise ValueError(f"No such image: {image_path}")
+    try:
+        result = run_registered_model(load_image(target), model_key)
+    except ModelRunRefused as exc:
+        raise ValueError(str(exc)) from exc
+    created = findings_from_detections(
+        project_root, project_id, str(target.resolve()),
+        model_used=result.model_used, model_key=result.model_key,
+        model_sha256=result.model_sha256, detections=result.output["detections"])
+    return {"model_key": result.model_key, "model_sha256": result.model_sha256,
+            "model_used": result.model_used, "findings": created,
+            "count": len(created), "scope": result.scope}
 
 
 # ------------------------------------------------------------------- plugins

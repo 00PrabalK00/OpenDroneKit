@@ -1247,20 +1247,78 @@ const twin = {
 
 /* ------------------------------------------------------------- AI INSPECTION */
 
+/* The selected finding, read back from the project: class, the model's claim kept apart
+   from the reviewer's decisions, and every decision in order. Re-drawn on selection, so
+   Accept or Reject followed by a click shows the history growing. */
+function findingDetails() {
+  const host = el("div", { class: "live", "data-live": "" });
+  const draw = async (row) => {
+    const id = row && (row.full_id || row.id);
+    if (!id) {
+      host.innerHTML = "";
+      host.appendChild(emptyState(
+        "Select a finding to see its class, confidence, provenance and review history."));
+      return;
+    }
+    const found = await tryCall("find_annotations");
+    const a = ((found && found.annotations) || []).find((x) => x.id === id);
+    host.innerHTML = "";
+    if (!a) {
+      host.appendChild(emptyState("That finding is no longer in this project."));
+      return;
+    }
+    const history = a.review_history || [];
+    const human = a.created_by === "user";
+    host.appendChild(properties([
+      { group: "Finding" },
+      ...reported([
+        ["Class", a.label], ["Severity", a.severity], ["Status", a.status],
+        ["In report", a.include_in_report && a.status !== "dismissed" ? "yes" : "no"],
+        ["Image", a.source_id], ["Note", a.note],
+      ]),
+      { group: human ? "Drawn by a person" : "What the model claimed" },
+      ...(human ? [] : reported([
+        ["Model", a.model_key], ["Ran as", a.model_used],
+        ["File digest", String(a.model_sha256 || "").slice(0, 16)],
+        ["Confidence", a.confidence == null ? "none recorded" : Number(a.confidence).toFixed(3)],
+      ])),
+      { group: `Review history (${history.length})` },
+      ...history.map((h) => ({
+        label: `${h.decision} \u00b7 ${h.reviewer}`,
+        value: `${h.at}${h.comment ? " \u2014 " + h.comment : ""}`,
+      })),
+    ]));
+  };
+  draw(selection.get("finding"));
+  // Redrawn by refreshLive, which builds a new host; the old one stops listening once
+  // it has left the page rather than drawing into a detached node forever.
+  const off = selection.on("finding", (row) => {
+    if (host.isConnected === false) { off(); return; }
+    draw(row);
+  });
+  return host;
+}
+
 const inspection = {
   id: "inspection",
   title: "AI Inspection",
   /* Validate resolves to verify_site -- "check the site against the plan" -- which is the
      Mission Planning meaning of the word. On this screen it should move a finding's
      status, which is what Accept already does. One label cannot carry two verbs. */
-  toolbar: ["Run AI", "|", "Accept", "Reject", "Edit", "Flag", "Tag", "|",
+  /* Run Model, Pre-label, Grade Corrosion and Land Cover reach the six installed models
+     that had no caller, and corrosion grading, which had no Api at all. Label and Build
+     Corpus are the labelling canvas and the corpus builder, both built and tested and
+     reachable from no screen. */
+  toolbar: ["Run AI", "Run Model", "Prelabel", "Grade Corrosion", "Land Cover", "|",
+            "Accept", "Reject", "Edit", "Flag", "Tag", "|",
+            "Label", "Build Corpus", "Train Model", "|",
             "Open in 3D", "Generate Report"],
   left: [
     /* The class names were reasonable; the counts beside them -- 4, 1, 2, 1 -- were
        not. A count next to a defect class reads as "this project has four cracks", and
        the project had none. The vocabulary is real and comes from the shared taxonomy;
        the counts come from the project's own findings or are absent. */
-    { id: "ai.library", title: "Defect Library", render: () => live({
+    { id: "ai.library", title: "Defect Library", refresh: true, render: () => live({
       calls: ["asset_taxonomy", "find_annotations"],
       empty: "No defect vocabulary available.",
       isEmpty: ([t]) => !(t && (t.asset_types || []).length),
@@ -1292,17 +1350,34 @@ const inspection = {
        are installed and whether each still matches the digest its metrics were measured
        on, which is the question this panel was reaching for. */
     { id: "ai.datasets", title: "Installed Models", render: () => live({
-      calls: ["verify_models"],
+      calls: ["verify_models", "model_status"],
       empty: "No models installed.",
-      isEmpty: ([r]) => !(r && (r.models || []).length),
-      render: ([r]) => tree((r.models || []).map((m, i) => ({
-        id: `r${i}`,
-        label: m.model_key,
-        icon: "\u25c8",
-        /* A mismatch means the published metric describes a different file, so it is
-           the only thing worth putting in the margin. */
-        meta: m.status === "mismatch" ? "digest mismatch" : m.status,
-      })), { selectKind: "model" }),
+      isEmpty: ([r, s]) => !(r && (r.models || []).length) && !(s && (s.detectors || []).length),
+      render: ([r, s]) => tree([
+        {
+          id: "models", label: "Models", icon: "\u25a4", expanded: true,
+          children: ((r && r.models) || []).map((m, i) => ({
+            id: `r${i}`,
+            label: m.model_key,
+            icon: "\u25c8",
+            /* A mismatch means the published metric describes a different file, so it
+               is the only thing worth putting in the margin. */
+            meta: m.status === "mismatch" ? "digest mismatch" : m.status,
+          })),
+        },
+        /* Per detector, which answers: a trained model or a classical heuristic. The
+           global model count said nine installed and nothing about metal and solar
+           detection being heuristic on this machine. */
+        {
+          id: "detectors", label: "Detectors", icon: "\u25a4", expanded: true,
+          children: ((s && s.detectors) || []).map((d, i) => ({
+            id: `d${i}`,
+            label: d.detector,
+            icon: d.backend === "heuristic" ? "\u26a0" : "\u25c8",
+            meta: d.backend === "heuristic" ? "HEURISTIC" : d.backend,
+          })),
+        },
+      ], { selectKind: "model" }),
     }) },
   ],
   canvas: () => splitCanvas([
@@ -1315,8 +1390,24 @@ const inspection = {
        a coordinate in Madhya Pradesh, attributed to a real model with a real digest. The
        provenance being real is what made it dangerous -- it read as a measurement with a
        audit trail. Selection is what fills this panel. */
-    { id: "ai.finding", title: "Finding Details", render: () =>
-      emptyState("Select a finding to see its class, severity, provenance and location.") },
+    { id: "ai.finding", title: "Finding Details", refresh: true, render: () => findingDetails() },
+    /* What Run AI is inspecting. Solar and metal detection run on the asset they belong
+       to, and nothing on any screen could say what the asset was, so both passes were
+       unreachable from the app. Declared here, sent with Run AI. On this machine both are
+       classical heuristics (the Detectors panel says so); their regions are never
+       findings and never move the health score. */
+    { id: "ai.runsettings", title: "Run AI Settings", render: () => fields([
+      { key: "structure_type", label: "Structure", value: "generic",
+        options: ["generic", "bridge", "building", "tower", "pipeline", "solar"] },
+      { key: "material_type", label: "Material", value: "concrete",
+        options: ["concrete", "steel", "reinforced_steel", "masonry", "composite", "mixed"] },
+      { key: "run_solar_detection", label: "Solar detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: solar assets" },
+      { key: "run_metal_detection", label: "Metal detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: steel / towers" },
+      { key: "crack_presence_gate", label: "Crack presence gate", value: "off",
+        options: ["off", "on"], unit: "on: skip segmenter when no tile flagged" },
+    ], settingChanged) },
   ],
   bottom: [
     /* Four invented findings used to sit here -- F-118 through F-112, on a "Roof --
@@ -1327,28 +1418,35 @@ const inspection = {
 
        These are the project's own annotations. A finding a person drew and one a model
        proposed are different kinds of evidence, so the table says which. */
-    { id: "ai.findings", title: "Findings", flex: 4, render: () => live({
+    { id: "ai.findings", title: "Findings", flex: 4, refresh: true, render: () => live({
       calls: ["find_annotations"],
       empty: "No findings yet. Run AI, or annotate an image.",
       isEmpty: ([found]) => !(found && (found.annotations || []).length),
       render: ([found]) => table(
         [{ title: "Finding", key: "id" }, { title: "Class", key: "cls" },
-         { title: "Severity", key: "sev" }, { title: "Source", key: "src" },
-         { title: "Status", key: "status" }],
+         { title: "Confidence", key: "conf", num: true },
+         { title: "Source", key: "src" }, { title: "Status", key: "status" },
+         { title: "Report", key: "report" }],
         (found.annotations || []).slice(0, 200).map((a) => ({
           id: String(a.id || "").slice(0, 8),
+          // The whole id travels with the row: review needs it, the column shows eight.
+          full_id: a.id,
+          label: a.label,
           cls: a.label || "\u2014",
-          sev: a.severity || "\u2014",
-          src: a.created_by === "user" ? "human" : "model",
+          /* The model's own score, or a dash when nothing produced one. Never a number
+             for a drawn finding or a heuristic region. */
+          conf: a.confidence == null ? "\u2014" : Number(a.confidence).toFixed(2),
+          src: a.created_by === "user" ? "human" : (a.model_key || a.created_by || "model"),
           status: a.status || "\u2014",
+          report: a.include_in_report && a.status !== "dismissed" ? "yes" : "no",
         })), { selectKind: "finding" }),
     }) },
     /* The class list was crack / corrosion / ponding -- three of the labels the sample
        table happened to use. Filtering is now done on the tags the project actually
        carries, which is what an inspector groups findings by, and the list is read from
-       the project rather than written here. Minimum confidence was removed: annotations
-       do not store a confidence, so the control filtered nothing. */
-    { id: "ai.filters", title: "Filter by tag", flex: 1, render: () => live({
+       the project rather than written here. Minimum confidence was removed when
+       annotations stored none; model findings now carry one, shown in Findings. */
+    { id: "ai.filters", title: "Filter by tag", flex: 1, refresh: true, render: () => live({
       calls: ["list_annotation_tags"],
       empty: "No tags yet. Select findings and tag them to group by elevation, "
              + "reflight or whatever the job needs.",

@@ -21,6 +21,11 @@ LOGGER = logging.getLogger(__name__)
 
 _MODEL_NET_CACHE: dict[str, Any] = {}
 
+#: Registry kinds that are YOLO-layout ONNX detectors. The EL solar model was exported
+#: as "onnx_detection" and was rejected by an equality check against "onnx_yolo", so an
+#: installed, measured model silently fell back to the heuristic.
+DETECTION_KINDS = frozenset({"onnx_yolo", "onnx_detection"})
+
 
 def _skeletonize_binary(binary_mask: np.ndarray) -> np.ndarray:
     """
@@ -72,7 +77,13 @@ class CrackDetectionResult:
 
 @dataclass
 class MetalDefectResult:
-    """Result bundle for metal defect detection."""
+    """Result bundle for metal defect detection.
+
+    There is no trained metal-surface model. This is a texture-discontinuity heuristic
+    and says so in `model_used`, with no model identity, so nothing downstream can read
+    its regions as a model's findings. On an aerial photo of farmland it marks a third
+    of the pixels; it is a screening aid for close-range metal surfaces and nothing more.
+    """
 
     mask: np.ndarray
     overlay: np.ndarray
@@ -80,19 +91,26 @@ class MetalDefectResult:
     total_pixels: int
     defect_ratio: float
     defect_regions: int
+    model_used: str = "heuristic"
+    model_key: str = ""
+    model_sha256: str = ""
 
 
 @dataclass
 class DefectHit:
     label: str
-    confidence: float
+    # The model's score, or None when nothing produced one. The classical paths used to
+    # derive a "confidence" from region area (0.35..0.95), which read exactly like a
+    # model score and meant nothing: 963 regions on a farmland photo at 0.95. A heuristic
+    # region has no calibrated score, so it reports none.
+    confidence: float | None
     bbox_xyxy: tuple[int, int, int, int]
     area_px: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "label": self.label,
-            "confidence": float(self.confidence),
+            "confidence": None if self.confidence is None else float(self.confidence),
             "bbox_xyxy": [int(v) for v in self.bbox_xyxy],
             "area_px": int(self.area_px),
         }
@@ -180,7 +198,8 @@ def _filter_connected_components(mask: np.ndarray, min_area_px: int) -> np.ndarr
     return cleaned
 
 
-def _mask_to_hits(mask: np.ndarray, label: str, min_area_px: int, confidence: float) -> list[DefectHit]:
+def _mask_to_hits(mask: np.ndarray, label: str, min_area_px: int,
+                  confidence: float | None = None) -> list[DefectHit]:
     hits: list[DefectHit] = []
     count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
     for idx in range(1, count):
@@ -194,7 +213,7 @@ def _mask_to_hits(mask: np.ndarray, label: str, min_area_px: int, confidence: fl
         hits.append(
             DefectHit(
                 label=label,
-                confidence=float(np.clip(confidence, 0.01, 0.99)),
+                confidence=None if confidence is None else float(np.clip(confidence, 0.01, 0.99)),
                 bbox_xyxy=(x, y, x + w, y + h),
                 area_px=area,
             )
@@ -238,11 +257,6 @@ def _union_mask(mask_by_class: dict[str, np.ndarray], shape: tuple[int, int]) ->
             continue
         union = cv2.bitwise_or(union, (mask > 0).astype(np.uint8) * 255)
     return union
-
-
-def _score_from_area(mask: np.ndarray) -> float:
-    ratio = float(np.mean(mask > 0))
-    return float(np.clip(0.35 + ratio * 2.0, 0.35, 0.95))
 
 
 def _load_onnx_net(model_path: Path) -> Any | None:
@@ -802,12 +816,12 @@ def _structural_fallback(image_bgr: np.ndarray, min_area_px: int) -> tuple[dict[
     crack = detect_cracks(image_bgr, min_area_px=min_area_px)
     if int(crack.crack_pixels) > 0:
         mask_by_class["crack"] = crack.mask
-        detections.extend(_mask_to_hits(crack.mask, "crack", min_area_px, confidence=_score_from_area(crack.mask)))
+        detections.extend(_mask_to_hits(crack.mask, "crack", min_area_px))
 
     metal = detect_metal_defects(image_bgr, min_area_px=max(40, min_area_px))
     if int(metal.defect_pixels) > 0:
         mask_by_class["corrosion"] = metal.mask
-        detections.extend(_mask_to_hits(metal.mask, "corrosion", min_area_px, confidence=_score_from_area(metal.mask)))
+        detections.extend(_mask_to_hits(metal.mask, "corrosion", min_area_px))
 
     for label, mask in (
         ("spalling", _detect_spalling_mask(image_bgr, min_area_px)),
@@ -819,7 +833,7 @@ def _structural_fallback(image_bgr: np.ndarray, min_area_px: int) -> tuple[dict[
         if pixels <= 0:
             continue
         mask_by_class[label] = mask
-        detections.extend(_mask_to_hits(mask, label, min_area_px, confidence=_score_from_area(mask)))
+        detections.extend(_mask_to_hits(mask, label, min_area_px))
 
     return mask_by_class, detections
 
@@ -854,7 +868,7 @@ def detect_structural_defects(
     if use_model and model_available:
         spec = get_model_spec(model_key)
         path_str = str(model_info.get("path", ""))
-        if spec is not None and path_str and spec.kind == "onnx_yolo":
+        if spec is not None and path_str and spec.kind in DETECTION_KINDS:
             try:
                 model_hits = _run_onnx_yolo(
                     image_bgr=image_bgr,
@@ -973,7 +987,7 @@ def _solar_fallback(
     hotspot_mask, hotspot_max = _detect_hotspot_mask(image_bgr, thermal_gray=thermal_gray, min_area_px=min_area_px)
     if int(np.sum(hotspot_mask > 0)) > 0:
         mask_by_class["hotspot"] = hotspot_mask
-        detections.extend(_mask_to_hits(hotspot_mask, "hotspot", min_area_px=max(20, min_area_px // 2), confidence=_score_from_area(hotspot_mask)))
+        detections.extend(_mask_to_hits(hotspot_mask, "hotspot", min_area_px=max(20, min_area_px // 2)))
 
     for label, mask in (
         ("cell_crack", _detect_solar_crack_mask(image_bgr, min_area_px=min_area_px)),
@@ -984,7 +998,7 @@ def _solar_fallback(
         if pixels <= 0:
             continue
         mask_by_class[label] = mask
-        detections.extend(_mask_to_hits(mask, label, min_area_px=max(20, min_area_px // 2), confidence=_score_from_area(mask)))
+        detections.extend(_mask_to_hits(mask, label, min_area_px=max(20, min_area_px // 2)))
 
     return mask_by_class, detections, hotspot_max
 
@@ -999,8 +1013,10 @@ def detect_solar_defects(
     """
     Detect solar inspection defects (hotspots, soiling, cell cracks, delamination).
 
-    If a model is available in models/model_registry.json and weight file exists,
-    ONNX YOLO inference is used. Otherwise, a robust classical fallback is used.
+    If the model named by `model_key` is installed, ONNX detection runs and its answer --
+    including an empty one -- is the result. Only when no model is installed, or it
+    failed to run, does the classical path run, and it is reported as `heuristic` (or
+    `onnx_fallback_heuristic`) with no confidence on any region.
     """
     h, w = image_bgr.shape[:2]
     total = int(max(1, h * w))
@@ -1011,11 +1027,12 @@ def detect_solar_defects(
     model_used = "heuristic"
     model_available = bool(model_info.get("exists", False))
     hotspot_max_temp_c: float | None = None
+    model_ran = False
 
     if use_model and model_available:
         spec = get_model_spec(model_key)
         path_str = str(model_info.get("path", ""))
-        if spec is not None and path_str and spec.kind == "onnx_yolo":
+        if spec is not None and path_str and spec.kind in DETECTION_KINDS:
             try:
                 model_hits = _run_onnx_yolo(
                     image_bgr=image_bgr,
@@ -1025,14 +1042,18 @@ def detect_solar_defects(
                     iou_threshold=float(spec.iou_threshold),
                     input_size=int(spec.input_size),
                 )
-            except Exception:
+                model_ran = True
+            except Exception as exc:
                 model_hits = []
-            if model_hits:
+                LOGGER.warning("ONNX solar inference failed (%s: %s); using heuristic.",
+                               type(exc).__name__, exc)
+            if model_ran:
+                # Ran: its answer stands, empty or not.
                 hits = model_hits
                 mask_by_class = _hits_to_masks((h, w), hits)
                 model_used = f"onnx:{Path(path_str).name}"
 
-    if not hits or not mask_by_class:
+    if not model_ran:
         mask_by_class, hits, hotspot_max_temp_c = _solar_fallback(
             image_bgr=image_bgr,
             thermal_gray=thermal_gray,
@@ -1063,5 +1084,7 @@ def detect_solar_defects(
         class_pixel_ratio=class_pixel_ratio,
         model_used=model_used,
         model_available=model_available,
+        model_key=identity["model_key"],
+        model_sha256=identity["model_sha256"],
         hotspot_max_temp_c=hotspot_max_temp_c,
     )

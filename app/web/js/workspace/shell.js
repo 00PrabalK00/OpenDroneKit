@@ -15,10 +15,32 @@ import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./
 import { armDrawing, bindDrawingKeys, canDraw, vertices } from "./draw.js";
 import { refreshProjectOverlays, showVector } from "./mapview.js";
 import { currentImage, setImage, setView } from "./viewstate.js";
-import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
+import { ask, askOne, choose as chooseModal, confirmAsk, labelBoxes, reveal, showResult } from "./modal.js";
 import { basemapNames, setBasemap, visibleBounds } from "./mapview.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
+
+/**
+ * What a finished job produced, in the words a user acts on. "Job finished" said nothing
+ * about a Run AI whose reconstruction failed, or how many findings are waiting for review.
+ */
+function jobOutcome(result) {
+  if (!result || typeof result !== "object") return "";
+  const parts = [];
+  if (result.findings_created != null) parts.push(`${result.findings_created} model finding(s) to review`);
+  if (result.heuristic_regions_not_recorded) {
+    parts.push(`${result.heuristic_regions_not_recorded} heuristic region(s) not recorded as findings`);
+  }
+  for (const [name, count] of Object.entries(result.heuristic_images_not_scored || {})) {
+    if (count) parts.push(`${name} ran as a heuristic on ${count} image(s), not scored`);
+  }
+  if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
+  if (result.metrics && typeof result.metrics.map50 === "number") {
+    parts.push(`validation mAP50 ${result.metrics.map50.toFixed(3)}`);
+  }
+  if (result.parity_ok === true && result.key) parts.push(`installed as ${result.key}`);
+  return parts.length ? `: ${parts.join("; ")}` : "";
+}
 
 /* Safety-critical actions must never be one careless click from Save. They are styled
  * apart and listed here so the styling cannot drift from the meaning. */
@@ -374,7 +396,10 @@ export class Shell {
       case "anomaly": {
         // A finding is reviewable, and the review buttons ask for an id. Remembering it
         // here is what lets Accept/Reject/Flag act on what is on screen.
-        this.selectedFindingId = value.id || value.label || null;
+        // The table shows the first eight characters of the id; review needs all of it.
+        // Selecting a row used to hand review_finding the short form, which matched no
+        // annotation, so Accept on a selected finding always failed.
+        this.selectedFindingId = value.full_id || value.id || value.label || null;
         this.toast(`${name} selected. Accept, Reject and Flag act on this finding.`, "ok");
         return;
       }
@@ -993,6 +1018,7 @@ export class Shell {
         await this.refreshState();
         // A new overlay or marker belongs on the map the operator is looking at.
         refreshProjectOverlays();
+        this.dock.refreshLive();
       }
     } catch (error) {
       // Shown, not swallowed. A refusal from the Api is the most useful thing this
@@ -1069,6 +1095,9 @@ export class Shell {
       // twenty-six buttons that looked completely dead and raised nothing.
       prompt: (label, fallback) => askOne(label, label, fallback),
       choose: (title, options) => chooseModal(title, options),
+      ask: (title, fields) => ask(title, fields),
+      showResult: (title, content) => showResult(title, content),
+      labelBoxes: (title, spec) => labelBoxes(title, spec),
       missionOptions: () => {
         // What the mission panels were actually edited to, under the names the planner
         // reads.
@@ -1143,6 +1172,22 @@ export class Shell {
         const agl = Number(raw.agl);
         if (raw.agl !== undefined && raw.agl !== "" && Number.isFinite(agl) && agl > 0) {
           options.flight_height_agl_m = agl;
+        }
+        return options;
+      },
+      /* Run AI: the reconstruction settings plus what the Run AI Settings panel says
+       * the asset is and which optional detectors to run. "auto" sends nothing, so
+       * the pipeline decides from the declared structure and material. */
+      inspectionOptions: () => {
+        const raw = this.settings || {};
+        const options = this.actionContext().pipelineOptions();
+        for (const key of ["structure_type", "material_type"]) {
+          if (raw[key]) options[key] = String(raw[key]);
+        }
+        for (const key of ["run_solar_detection", "run_metal_detection", "crack_presence_gate"]) {
+          const value = String(raw[key] ?? "").toLowerCase();
+          if (value === "on") options[key] = true;
+          else if (value === "off") options[key] = false;
         }
         return options;
       },
@@ -1270,8 +1315,9 @@ export class Shell {
       const state = status.state || status.status;
       const percent = status.progress ?? status.percent;
       if (state === "done" || state === "finished" || state === "complete") {
-        this.toast(`Job ${jobId} finished.`, "ok");
+        this.toast(`Job ${jobId} finished${jobOutcome(status.result)}.`, "ok");
         await this.refreshState();
+        this.dock.refreshLive();
         return;
       }
       if (state === "failed" || state === "error") {

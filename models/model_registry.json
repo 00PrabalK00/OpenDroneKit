@@ -164,7 +164,12 @@
       "input_size": 96,
       "description": "ResNet18 @96 on Raptor Maps InfraredSolarModules, run solar_thermal_cls, 26 epochs (early-stopped). Validation balanced accuracy 0.724, plain accuracy 0.815. Every one of the 12 classes is recalled; none is ignored. READ PER-CLASS RECALL, NOT THE MEAN. The corpus is 10,000 No-Anomaly against 249 Hot-Spot and 204 Soiling, so a single averaged figure hides exactly the rare classes the model exists to find. Recall by class: Diode 0.969, Diode-Multi 0.957, No-Anomaly 0.926, Shadowing 0.809, Vegetation 0.722, Hot-Spot-Multi 0.719, Offline-Module 0.707, Hot-Spot 0.650, Cracking 0.646, Cell 0.635, Cell-Multi 0.537, SOILING 0.367. SOILING IS THE WEAK CLASS at 0.367 recall and 0.344 precision on 30 validation samples: roughly two in three soiled modules are missed, and a third of soiling calls are wrong. Do not report soiling findings from this model without saying so. SCOPE: the source crops are 24x40 px upsampled to 96, so this is a PER-MODULE CLASSIFIER over polygons something else must already have located. It is not a localiser and cannot find modules in a survey image. Balanced accuracy selected the checkpoint; plain accuracy would have chosen a model that answers No-Anomaly to everything.",
       "sha256": "6933a09abff99bf8d4e2619a50a64498432d2877b9abd55ccab7a87ac357fd42",
-      "status": "installed"
+      "status": "installed",
+      "preprocessing": {
+        "input": "rgb_0_1",
+        "normalisation": "imagenet",
+        "output": "logits"
+      }
     },
     "rail_corridor_segmentation": {
       "kind": "onnx_segmentation",
@@ -188,7 +193,17 @@
       "input_size": 224,
       "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (IoU 0.637). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface.",
       "sha256": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
-      "status": "installed"
+      "status": "installed",
+      "output_classes": [
+        "cracked",
+        "uncracked"
+      ],
+      "positive_class": "cracked",
+      "preprocessing": {
+        "input": "rgb_0_1",
+        "normalisation": "in_graph",
+        "output": "softmax_in_graph"
+      }
     },
     "rail_obstacle_detector": {
       "kind": "onnx_yolo",

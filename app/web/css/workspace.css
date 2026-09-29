@@ -556,3 +556,16 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
 }
 
 .modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-3); }
+
+/* A model's overlay and the labelling canvas need room; a 640px dialog shrank both to
+   thumbnails nobody could read a box on. */
+.modal.modal-wide { max-width: min(1100px, 92vw); max-height: 92vh; }
+.modal-image { display: block; max-width: 100%; max-height: 60vh; margin: 0 auto var(--sp-2); }
+.label-canvas {
+  display: block; max-width: 100%; max-height: 64vh; margin: 0 auto;
+  cursor: crosshair; border: 1px solid var(--line);
+}
+
+/* A detector answering with classical rules rather than a trained model. Marked in the
+   same colour as synthetic content, because to a user it is the same warning. */
+.badge-heuristic { color: var(--synthetic); font-weight: 600; }

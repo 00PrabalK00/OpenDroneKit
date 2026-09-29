@@ -217,7 +217,71 @@ class TestReviewKeepsWhatTheModelClaimed:
 
         root, annotation_id = project_with_finding
         result = desktop_ops.review_finding(root, annotation_id, "accept", "prabal")
-        assert "prabal" in (result.get("note") or "")
+        assert [h["reviewer"] for h in result["review_history"]] == ["prabal"]
+
+    def test_the_inspector_note_is_not_overwritten(self, tmp_path) -> None:
+        """The audit found 'flag by alice' replacing an inspector's measured remark."""
+        from app import desktop_ops
+        from core.annotations import create_annotation, get_annotation
+
+        annotation = create_annotation(
+            tmp_path, "p1", "image", "a.jpg", "point",
+            {"type": "Point", "coordinates": [1, 2]}, "crack", "medium", "open",
+            note="width 2mm, inspector remark",
+        )
+        desktop_ops.review_finding(tmp_path, annotation.id, "flag", "alice")
+        desktop_ops.review_finding(tmp_path, annotation.id, "reject", "bob")
+        stored = get_annotation(tmp_path, annotation.id)
+        assert stored.note == "width 2mm, inspector remark"
+        # Both decisions survive, in order: bob's did not erase alice's.
+        assert [(h["decision"], h["reviewer"]) for h in stored.review_history] == [
+            ("flag", "alice"), ("reject", "bob")]
+        assert stored.review_history[1]["previous_status"] == "in_review"
+
+    def test_a_rejected_finding_leaves_the_report(self, tmp_path) -> None:
+        """Rejected findings kept include_in_report=True and reached reports."""
+        from app import desktop_ops
+        from core.annotations import create_annotation, get_report_annotations
+
+        kept = create_annotation(
+            tmp_path, "p1", "image", "a.jpg", "point",
+            {"type": "Point", "coordinates": [1, 2]}, "crack", "medium", "open")
+        rejected = create_annotation(
+            tmp_path, "p1", "image", "a.jpg", "point",
+            {"type": "Point", "coordinates": [3, 4]}, "crack", "medium", "open")
+        result = desktop_ops.review_finding(tmp_path, rejected.id, "reject", "bob")
+        assert result["include_in_report"] is False
+        assert [a.id for a in get_report_annotations(tmp_path, "p1")] == [kept.id]
+
+        # Accepting after all puts it back: the latest decision is the one that counts.
+        desktop_ops.review_finding(tmp_path, rejected.id, "accept", "carol")
+        assert {a.id for a in get_report_annotations(tmp_path, "p1")} == {kept.id, rejected.id}
+
+    def test_a_dismissed_finding_never_reaches_a_report(self, tmp_path) -> None:
+        """Even one whose report flag was left set by some older path."""
+        from core.annotations import create_annotation, get_report_annotations
+
+        create_annotation(
+            tmp_path, "p1", "image", "a.jpg", "point",
+            {"type": "Point", "coordinates": [1, 2]}, "crack", "medium", "dismissed",
+            include_in_report=True)
+        assert get_report_annotations(tmp_path, "p1") == []
+
+    def test_the_model_identity_survives_review(self, tmp_path) -> None:
+        from app import desktop_ops
+        from core.annotations import create_annotation
+
+        annotation = create_annotation(
+            tmp_path, "p1", "image", "a.jpg", "rectangle",
+            {"type": "Polygon", "coordinates": [[[0, 0], [4, 0], [4, 3], [0, 3], [0, 0]]]},
+            "Crack", "medium", "open", created_by="model",
+            model_used="onnx:x.onnx", model_key="structural_multiclass_detector",
+            model_sha256="ab" * 32, confidence=0.49)
+        result = desktop_ops.review_finding(tmp_path, annotation.id, "reject", "bob")
+        assert result["model_key"] == "structural_multiclass_detector"
+        assert result["model_sha256"] == "ab" * 32
+        assert result["confidence"] == pytest.approx(0.49)
+        assert result["created_by"] == "model"
 
     def test_an_unknown_decision_is_refused(self, project_with_finding) -> None:
         from app import desktop_ops

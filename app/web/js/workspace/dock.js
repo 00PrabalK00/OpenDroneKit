@@ -219,7 +219,7 @@ export class Dock {
     });
 
     if (state.hidden) el.classList.add("hidden");
-    this.panels.set(def.id, { def, el, region });
+    this.panels.set(def.id, { def, el, region, body });
     return el;
   }
 
@@ -255,6 +255,20 @@ export class Dock {
     body.appendChild(view);
     holder.appendChild(body);
     win.document.body.appendChild(holder);
+  }
+
+  /**
+   * Re-read the panels that declare `refresh: true`, after an action changed what they
+   * show. Live panels read the application once, when drawn; without this a finding
+   * accepted, rejected or pre-labelled stayed as it was on screen until the workspace
+   * was reopened, and Run AI's findings never appeared at all.
+   */
+  refreshLive() {
+    for (const { def, body } of this.panels.values()) {
+      if (!def.refresh || !def.render || !body) continue;
+      body.innerHTML = "";
+      body.appendChild(def.render());
+    }
   }
 
   showPanel(id) {

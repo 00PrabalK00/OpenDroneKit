@@ -87,7 +87,10 @@ class AnnotationOut(BaseModel):
 
 
 class AnnotationReview(BaseModel):
-    action: Literal["accept", "edit", "reclassify"]
+    # "reject" is how a reviewer dismisses a false positive. Without it the only way to
+    # say "the model was wrong" was to delete the pre-label, which also destroyed the
+    # model's claim -- the one record of what the model got wrong.
+    action: Literal["accept", "edit", "reclassify", "reject"]
     geometry: dict[str, Any] | None = None
     label: str | None = Field(default=None, min_length=1, max_length=500)
     severity: str | None = None
@@ -412,14 +415,20 @@ def review_annotation(
     if payload.action == "reclassify" and payload.label is None:
         raise HTTPException(status_code=422, detail="Reclassify review requires a replacement label.")
 
+    rejecting = payload.action == "reject"
+    if rejecting and (payload.geometry is not None or payload.label is not None):
+        raise HTTPException(
+            status_code=422,
+            detail="A rejection keeps the model's geometry and label as the record of what it claimed.")
     candidate = AnnotationCreate(
         source_type=row.source_type, source_id=row.source_id,
         annotation_type=row.annotation_type,
         geometry=payload.geometry or loads_geometry(row.geometry_geojson) or {},
         crs_epsg=row.crs_epsg, label=payload.label or row.label,
         severity=payload.severity or row.severity,
-        status=payload.status or "open", note=payload.note if payload.note is not None else row.note,
-        include_in_report=True,
+        status="dismissed" if rejecting else (payload.status or "open"),
+        note=payload.note if payload.note is not None else row.note,
+        include_in_report=not rejecting,
     )
     _validate(candidate)
     row.geometry_geojson = dumps_geometry(candidate.geometry)
@@ -427,9 +436,11 @@ def review_annotation(
     row.severity = candidate.severity
     row.status = candidate.status
     row.note = candidate.note
-    row.include_in_report = True
+    # A rejected false positive stays on record, with its claim, and out of the report.
+    row.include_in_report = not rejecting
     row.review_action = {
         "accept": "accepted", "edit": "edited", "reclassify": "reclassified",
+        "reject": "rejected",
     }[payload.action]
     row.reviewed_by = user.id
     row.reviewed_at = utcnow()

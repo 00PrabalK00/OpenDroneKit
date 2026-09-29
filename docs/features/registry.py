@@ -879,7 +879,14 @@ VISION = [
       "A third attempt, an RGB detector over panel condition (Clear/Dusty/Damage/Snow), "
       "reached only mAP50 0.318 with Dusty its WORST class at 0.073 -- the one class "
       "Indian sites most need -- and was deliberately NOT registered. Soiling looks like "
-      "a radiometric comparison problem rather than a detection one."),
+      "a radiometric comparison problem rather than a detection one. "
+      "IN THE PIPELINE: its solar routing key, solar_defect_detector, has no weights, so "
+      "Run AI's solar pass is the classical heuristic, reported as model_used=heuristic "
+      "with no confidence, never written as a finding and left out of the health score "
+      "(the report and the finished-job message say it was not scored). It runs when AI "
+      "Inspection > Run AI Settings declares a solar structure or switches solar "
+      "detection on, and not otherwise. Both trained models are run from AI Inspection > "
+      "Run Model with their scope note beside the answer."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "
       "with the survey's vertical accuracy carried through. Refuses without an accuracy "
@@ -903,7 +910,8 @@ VISION = [
       "Users label, split, train, review metrics and deploy their own model.",
       "implemented", ["tests/test_custom_training.py",
                       "tests/test_label_sets.py",
-                      "tests/test_label_ui.py"],
+                      "tests/test_label_ui.py",
+                      "tests/test_custom_model_from_app.py"],
       "Trainers exist, and core/custom_training.py is now the dataset builder they were "
       "missing: labelled images become splits or the corpus is REFUSED with the reason. "
       "Refused rather than warned, because a corpus is built once and its metric read "
@@ -928,13 +936,26 @@ VISION = [
       "ONLY when the user marks it deliberately empty, because a confirmed negative is "
       "evidence and a forgotten image is an accident, and training on the second teaches "
       "the model the defect is absent. "
-      "WHAT IS STILL NOT HERE: training is launched from the CLI or the job queue rather "
-      "than from the labelling screen, so label-to-model is two steps and not one."),
+      "LABEL TO MODEL IN THE APP. AI Inspection's Label, Build Corpus and Train Model "
+      "buttons mount the canvas on a dataset image, keep the boxes in the project "
+      "(training/labels/boxes.json), build the corpus from them, train in a separate "
+      "process as a cancellable job, show the validation mAP50, and deploy only on a "
+      "second click: the ONNX export must pass the parity gate and installs under a "
+      "custom_* key, never over a shipped model. tests/test_custom_model_from_app.py runs "
+      "that whole path through the Api on CODEBRIM images carrying real boxes, then runs "
+      "the deployed model; that test needs the gitignored corpus and a CUDA GPU and "
+      "skips without them. One epoch proves the path, not a useful model."),
     F("ai.assisted_annotation", "AI assisted annotation", "hub", "AI",
       "Model pre-labels imagery; a reviewer accepts, edits, merges, splits or reclassifies.",
-      "implemented", ["tests/test_assisted_annotations.py"],
+      "implemented", ["tests/test_assisted_annotations.py",
+                      "tests/test_ai_user_path.py::TestPrelabelFromTheDesktop",
+                      "tests/test_ai_user_path.py::TestRunAIFromTheApi"],
       "A public-domain concrete photograph exercises installed YOLO ONNX inference and "
-      "every review action. Original model geometry, label, confidence, key and sha256 "
+      "every review action, including reject, which dismisses a false positive and "
+      "keeps its claim instead of forcing a delete. The desktop app pre-labels through "
+      "Api.prelabel_image (AI Inspection > Prelabel), and Run AI writes the structural "
+      "detector's hits as findings in review and out of the report; heuristic regions "
+      "are never written as findings. Original model geometry, label, confidence, key and sha256 "
       "remain immutable. SegFormer pre-label persistence is refused because its current "
       "result contract has no per-region confidence; no score is synthesised."),
     F("ai.human_validation", "Human validation record", "hub", "AI",
@@ -942,7 +963,11 @@ VISION = [
       "confidence) and the reviewer's decision are separate fields, so reviewing never "
       "erases what the model asserted.",
       "implemented", ["tests/test_inspection.py::TestProvenance",
-                      "tests/test_inspection.py::TestReview"]),
+                      "tests/test_inspection.py::TestReview",
+                      "tests/test_desktop_ops.py::TestReviewKeepsWhatTheModelClaimed"],
+      "The desktop review (Accept / Reject / Flag) appends to a review history rather "
+      "than overwriting the inspector's note or the previous reviewer, and a rejected "
+      "finding leaves the report."),
     F("ai.quantification", "Defect quantification", "vision", "AI",
       "Counts, total length, total area and percentage of surface affected, in metric "
       "units, with unmeasured defects declared rather than counted as zero.",

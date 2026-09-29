@@ -271,6 +271,12 @@ class ONNXSemanticPredictor:
         # model and call the weights identified -- see sha256_onnx_model.
         self.checkpoint_sha256 = sha256_onnx_model(path)
         self._session = ort.InferenceSession(str(path), providers=providers)
+        # ONNX Runtime lists CUDA as available when the provider DLL is present and then,
+        # if cuBLAS or cuDNN is missing, logs an error and quietly runs on the CPU. The
+        # device reported must be the one that loaded, or a CPU run is recorded as CUDA
+        # and slips past the CPU size guard in run_semantic_inference.
+        if self.device == 'cuda' and 'CUDAExecutionProvider' not in self._session.get_providers():
+            self.device = 'cpu'
         self._input_name = self._session.get_inputs()[0].name
         self._mean = np.asarray(mean, dtype=np.float32)[:, None, None]
         self._std = np.asarray(std, dtype=np.float32)[:, None, None]

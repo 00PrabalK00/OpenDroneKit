@@ -222,3 +222,111 @@ export function reveal(title, body) {
     setTimeout(() => { area.focus(); area.select(); }, 0);
   });
 }
+
+/**
+ * Show what a model said about an image: the overlay it drew, and the facts beside it.
+ *
+ * `lines` is [[label, value]]. The model's scope note goes in as a line like any other,
+ * because several installed models are valid on one kind of imagery only and this box
+ * is where a user decides whether the answer applies to their photograph.
+ */
+export function showResult(title, { image = "", lines = [] } = {}) {
+  return new Promise((resolve) => {
+    const box = panel(title);
+    box.classList.add("modal-wide");
+    if (image) {
+      const picture = document.createElement("img");
+      picture.className = "modal-image";
+      picture.alt = title;
+      picture.src = image;
+      box.appendChild(picture);
+    }
+    const table = document.createElement("table");
+    table.className = "props";
+    for (const [label, value] of lines) {
+      const row = document.createElement("tr");
+      const head = document.createElement("th");
+      head.textContent = label;
+      const cell = document.createElement("td");
+      cell.textContent = value == null ? "—" : String(value);
+      row.append(head, cell);
+      table.appendChild(row);
+    }
+    box.appendChild(table);
+    let close = () => {};
+    const finish = () => { close(); resolve(); };
+    buttons(box, { okLabel: "Close", cancelLabel: "Close" }, finish, finish);
+    close = mount(box, finish);
+  });
+}
+
+/**
+ * Draw boxes on one image with the labelling canvas (label-box.js).
+ *
+ * Resolves to the canvas payload -- {path, boxes, confirmed_empty} with coordinates
+ * normalised to the image -- or null on cancel. The image is shown from a downscaled
+ * preview; normalised coordinates are the same on the full-size original, which is the
+ * path the payload names.
+ */
+export function labelBoxes(title, { imageUri, path, classes, existing = [] }) {
+  const Labeller = (typeof window !== "undefined" && window.ODKLabelBox)
+    ? window.ODKLabelBox.BoxLabeller : null;
+  if (!Labeller) {
+    return Promise.reject(new Error("The labelling canvas (label-box.js) is not loaded on this page."));
+  }
+  return new Promise((resolve) => {
+    const box = panel(title);
+    box.classList.add("modal-wide");
+
+    const bar = document.createElement("div");
+    bar.className = "modal-field";
+    const pick = document.createElement("select");
+    for (const name of classes) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name;
+      pick.appendChild(option);
+    }
+    const count = document.createElement("span");
+    count.className = "modal-hint";
+    const empty = document.createElement("label");
+    const emptyBox = document.createElement("input");
+    emptyBox.type = "checkbox";
+    empty.append(emptyBox, document.createTextNode(" No defects in this image (confirmed empty)"));
+    const undo = document.createElement("button");
+    undo.className = "tbtn";
+    undo.textContent = "Remove last box";
+    bar.append(pick, undo, count, empty);
+    box.appendChild(bar);
+
+    const surface = document.createElement("canvas");
+    surface.className = "label-canvas";
+    box.appendChild(surface);
+
+    const labeller = new Labeller(surface, {
+      classes,
+      onChange: () => { count.textContent = `${labeller.boxes.length} box(es)`; },
+    });
+    pick.onchange = () => labeller.setActiveClass(pick.value);
+    undo.onclick = () => {
+      if (labeller.boxes.length) labeller.removeBox(labeller.boxes.length - 1);
+      count.textContent = `${labeller.boxes.length} box(es)`;
+    };
+    const picture = new Image();
+    picture.onload = () => {
+      labeller.setImage(picture);
+      for (const existingBox of existing) labeller.boxes.push({ ...existingBox });
+      labeller.draw();
+      count.textContent = `${labeller.boxes.length} box(es)`;
+    };
+    picture.src = imageUri;
+
+    let close = () => {};
+    const finish = (value) => { close(); resolve(value); };
+    buttons(box, { okLabel: "Save labels" },
+      () => finish(labeller.toPayload(path, emptyBox.checked)), () => finish(null));
+    close = mount(box, () => finish(null));
+    // Exposed so a headless check can drive the canvas and read what it holds.
+    box.labeller = labeller;
+  });
+}

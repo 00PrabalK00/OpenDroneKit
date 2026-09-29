@@ -93,10 +93,22 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     n = float(max(1, len(image_rows)))
     crack_ratio = float(sum(_safe_float(r.get("crack_ratio", 0.0)) for r in image_rows) / n)
     crack_len = float(sum(_safe_float(r.get("crack_length_px", 0.0)) for r in image_rows) / n)
-    crack_width = float(sum(_safe_float(r.get("crack_max_width_px", 0.0)) for r in image_rows) / n)
-    metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in image_rows) / n)
+    # The pipeline now names this for what it is -- the thickness of the mask, not a
+    # measured crack width -- and older runs still carry the old key.
+    crack_width = float(sum(_safe_float(r.get("crack_mask_thickness_px", r.get("crack_max_width_px", 0.0)))
+                            for r in image_rows) / n)
+    # Metal and solar ratios count only where a trained model produced them. The
+    # classical fallbacks mark colour and texture, not defects -- 0.55 to 0.98 "solar
+    # defect" on a concrete wall -- and folding that into the score moved a condition
+    # grade from 3 to 4 with nothing on the report saying why. Heuristic images are
+    # counted so the report can say what was left out.
+    metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in image_rows
+                            if _model_backed(r, "metal")) / n)
     structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in image_rows) / n)
-    solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in image_rows) / n)
+    solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in image_rows
+                            if _model_backed(r, "solar")) / n)
+    metal_excluded = sum(1 for r in image_rows if "metal_ratio" in r and not _model_backed(r, "metal"))
+    solar_excluded = sum(1 for r in image_rows if "solar_ratio" in r and not _model_backed(r, "solar"))
     quality_fail = float(sum(1.0 for r in image_rows if bool(r.get("quality_ok", True)) is False) / n)
     low_overlap = float(sum(1.0 for r in image_rows if bool(r.get("low_overlap", False))) / n)
     return {
@@ -108,7 +120,14 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
         "solar_ratio_avg": solar_ratio,
         "quality_fail_ratio": quality_fail,
         "low_overlap_ratio": low_overlap,
+        "metal_heuristic_images_excluded": float(metal_excluded),
+        "solar_heuristic_images_excluded": float(solar_excluded),
     }
+
+
+def _model_backed(row: dict[str, Any], prefix: str) -> bool:
+    """True when a trained model, not the classical fallback, produced this ratio."""
+    return str(row.get(f"{prefix}_model_used", "")).startswith("onnx:")
 
 
 def _forecast_growth_metric(forecast_payload: dict[str, Any]) -> tuple[float | None, dict[str, Any]]:
@@ -568,6 +587,13 @@ def evaluate_asset_health(
             "quality_penalty_component": float(coverage_norm),
             "not_assessed": sorted(k for k, v in measured.items() if v is None),
             "weights": {k: float(v) for k, v in w.items()},
+            # Images whose metal or solar output came from a heuristic and so carried
+            # no weight above. Zero components with a non-zero count here mean "not
+            # scored", not "no defects".
+            "excluded_heuristic_images": {
+                "metal": int(image_metrics["metal_heuristic_images_excluded"]),
+                "solar": int(image_metrics["solar_heuristic_images_excluded"]),
+            },
         },
         "image_metrics": image_metrics,
         "forecast_metrics": growth_meta,

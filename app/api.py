@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import time
 import os
 from pathlib import Path
 import platform
@@ -118,17 +119,20 @@ class Api:
 
     @guard
     def model_status(self) -> dict[str, Any]:
-        """Which detection models are present on disk, so the UI never implies AI it lacks."""
-        from core.models import model_status as status_for
+        """Which detection models are present on disk, so the UI never implies AI it lacks.
 
-        registry_path = Path("models/model_registry.json")
-        keys: list[str] = []
-        if registry_path.exists():
-            try:
-                registry = json.loads(registry_path.read_text(encoding="utf-8"))
-                keys = list(registry.get("models", registry).keys())
-            except json.JSONDecodeError:
-                keys = []
+        The registry is found through core.models rather than a path relative to the
+        working directory: launched from a shortcut, the relative path pointed nowhere
+        and the app reported "0 of 0" models on a machine with nine installed.
+
+        `detectors` answers the question a user actually has -- for each detector the
+        pipeline runs, is it a trained model or a heuristic -- because one global count
+        hid that solar and metal detection were heuristic on every machine.
+        """
+        from core.model_runner import detector_backends
+        from core.models import load_registry, model_status as status_for
+
+        keys = list((load_registry().get("models") or {}).keys())
         rows = []
         for key in keys:
             try:
@@ -137,7 +141,10 @@ class Api:
             except Exception as exc:  # noqa: BLE001
                 rows.append({"key": key, "exists": False, "error": str(exc)})
         available = sum(1 for r in rows if r.get("exists"))
-        return ok(models=rows, available=available, total=len(rows))
+        detectors = detector_backends()
+        heuristic = [d["detector"] for d in detectors if d["backend"] == "heuristic"]
+        return ok(models=rows, available=available, total=len(rows),
+                  detectors=detectors, heuristic_detectors=heuristic)
 
     @guard
     def verify_models(self) -> dict[str, Any]:
@@ -1877,8 +1884,60 @@ class Api:
         )
 
     @guard
-    def build_detection_corpus(self, labelled: list[dict[str, Any]],
-                               output_dir: str,
+    def save_label_boxes(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Keep the boxes drawn on one image, replacing any earlier set for that image.
+
+        The labelling canvas produces one payload per image; stored in the project so a
+        labelling session survives closing the window, and so Build Corpus reads what
+        was actually drawn rather than whatever the page still held in memory.
+        """
+        from core.custom_training import CorpusRefused
+        from core.label_sets import regions_from_payload
+
+        try:
+            regions_from_payload([entry])
+        except (CorpusRefused, ValueError, TypeError) as exc:
+            return fail(str(exc))
+        if not Path(str(entry.get("path", ""))).is_file():
+            return fail(f"No such image: {entry.get('path')}")
+        store = self._label_store()
+        entries = [e for e in self._read_label_store(store)
+                   if e.get("path") != entry.get("path")]
+        entries.append({
+            "path": str(entry["path"]),
+            "boxes": list(entry.get("boxes") or []),
+            "confirmed_empty": bool(entry.get("confirmed_empty", False)),
+        })
+        store.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        return ok(saved=str(entry["path"]), images=len(entries),
+                  boxes=sum(len(e["boxes"]) for e in entries))
+
+    @guard
+    def list_label_boxes(self) -> dict[str, Any]:
+        """Every image labelled in this project, with its boxes."""
+        entries = self._read_label_store(self._label_store())
+        classes = sorted({b.get("label", "") for e in entries for b in e.get("boxes", [])})
+        return ok(entries=entries, images=len(entries),
+                  boxes=sum(len(e.get("boxes", [])) for e in entries), classes=classes)
+
+    def _label_store(self) -> Path:
+        folder = self._session.project_root() / "training" / "labels"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / "boxes.json"
+
+    @staticmethod
+    def _read_label_store(store: Path) -> list[dict[str, Any]]:
+        if not store.exists():
+            return []
+        try:
+            data = json.loads(store.read_text(encoding="utf-8"))
+        except ValueError:
+            return []
+        return data if isinstance(data, list) else []
+
+    @guard
+    def build_detection_corpus(self, labelled: list[dict[str, Any]] | None = None,
+                               output_dir: str = "",
                                salt: str = "custom-boxes-v1",
                                allow_empty_images: bool = False) -> dict[str, Any]:
         """Turn boxes drawn in the labelling canvas into a trainable corpus, or refuse.
@@ -1895,6 +1954,12 @@ class Api:
         from core.custom_training import CorpusRefused
         from core.label_sets import build_detection_corpus, regions_from_payload
 
+        # With nothing passed, the corpus is built from what was drawn in this project.
+        if labelled is None:
+            labelled = self._read_label_store(self._label_store())
+        if not output_dir:
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            output_dir = str(self._session.project_root() / "training" / f"corpus_{stamp}")
         try:
             regions = regions_from_payload(labelled)
             report = build_detection_corpus(
@@ -1904,7 +1969,82 @@ class Api:
             return fail(str(exc))
         except (OSError, ValueError) as exc:
             return fail(str(exc))
-        return ok(**report)
+        return ok(output_dir=str(output_dir), **report)
+
+    @guard
+    def list_training_artifacts(self) -> dict[str, Any]:
+        """The corpora built and the training runs finished in this project."""
+        root = self._session.project_root() / "training"
+        corpora = []
+        for folder in sorted(root.glob("corpus_*")):
+            report = folder / "corpus_report.json"
+            if (folder / "data.yaml").is_file():
+                info = json.loads(report.read_text(encoding="utf-8")) if report.is_file() else {}
+                corpora.append({"path": str(folder), "name": folder.name,
+                                "classes": info.get("classes", []),
+                                "total_images": info.get("total_images"),
+                                "total_boxes": info.get("total_boxes")})
+        runs = []
+        for summary in sorted((root / "runs").glob("*/summary.json")):
+            info = json.loads(summary.read_text(encoding="utf-8"))
+            runs.append({"run_dir": str(summary.parent), "key": summary.parent.name,
+                         "metrics": info.get("metrics", {}),
+                         "deployed": (summary.parent / "export_report.json").is_file()})
+        return ok(corpora=corpora, runs=runs)
+
+    @guard
+    def train_custom_model(self, name: str, corpus_dir: str, epochs: int = 50,
+                           image_size: int = 640, batch_size: int = 8) -> dict[str, Any]:
+        """Train a detector on a corpus built from this project's labels, as a job.
+
+        The result is a metrics card, not an installed model: Deploy Model is a separate
+        step taken after reading the numbers.
+        """
+        from core.custom_model_training import TrainingRefused, custom_key
+
+        if not corpus_dir or not (Path(corpus_dir) / "data.yaml").is_file():
+            return fail("Choose a corpus built with Build Corpus first.")
+        try:
+            key = custom_key(name)
+        except TrainingRefused as exc:
+            return fail(str(exc))
+        runs = self._session.project_root() / "training" / "runs"
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.custom_model_training import train_detector
+
+            progress(2, f"Training {key}")
+            result = train_detector(corpus_dir, runs, name=key, epochs=int(epochs),
+                                    image_size=int(image_size), batch_size=int(batch_size),
+                                    progress=progress, should_cancel=should_cancel)
+            session.audit("custom_model_trained", {"key": key, "metrics": result["metrics"]})
+            return result
+
+        return ok(job_id=self._jobs.submit("training", work), key=key)
+
+    @guard
+    def deploy_custom_model(self, run_dir: str, key: str = "") -> dict[str, Any]:
+        """Export a finished run, gate it on ONNX parity, and install it as a custom_* key."""
+        from core.custom_model_training import custom_key
+
+        run = Path(run_dir)
+        if not (run / "weights" / "best.pt").is_file():
+            return fail(f"No trained weights in {run_dir}.")
+        target = custom_key(key or run.name)
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.custom_model_training import deploy_detector
+
+            progress(10, "Exporting to ONNX and checking parity")
+            result = deploy_detector(run, target)
+            session.audit("custom_model_deployed", {"key": target})
+            return {"key": target, "parity_ok": result["export"].get("parity_ok"),
+                    "labels": result["export"].get("labels"),
+                    "sha256": (result.get("registered") or {}).get("sha256", "")}
+
+        return ok(job_id=self._jobs.submit("deploy_model", work), key=target)
 
     # ---------------------------------------------------------------- fleet
     #
@@ -2250,9 +2390,16 @@ class Api:
         if not content:
             return fail("Report not generated: " + self._NOTHING_TO_REPORT,
                         missing=[self._NOTHING_TO_REPORT])
+        # Findings are stored under the desktop project's root and id, not the report
+        # engine's mirror, so the report is told where to read them. Only for the open
+        # project: an explicit engine id is that engine project's own findings.
+        findings: dict[str, str] = {}
+        if not project_id:
+            findings = {"findings_root": str(self._session.project_root()),
+                        "findings_project_id": str(self._session.project_id())}
         try:
             built = desktop_ops.generate_report(
-                target, title=title, report_type=report_type, author=author)
+                target, title=title, report_type=report_type, author=author, **findings)
             gaps = self._engine_gaps(content)
             if gaps:
                 built = {**built, "warnings": list(built.get("warnings") or []) + gaps}
@@ -2526,11 +2673,14 @@ class Api:
         if fmt not in ("pdf", "docx"):
             return fail(f"Unknown report format {output_format!r}. Use pdf or docx.")
 
-        annotations = list_annotations(Path(root))
+        # Only what a reviewer has let into the report: a rejected finding, or a model
+        # pre-label nobody has accepted yet, is not a finding of this inspection.
+        annotations = [a for a in list_annotations(Path(root))
+                       if a.include_in_report and a.status != "dismissed"]
         if not annotations:
             return fail(
-                "No findings recorded yet, so there is nothing to report. Annotate the "
-                "imagery or run an AI inspection first."
+                "No reportable findings yet, so there is nothing to report. Annotate the "
+                "imagery, or run an AI inspection and accept the findings you agree with."
             )
 
         layers = [l for l in self._session.layers.values() if getattr(l, "crs_epsg", None)]
@@ -2548,6 +2698,10 @@ class Api:
                 finding["tags"] = list(annotation.tags)
             if annotation.note:
                 finding["note"] = annotation.note
+            if annotation.model_key:
+                finding["model_key"] = annotation.model_key
+                finding["model_sha256"] = annotation.model_sha256
+                finding["confidence"] = annotation.confidence
             findings.append(finding)
 
         payload: dict[str, Any] = {
@@ -2599,15 +2753,20 @@ class Api:
 
     @guard
     def review_finding(self, annotation_id: str, decision: str,
-                       reviewer: str = "operator") -> dict[str, Any]:
-        """Accept, reject or flag a finding without overwriting what the model claimed."""
+                       reviewer: str = "operator", comment: str = "") -> dict[str, Any]:
+        """Accept, reject or flag a finding without overwriting what the model claimed.
+
+        Decisions append to the finding's review history; a rejection takes it out of
+        reports.
+        """
         from app import desktop_ops
 
         root = self._session.project_root()
         if not root:
             return fail("Open a project before reviewing findings.")
         try:
-            return ok(**desktop_ops.review_finding(root, annotation_id, decision, reviewer))
+            return ok(**desktop_ops.review_finding(root, annotation_id, decision, reviewer,
+                                                   comment))
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 
@@ -4686,12 +4845,23 @@ class Api:
 
     @guard
     def run_pipeline(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Start the full inspection pipeline as a background job."""
+        """Start the full inspection pipeline as a background job.
+
+        When it finishes, every detection a trained model made becomes a finding in
+        review, with the model key, file digest and confidence on the record, so the
+        Findings panel shows what the models found. Heuristic regions stay in the run's
+        summary and are counted, not recorded as findings.
+        """
         opts = dict(options or {})
         images = opts.get("image_dir") or self._session.active_dataset_dir
         if not images:
             return fail("Select a dataset before running the pipeline.")
-        output = str(opts.get("output_dir") or (self._session.project_root() / "analysis"))
+        if not Path(images).exists():
+            return fail(f"Image folder not found: {images}")
+        root = self._session.project_root()
+        output = str(opts.get("output_dir") or (root / "analysis"))
+        project_id = str(self._session.project_id())
+        session = self._session
         chosen_epsg = self._session.store.get_setting(self._crs_setting_key()) or None
         terrain = self._session.terrain_source_path
         aoi = list(self._session.aoi_polygon or [])
@@ -4700,6 +4870,7 @@ class Api:
         control = self._control_points()
 
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from app import desktop_ops
             from core.pipeline import PipelineConfig, StructuralFaultPipeline
 
             config = PipelineConfig()
@@ -4712,7 +4883,18 @@ class Api:
                 config.coverage_ground_elevation_m = float(opts["ground_elevation_m"])
             config.coverage_terrain_path = str(opts.get("terrain_path") or terrain or "")
             config.coverage_aoi_lonlat = aoi or None
+            if opts.get("dense") is not None:
+                config.reconstruction_dense = bool(opts["dense"])
+            for key in ("structure_type", "material_type", "asset_id"):
+                if opts.get(key):
+                    setattr(config, key, str(opts[key]))
+            for key in ("run_solar_detection", "run_metal_detection",
+                        "crack_presence_gate", "grade_corrosion"):
+                if opts.get(key) is not None:
+                    setattr(config, key, bool(opts[key]))
             pipeline = StructuralFaultPipeline(config, ground_control=control)
+            # The keyword is output_dir. This call said output_root, so every Run AI and
+            # Start click failed with a TypeError three seconds in.
             result = pipeline.run(image_dir=images, output_dir=output, progress_callback=progress)
             payload = result.to_dict() if hasattr(result, "to_dict") else dict(result)
             payload["ground_control"] = getattr(pipeline.reconstructor, "control_report", None)
@@ -4721,9 +4903,142 @@ class Api:
                     "Ground control points were not used: only the COLMAP engine fits the "
                     "model to them, and this run used "
                     f"{type(pipeline.reconstructor).__name__}.")
+            summary = json.loads(Path(payload["summary_json_path"]).read_text(encoding="utf-8"))
+            payload.update(desktop_ops.findings_from_pipeline(root, project_id, summary))
+            payload["reconstruction_status"] = summary.get("reconstruction", {}).get("status", "ok")
+            # Which optional detectors ran as heuristics and so were left out of the
+            # health score -- said in the finished-job message, not only in the report.
+            components = (summary.get("health_scoring", {}) or {}).get("components", {}) or {}
+            payload["heuristic_images_not_scored"] = dict(
+                components.get("excluded_heuristic_images", {}) or {})
+            payload["detectors_run"] = {
+                name: sorted({str(r.get(f"{name}_model_used", "not_run"))
+                              for r in summary.get("images", []) if isinstance(r, dict)})
+                for name in ("crack", "structural", "solar", "metal")}
+            session.audit("pipeline_complete", {
+                "run_dir": payload.get("run_dir"),
+                "findings_created": payload.get("findings_created", 0),
+            })
             return payload
 
         return ok(job_id=self._jobs.submit("pipeline", work))
+
+    @guard
+    def prelabel_image(self, image_path: str,
+                       model_key: str = "structural_multiclass_detector") -> dict[str, Any]:
+        """Run an installed detector on one image; its detections become findings in review.
+
+        The desktop half of POST /projects/{id}/annotations/prelabel, which worked and
+        was reachable from no screen.
+        """
+        from app import desktop_ops
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = desktop_ops.prelabel_image(
+                self._session.project_root(), str(self._session.project_id()),
+                str(path), model_key)
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("prelabel_created", {"model_key": model_key, "count": result["count"]})
+        return ok(**result)
+
+    @guard
+    def run_model(self, model_key: str, image_path: str) -> dict[str, Any]:
+        """Run any installed model on one image and show what it said.
+
+        Every installed model is reachable here, including the six that had no path at
+        all. The result carries the registry's scope note, because several of them are
+        valid on one kind of imagery only and the result is where a user reads that.
+        """
+        from core.detection import load_image
+        from core.model_runner import ModelRunRefused, run_registered_model, save_overlay
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = run_registered_model(load_image(path), str(model_key))
+        except ModelRunRefused as exc:
+            return fail(str(exc))
+        out_dir = self._session.project_root() / "analysis" / "models" / str(model_key)
+        overlay_path = save_overlay(result, out_dir, path.stem)
+        self._session.audit("model_run", {"model_key": model_key, "image": str(path)})
+        return ok(**result.to_dict(), image=str(path), overlay_path=overlay_path,
+                  overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
+
+    @guard
+    def grade_corrosion(self, image_path: str) -> dict[str, Any]:
+        """Grade corrosion severity per pixel, or refuse with the reason.
+
+        There is no heuristic grade to fall back to. The grade is only meaningful on a
+        close-range photo of a corroded surface; the scope note says so and travels
+        with the result.
+        """
+        return self.run_model("corrosion_severity_segmentation", image_path)
+
+    @guard
+    def run_landcover(self, orthomosaic_path: str = "", allow_cpu: bool = False) -> dict[str, Any]:
+        """Land-cover segmentation of a georeferenced orthomosaic, as a background job.
+
+        Refuses on CPU unless asked, because a survey-sized orthomosaic on a CPU takes
+        long enough to look hung. The result lists which classes the model's holdout
+        says are usable; the others are still drawn and are marked as not usable.
+        """
+        source = orthomosaic_path or ""
+        if not source:
+            for layer in self._session.layers.values():
+                candidate = str(getattr(layer, "path", "") or "")
+                if "orthomosaic" in candidate.lower() and candidate.lower().endswith((".tif", ".tiff")):
+                    source = candidate
+                    break
+        if not source:
+            return fail("No orthomosaic: run a reconstruction or add an orthomosaic layer first.")
+        if not Path(source).is_file():
+            return fail(f"Orthomosaic not found: {source}")
+        output = self._session.project_root() / "analysis" / "landcover"
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.model_runner import run_landcover
+
+            progress(5, "Running land-cover model")
+            result = run_landcover(source, output, allow_cpu=bool(allow_cpu))
+            polygons = result.get("polygons_path")
+            if polygons and Path(polygons).exists():
+                session.register_vector_layer(polygons, name="Land cover (model)")
+            session.audit("landcover_complete", {"model_key": result["model_key"]})
+            return result
+
+        return ok(job_id=self._jobs.submit("landcover", work))
+
+    def _resolve_image(self, image_path: str) -> Path | None:
+        """An absolute path, or a name inside the active dataset."""
+        raw = str(image_path or "").strip()
+        if not raw:
+            return None
+        candidate = Path(raw)
+        if not candidate.is_absolute() and self._session.active_dataset_dir:
+            candidate = Path(self._session.active_dataset_dir) / raw
+        return candidate if candidate.is_file() else None
+
+    @staticmethod
+    def _data_uri(image: Any, max_size: int = 1200) -> str:
+        import base64
+
+        import cv2
+
+        height, width = image.shape[:2]
+        if max(height, width) > max_size:
+            scale = max_size / float(max(height, width))
+            image = cv2.resize(image, (int(width * scale), int(height * scale)),
+                               interpolation=cv2.INTER_AREA)
+        okay, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
+        if not okay:
+            return ""
+        return "data:image/jpeg;base64," + base64.b64encode(buffer.tobytes()).decode("ascii")
 
     @guard
     def set_active_dataset(self, folder: str) -> dict[str, Any]:
