@@ -1311,6 +1311,69 @@ class Api:
         return ok(annotations=[a.to_dict() for a in found], count=len(found))
 
     @guard
+    def model_scene(self, kind: str = "mesh") -> dict[str, Any]:
+        """The project's mesh or point cloud as buffers the cockpit's 3D viewer draws.
+
+        Textured Mesh and Point Cloud used to fall back to a 2D raster, and Save View,
+        Clip and Measure in 3D all said "the 3D viewer is not built" -- with the model,
+        the view store and the clip store already on disk.
+        """
+        from core.model_scene import SceneRefused, build_scene
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            scene = build_scene(Path(root) / "reconstruction", str(kind))
+        except SceneRefused as exc:
+            return fail(str(exc))
+        views = self.list_views()
+        default = next((v for v in (views.get("views") or []) if v.get("is_default")), None)
+        return ok(scene=scene, default_view=default)
+
+    @guard
+    def measure_on_model(self, kind: str, points_xyz: list[list[float]]) -> dict[str, Any]:
+        """Length, height or area between points picked in the 3D viewer, in metres.
+
+        Points arrive in the model file's frame and are carried into the CRS through the
+        reconstruction's recorded georeference; an ungeoreferenced model is refused.
+        """
+        from core.model_scene import SceneRefused, measure_scene
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        try:
+            measurement = measure_scene(Path(root) / "reconstruction", str(kind), points_xyz or [])
+        except SceneRefused as exc:
+            return fail(str(exc))
+        self._session.audit("model_measured", {"kind": kind, "points": len(points_xyz or [])})
+        return ok(measurement=measurement)
+
+    @guard
+    def annotate_model(self, point_xyz: list[float], label: str, severity: str = "medium",
+                       note: str = "", source: str = "mesh") -> dict[str, Any]:
+        """Pin a finding to a point on the 3D model; it joins the project's annotations."""
+        from core.annotations import create_annotation
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        point = [float(v) for v in (point_xyz or [])[:3]]
+        if len(point) != 3:
+            return fail("A 3D annotation needs a point on the model as [x, y, z].")
+        try:
+            annotation = create_annotation(
+                Path(root), str(self._session.project_id()), "3d", str(source), "point",
+                {"type": "Point", "coordinates": point}, str(label).strip(),
+                str(severity or "medium").lower(), "open", note=str(note or "") or None,
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("model_annotated", {"id": annotation.id, "label": annotation.label})
+        return ok(annotation=annotation.to_dict())
+
+    @guard
     def list_views(self) -> dict[str, Any]:
         """The named ways this project's model can be opened."""
         from core.saved_views import ViewStore

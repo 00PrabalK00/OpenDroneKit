@@ -257,9 +257,9 @@ const VIEW_LAYERS = {
   hillshade: ["hillshade"],
   semantic: ["semantic", "classification"],
   thermal: ["thermal"],
-  // Deliberately absent: mesh, pointcloud, profile, fused, radiometric, thermal3d.
-  // Those are produced as files rather than registered layers, or need a viewer this
-  // canvas does not have, so they report "no <view> product yet" -- which is true.
+  // Deliberately absent: mesh and pointcloud, which the 3D viewer draws (viewer3d.js),
+  // and profile, fused, radiometric, thermal3d, which are produced as files rather than
+  // registered layers and so report "no <view> product yet" -- which is true.
 };
 
 /**
@@ -289,7 +289,7 @@ async function projectProduct(view) {
   };
 }
 
-export function canvas({ kind = "map", title, note, tools = [], overlays = [], map = null } = {}) {
+export function canvas({ kind = "map", title, note, tools = [], overlays = [], map = null, model = null } = {}) {
   const root = el("div", { class: "canvas" });
 
   if (tools.length) {
@@ -304,6 +304,14 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
           bar.querySelectorAll(".tool").forEach((t) => t.classList.remove("active"));
           button.classList.add("active");
           if (tool.onSelect) tool.onSelect();
+          // A 3D canvas answers its own tools on the model on screen.
+          else if (model) {
+            import("./viewer3d.js").then(({ answerCanvasTool }) => {
+              const said = answerCanvasTool(tool.title);
+              if (said) root.dispatchEvent(new CustomEvent("odk:say", { bubbles: true,
+                detail: { text: `${tool.title}: ${said}`, kind: said.startsWith("there is no") ? "warn" : "ok" } }));
+            });
+          }
           // A map canvas answers its own tools (see the map block below). Before this the
           // buttons only moved the highlight, and nothing listened for what they meant.
           else root.dispatchEvent(new CustomEvent("odk:tool", { detail: tool.title }));
@@ -358,6 +366,20 @@ export function canvas({ kind = "map", title, note, tools = [], overlays = [], m
     }
 
     const view = currentView();
+
+    // The mesh and the point cloud are drawn in 3D, not previewed as a raster. A canvas
+    // declaring a `model` (the Digital Twin) opens on it; anywhere, the Textured Mesh and
+    // Point Cloud views mount the viewer. Both used to fall through to a 2D preview or
+    // "No mesh product yet" while mesh.ply and reconstruction.ply sat on disk.
+    const modelView = view === "mesh" || view === "pointcloud" ? view
+      : (model && (!view || view === "map") ? model : null);
+    if (modelView) {
+      const { mountViewer } = await import("./viewer3d.js");
+      await mountViewer(root, modelView, { fallback: modelView === view ? null
+        : (modelView === "mesh" ? "pointcloud" : null) });
+      return;
+    }
+
     // A map canvas keeps its map ONLY while the view is the map. Returning early for
     // every map canvas meant the thermal workspace -- which is a map -- ignored its own
     // RGB, Thermal and Fused buttons entirely.

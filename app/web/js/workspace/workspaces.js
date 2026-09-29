@@ -27,6 +27,7 @@ import { emptyState, live, reported } from "./live.js";
    tryCall returns null rather than throwing, which is what lets the checkbox revert
    instead of showing a state the application never accepted. */
 import { tryCall } from "./api.js";
+import { modelMeasurements } from "./viewer3d.js";
 
 /* A readout in the corner of the canvas, asking the application for its numbers.
  *
@@ -1060,15 +1061,19 @@ const processing = {
     }) },
   ],
   canvas: () => canvas({
-    title: "Sparse reconstruction",
-    note: "Camera positions, tie points and the growing point cloud. Switches to dense, mesh and orthomosaic as stages complete.",
+    title: "Reconstruction",
+    /* "The growing point cloud" was never drawn: the canvas had no data source and its
+       Orbit/Zoom/Select/Fit buttons moved a highlight. It now shows the cloud the last
+       run wrote, in the same 3D viewer as the Digital Twin, or says there is none. */
+    note: "The point cloud the last reconstruction wrote.",
+    model: "pointcloud",
     tools: [{ icon: "✥", title: "Orbit" }, { icon: "⊕", title: "Zoom" }, { icon: "▣", title: "Select" }, { icon: "⤡", title: "Fit" }],
     overlays: [
       { at: "tl", html: `<strong>Ingestion → Features → Matching → SfM → Georeference → Dense → DSM/DTM → Ortho → Mesh → Twin</strong>` },
       /* These were "1,842 cameras · 412k tie points" regardless of the project open.
          The canvas has no data source of its own, so it now says what the stage IS
          rather than inventing what it processed. */
-      { at: "br", html: `Sparse cloud · counts in the Job Progress panel` },
+      { at: "br", html: `Stages and progress in the Job Progress panel` },
     ],
   }),
   right: [
@@ -1197,13 +1202,14 @@ const twin = {
   ],
   canvas: () => canvas({
     title: "Digital twin",
-    note: "Click any object to inspect its metadata, inspection history and findings.",
+    note: "The project's reconstructed mesh, or its point cloud when no mesh was built.",
+    model: "mesh",
     tools: [{ icon: "✥", title: "Orbit" }, { icon: "⊕", title: "Zoom" }, { icon: "▣", title: "Select" },
             { icon: "⤢", title: "Measure" }, { icon: "✎", title: "Annotate" }, { icon: "⤡", title: "Fit" }],
     overlays: [
       /* "4.1M faces, 12 assets, 6 findings" was fixed text, shown over an empty canvas
          on a project whose mesh has 0 of those numbers in common. */
-      { at: "br", html: `Loaded from the project's reconstruction products` },
+      { at: "br", html: `Drawn from the project's reconstruction products` },
     ],
   }),
   right: [
@@ -1225,20 +1231,35 @@ const twin = {
   ],
   bottom: [
     /* Reported a centroid in Madhya Pradesh for an asset that does not exist. */
-    { id: "twin.props", title: "Object Properties", flex: 2, render: () =>
-      emptyState("No object selected.") },
+    /* The findings pinned to the model with Annotate, from the project's annotations. */
+    { id: "twin.props", title: "Findings on the Model", flex: 2, render: () => live({
+      calls: ["find_annotations"],
+      empty: "No findings pinned to the model. Use Annotate, then click the model.",
+      isEmpty: ([f]) => !(f && (f.annotations || []).some((a) => a.source_type === "3d")),
+      render: ([f]) => table(
+        [{ title: "Finding", key: "n" }, { title: "Severity", key: "s" }, { title: "Point", key: "p" }],
+        (f.annotations || []).filter((a) => a.source_type === "3d").map((a) => ({
+          n: a.label,
+          s: a.severity,
+          p: ((a.geometry && a.geometry.coordinates) || []).map((v) => Number(v).toFixed(2)).join(", "),
+        }))),
+    }) },
     /* Three measurements of a building that was never surveyed. Measuring is an action
-       the operator takes; the panel holds the results of it. */
-    { id: "twin.measure", title: "Measurements", flex: 2, render: () =>
-      emptyState("No measurements yet. Use Measure on the canvas.") },
+       the operator takes; the panel holds the results of it -- each one computed by the
+       application from the points picked on the model. */
+    { id: "twin.measure", title: "Measurements", flex: 2, render: () => live({
+      calls: [],
+      empty: "No measurements yet. Use Measure on the model.",
+      isEmpty: () => !modelMeasurements().length,
+      render: () => consoleView(modelMeasurements().slice(0, 12).map((m) => ({
+        t: m.kind, text: m.text,
+      }))),
+    }) },
     { id: "twin.history", title: "History", flex: 1, render: () => live({
       calls: ["audit_log"],
       empty: "No history for this project yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 10).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(5, 10) || "—",
-        text: e.message || e.action || "—",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 10).map(auditLine)),
     }) },
   ],
 };

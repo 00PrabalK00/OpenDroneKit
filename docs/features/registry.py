@@ -1219,10 +1219,16 @@ INSPECTION = [
                       "tests/test_model_measurement.py::TestArea",
                       "tests/test_model_measurement.py::TestVolume",
                       "tests/test_model_measurement.py::TestThroughTheApi",
-                      "tests/test_model_measurement.py::TestMeshReading"],
+                      "tests/test_model_measurement.py::TestMeshReading",
+                      "tests/test_cockpit_3d_viewer.py::test_the_twin_draws_the_mesh_and_measures_between_picked_points",
+                      "tests/test_cockpit_3d_viewer.py::test_an_unreferenced_model_is_drawn_but_not_measured"],
       "core/model_measurement.py; Api.measure_in_model. Volume is the divergence "
       "theorem over a closed mesh, so it is origin-independent; an open exterior with "
-      "no floor is refused instead of summed."),
+      "no floor is refused instead of summed. In the desktop cockpit the Digital Twin "
+      "draws the project's mesh or cloud (core/model_scene.py, viewer3d.js); Measure "
+      "picks points on it and Api.measure_on_model carries them into the CRS through "
+      "the reconstruction's geo_anchor.json, refusing a model without one. Volume is "
+      "not offered there."),
     F("me.volume", "Volume and stockpile", "core", "Measurement",
       "Cut/fill against DTM, plane and lowest-point references, exact on a known surface.",
       "verified", ["tests/test_dsm_analysis.py::test_volume_against_dtm_is_exact",

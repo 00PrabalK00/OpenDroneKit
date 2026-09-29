@@ -136,6 +136,14 @@ class TestTheFeaturesBuiltHereAreReachable:
         ("boundary_from_marks", "Close Boundary"),
         ("clear_boundary_marks", "Clear Corners"),
         ("diff_mission_versions", "Compare Versions"),
+        # Declared "needs the 3D viewer" until the Digital Twin had one (viewer3d.js).
+        # They act on the model on screen; tests/test_cockpit_3d_viewer.py drives them.
+        ("save_view", "Save View"),
+        ("open_view", "Save View"),
+        ("set_default_view", "Save View"),
+        ("set_clip_visible", "Clip"),
+        ("remove_clip", "Clip"),
+        ("export_clipped_model", "Clip"),
     ]
 
     @pytest.mark.parametrize("method,button", REACHABLE, ids=[m for m, _ in REACHABLE])
@@ -150,14 +158,15 @@ class TestTheFeaturesBuiltHereAreReachable:
 
 
 class TestWhatCannotBeReachedSaysWhy:
-    """Three capabilities need the interactive 3D viewer, which is not built.
+    """A capability with no way to drive it from this interface is declared, not wired.
 
-    They are declared rather than wired. A button that always answers "no camera pose
-    yet" would be the same dead control this audit exists to remove -- but silently
-    dropping them would lose the fact that the capability exists and is tested.
+    A button that always answers "no camera pose yet" would be the same dead control
+    this audit exists to remove -- but silently dropping it would lose the fact that the
+    capability exists and is tested. Save View, Clip and Measure in 3D left this list
+    when the Digital Twin gained its 3D viewer.
     """
 
-    DECLARED = ["Save View", "Clip", "Temperature Range", "Measure in 3D"]
+    DECLARED = ["Temperature Range"]
 
     @pytest.mark.parametrize("button", DECLARED)
     def test_it_names_the_missing_capability(self, actions, button) -> None:
@@ -172,10 +181,20 @@ class TestWhatCannotBeReachedSaysWhy:
         """The declaration has to be true in both directions: the button says the
         capability is implemented, so it had better be."""
         api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
-        method = {"Save View": "save_view", "Clip": "add_plane_clip",
-                  "Temperature Range": "scale_thermal",
-                  "Measure in 3D": "measure_in_model"}[button]
+        method = {"Temperature Range": "scale_thermal"}[button]
         assert f"def {method}(" in api
+
+
+def test_measure_in_3d_reaches_the_model_measurement() -> None:
+    """Measure in 3D opens the model with the measure tool armed; the viewer's picks go
+    to measure_on_model, which the Api implements."""
+    viewer = (ROOT / "app" / "web" / "js" / "workspace" / "viewer3d.js").read_text(encoding="utf-8")
+    api = (ROOT / "app" / "api.py").read_text(encoding="utf-8")
+    assert 'call("measure_on_model"' in viewer
+    assert "def measure_on_model(" in api
+    # Clip's "New cut" arms the viewer, whose picked point becomes the plane.
+    assert 'call("add_plane_clip"' in viewer
+    assert "def add_plane_clip(" in api
 
 
 class TestTheContextHelpersExist:

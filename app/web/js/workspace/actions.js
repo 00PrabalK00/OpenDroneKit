@@ -18,6 +18,8 @@
 
 import { call, tryCall, lastError, connected } from "./api.js";
 import { demoEnabled } from "./demo.js";
+import { currentViewer, queueModelTool } from "./viewer3d.js";
+import { setView } from "./viewstate.js";
 
 /* Where the REST service listens when started with its documented command. */
 const REST_BASE = "http://127.0.0.1:8000";
@@ -480,13 +482,16 @@ export const ACTIONS = {
     },
   },
 
-  /* measure_in_model joins Save View and Clip: implemented, tested, and it needs points
-     picked on a mesh that is on screen. */
+  /* Said "the interactive viewer is not built". It opens the model in the Digital Twin
+     with the measure tool armed: two points picked on the model, measured in metres by
+     measure_on_model through the reconstruction's georeference. */
   "Measure in 3D": {
-    describe: "Measure between two points on the model. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "measure_in_model is implemented, but a 3D measurement is two "
-                        + "points picked on a mesh, and the interactive viewer is not built." };
+    describe: "Open the model in the Digital Twin and measure between two picked points.",
+    async run(ctx) {
+      queueModelTool("measure");
+      setView("mesh");
+      ctx.openWorkspace("twin");
+      return { message: "Measure in 3D: click two points on the model." };
     },
   },
 
@@ -771,22 +776,84 @@ export const ACTIONS = {
     },
   },
 
-  /* These four are implemented, tested, and cannot be driven from this interface yet.
-     Each needs the 3D viewer: a camera to save, a model to cut against, and a selected
-     raster to scale. Declaring that is the honest state -- a button that always answers
-     "no camera pose yet" would be the same dead control this audit exists to remove. */
+  /* Save View and Clip said the 3D viewer was not built. They act on the model on screen
+     (viewer3d.js): a view is the camera of that viewer, in the model's own coordinates,
+     and a cut is a plane through a point picked on it. */
   "Save View": {
-    describe: "Remember a camera position. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "save_view is implemented, but the cockpit has no interactive "
-                        + "3D camera to read a position from yet." };
+    describe: "Save the 3D camera as a named view, or open a saved one.",
+    async run(ctx) {
+      const viewer = currentViewer();
+      if (!viewer) {
+        return { skipped: "No 3D model on screen. Open Textured Mesh or Point Cloud in the "
+                          + "Digital Twin first; a view is that camera." };
+      }
+      const listed = await call("list_views");
+      const views = listed.views || [];
+      let choice = "save";
+      if (views.length) {
+        choice = await ctx.choose("Views", [
+          { label: "Save the current camera as a new view", value: "save" },
+          ...views.map((v) => ({ label: `Open “${v.name}”${v.is_default ? " (default)" : ""}`, value: `open:${v.name}` })),
+          ...views.filter((v) => !v.is_default).map((v) => ({ label: `Open with “${v.name}” by default`, value: `default:${v.name}` })),
+        ]);
+        if (!choice) return { skipped: "Nothing chosen." };
+      }
+      if (choice.startsWith("open:")) {
+        const opened = await call("open_view", choice.slice(5));
+        viewer.applyView(opened.view);
+        const missing = opened.missing_clips || [];
+        return { message: `Opened view “${opened.view.name}”.`
+          + (missing.length ? ` It refers to ${missing.length} clip(s) that no longer exist.` : "") };
+      }
+      if (choice.startsWith("default:")) {
+        await call("set_default_view", choice.slice(8));
+        return { message: `“${choice.slice(8)}” now opens by default.` };
+      }
+      const name = await ctx.prompt("Name this view", `view ${views.length + 1}`);
+      if (!name) return { skipped: "No name given." };
+      const cam = viewer.cameraState();
+      const clips = (await call("list_clips")).clips || [];
+      await call("save_view", name, cam.position, cam.target, cam.fov_deg,
+        clips.filter((c) => c.visible).map((c) => c.name), false, true, views.length === 0);
+      return { message: `Saved view “${name}”${views.length === 0 ? " (opens by default)" : ""}.` };
     },
   },
   Clip: {
-    describe: "Cut the model with a plane. Needs the interactive 3D viewer.",
-    async run() {
-      return { skipped: "add_plane_clip is implemented, but a cut plane has to be placed "
-                        + "against a model on screen, and the 3D viewer is not built." };
+    describe: "Cut the model with a plane through a picked point, or manage the cuts.",
+    async run(ctx) {
+      const viewer = currentViewer();
+      if (!viewer) {
+        return { skipped: "No 3D model on screen. Open Textured Mesh or Point Cloud in the "
+                          + "Digital Twin first; a cut is placed on the model." };
+      }
+      const clips = (await call("list_clips")).clips || [];
+      const choice = await ctx.choose("Clip", [
+        { label: "New cut: click a point, the part between the camera and it is removed", value: "new" },
+        ...clips.map((c) => ({ label: `${c.visible ? "Hide" : "Show"} “${c.name}”`, value: `toggle:${c.name}` })),
+        ...clips.map((c) => ({ label: `Remove “${c.name}”`, value: `remove:${c.name}` })),
+        ...(clips.some((c) => c.visible)
+          ? [{ label: "Export the model as the visible cuts leave it", value: "export" }] : []),
+      ]);
+      if (!choice) return { skipped: "Nothing chosen." };
+      if (choice === "new") {
+        viewer.setTool("clip");
+        return { message: "Clip: click a point on the model." };
+      }
+      if (choice === "export") {
+        const done = await call("export_clipped_model", "");
+        return { message: `Wrote ${done.faces.toLocaleString()} of ${done.source_faces.toLocaleString()} `
+          + `triangles to ${done.path}.` };
+      }
+      const [verb, ...rest] = choice.split(":");
+      const name = rest.join(":");
+      if (verb === "toggle") {
+        const clip = clips.find((c) => c.name === name);
+        await call("set_clip_visible", name, !(clip && clip.visible));
+      } else {
+        await call("remove_clip", name);
+      }
+      await viewer.reload();
+      return { message: `${verb === "toggle" ? "Toggled" : "Removed"} “${name}”.` };
     },
   },
   "Temperature Range": {

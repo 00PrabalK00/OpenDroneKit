@@ -505,6 +505,13 @@ table.grid td.num { text-align: right; font-family: var(--mono); }
   background: var(--bg-app);
 }
 
+/* The Digital Twin's 3D view: the WebGL canvas with a 2D layer over it for picked
+   points and measurement lines. The overlay takes the pointer; the GL canvas draws. */
+.viewer3d { position: absolute; inset: 0; z-index: 1; }
+.viewer3d canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.viewer3d-overlay { outline: none; touch-action: none; cursor: grab; }
+.canvas-overlay.bl .chip { white-space: normal; max-width: 70ch; display: inline-block; }
+
 
 /* ------------------------------------------------------------------- modals */
 /* Drawn by the application because the webview has no prompt(). Same density as the

@@ -17,6 +17,7 @@ import { ask, askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.
 import { refreshLive } from "./live.js";
 import { armTool, configureDrawing, currentMap, stopDrawing, undoPoint } from "./draw.js";
 import { fitTo } from "./mapview.js";
+import { armModelTool, configureViewer, currentViewer } from "./viewer3d.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -141,6 +142,12 @@ export class Shell {
         await this.refreshState();
         refreshLive();
       },
+    });
+    // The 3D viewer reports and asks through the same channels as the map drawing.
+    configureViewer({
+      toast: (text, kind) => this.toast(text, kind),
+      prompt: (label, fallback) => askOne(label, label, fallback),
+      changed: () => refreshLive(),
     });
     this.root.addEventListener("odk:say", (event) => {
       const { text, kind } = event.detail || {};
@@ -779,10 +786,12 @@ export class Shell {
       // Armed on the map drawing layer, which reads the clicks. Storing the name on the
       // shell and toasting "Draw on the canvas" was all this did before, and nothing ever
       // read it back: Distance and Area took no measurement at all.
-      const said = armTool(entry.tool);
+      // A 3D model on screen takes the tool; otherwise the map drawing layer does.
+      const onModel = currentViewer();
+      const said = onModel ? armModelTool(entry.tool) : armTool(entry.tool);
       this.activeTool = entry.tool;
       this.workspaceEl.dataset.tool = entry.tool;
-      if (said) this.toast(`${action}: ${said}`, currentMap() ? "ok" : "warn");
+      if (said) this.toast(`${action}: ${said}`, onModel || currentMap() ? "ok" : "warn");
       else this.toast(`${action}: this tool draws on a 3D model, and needs the 3D view open. `
         + "Use Textured Mesh or Point Cloud first.", "warn");
       return;
@@ -925,6 +934,7 @@ export class Shell {
           organization: String(raw.org || ""),
         };
       },
+      openWorkspace: (id) => this.open(id),
       selectedJob: () => this.selectedJobId || null,
       selectedFinding: () => this.selectedFindingId || null,
       selectedFleetId: () => this.selectedFleetId || null,
