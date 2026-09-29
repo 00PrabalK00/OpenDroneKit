@@ -70,6 +70,23 @@ def guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def app_version() -> str:
+    """The toolkit's version, read from the package's own __init__.py.
+
+    The cockpit status bar printed a literal "v1.0" while the package said 0.1.0. The
+    repository root is not importable as a package from main.py, so the assignment is
+    read rather than imported; a file that cannot be read gives "unknown", not a guess.
+    """
+    import re
+
+    try:
+        text = (Path(__file__).resolve().parents[1] / "__init__.py").read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    match = re.search(r"^__version__\s*=\s*[\"']([^\"']+)[\"']", text, re.MULTILINE)
+    return match.group(1) if match else "unknown"
+
+
 def _data_paths() -> dict[str, str]:
     """Where this install keeps its state (core/paths.py), for the UI to show."""
     from core.paths import describe
@@ -587,6 +604,7 @@ class Api:
             jobs=self._jobs.active(),
             display_epsg=self._session.display_epsg,
             data_paths=_data_paths(),
+            version=app_version(),
         )
 
     # -- layers ----------------------------------------------------------

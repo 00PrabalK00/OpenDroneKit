@@ -287,15 +287,19 @@ const home = {
     /* Reported three workers, a redis broker and postgis. This build is local-first and
        runs none of them; it was describing a deployment that does not exist here. */
     { id: "home.system", title: "System Status", render: () => live({
-      calls: ["capabilities", "verify_models"],
+      calls: ["capabilities", "verify_models", "get_state"],
       empty: "The application did not report its capabilities.",
-      render: ([caps, models]) => {
+      render: ([caps, models, state]) => {
         const rows = (models && models.models) || [];
         const verified = rows.filter((m) => m.verified).length;
         const mismatch = rows.filter((m) => m.status === "mismatch").length;
         return properties([
           { label: "Bridge", value: chip("connected", "ok") },
-          { label: "Storage", value: chip("local-first", "ok") },
+          // Was a fixed "local-first" chip. The data root get_state reports (core/paths.py),
+          // or a plain "unknown" when the application did not say.
+          { label: "Version", value: (state && state.version) ? `v${state.version}` : "unknown" },
+          { label: "Storage", value: (state && state.data_paths && state.data_paths.data_root)
+            ? state.data_paths.data_root : chip("unknown", "warn") },
           ...(rows.length ? [{ label: "Models verified",
             value: chip(`${verified}/${rows.filter((m) => m.status !== "awaiting_weights").length}`,
               mismatch ? "warn" : "ok") }] : []),
