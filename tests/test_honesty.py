@@ -93,25 +93,31 @@ class TestEngineLabelsItselfAccurately:
         assert "sfm_sparse_custom" in assignments
 
 
-class TestOrthomosaicReportsGuessedOffsets:
-    """A failed correlation substituted 35% of frame width and said nothing."""
+class TestOrthomosaicIsNeverPositionedByAssumption:
+    """A failed correlation substituted 35% of frame width; later the whole "mosaic" was a
+    strip of frames at assumed offsets. The custom engine now refuses imagery it cannot
+    register instead of laying it out."""
 
-    def test_uncorrelatable_frames_are_counted(self, tmp_path):
+    def test_unregistrable_frames_are_refused_not_laid_out(self, tmp_path):
         cv2 = pytest.importorskip("cv2")
         rng = np.random.default_rng(0)
-        paths = []
+        images = tmp_path / "images"
+        images.mkdir()
         for index in range(4):
             noise = (rng.random((240, 320, 3)) * 255).astype(np.uint8)
-            target = tmp_path / f"{index}.png"
-            cv2.imwrite(str(target), noise)
-            paths.append(target)
+            cv2.imwrite(str(images / f"{index}.png"), noise)
 
         reconstructor = CustomDroneReconstructor(profile="fast_preview")
-        reconstructor._build_orthomosaic(paths, tmp_path / "mosaic.png")
+        with pytest.raises(RuntimeError, match="too few to reconstruct"):
+            reconstructor.reconstruct(image_dir=images, output_dir=tmp_path / "out")
+        assert not (tmp_path / "out" / "orthomosaic.png").exists()
 
-        assert reconstructor._mosaic_guessed_offsets > 0, (
-            "pure noise cannot correlate, so substituted offsets must be recorded"
-        )
+    def test_the_assumed_overlap_is_gone(self):
+        import core.reconstruction as module
+
+        source = inspect.getsource(module)
+        assert "_mosaic_guessed_offsets" not in source
+        assert "phaseCorrelate" not in source
 
 
 class TestDetectionReportsWhatItActuallyUsed:
