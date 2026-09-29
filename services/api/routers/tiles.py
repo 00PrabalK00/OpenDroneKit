@@ -39,6 +39,7 @@ from core.tile_cache import (  # noqa: F401 - re-exported
     read_tile,
     tile_path as _core_tile_path,
     summary as tile_summary,
+    tile_media_type,
     tile_root,
 )
 
@@ -201,6 +202,6 @@ def serve_tile(z: int, x: int, y: int, provider: str = "satellite") -> Response:
             headers={"X-ODK-Tile": "not-cached"},
         )
     return Response(
-        content=body, media_type="image/png",
+        content=body, media_type=tile_media_type(body),
         headers={"Cache-Control": "public, max-age=86400", "X-ODK-Tile": "cached"},
     )

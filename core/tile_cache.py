@@ -112,6 +112,19 @@ def read_tile(provider: str, zoom: int, x: int, y: int) -> bytes | None:
     return target.read_bytes() if target.is_file() else None
 
 
+def tile_media_type(body: bytes) -> str:
+    """The real image type of a cached tile, from its magic bytes.
+
+    Tiles are stored as `<y>.png` whatever the provider sent, and the imagery providers
+    send JPEG. Serving those as image/png mislabels them; say what the bytes are.
+    """
+    if body.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if body[:4] == b"RIFF" and body[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/png"
+
+
 def validate(area: Any) -> int:
     """Refuse a request that cannot be honoured; return its tile count otherwise."""
     spec = PROVIDERS.get(area.provider)

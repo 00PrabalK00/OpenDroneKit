@@ -37,6 +37,7 @@ class _Provider(BaseHTTPRequestHandler):
     """Stands in for the internet tile server: serves every z/x/y as TILE."""
 
     requests: list[str] = []
+    body: bytes = TILE
 
     def log_message(self, *_args):
         return
@@ -44,10 +45,11 @@ class _Provider(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         type(self).requests.append(self.path)
         self.send_response(200)
-        self.send_header("Content-Type", "image/png")
-        self.send_header("Content-Length", str(len(TILE)))
+        body = type(self).body
+        self.send_header("Content-Type", "image/jpeg" if body[:2] == b"\xff\xd8" else "image/png")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(TILE)
+        self.wfile.write(body)
 
 
 @pytest.fixture()
@@ -61,6 +63,7 @@ def provider(monkeypatch):
         "max_zoom": 3, "attribution": "local test source",
     })
     _Provider.requests = []
+    _Provider.body = TILE
     yield server
     server.shutdown()
     server.server_close()
@@ -118,6 +121,40 @@ class TestOfflineBasemap:
         code, _, body = _get(url)
         assert code == 200 and b"basemap-select" in body
 
+    def test_cached_imagery_is_served_as_what_it_is(self, provider):
+        """Imagery providers send JPEG; the cache stores it as <y>.png and both servers
+        used to label it image/png. The bytes' real type is what goes on the wire."""
+        import io
+
+        from PIL import Image
+
+        from app.api import Api
+        from app.session import AppSession
+        from app.shell import WEB_ROOT, Shell
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (40, 90, 30)).save(buffer, "JPEG")
+        _Provider.body = buffer.getvalue()
+
+        api = Api(AppSession())
+        started = api.cache_basemap_area(-10, -10, 10, 10, 0, 0, "local-test")
+        assert _wait_job(api, started["job_id"])["status"] == "done"
+        provider.shutdown()
+
+        origin = Shell._serve(WEB_ROOT, "index.html", runtime={}).rsplit("/", 1)[0]
+        code, headers, body = _get(f"{origin}/tiles/0/0/0.png?provider=local-test")
+        assert code == 200 and body == _Provider.body
+        assert headers.get("Content-Type") == "image/jpeg"
+
+        pytest.importorskip("fastapi")
+        from fastapi.testclient import TestClient
+
+        from services.api.main import app as hub_app
+
+        answer = TestClient(hub_app).get("/tiles/0/0/0.png", params={"provider": "local-test"})
+        assert answer.status_code == 200 and answer.content == _Provider.body
+        assert answer.headers["content-type"] == "image/jpeg"
+
     def test_caching_refuses_what_it_cannot_honour(self, provider):
         from app.api import Api
         from app.session import AppSession
@@ -143,6 +180,7 @@ class TestHubService:
     def test_the_shell_starts_the_hub_and_publishes_where(self, tmp_path):
         pytest.importorskip("uvicorn")
         pytest.importorskip("fastapi")
+        import services.api.main  # noqa: F401 - already imported, as anything in-process may
         from app.shell import WEB_ROOT, Shell, _free_port, start_hub_service
 
         runtime: dict = {}

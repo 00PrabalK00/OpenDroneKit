@@ -260,7 +260,7 @@ class Shell:
                     return
                 match = _TILE_ROUTE.match(parts.path)
                 if match:
-                    from core.tile_cache import TRANSPARENT_PNG, read_tile
+                    from core.tile_cache import TRANSPARENT_PNG, read_tile, tile_media_type
 
                     provider = (parse_qs(parts.query).get("provider") or ["satellite"])[0]
                     z, x, y = (int(value) for value in match.groups())
@@ -269,7 +269,7 @@ class Shell:
                         # A gap in coverage looks like a gap, not like terrain.
                         self._send(404, "image/png", TRANSPARENT_PNG, {"X-ODK-Tile": "not-cached"})
                     else:
-                        self._send(200, "image/png", tile, {"X-ODK-Tile": "cached"})
+                        self._send(200, tile_media_type(tile), tile, {"X-ODK-Tile": "cached"})
                     return
                 super().do_GET()
 
@@ -323,15 +323,19 @@ def start_hub_service(runtime: dict[str, Any], *, ui_origin: str,
         try:
             import uvicorn
 
-            origins = [o.strip() for o in os.environ.get("ODK_CORS_ORIGINS", "").split(",") if o.strip()]
-            if ui_origin not in origins:
-                origins.append(ui_origin)
-            os.environ["ODK_CORS_ORIGINS"] = ",".join(origins)
+            from starlette.middleware.cors import CORSMiddleware
+
             from services.api.main import app as hub_app
+
+            # The page's origin is allowed by wrapping the app, not by editing
+            # ODK_CORS_ORIGINS: services.api.main reads that once, at import, so if
+            # anything had imported it first the page's requests were refused.
+            served = CORSMiddleware(hub_app, allow_origins=[ui_origin], allow_credentials=True,
+                                    allow_methods=["*"], allow_headers=["*"])
 
             chosen = port if port is not None else _free_port(HUB_DEFAULT_PORT)
             server = uvicorn.Server(uvicorn.Config(
-                hub_app, host="127.0.0.1", port=chosen, log_level="warning",
+                served, host="127.0.0.1", port=chosen, log_level="warning",
                 lifespan="on", access_log=False,
             ))
             # Not the main thread: uvicorn must not install signal handlers here.
@@ -342,7 +346,9 @@ def start_hub_service(runtime: dict[str, Any], *, ui_origin: str,
 
                 while runtime.get("hub_status") == "starting":
                     if server.started:
-                        runtime.update(hub_status="running", hub_api=f"http://127.0.0.1:{chosen}")
+                        # Address first: a reader that sees "running" must see where.
+                        runtime["hub_api"] = f"http://127.0.0.1:{chosen}"
+                        runtime["hub_status"] = "running"
                         return
                     time.sleep(0.05)
 
