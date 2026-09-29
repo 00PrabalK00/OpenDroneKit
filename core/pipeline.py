@@ -76,9 +76,11 @@ class PipelineConfig:
     # machines, that output was heuristic noise attached to the wrong asset.
     run_solar_detection: bool | None = None
     run_metal_detection: bool | None = None
-    # crack_presence_classifier triages each image before the slower segmenter runs,
-    # which is how the registry says the two crack models are meant to be combined.
-    crack_presence_gate: bool = True
+    # crack_presence_classifier runs on every image and its tile verdicts are recorded
+    # beside the segmenter's mask. As a gate (skip segmentation when no tile is flagged)
+    # it lost real cracks the segmenter finds -- 2 of 25 CrackForest images -- so gating
+    # is opt-in and the default is a second, recorded opinion.
+    crack_presence_gate: bool = False
     # Grade corrosion severity on images where the structural model found corrosion.
     grade_corrosion: bool = True
     structural_model_key: str = "structural_multiclass_detector"
@@ -306,18 +308,19 @@ class StructuralFaultPipeline:
             image = load_image(image_path)
             presence_row: dict[str, Any] = {}
             run_crack_model = True
-            if self.config.crack_presence_gate:
-                from .model_runner import ModelRunRefused, crack_presence
+            from .model_runner import ModelRunRefused, crack_presence
 
-                try:
-                    presence = crack_presence(image)
-                    presence_row = presence.to_dict()
+            try:
+                presence = crack_presence(image)
+                presence_row = presence.to_dict()
+                presence_row["used_as_gate"] = bool(self.config.crack_presence_gate)
+                if self.config.crack_presence_gate:
                     run_crack_model = presence.any_crack
-                except ModelRunRefused as exc:
-                    # No classifier installed: the gate is skipped, not faked.
-                    presence_row = {"skipped": str(exc)}
-            # When the classifier flags no tile the segmenter is not asked, and the row
-            # says so: an empty mask there means nothing was looked for.
+            except ModelRunRefused as exc:
+                # No classifier installed: nothing is recorded in its place.
+                presence_row = {"skipped": str(exc)}
+            # Only with the gate switched on is the segmenter ever skipped, and then the
+            # row says so: an empty mask there means nothing was looked for.
             crack = (detect_cracks(image, min_area_px=self.config.crack_min_area_px)
                      if run_crack_model else None)
             structural = detect_structural_defects(
