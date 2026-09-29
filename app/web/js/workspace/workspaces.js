@@ -56,12 +56,25 @@ function readout({ calls, isEmpty, empty, render }) {
   });
 }
 
+/* The report type and format picked in the Reports Template panel. The Readiness panel
+   used to judge "standard" whatever was selected, so a type that would be refused
+   (mission_summary without a mission) looked ready until Generate. */
+const reportChoice = { tpl: "standard", fmt: "PDF" };
+const REPORT_FORMATS = { PDF: ["html", "pdf"], DOCX: ["html", "docx"],
+                         "PDF+DOCX": ["html", "pdf", "docx"], HTML: ["html"] };
+
 /* Every editable field reports onto the same bus the trees and tables use.
  *
  * fields() has always accepted an onChange and no caller passed one, so editing an
  * altitude or an overlap changed the input element and nothing else -- the mission that
  * Plan then generated used the defaults, silently. */
-const settingChanged = (key, value) => selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+const settingChanged = (key, value) => {
+  selection.select("setting", { id: key, label: `${key} = ${value}`, key, value });
+  if (key in reportChoice) {
+    reportChoice[key] = value;
+    window.dispatchEvent(new Event("odk:refresh"));
+  }
+};
 
 const MAP_TOOLS = [
   { icon: "✥", title: "Pan" },
@@ -1693,7 +1706,8 @@ const reports = {
       })), { selectKind: "report" }),
   }),
   right: [
-    { id: "rp.settings", title: "Template", render: () => fields([
+    { id: "rp.settings", title: "Template", render: () => Object.assign(reportChoice,
+      { tpl: "standard", fmt: "PDF" }) && fields([
       /* The options are the report types core/report_engine.py actually builds, and
          each one now has its own section list (see Report Structure). They used to
          read Inspection / Survey / Progress / Thermal, none of which the engine has
@@ -1737,7 +1751,8 @@ const reports = {
     /* report_readiness() judges the OPEN project: what is missing blocks Generate,
        warnings are sections that will say something was not done. */
     { id: "rp.log", title: "Readiness", flex: 2, render: () => live({
-      calls: ["report_readiness"],
+      calls: [() => ["report_readiness", "", reportChoice.tpl,
+                     REPORT_FORMATS[reportChoice.fmt] || ["html", "pdf"]]],
       empty: "Open a project to check what a report still needs.",
       isEmpty: ([r]) => !r,
       render: ([r]) => consoleView([
@@ -1745,8 +1760,8 @@ const reports = {
         ...(r.warnings || []).map((item) => ({ t: "warning", text: String(item), level: "warn" })),
         ...(r.notes || []).map((item) => ({ t: "note", text: String(item), level: "" })),
         ...((r.missing || []).length ? [] : [{ t: "ready", level: "ok",
-          text: "Generate writes the report, the chosen formats and a provenance record "
-            + "for each file into the project's reports folder." }]),
+          text: "Generate writes the report in the chosen formats into the project's "
+            + "reports folder, with a provenance record for each HTML, PDF and Word file." }]),
       ]),
     }) },
   ],

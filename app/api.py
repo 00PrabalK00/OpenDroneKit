@@ -1899,7 +1899,12 @@ class Api:
             readiness = report_builder.readiness(self._session, config)
         except ValueError as exc:
             return fail(str(exc))
-        return ok(ready=readiness.ok, **readiness.to_dict())
+        # The call itself succeeded; whether the report can be written is `ready`.
+        # readiness.to_dict() carries its own "ok", which must not override the call's,
+        # or a refused report type reaches both UIs as an error with no message and the
+        # list of what is missing is never shown.
+        checklist = {k: v for k, v in readiness.to_dict().items() if k != "ok"}
+        return ok(ready=readiness.ok, **checklist)
 
     @guard
     def generate_report(self, project_id: str = "", title: str = "Inspection report",

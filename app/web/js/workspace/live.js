@@ -42,7 +42,12 @@ export function live({ calls, render, empty, isEmpty }) {
   const settle = async () => {
     let results;
     try {
-      results = await Promise.all(calls.map((name) => tryCall(name)));
+      // A call is a method name, or a function returning [name, ...args] so a panel
+      // can ask about what the operator has chosen right now (a report type, say).
+      results = await Promise.all(calls.map((spec) => {
+        const [name, ...args] = typeof spec === "function" ? spec() : [spec];
+        return tryCall(name, ...args);
+      }));
     } catch {
       results = calls.map(() => null);
     }
