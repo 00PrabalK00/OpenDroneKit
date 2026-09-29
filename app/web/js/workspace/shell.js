@@ -1105,6 +1105,14 @@ export class Shell {
       return;
     }
 
+    if (this.mode === "connected" && !(this.state && this.state.project)
+        && prerequisite(action, this.stateSummary())) {
+      // "No project open" is only as true as the last get_state that answered. At
+      // startup that read can fail (a busy machine, a locked store) and the shell was
+      // left refusing every project action for the session while a project WAS open.
+      // Ask again before refusing.
+      await this.refreshState();
+    }
     const blocked = prerequisite(action, this.stateSummary());
     if (blocked) {
       this.toast(`${action}: ${blocked}`, "warn");
@@ -1484,6 +1492,10 @@ export class Shell {
   /** Ask the application what is open, so prerequisites are real rather than assumed. */
   async refreshState() {
     const state = await tryCall("get_state");
+    // A failed read is not "no project": keep asking until the application answers,
+    // rather than showing "no project open" for the whole session.
+    this.stateUnread = !state && this.mode === "connected";
+    if (this.stateUnread) this.retryStateRead();
     if (state) {
       this.state = {
         project: state.project || state.active_project || null,
@@ -1500,6 +1512,18 @@ export class Shell {
     this.vehicle = (telemetry && telemetry.telemetry) || null;
     this.applyMode();
     this.renderIndicators();
+  }
+
+  /** Read the state again shortly, while get_state keeps failing. */
+  retryStateRead() {
+    if (this.stateRetryTimer) return;
+    this.stateRetryTimer = setTimeout(async () => {
+      this.stateRetryTimer = null;
+      if (this.mode !== "connected" || !this.stateUnread) return;
+      await this.refreshState();
+      // Panels drawn from the failed read showed their empty state; draw them again.
+      if (!this.stateUnread) this.open(this.workspaceId);
+    }, 1000);
   }
 
   /** The top and status bar indicators, from the state just read.

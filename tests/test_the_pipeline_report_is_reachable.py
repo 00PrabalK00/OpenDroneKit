@@ -225,13 +225,9 @@ const out = {};
 // The Readiness panel fills once the shell has the open project.
 await __waitFor(() => /warning|note|ready|missing/.test(
   qa('.console .line').map((l) => l.textContent).join(' ')));
-// Under load the panel can fill before the shell has read the open project, and the
-// action then (rightly) answers "Open a project first". Click again until it has.
-const started = Date.now();
-while (!document.querySelector('textarea.modal-reveal') && Date.now() - started < 90000) {
-  qa('.tbtn').find((b) => b.textContent === 'Inspection Report').click();
-  await new Promise((r) => setTimeout(r, 3000));
-}
+// One click, as a user makes it. The shell re-reads the open project before refusing
+// with "Open a project first", so no retry loop is needed here.
+qa('.tbtn').find((b) => b.textContent === 'Inspection Report').click();
 await __waitFor(() => document.querySelector('textarea.modal-reveal'));
 out.text = document.querySelector('textarea.modal-reveal').value;
 out.title = document.body.innerText.match(/Inspection report: run_\d+_\d+/)?.[0] || '';
