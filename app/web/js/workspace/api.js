@@ -24,7 +24,11 @@ const PENDING = new Map();
 
 /** Whether the Python bridge is available in this page. */
 export function connected() {
-  return Boolean(typeof window !== "undefined" && window.pywebview && window.pywebview.api);
+  /* pywebview creates `window.pywebview.api` as an empty object first and fills it just
+     before firing pywebviewready. Treating the empty object as a bridge let panels call
+     methods that did not exist yet, fail, and render "no data" for the session. */
+  return Boolean(typeof window !== "undefined" && window.pywebview && window.pywebview.api
+    && typeof window.pywebview.api.get_state === "function");
 }
 
 /**

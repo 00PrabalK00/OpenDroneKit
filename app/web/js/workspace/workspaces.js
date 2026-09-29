@@ -28,6 +28,27 @@ import { emptyState, live, reported } from "./live.js";
    instead of showing a state the application never accepted. */
 import { tryCall } from "./api.js";
 
+/* One audit_log row as a console line.
+
+   The rows are {event_type, payload_json, created_at} -- the store's schema. The panels
+   read message/action/at, which no row has ever carried, so every line rendered as
+   "— —" over a real history. */
+export function auditLine(e) {
+  let detail = "";
+  try {
+    const payload = typeof e.payload_json === "string" ? JSON.parse(e.payload_json || "{}") : (e.payload_json || {});
+    detail = Object.entries(payload || {}).slice(0, 3)
+      .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ");
+  } catch { detail = ""; }
+  const kind = String(e.event_type || e.action || e.message || "");
+  const text = [kind.replace(/_/g, " "), detail].filter(Boolean).join(" — ") || "(unnamed event)";
+  return {
+    t: String(e.created_at || e.at || e.timestamp || "").slice(11, 19) || "—",
+    text,
+    level: /fail|error|refus/i.test(kind) ? "error" : /warn/i.test(kind) ? "warn" : "",
+  };
+}
+
 /* A readout in the corner of the canvas, asking the application for its numbers.
  *
  * Six overlays used to carry figures written into this file: the mission map's capture
@@ -238,12 +259,7 @@ const home = {
       calls: ["audit_log"],
       empty: "Nothing has happened in this workspace yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 12).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || e.event || "—",
-        level: /fail|error|refus/i.test(e.message || e.action || "") ? "error"
-          : /warn/i.test(e.message || e.action || "") ? "warn" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 12).map(auditLine)),
     }) },
     /* Reported three workers, a redis broker and postgis. This build is local-first and
        runs none of them; it was describing a deployment that does not exist here. */
@@ -270,11 +286,7 @@ const home = {
       calls: ["audit_log"],
       empty: "No activity recorded yet.",
       isEmpty: ([log]) => !(log && (log.events || []).length),
-      render: ([log]) => consoleView((log.events || []).slice(0, 20).map((e) => ({
-        t: String(e.at || e.timestamp || "").slice(11, 19) || "—",
-        text: e.message || e.action || "—",
-        level: /fail|error/i.test(e.message || e.action || "") ? "error" : "",
-      }))),
+      render: ([log]) => consoleView((log.events || []).slice(0, 20).map(auditLine)),
     }) },
     /* Three jobs at 34, 72 and 95 per cent on workers w-01 to w-03. This build runs
        jobs on threads in this process; there are no workers, and a Worker column

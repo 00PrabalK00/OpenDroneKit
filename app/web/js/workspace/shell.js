@@ -8,12 +8,13 @@
 
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
-import { WORKSPACES, WORKSPACE_BY_ID } from "./workspaces.js";
+import { WORKSPACES, WORKSPACE_BY_ID, auditLine } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, prerequisite, resolve } from "./actions.js";
 import { setImage, setView } from "./viewstate.js";
 import { askOne, choose as chooseModal, confirmAsk, reveal } from "./modal.js";
+import { basemapNames, setBasemap, visibleBounds } from "./mapview.js";
 
 const LAST_WORKSPACE = "odk.workspace.last";
 
@@ -125,12 +126,78 @@ export class Shell {
    */
   async connect() {
     const ready = await whenReady();
-    if (!ready || !connected()) return;
+    if (!ready || !connected()) {
+      // A slow start fires pywebviewready after whenReady() has given up. Staying
+      // "disconnected" for the whole session over a few hundred milliseconds is the
+      // wrong answer; connect when the bridge does arrive.
+      if (!this.awaitingBridge && typeof window !== "undefined") {
+        this.awaitingBridge = true;
+        window.addEventListener("pywebviewready", () => { this.awaitingBridge = false; this.connect(); }, { once: true });
+      }
+      return;
+    }
     if (this.mode === "demo") return;
+    if (this.mode === "connected") return;
     this.mode = "connected";
-    const projects = await tryCall("list_projects");
-    this.projects = Array.isArray(projects && projects.projects) ? projects.projects : [];
     await this.refreshState();
+    // The first workspace was rendered before the bridge answered, so every live panel
+    // in it asked, got nothing, and showed its empty state ("No projects yet", "No
+    // project open") while the status bar said "connected -- 1 project(s)". Render it
+    // again now that there is something to ask.
+    this.open(this.workspaceId);
+    this.pollChrome();
+  }
+
+  /* The top bar and status bar report the application, not a sample.
+
+     They used to be literals: a green "API", a green "3 workers", "PK / DEMO
+     organisation", a clock pinned to 00:00:00 and "OpenDroneKit Aukerman survey" as the
+     open project, whatever was really open. Now each is read from the Api (or the
+     shell's own runtime file) and says "unknown" when it cannot be. */
+  updateChrome() {
+    if (!this.chrome) return;
+    const live = this.mode === "connected";
+    const demo = this.mode === "demo";
+    const setDot = (node, kind) => { node.className = `status-dot ${kind}`; };
+
+    setDot(this.chrome.apiDot, live ? "ok" : demo ? "idle" : "warn");
+    this.chrome.apiText.textContent = live ? " API connected" : demo ? " demo (no API)" : " API not connected";
+
+    const running = (this.jobs || []).filter((j) => ["running", "pending"].includes(j.status)).length;
+    setDot(this.chrome.jobsDot, live ? (running ? "ok" : "idle") : "idle");
+    this.chrome.jobsText.textContent = live ? ` ${running} job${running === 1 ? "" : "s"} running` : " jobs —";
+
+    const hub = this.hubRuntime || {};
+    const hubKind = hub.hub_status === "running" ? "ok" : hub.hub_status === "starting" ? "idle" : "warn";
+    setDot(this.chrome.hubDot, live ? hubKind : "idle");
+    this.chrome.hubText.textContent = live
+      ? ` Hub ${hub.hub_status || "unknown"}`
+      : " Hub —";
+    this.chrome.hubText.title = hub.hub_error || (hub.hub_api ? `Hub service at ${hub.hub_api}` : "");
+
+    const project = this.state && this.state.project;
+    this.chrome.projectName.textContent = demo ? DEMO.ORG : project ? project.name : "no project open";
+    this.chrome.siteText.textContent = demo ? ` ${DEMO.SITES[0]}` : project ? ` ${project.name}` : " no project open";
+    setDot(this.chrome.siteDot, demo ? "idle" : project ? "ok" : "warn");
+    this.chrome.crsText.textContent = this.state && this.state.epsg ? `EPSG:${this.state.epsg}` : "EPSG:—";
+  }
+
+  /** Keep jobs and the Hub state current while the window is open. */
+  pollChrome() {
+    if (this.chromeTimer) return;
+    const tick = async () => {
+      const jobs = await tryCall("list_jobs");
+      if (jobs) this.jobs = jobs.jobs || [];
+      try {
+        const response = await fetch("odk-runtime.json", { cache: "no-store" });
+        this.hubRuntime = response.ok ? await response.json() : { hub_status: "not in desktop shell" };
+      } catch {
+        this.hubRuntime = { hub_status: "unknown" };
+      }
+      this.updateChrome();
+    };
+    tick();
+    this.chromeTimer = setInterval(tick, 5000);
   }
 
   /**
@@ -200,6 +267,7 @@ export class Shell {
     // So the banner now follows what is on screen rather than what the bridge says.
     const synthetic = this.mode !== "connected" || this.showingSampleContent();
     this.banner.classList.toggle("hidden", !synthetic);
+    this.updateChrome();
     if (this.connectionChip) {
       this.connectionChip.textContent =
         this.mode === "connected"
@@ -440,6 +508,11 @@ export class Shell {
    * behaviours for one action, and the one nobody tests is the one that breaks.
    */
   installMenuBridge() {
+    /* Every item in app/shell.py's menu bar is handled here; tests/test_menu_coverage.py
+       holds the two lists together. Seven used to fall through to "Menu action not
+       handled here" (Connect Vehicle, Arm, Start, Pause, Resume, Return to Home, Abort)
+       and several reached the wrong verb: Model Manager started the full reconstruction
+       pipeline, Mission History ran Simulate, Environment Capabilities ran Preflight. */
     const toWorkspace = {
       "mission.plan": "planning",
       "mission.settings": "planning",
@@ -447,12 +520,12 @@ export class Shell {
       "fly.connect": "flight",
       "fly.command": "flight",
       "fly.disconnect": "flight",
+      "fly.upload": "flight",
+      "recon.run": "processing",
       "recon.settings": "processing",
       "analysis.pipeline": "inspection",
-      "analysis.models": "inspection",
+      "analysis.models": "settings",
       "tools.measure": "measurements",
-      "tools.audit": "developers",
-      "view.panel": null,
     };
 
     const toAction = {
@@ -465,17 +538,30 @@ export class Shell {
       "mission.save": "Save",
       "mission.export": "Export",
       "mission.export_all": "Export",
+      "mission.history": "History",
       "recon.run": "Process",
       "analysis.pipeline": "Start",
-      "analysis.models": "Run AI",
+      "analysis.models": "Verify Models",
       "fly.upload": "Upload",
-      "tools.capabilities": "Preflight",
-      "mission.history": "Simulate",
+    };
+
+    // Where each View-menu panel lives in the cockpit.
+    const panelWorkspace = { layers: "twin", mission: "planning", telemetry: "flight", jobs: "processing" };
+
+    // The vehicle verbs, with the same confirmation the flight toolbar asks for.
+    const vehicleQuestion = {
+      arm: "Arm the aircraft?",
+      start: "Start the uploaded mission?",
+      pause: "Pause the aircraft?",
+      resume: "Resume the mission?",
+      rth: "Return to home?",
+      abort: "ABORT the flight?",
     };
 
     window.odk = window.odk || {};
     window.odk.onMenu = async ({ action, payload } = {}) => {
       if (!action) return;
+      payload = payload || {};
 
       // Jump to where the action belongs first, so the user can see what it did.
       const workspace = toWorkspace[action];
@@ -487,56 +573,132 @@ export class Shell {
         return;
       }
 
-      switch (action) {
-        case "project.reveal":
-        case "recon.reveal": {
-          const state = await tryCall("get_state");
-          const root = state && state.project && (state.project.root_dir || state.project.path);
-          if (root) await tryCall("open_path", String(root));
-          this.toast(root ? `Opened ${root}` : "No project folder to open.", root ? "ok" : "warn");
-          return;
-        }
-        case "mission.clear_aoi":
-          await tryCall("set_aoi", null);
-          this.toast("Area of interest cleared.", "ok");
-          return;
-        case "mission.clear_nofly":
-          await tryCall("set_no_fly_zones", []);
-          this.toast("No-fly zones cleared.", "ok");
-          return;
-        case "data.import_terrain": {
-          const file = await call("pick_file", ["tif", "tiff", "asc", "csv"]);
-          if (!file || !file.path) return;
-          await tryCall("set_terrain_source", file.path);
-          this.toast(`Terrain source: ${file.path}`, "ok");
-          return;
-        }
-        case "fly.disconnect":
-          await tryCall("disconnect_vehicle");
-          this.toast("Vehicle disconnected.", "ok");
-          return;
-        case "view.zoom_aoi":
-        case "view.zoom_mission":
-          setView("map");
-          setImage(null);
-          this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
-          this.toast("Back to the map.", "ok");
-          return;
-        case "view.basemap":
-          this.toast("Basemap is chosen on the canvas toolbar.", "warn");
-          return;
-        case "help.shortcuts":
-          this.openPalette();
-          return;
-        case "help.about":
-          this.toast("OpenDroneKit — offline-first drone inspection toolkit.", "ok");
-          return;
-        default:
-          // Named rather than ignored: a menu item nobody wired should say so, in the
-          // same way an unwired button does.
-          this.toast(`Menu action not handled here: ${action}`, "warn");
+      try {
+        await this.handleMenu(action, payload, { panelWorkspace, vehicleQuestion });
+      } catch (error) {
+        this.toast(`${action}: ${error.message || error}`, "error");
       }
     };
+  }
+
+  /** Menu items that are not one toolbar verb. Each one reaches the Api or says why not. */
+  async handleMenu(action, payload, { panelWorkspace, vehicleQuestion }) {
+    switch (action) {
+      case "project.reveal":
+      case "recon.reveal": {
+        const state = await tryCall("get_state");
+        const root = state && state.project && (state.project.root_dir || state.project.path);
+        if (root) await tryCall("open_path", String(root));
+        this.toast(root ? `Opened ${root}` : "No project folder to open.", root ? "ok" : "warn");
+        return;
+      }
+      case "mission.clear_aoi":
+        await call("set_aoi", []);
+        this.toast("Area of interest cleared.", "ok");
+        return;
+      case "mission.clear_nofly":
+        await call("set_no_fly_zones", []);
+        this.toast("No-fly zones cleared.", "ok");
+        return;
+      case "mission.settings":
+        this.toast("Mission settings are the parameter panel in this Planning workspace; Plan uses what is typed there.", "ok");
+        return;
+      case "recon.settings":
+        this.toast("Reconstruction settings are the Processing Settings panel here; Process uses them.", "ok");
+        return;
+      case "data.import_terrain": {
+        const file = await call("pick_file", ["tif", "tiff", "asc", "csv"]);
+        if (!file || !file.path) return;
+        await call("set_terrain_source", file.path);
+        this.toast(`Terrain source: ${file.path}`, "ok");
+        return;
+      }
+      case "fly.connect": {
+        if (!connected()) { this.toast("Connect Vehicle: the Python bridge is not connected.", "warn"); return; }
+        const driver = await chooseModal("Vehicle driver", ["mavlink", "mock"]);
+        if (!driver) return;
+        const uri = driver === "mock" ? "mock://"
+          : await askOne("Connect Vehicle", "MAVLink connection (e.g. udpin:0.0.0.0:14550, COM3:57600)", "udpin:0.0.0.0:14550");
+        if (!uri) return;
+        const result = await call("connect_vehicle", String(uri), driver);
+        const vehicle = (result && result.vehicle) || {};
+        this.toast(`Vehicle ${vehicle.connected ? "connected" : "not connected"} (${driver} ${uri}).`, vehicle.connected ? "ok" : "warn");
+        await this.refreshState();
+        return;
+      }
+      case "fly.disconnect":
+        await call("disconnect_vehicle");
+        this.toast("Vehicle disconnected.", "ok");
+        return;
+      case "fly.command": {
+        const command = String(payload.command || "");
+        const question = vehicleQuestion[command];
+        if (!question) { this.toast(`Unknown vehicle command: ${command}`, "warn"); return; }
+        if (!connected()) { this.toast(`${command}: the Python bridge is not connected.`, "warn"); return; }
+        if (!this.confirmAll && !(await confirmAsk(question))) return;
+        const result = await call("vehicle_command", command);
+        const detail = result && result.result;
+        this.toast(`${command} sent${detail && detail.message ? `: ${detail.message}` : "."}`, "ok");
+        return;
+      }
+      case "view.panel": {
+        const target = panelWorkspace[payload.panel];
+        if (!target) { this.toast(`No ${payload.panel} panel in the cockpit.`, "warn"); return; }
+        this.open(target);
+        this.toast(`${payload.panel} panel: ${WORKSPACE_BY_ID[target].title} workspace.`, "ok");
+        return;
+      }
+      case "view.zoom_aoi":
+      case "view.zoom_mission":
+        setView("map");
+        setImage(null);
+        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+        this.toast("Back to the map.", "ok");
+        return;
+      case "view.basemap": {
+        const key = String(payload.basemap || "");
+        if (setBasemap(key)) this.toast(`Basemap: ${key}.`, "ok");
+        else this.toast(`Unknown basemap ${key}. Available: ${basemapNames().join(", ")}.`, "warn");
+        return;
+      }
+      case "view.cache_tiles": {
+        const view = visibleBounds();
+        if (!view) { this.toast("Open a workspace with a map to choose the area to cache.", "warn"); return; }
+        const minZoom = Math.max(0, Math.floor(view.zoom));
+        const maxZoom = Math.min(19, minZoom + 3);
+        const result = await call("cache_basemap_area", view.west, view.south, view.east, view.north, minZoom, maxZoom, "satellite");
+        this.toast(`Caching ${result.tiles} tiles (z${minZoom}-${maxZoom}) for offline use…`, "ok");
+        this.watchJob(result.job_id);
+        return;
+      }
+      case "tools.measure":
+        await this.runAction(payload.mode === "area" ? "Area" : "Distance");
+        return;
+      case "tools.capabilities": {
+        const caps = await call("capabilities");
+        const lines = Object.entries(caps || {})
+          .filter(([key]) => key !== "ok")
+          .map(([key, value]) => `${key}: ${typeof value === "object" ? JSON.stringify(value) : value}`);
+        await reveal("Environment capabilities", lines.join("\n") || "Nothing reported.");
+        return;
+      }
+      case "tools.audit": {
+        const log = await call("audit_log", 100);
+        const lines = ((log && log.events) || []).map((e) => { const l = auditLine(e); return `${l.t}  ${l.text}`; });
+        await reveal("Audit log (newest first)", lines.join("\n") || "No events recorded for this project.");
+        return;
+      }
+      case "help.shortcuts":
+        this.openPalette();
+        return;
+      case "help.about":
+        this.toast("OpenDroneKit — offline-first drone inspection toolkit.", "ok");
+        return;
+      default:
+        // Named rather than ignored: a menu item nobody wired should say so, in the
+        // same way an unwired button does.
+        this.toast(`Menu action not handled here: ${action}`, "warn");
+    }
   }
 
   buildNav() {
@@ -551,6 +713,16 @@ export class Shell {
     }
     this.navItems = items;
 
+    // Filled from the Api by updateChrome(); nothing here is a literal about the world.
+    const chrome = this.chrome = this.chrome || {};
+    chrome.apiDot = el("span", { class: "status-dot warn" });
+    chrome.apiText = el("span", { text: " API not connected" });
+    chrome.jobsDot = el("span", { class: "status-dot idle" });
+    chrome.jobsText = el("span", { text: " jobs —" });
+    chrome.hubDot = el("span", { class: "status-dot idle" });
+    chrome.hubText = el("span", { text: " Hub —" });
+    chrome.projectName = el("span", { text: this.mode === "demo" ? DEMO.ORG : "no project open" });
+
     const search = el("div", { class: "searchbox" }, [
       el("span", { text: "⌕" }),
       el("span", { text: "Search projects, missions, findings…", style: "flex:1 1 auto" }),
@@ -564,24 +736,27 @@ export class Shell {
       el("div", { class: "nav-right" }, [
         search,
         el("span", { class: "sep" }),
-        el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: " API" })]),
-        el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: " 3 workers" })]),
-        el("span", {}, [el("span", { class: "status-dot idle" }), el("span", { text: " offline mode" })]),
+        el("span", {}, [chrome.apiDot, chrome.apiText]),
+        el("span", {}, [chrome.jobsDot, chrome.jobsText]),
+        el("span", {}, [chrome.hubDot, chrome.hubText]),
         el("span", { class: "sep" }),
         this.clock = el("span", { class: "mono", text: "--:--:-- UTC" }),
         el("span", { class: "sep" }),
-        el("span", { class: "avatar", text: "PK" }),
-        el("span", { text: DEMO.ORG }),
+        chrome.projectName,
       ]),
     ]);
   }
 
   buildStatus() {
     this.selectionLabel = el("span", { text: "no selection" });
+    const chrome = this.chrome = this.chrome || {};
+    chrome.siteDot = el("span", { class: "status-dot warn" });
+    chrome.siteText = el("span", { text: this.mode === "demo" ? ` ${DEMO.SITES[0]}` : " no project open" });
+    chrome.crsText = el("span", { class: "mono", text: "EPSG:—" });
     return el("footer", { class: "statusbar" }, [
-      el("span", {}, [el("span", { class: "status-dot ok" }), el("span", { text: ` ${DEMO.SITES[0]}` })]),
+      el("span", {}, [chrome.siteDot, chrome.siteText]),
       el("span", { class: "sep" }),
-      el("span", { class: "mono", text: "EPSG:4326" }),
+      chrome.crsText,
       el("span", { class: "sep" }),
       this.selectionLabel,
       el("span", { class: "spacer" }),
@@ -857,8 +1032,11 @@ export class Shell {
       this.state = {
         project: state.project || state.active_project || null,
         dataset: state.dataset || state.active_dataset || null,
+        epsg: state.display_epsg || null,
       };
     }
+    const projects = await tryCall("list_projects");
+    if (projects) this.projects = Array.isArray(projects.projects) ? projects.projects : [];
     const jobs = await tryCall("list_jobs");
     this.jobs = (jobs && jobs.jobs) || [];
     this.applyMode();
@@ -921,10 +1099,12 @@ export class Shell {
       { kind: "layout", label: "Reset workspace layout", run: () => this.dock.resetLayout() },
       { kind: "view", label: "Toggle full-screen canvas", hint: "F11", run: () => this.dock.toggleCanvasFullScreen() },
       ...SHORTCUTS.map(([keys, what]) => ({ kind: "shortcut", label: what, hint: keys, run: () => {} })),
-      { kind: "project", label: DEMO.SITES[0], hint: "project", run: () => {} },
-      { kind: "project", label: DEMO.SITES[1], hint: "project", run: () => {} },
-      { kind: "finding", label: "F-118 crack — Roof Block A", hint: "finding", run: () => this.open("inspection") },
-      { kind: "mission", label: "Roof Block A v3", hint: "mission", run: () => this.open("planning") },
+      // The projects this machine actually holds; picking one opens it. There used to be
+      // two demo sites, a finding and a mission version here that existed nowhere.
+      ...(this.mode === "connected" ? (this.projects || []) : []).map((p) => ({
+        kind: "project", label: String(p.name), hint: "open project",
+        run: () => this.openProject(p.id, p.name),
+      })),
     ];
     this.palette(items, "");
   }
@@ -989,11 +1169,13 @@ export class Shell {
     });
 
     const tick = () => {
-      // The epoch while the shell is showing demo content. A live wall clock beside
+      // The epoch while the shell is showing demo content: a live wall clock beside
       // synthetic sites is the detail that makes the whole screen read as a real shift
-      // in progress, and it is the one number here that is genuinely true -- which is
-      // exactly what makes it misleading in this company.
-      this.clock.textContent = `${DEMO.CLOCK} UTC`;
+      // in progress. Connected to the application, it is simply the time -- it used to
+      // stay pinned at the epoch for the whole session, a clock that was always wrong.
+      this.clock.textContent = this.mode === "connected"
+        ? `${new Date().toISOString().slice(11, 19)} UTC`
+        : `${DEMO.CLOCK} UTC`;
     };
     tick();
     setInterval(tick, 1000);
