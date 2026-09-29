@@ -134,16 +134,14 @@ def colmap_executable() -> str | None:
     return None
 
 
+# Dense stereo used to read True whenever a native binary existed. A CUDA build of
+# COLMAP that was not compiled for this GPU's architecture (an RTX 50-series card
+# against a build without sm_120 kernels) exists, prints "with CUDA", and fails every
+# patch-match run with "the provided PTX was compiled with an unsupported toolchain".
+# The capability is therefore established by running patch-match once on a tiny
+# fixture (native_dense_probe), and the reason is reported next to the answer.
 def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
-    """Report exactly what this environment can do, for honest UI and log reporting.
-
-    Dense stereo used to read True whenever a native binary existed. A CUDA build of
-    COLMAP that was not compiled for this GPU's architecture (an RTX 50-series card
-    against a build without sm_120 kernels) exists, prints "with CUDA", and fails every
-    patch-match run with "the provided PTX was compiled with an unsupported toolchain".
-    The capability is therefore established by running patch-match once on a tiny
-    fixture, and the reason is reported next to the answer.
-    """
+    """Report exactly what this environment can do, for honest UI and log reporting."""
     caps = geo.geo_capabilities()
     binary = colmap_executable() or ""
     bindings_dense = _pycolmap_has_dense() and pycolmap_has_cuda()
