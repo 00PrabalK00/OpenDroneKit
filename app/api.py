@@ -5559,10 +5559,25 @@ class Api:
     @guard
     def connect_vehicle(self, uri: str, driver: str = "pymavlink") -> dict[str, Any]:
         vehicle = self._session.connect_vehicle(uri, driver)
+        if not vehicle.get("connected"):
+            # A link that did not open starts no log. This block used to read the
+            # session's current log, which is the PREVIOUS connection's, so a failed
+            # pymavlink attempt after a mock flight reported {driver: 'mock'}. It now
+            # describes the attempt the operator just made, and says no log began.
+            return ok(vehicle=vehicle, flight_log={
+                "driver": vehicle.get("driver", ""),
+                "uri": vehicle.get("uri", uri),
+                "simulated": bool(vehicle.get("is_simulated", False)),
+                "started": False,
+                "archived": None,
+                "note": "No flight log was started: the link did not open.",
+            })
         log = self._session.flight_log
         return ok(vehicle=vehicle, flight_log={
             "driver": getattr(log, "driver", ""),
+            "uri": getattr(log, "connection_uri", uri),
             "simulated": bool(getattr(log, "is_simulated", False)),
+            "started": True,
             "archived": (self._session.archived_flight_logs[-1]
                          if self._session.archived_flight_logs else None),
         })
