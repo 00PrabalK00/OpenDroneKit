@@ -28,10 +28,21 @@ const PALETTE = {
   layer: "#a78bfa",
 };
 
+const sourceId = (id) => `odk-v-${String(id).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+
 function drawPinned(map) {
-  if (!map.isStyleLoaded || !map.isStyleLoaded()) return;
+  if (!map.isStyleLoaded || !map.isStyleLoaded()) {
+    /* isStyleLoaded() is false while any source is still fetching (a raster layer being
+       added, a basemap tile in flight). Returning then dropped the overlays for good;
+       wait for the map to go idle and draw them. */
+    if (!map.__odkVectorsPending && map.once) {
+      map.__odkVectorsPending = true;
+      map.once("idle", () => { map.__odkVectorsPending = false; drawPinned(map); });
+    }
+    return;
+  }
   for (const [id, entry] of pinned) {
-    const source = `odk-v-${id.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const source = sourceId(id);
     const existing = map.getSource(source);
     if (existing) { existing.setData(entry.geojson); continue; }
     map.addSource(source, { type: "geojson", data: entry.geojson });
@@ -56,9 +67,16 @@ export function showVector(id, geojson, kind = "layer") {
   mounted.forEach((map) => drawPinned(map));
 }
 
-/** What is currently drawn, by id -- for the evidence tests and the layer panel. */
+/** What is actually on a mounted map, by id, with its feature count -- read back from
+    the map's own sources, so a layer that was pinned but never reached a map is absent. */
 export function shownVectors() {
-  return [...pinned.keys()];
+  const shown = {};
+  for (const [id, entry] of pinned) {
+    if ([...mounted].some((map) => map.getSource && map.getSource(sourceId(id)))) {
+      shown[id] = ((entry.geojson || {}).features || []).length;
+    }
+  }
+  return shown;
 }
 
 async function loadProjectOverlays(map) {
