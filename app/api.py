@@ -23,7 +23,7 @@ import sys
 from typing import Any, Callable
 
 from .jobs import JobManager
-from .session import AppSession, MapLayer
+from .session import AppSession, MapLayer, json_safe
 
 #: The largest area of interest one mission is planned over. Beyond this the planner runs
 #: for minutes to hours; see set_aoi.
@@ -31,11 +31,13 @@ MAX_AOI_AREA_M2 = 50_000_000.0
 
 
 def ok(**payload: Any) -> dict[str, Any]:
-    return {"ok": True, **payload}
+    # Every reply crosses to JavaScript as JSON, where a bare NaN makes the whole reply
+    # unreadable; a non-finite number is sent as null instead.
+    return {"ok": True, **json_safe(payload)}
 
 
 def fail(error: str, **payload: Any) -> dict[str, Any]:
-    return {"ok": False, "error": str(error), **payload}
+    return {"ok": False, "error": str(error), **json_safe(payload)}
 
 
 def _optional_float(value: Any) -> float | None:
@@ -2843,8 +2845,8 @@ class Api:
         """Write the fleet register (aircraft, batteries, pilots, full maintenance log).
 
         Fleet's Export button exported the MISSION, and on the Fleet screen answered
-        "No mission has been planned yet". Unset, the files go under the data root's
-        exports folder in a timestamped directory, so a second export never overwrites
+        "No mission has been planned yet". Unset, the files go under the open project's
+        exports folder (the data root's when no project is open) in a timestamped directory, so a second export never overwrites
         the first.
         """
         from app import desktop_ops
@@ -2852,8 +2854,11 @@ class Api:
 
         target = str(directory or "").strip()
         if not target:
+            # The open project's exports folder when there is one, else the data root's.
+            root = self._session.project_root()
+            base = Path(root) / "exports" if root else data_root() / "exports"
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            target = str(data_root() / "exports" / f"fleet-{stamp}")
+            target = str(base / f"fleet-{stamp}")
         try:
             _, org = self._service_ids(organization_id=organization_id)
             return ok(**desktop_ops.export_fleet(org, target))
@@ -3347,13 +3352,18 @@ class Api:
         result always carries what the range excluded, and a warning when the hottest
         pixels in the frame are saturated.
         """
-        from core.thermal import NotRadiometric, load_radiometric_file
+        from core.thermal import NotRadiometric, load_radiometric_file, load_temperature_geotiff
         from core.thermal_scaling import (
             ScalingRefused, anomaly_scale, auto_scale, legend, manual_scale,
         )
 
         try:
-            frame = load_radiometric_file(path)
+            # A temperature map the thermal run wrote is as much a measurement as the
+            # sidecar it came from; Temperature Range refused the toolkit's own product.
+            if Path(path).suffix.lower() in {".tif", ".tiff"}:
+                frame = load_temperature_geotiff(path)
+            else:
+                frame = load_radiometric_file(path)
         except (NotRadiometric, FileNotFoundError, OSError) as exc:
             return fail(str(exc))
 

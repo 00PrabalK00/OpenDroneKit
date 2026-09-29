@@ -535,7 +535,7 @@ def export_fleet(organization_id: int, directory: str | Path) -> dict[str, Any]:
             writer.writerow(columns)
             writer.writerows([[row[c] for c in columns] for row in rows])
         files[key] = str(path)
-    summary = out / "fleet.json"
+    summary = out / "fleet_register.json"
     summary.write_text(json.dumps({
         "organization_id": int(organization_id),
         "exported_at": _utc_now().isoformat(),

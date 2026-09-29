@@ -199,6 +199,8 @@ export class Shell {
     configureDrawing({
       toast: (text, kind) => this.toast(text, kind),
       prompt: (label, fallback) => askOne(label, label, fallback),
+      // Which screen the button was pressed on, for verbs shared by several toolbars.
+      workspaceId: () => this.workspaceId,
       geometry: (geometry) => {
         this.selectionGeometry = geometry;
         this.selectionLabel.textContent = `selection: ${geometry.type}`;

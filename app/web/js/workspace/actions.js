@@ -344,6 +344,17 @@ export const ACTIONS = {
   Export: {
     describe: "Export the mission, or the products when there is no mission.",
     async run(ctx) {
+      // On the Fleet screen the thing on screen is the fleet register, not a mission.
+      if (ctx.workspaceId && ctx.workspaceId() === "fleet") {
+        const fleet = await call("export_fleet", ctx.organizationId());
+        const c = fleet.counts;
+        return {
+          message: `Exported the fleet register (${c.aircraft} aircraft, ${c.batteries} `
+            + `batteries, ${c.pilots} pilots, ${c.maintenance} maintenance records) to `
+            + `${fleet.directory}.`,
+          files: Object.values(fleet.files || {}),
+        };
+      }
       // tryCall, not call: call() THROWS when the API refuses, so a fallback written
       // after it can never run. The first version of this used call() and the mission
       // refusal propagated straight past the products branch, which is why the button
@@ -1261,8 +1272,13 @@ export const ACTIONS = {
          dataset was reported "may not fit" beside a note that said it would. The verdict
          is can_run_as_one_job, and the note already states it with the figures. */
       const warnings = (result.warnings || []).join(" ");
+      /* Below the memory one image needs, no chunk size helps; this used to recommend
+         "chunks of about 1" that did not fit either. */
+      const verdict = result.can_run_as_one_job ? "Fits"
+        : result.fits_one_image === false ? "Cannot run here now"
+        : "Does not fit as one job";
       return {
-        message: `${result.can_run_as_one_job ? "Fits" : "Does not fit as one job"}: `
+        message: `${verdict}: `
           + `${result.note || `${count} images`}${warnings ? ` ${warnings}` : ""}`,
       };
     },
@@ -1566,7 +1582,8 @@ export const ACTIONS = {
   "Temperature Range": {
     describe: "Choose the temperature range a radiometric frame is drawn in.",
     async run(ctx) {
-      const picked = await call("pick_file", ["json"]);
+      // A radiometric sidecar, or the temperature GeoTIFF a thermal map run wrote.
+      const picked = await call("pick_file", ["json", "tif", "tiff"]);
       if (!picked.path) return { skipped: "No radiometric frame chosen." };
       const modes = {
         "Automatic (1st to 99th percentile)": "auto",

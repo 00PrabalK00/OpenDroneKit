@@ -159,6 +159,8 @@
     });
 
     await Promise.all(state.layers.map(mountLayer));
+    // The offline note names the imagery on screen; keep it true as layers change.
+    if (state.map && state.map.basemap === 'offline') reportOfflineCache(true);
   }
 
   async function mountLayer(layer) {
@@ -1009,7 +1011,10 @@
     },
 
     'analysis.pipeline': async () => {
-      const result = await tryCall('run_pipeline', { engine: $('#recon-engine').value, ...runOnOptions() });
+      // The Profile select sits above both buttons; Run Full Pipeline used to send only
+      // the engine, so a "Fast preview" choice still ran a standard reconstruction.
+      const result = await tryCall('run_pipeline', {
+        engine: $('#recon-engine').value, profile: $('#recon-profile').value, ...runOnOptions() });
       if (result) {
         status('Pipeline started.');
         pollJob(result.job_id, (job) => {
@@ -1324,17 +1329,49 @@
   function chooseBasemap(key) {
     state.map.setBasemap(key);
     if (key === 'offline') reportOfflineCache();
+    else showBasemapNote('');
+  }
+
+  /* A standing label on the map itself. The status line is overwritten by the next
+     message within a second ("OpenDroneKit ready."), so on a laptop with no signal the
+     explanation for a dark map used to vanish before anyone read it. */
+  function showBasemapNote(text) {
+    let note = $('#basemap-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'basemap-note';
+      note.className = 'basemap-note';
+      note.setAttribute('role', 'status');
+      $('#map').appendChild(note);
+    }
+    note.textContent = text;
+    note.hidden = !text;
   }
 
   /* Say what the offline basemap can show, so an empty cache reads as empty rather
-     than as a broken map. */
-  async function reportOfflineCache() {
+     than as a broken map -- and what the project's own imagery adds, which is read
+     from disk and needs no network. */
+  async function reportOfflineCache(quiet) {
     const result = await tryCall('basemap_cache_status');
     if (!result) return;
     const sat = (result.providers || {}).satellite;
-    status(sat && sat.tiles
-      ? `Offline cache: ${sat.tiles} satellite tiles at zoom ${sat.zoom_levels.join(', ')}. Uncached areas stay empty.`
-      : 'The offline tile cache is empty. While online, frame the site and press "Cache view".');
+    const rasters = (state.layers || []).filter((l) => l.kind !== 'vector' && l.crs_epsg && l.visible !== false);
+    const ortho = rasters.find((l) => /ortho/i.test(l.name)) || rasters[0];
+    const own = ortho
+      ? ` The project's ${ortho.name} is drawn from disk.`
+      : ' Project layers still draw from disk.';
+    let text;
+    if (sat && sat.tiles) {
+      const levels = sat.zoom_levels || [];
+      if (levels.length) state.map.setOfflineMaxZoom(Math.max(...levels));
+      text = `Basemap: offline cache, ${sat.tiles} satellite tile(s) at zoom `
+        + `${levels.join(', ')}. Areas never cached stay empty.` + own;
+    } else {
+      text = 'No basemap: the offline tile cache is empty. While online, frame the site '
+        + 'and press "Cache view".' + own;
+    }
+    if (!quiet) status(text);
+    showBasemapNote(text);
   }
 
   /* Download the tiles for what is on screen, a few zoom levels deeper, so the map
@@ -1400,7 +1437,7 @@
   function initMap() {
     state.map = new OdkMap('map', {
       onReady: () => { state.ready = true; status('Map ready. Draw an area of interest to plan a mission.', { ambient: true }); },
-      onBasemapFallback: (message) => { $('#basemap-select').value = 'offline'; status(message); reportOfflineCache(); },
+      onBasemapFallback: (message) => { $('#basemap-select').value = 'offline'; status(message); showBasemapNote(message); reportOfflineCache(); },
       onCursor: (lon, lat) => {
         $('#status-coords').textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
         $('#status-scale').textContent = `z${state.map.map.getZoom().toFixed(1)}`;

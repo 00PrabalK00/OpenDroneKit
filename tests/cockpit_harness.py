@@ -136,6 +136,8 @@ class Cockpit:
     picks: dict[str, str] = field(default_factory=dict)
     calls: list[dict[str, Any]] = field(default_factory=list)
     opened: list[str] = field(default_factory=list)
+    #: Offline basemap tiles the page asked for: (path, HTTP status).
+    tiles: list[tuple[str, int]] = field(default_factory=list)
     ready_delay_ms: int = 0
     bridge: bool = True
     #: The page under test: the cockpit, or "index.html" for the classic window.
@@ -182,10 +184,20 @@ class Cockpit:
                     wanted = self.path.split("ms=", 1)[-1] if "ms=" in self.path else "50"
                     _time.sleep(min(float(wanted or 50), 400.0) / 1000.0)
                     return self._send(b"{}", "application/json")
+                if path == "/__tiles":
+                    return self._send(json.dumps(cockpit.tiles).encode(), "application/json")
                 if path == "/__calls":
                     return self._send(json.dumps(cockpit.calls, default=str).encode(), "application/json")
                 if path == "/__scenario.html":
                     return self._send(cockpit._page().encode("utf-8"), "text/html; charset=utf-8")
+                # The offline basemap, answered by the code the desktop shell uses.
+                from core.tile_cache import tile_response
+
+                tile = tile_response(path, self.path.split("?", 1)[1] if "?" in self.path else "")
+                if tile is not None:
+                    code, kind, body, _ = tile
+                    cockpit.tiles.append((self.path, code))
+                    return self._send(body, kind, code)
                 target = (WEB / path.lstrip("/")).resolve()
                 if WEB.resolve() not in target.parents or not target.is_file():
                     return self._send(b"not found", "text/plain", 404)
@@ -209,7 +221,12 @@ class Cockpit:
                 })
                 return self._send(json.dumps(result, default=str).encode(), "application/json")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        # The listen backlog defaults to 5. A map opening fires a burst of tile and
+        # module requests, and on a loaded Windows machine the overflow was refused:
+        # "Failed to fetch", and tiles MapLibre marks errored and never asks for again.
+        server_class = type("CockpitServer", (ThreadingHTTPServer,),
+                            {"request_queue_size": 128, "daemon_threads": True})
+        self.server = server_class(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self) -> "Cockpit":
@@ -253,7 +270,8 @@ class Cockpit:
         html = html.replace("<head>", "<head>" + shim, 1)
         return html.replace("</body>", scenario + "</body>", 1)
 
-    def run(self, scenario: str, *, query: str = "", virtual_time_ms: int = 60000) -> dict[str, Any]:
+    def run(self, scenario: str, *, query: str = "", virtual_time_ms: int = 60000,
+            timeout_s: float = 240) -> dict[str, Any]:
         """Load the cockpit, run `scenario` (the body of an async function), return what
         it returned."""
         self._scenario = scenario
@@ -266,7 +284,7 @@ class Cockpit:
         argv.insert(-1, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1")
         if self.window_size:
             argv.insert(-1, f"--window-size={self.window_size}")
-        completed = subprocess.run(argv, capture_output=True, text=True, timeout=240,
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s,
                                    encoding="utf-8", errors="replace")
         found = re.search(r'<pre id="odk-result">(.*?)</pre>', completed.stdout, re.DOTALL)
         assert found, f"the page never rendered a result:\n{completed.stdout[-2000:]}\n{completed.stderr[-2000:]}"

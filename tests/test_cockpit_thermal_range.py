@@ -13,6 +13,7 @@ roof with one 80 C flue. The page is the real cockpit against the real Api.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -85,3 +86,31 @@ def test_a_thermal_jpeg_is_refused_with_the_reason(tmp_path) -> None:
             return { toast: await ODK.waitFor(() => ODK.toasts().find((t) => t.startsWith("Temperature Range:")), 10000) };
         """)
     assert "exiftool" in result["toast"] and "palette, not temperatures" in result["toast"]
+
+
+def test_the_temperature_map_a_thermal_run_wrote_is_accepted(tmp_path) -> None:
+    """The toolkit's own product, thermal_temperature.tif, was refused as "not a JSON"."""
+    from core.india_thermal import write_radiometric_thermal_map
+    from core.thermal import load_radiometric_file
+
+    image = load_radiometric_file(_frame(tmp_path))
+    written = write_radiometric_thermal_map(image, tmp_path / "thermal", epsg=32617,
+                                            west=500000.0, north=4570000.0, pixel_size=0.1)
+    geotiff = next(Path(p) for p in written.artifact_paths if str(p).endswith("thermal_temperature.tif"))
+    api = make_api(tmp_path)
+    toast, calls = _press(api, tmp_path, geotiff, "Manual (enter min and max)", ["18", "26"])
+    assert calls and calls[-1]["ok"], calls
+    # The same field as the sidecar it was written from, so the same answer.
+    expected = api.scale_thermal(str(_frame(tmp_path)), "manual", 18, 26)
+    assert toast.startswith("Range 18.0 to 26.0 °C (manual, ironbow)"), toast
+    assert f"the frame spans {expected['scale']['data_min_c']:.1f} to 80.0 °C" in toast
+    assert "saturates 4 pixel(s)" in toast
+
+
+def test_a_raster_that_is_not_a_temperature_map_is_refused(tmp_path, surface_pair) -> None:
+    api = make_api(tmp_path)
+    toast, calls = _press(api, tmp_path, surface_pair["dsm"], "Automatic (1st to 99th percentile)")
+    assert calls and not calls[-1]["ok"], calls
+    assert toast.startswith("Temperature Range:"), toast
+    assert "does not say it holds measured temperatures" in toast
+

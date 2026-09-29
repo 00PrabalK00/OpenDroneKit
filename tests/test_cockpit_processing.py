@@ -8,6 +8,8 @@ second one up front and says which job holds the folder.
 
 from __future__ import annotations
 
+import pytest
+
 import time
 
 from cockpit_harness import Cockpit, make_api, write_geotagged_jpeg
@@ -80,7 +82,9 @@ def test_size_job_reports_the_verdict_the_application_computed(tmp_path) -> None
             await ODK.press("Size Job");
             return { toast: await ODK.waitFor(() => ODK.toasts().find((t) => t.includes("images")), 10000) };
         """)
-    verdict = "Fits" if expected["can_run_as_one_job"] else "Does not fit as one job"
+    verdict = ("Fits" if expected["can_run_as_one_job"]
+               else "Cannot run here now" if not expected["fits_one_image"]
+               else "Does not fit as one job")
     assert result["toast"].startswith(f"{verdict}: {expected['note']}"), (result, expected)
     assert "may not fit" not in result["toast"] or not expected["can_run_as_one_job"]
 
@@ -104,3 +108,25 @@ def test_size_job_does_not_contradict_itself_on_a_machine_short_of_memory(tmp_pa
     assert toast.startswith("Fits: 4 images should run as a single job"), toast
     assert "Memory is tight" in toast
     assert "Does not fit" not in toast and "chunks of about" not in toast
+
+
+@pytest.mark.parametrize("free_mb", [36.0, 30.0])
+def test_size_job_refuses_when_not_even_one_image_fits(tmp_path, monkeypatch, free_mb) -> None:
+    """Verifier: at 36 MB free the toast offered "chunks of about 1 fit" though one image
+    is estimated at 45 MB. Chunking cannot help there, and the toast must say so."""
+    import core.job_sizing as sizing
+
+    monkeypatch.setattr(sizing, "available_memory_mb", lambda: free_mb)
+    api = make_api(tmp_path)
+    _dataset(api, tmp_path)
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        result = cockpit.run("""
+            await ODK.nav("Processing");
+            await ODK.press("Size Job");
+            return { toast: await ODK.waitFor(() => ODK.toasts().find((t) => t.includes("images") || t.includes("image(s)")), 10000) };
+        """)
+    toast = result["toast"]
+    assert toast.startswith("Cannot run here now: This machine cannot run this job now"), toast
+    assert f"only {free_mb:.0f} MB is free" in toast
+    assert "splitting the job cannot help" in toast
+    assert "chunks of about" not in toast and "Fits" not in toast

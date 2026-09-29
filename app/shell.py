@@ -18,7 +18,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import webview
 from webview.menu import Menu, MenuAction, MenuSeparator
@@ -282,18 +282,11 @@ class Shell:
                     body = json.dumps(state).encode("utf-8")
                     self._send(200, "application/json", body, {"Cache-Control": "no-store"})
                     return
-                match = _TILE_ROUTE.match(parts.path)
-                if match:
-                    from core.tile_cache import TRANSPARENT_PNG, read_tile, tile_media_type
+                from core.tile_cache import tile_response
 
-                    provider = (parse_qs(parts.query).get("provider") or ["satellite"])[0]
-                    z, x, y = (int(value) for value in match.groups())
-                    tile = read_tile(provider, z, x, y)
-                    if tile is None:
-                        # A gap in coverage looks like a gap, not like terrain.
-                        self._send(404, "image/png", TRANSPARENT_PNG, {"X-ODK-Tile": "not-cached"})
-                    else:
-                        self._send(200, tile_media_type(tile), tile, {"X-ODK-Tile": "cached"})
+                answer = tile_response(parts.path, parts.query)
+                if answer is not None:
+                    self._send(*answer)
                     return
                 super().do_GET()
 
@@ -307,12 +300,15 @@ class Shell:
                 self.wfile.write(body)
 
         handler = functools.partial(Handler, directory=str(root))
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        # The listen backlog defaults to 5. Opening the map fires a burst of tile and
+        # module requests; on a busy Windows machine the overflow is refused, and a
+        # basemap tile refused once is marked errored and never requested again.
+        server_class = type("ShellServer", (ThreadingHTTPServer,),
+                            {"request_queue_size": 128, "daemon_threads": True})
+        server = server_class(("127.0.0.1", 0), handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{server.server_port}/{page}"
 
-
-_TILE_ROUTE = re.compile(r"^/tiles/(\d+)/(\d+)/(\d+)\.png$")
 
 HUB_DEFAULT_PORT = 8000
 

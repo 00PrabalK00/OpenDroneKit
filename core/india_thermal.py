@@ -308,7 +308,7 @@ def write_radiometric_thermal_map(
         "source": image.source,
         "temperature_source": "radiometric_counts_via_core.thermal",
         "interpolated": False,
-        "calibration": asdict(image.calibration),
+        "calibration": asdict(image.calibration) if image.calibration is not None else None,
         "geotiff": geotiff.name,
     }
     if registration is not None:

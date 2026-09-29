@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 import shutil
 from typing import Any
@@ -55,6 +56,27 @@ def _is_simulated(driver: str) -> bool:
     return str(driver or "").lower() in SIMULATED_DRIVERS
 
 
+def json_safe(value: Any) -> Any:
+    """``value`` with every non-finite float replaced by None.
+
+    Python's json writes NaN and Infinity as bare tokens, which JSON.parse rejects. One
+    raster whose nodata is NaN, carried in a layer's metadata, made every get_state and
+    list_layers reply unreadable to the UI, so the open project looked closed.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        items = [json_safe(v) for v in value]
+        return tuple(items) if type(value) is tuple else items
+    if type(value).__module__ == "numpy" and hasattr(value, "item"):
+        return json_safe(value.item()) if getattr(value, "ndim", 0) == 0 else json_safe(value.tolist())
+    return value
+
+
 @dataclass
 class MapLayer:
     """One entry in the GIS layer tree."""
@@ -78,8 +100,8 @@ class MapLayer:
             "visible": self.visible,
             "opacity": self.opacity,
             "crs_epsg": self.crs_epsg,
-            "bounds_lonlat": self.bounds_lonlat,
-            "metadata": self.metadata,
+            "bounds_lonlat": json_safe(self.bounds_lonlat),
+            "metadata": json_safe(self.metadata),
         }
 
 

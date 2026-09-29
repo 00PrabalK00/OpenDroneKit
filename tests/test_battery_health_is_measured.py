@@ -49,7 +49,7 @@ def test_a_new_pack_has_no_health_until_one_is_measured(fresh_install, tmp_path)
     with open(Path(exported["directory"]) / "batteries.csv", newline="", encoding="utf-8") as fh:
         [row] = list(csv.DictReader(fh))
     assert row["health_pct"] == "", row
-    register = json.loads((Path(exported["directory"]) / "fleet.json").read_text("utf-8"))
+    register = json.loads(Path(exported["files"]["json"]).read_text("utf-8"))
     assert register["batteries"][0]["health_pct"] is None, register
 
     logged = api.log_battery_cycle(1, added["id"], "2", "")
