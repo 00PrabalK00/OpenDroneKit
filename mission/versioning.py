@@ -30,6 +30,7 @@ SIGNIFICANT_FIELDS: dict[str, tuple[str, str]] = {
     "estimated_time_min": ("Flight time", "min"),
     "path_distance_m": ("Path distance", "m"),
     "camera": ("Camera", ""),
+    "speed_m_s": ("Speed", "m/s"),
     "template": ("Template", ""),
     "flight_direction_deg": ("Flight direction", "deg"),
     "line_spacing_m": ("Line spacing", "m"),
@@ -163,16 +164,42 @@ def _summary_of(version: dict[str, Any]) -> dict[str, Any]:
     return version
 
 
+def _waypoint_count(summary: dict[str, Any]) -> int:
+    """How many waypoints a summary records, whichever way it records them.
+
+    save_mission stores the COUNT (plan_summary.waypoints is an int); an unwrapped plan
+    carries the list. len() on the count raised TypeError, so once a mission had two
+    saved versions, history and compare both failed -- and the cockpit, reading that as
+    "nothing", told the operator there were no saved versions.
+    """
+    value = summary.get("waypoints")
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    count = summary.get("waypoint_count")
+    return int(count) if isinstance(count, (int, float)) else 0
+
+
+def _with_template(version: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """The summary plus the template, which is stored beside it rather than in it."""
+    if "template" in summary or not version.get("template"):
+        return summary
+    return {**summary, "template": version.get("template")}
+
+
 def diff_versions(older: dict[str, Any], newer: dict[str, Any]) -> MissionDiff:
     """Compare two saved mission versions."""
-    before = _summary_of(older)
-    after = _summary_of(newer)
+    before = _with_template(older, _summary_of(older))
+    after = _with_template(newer, _summary_of(newer))
 
     result = MissionDiff(
         from_version=int(older.get("version_num", 0) or 0),
         to_version=int(newer.get("version_num", 0) or 0),
-        waypoints_before=len(before.get("waypoints") or []),
-        waypoints_after=len(after.get("waypoints") or []),
+        waypoints_before=_waypoint_count(before),
+        waypoints_after=_waypoint_count(after),
     )
 
     # Geometry is compared as a whole: a redrawn boundary is one decision, not one
@@ -185,7 +212,7 @@ def diff_versions(older: dict[str, Any], newer: dict[str, Any]) -> MissionDiff:
         != (constraints_after.get("no_fly_polygons") or [])
     )
 
-    skip = {"waypoints", "polygon", "geojson", "flight_recipe", "autopilot_commands",
+    skip = {"waypoints", "waypoint_count", "polygon", "geojson", "flight_recipe", "autopilot_commands",
             "safety_constraints", "expected_coverage"}
 
     for key in sorted(set(before) | set(after)):
@@ -241,22 +268,36 @@ def restore_version(store: Any, project_id: int, version: dict[str, Any],
 
 
 def version_history(versions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Each version alongside what changed from the one before it."""
-    ordered = sorted(versions, key=lambda v: int(v.get("version_num", 0) or 0))
-    history: list[dict[str, Any]] = []
+    """Each version alongside what changed from the one before it.
 
-    for index, version in enumerate(ordered):
+    Version numbers count per mission name, so a project with two missions has two
+    version 1s. Each version is compared with the previous version OF THE SAME MISSION;
+    comparing "North face v1" with "Roof v1" described a change nobody made.
+    """
+    ordered = sorted(versions, key=lambda v: (str(v.get("mission_name") or ""),
+                                              int(v.get("version_num", 0) or 0)))
+    history: list[dict[str, Any]] = []
+    previous: dict[str, dict[str, Any]] = {}
+
+    for version in ordered:
+        name = str(version.get("mission_name") or "")
+        summary = _summary_of(version)
         entry = {
+            "mission_name": name,
             "version_num": version.get("version_num"),
             "id": version.get("id"),
             "created_at": version.get("created_at"),
             "note": version.get("note", ""),
             "template": version.get("template"),
+            "waypoints": _waypoint_count(summary),
+            "altitude_m": summary.get("altitude_m"),
         }
-        if index == 0:
+        before = previous.get(name)
+        if before is None:
             entry["changes"] = ["First saved version."]
         else:
-            entry["changes"] = diff_versions(ordered[index - 1], version).summary()
+            entry["changes"] = diff_versions(before, version).summary()
+        previous[name] = version
         history.append(entry)
 
     return history

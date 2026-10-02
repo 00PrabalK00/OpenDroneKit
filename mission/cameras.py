@@ -266,6 +266,14 @@ def resolve(name: str, path: Path | None = None) -> tuple[CameraProfile, bool]:
         if candidate_key.replace("_", "") == key.replace("_", ""):
             return profile, True
 
+    # A profile's display name is what a person reads in a list and may well pass back.
+    # It fell through to the placeholder, so every camera picked by name was described
+    # with the generic sensor's figures.
+    wanted = (name or "").strip().casefold()
+    for profile in profiles.values():
+        if wanted and profile.name.strip().casefold() == wanted:
+            return profile, True
+
     return profiles["custom"], False
 
 

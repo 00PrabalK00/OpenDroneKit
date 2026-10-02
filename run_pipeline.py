@@ -226,6 +226,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--solar-imagery is chosen per image.",
     )
     parser.add_argument(
+        "--structural-detection",
+        default="auto",
+        choices=["auto", "on", "off"],
+        help="The concrete crack and structural models. auto: not on a solar asset. "
+        "They never run on EL cell or IR module images, whatever this says.",
+    )
+    parser.add_argument(
         "--solar-imagery",
         default="auto",
         choices=["auto", "el_cell", "thermal_module", "rgb_photo"],
@@ -339,6 +346,8 @@ def main() -> None:
         asset_id=str(args.asset_id or ""),
         structure_type=str(args.structure_type or "generic"),
         material_type=str(args.material_type or "concrete"),
+        run_structural_detection={"on": True, "off": False}.get(
+            str(args.structural_detection or "auto")),
     )
     try:
         result = run_pipeline(

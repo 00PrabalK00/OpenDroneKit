@@ -593,6 +593,134 @@ def _distance_to_ring_xy(point_xy, ring_xy) -> float:
     return best
 
 
+def _segments_clearance_to_ring(starts: np.ndarray, ends: np.ndarray, ring: np.ndarray) -> np.ndarray:
+    """Exact closest approach of each segment (starts[i] -> ends[i]) to a closed ring.
+
+    Zero where a segment crosses a wall. Vectorised over segments and walls, so a whole
+    visibility graph is checked without sampling: a sampled check can step over a
+    corner that a leg grazes between two samples.
+    """
+    starts = np.asarray(starts, dtype=np.float64).reshape(-1, 2)
+    ends = np.asarray(ends, dtype=np.float64).reshape(-1, 2)
+    wa = np.asarray(ring, dtype=np.float64)
+    wb = np.roll(wa, -1, axis=0)
+    p1, p2 = starts[:, None, :], ends[:, None, :]
+    q1, q2 = wa[None, :, :], wb[None, :, :]
+
+    def point_to_segment(p, a, b):
+        ab = b - a
+        denom = np.maximum((ab * ab).sum(-1), 1e-18)
+        t = np.clip(((p - a) * ab).sum(-1) / denom, 0.0, 1.0)
+        return np.linalg.norm(a + t[..., None] * ab - p, axis=-1)
+
+    best = np.minimum.reduce([
+        point_to_segment(p1, q1, q2), point_to_segment(p2, q1, q2),
+        point_to_segment(q1, p1, p2), point_to_segment(q2, p1, p2)])
+
+    def orient(a, b, c):
+        return ((b[..., 0] - a[..., 0]) * (c[..., 1] - a[..., 1])
+                - (b[..., 1] - a[..., 1]) * (c[..., 0] - a[..., 0]))
+
+    o1, o2 = orient(p1, p2, q1), orient(p1, p2, q2)
+    o3, o4 = orient(q1, q2, p1), orient(q1, q2, p2)
+    crossing = (o1 * o2 < 0) & (o3 * o4 < 0)
+    best = np.where(crossing, 0.0, best)
+    return best.min(axis=1)
+
+
+class _FootprintRouter:
+    """Shortest route between two points that keeps a clearance from a footprint.
+
+    Nodes are the stand-off arcs round each outside corner (sampled finely enough that
+    the chord between neighbours stays within 97% of the radius) and the stand-off mitre
+    at each inside corner; edges are the node pairs whose straight leg keeps the
+    clearance. A wall-to-wall transit then goes round the corner at the stand-off
+    instead of cutting it.
+    """
+
+    def __init__(self, ring: np.ndarray, standoffs: list[float], clearance: float) -> None:
+        self.ring = np.asarray(ring, dtype=np.float64)
+        self.clearance = float(clearance)
+        closed = np.vstack([self.ring, self.ring[:1]])
+        orient = 1.0 if _signed_area_xy(self.ring) > 0.0 else -1.0
+        count = len(self.ring)
+        candidates: list[np.ndarray] = []
+        for v in range(count):
+            prev_pt, vertex, next_pt = self.ring[v - 1], self.ring[v], self.ring[(v + 1) % count]
+            d_a, d_b = vertex - prev_pt, next_pt - vertex
+            if np.linalg.norm(d_a) < 1e-9 or np.linalg.norm(d_b) < 1e-9:
+                continue
+            d_a, d_b = d_a / np.linalg.norm(d_a), d_b / np.linalg.norm(d_b)
+            n_a = orient * np.array([d_a[1], -d_a[0]])
+            n_b = orient * np.array([d_b[1], -d_b[0]])
+            s_a, s_b = standoffs[v - 1], standoffs[v % count]
+            turn = math.atan2(d_a[0] * d_b[1] - d_a[1] * d_b[0], float(d_a @ d_b))
+            if turn * orient > 1e-9:          # outside corner: arc round it
+                steps = max(1, int(math.ceil(abs(turn) / math.radians(28.0))))
+                radius = max(s_a, s_b)
+                for j in range(steps + 1):
+                    phi = turn * j / steps
+                    c, s = math.cos(phi), math.sin(phi)
+                    candidates.append(vertex + radius * np.array(
+                        [c * n_a[0] - s * n_a[1], s * n_a[0] + c * n_a[1]]))
+            else:                              # inside corner (or straight): the mitre
+                matrix = np.column_stack([d_a, -d_b])
+                rhs = (n_b * s_b) - (n_a * s_a)
+                if abs(float(np.linalg.det(matrix))) > 1e-9:
+                    t = np.linalg.solve(matrix, rhs)[0]
+                    candidates.append(vertex + n_a * s_a + d_a * t)
+                candidates.append(vertex + n_a * s_a)
+                candidates.append(vertex + n_b * s_b)
+        nodes = [p for p in candidates
+                 if not _point_in_polygon(p, closed)
+                 and _distance_to_ring_xy(p, closed) >= self.clearance - 1e-6]
+        self.nodes = np.asarray(nodes, dtype=np.float64).reshape(-1, 2)
+        n = len(self.nodes)
+        self.adjacent = np.zeros((n, n), dtype=bool)
+        for i in range(n - 1):
+            ok = self.leg_clear(np.repeat(self.nodes[i:i + 1], n - i - 1, axis=0), self.nodes[i + 1:])
+            self.adjacent[i, i + 1:] = ok
+            self.adjacent[i + 1:, i] = ok
+
+    def leg_clear(self, starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
+        return _segments_clearance_to_ring(starts, ends, self.ring) >= self.clearance - 1e-6
+
+    def route(self, start: np.ndarray, end: np.ndarray) -> list[np.ndarray] | None:
+        """Intermediate points from start to end: empty when the direct leg is clear,
+        None when no route keeps the clearance."""
+        start, end = np.asarray(start, dtype=np.float64), np.asarray(end, dtype=np.float64)
+        if bool(self.leg_clear(start[None], end[None])[0]):
+            return []
+        n = len(self.nodes)
+        if n == 0:
+            return None
+        from_start = self.leg_clear(np.repeat(start[None], n, axis=0), self.nodes)
+        to_end = self.leg_clear(self.nodes, np.repeat(end[None], n, axis=0))
+        distance = np.full(n, np.inf)
+        previous = np.full(n, -1, dtype=int)
+        distance[from_start] = np.linalg.norm(self.nodes[from_start] - start, axis=1)
+        done = np.zeros(n, dtype=bool)
+        while True:
+            open_ = np.where(~done & np.isfinite(distance))[0]
+            if len(open_) == 0:
+                break
+            u = int(open_[np.argmin(distance[open_])])
+            done[u] = True
+            step = distance[u] + np.linalg.norm(self.nodes - self.nodes[u], axis=1)
+            better = self.adjacent[u] & ~done & (step < distance)
+            distance[better] = step[better]
+            previous[better] = u
+        total = np.where(to_end, distance + np.linalg.norm(self.nodes - end, axis=1), np.inf)
+        if not np.isfinite(total).any():
+            return None
+        u = int(np.argmin(total))
+        path: list[np.ndarray] = []
+        while u >= 0:
+            path.append(self.nodes[u].copy())
+            u = int(previous[u])
+        return path[::-1]
+
+
 def _expand_geofence_for_structure(
     geofence_lonlat: list[list[float]],
     standoff_m: float,
@@ -2193,6 +2321,12 @@ def _constraints_from_dict(
             except Exception:
                 continue
     rth_alt = float(data.get("rth_altitude_m", max(max_alt + 10.0, default_altitude_m + 20.0)))
+    if "max_altitude_m" not in data and "max_alt_m" not in data:
+        # The default RTH sits 10 m above the default ceiling, and preflight blocks any
+        # plan whose RTH exceeds its ceiling -- so every plan made on defaults was one
+        # its own checklist refused (found by a real ArduPilot SITL run). With no
+        # ceiling given, the ceiling is raised to admit the RTH climb.
+        max_alt = max(max_alt, rth_alt)
     return MissionConstraints(
         geofence=geofence,
         min_altitude_m=max(5.0, min_alt),
@@ -5730,6 +5864,8 @@ class MissionPlanner:
         unseen_lengths: list[tuple[int, float]] = []
 
         poses: list[_CapturePose] = []
+        face_standoffs: list[float] = []
+        face_heights: list[float] = []
         for index in range(len(ring)):
             start = ring[index]
             end = ring[(index + 1) % len(ring)]
@@ -5738,6 +5874,8 @@ class MissionPlanner:
             standoff = max(0.5, float(face.get("standoff_m", default_standoff)))
             top = float(face.get("top_altitude_m", default_top))
             bottom = float(face.get("bottom_altitude_m", default_bottom))
+            face_standoffs.append(standoff)
+            face_heights.extend([top, bottom])
             h_spacing = max(0.75, float(face.get("horizontal_spacing_m", default_h)))
             v_spacing = max(0.75, float(face.get("vertical_spacing_m", default_v)))
             face_pitch = float(np.clip(float(face.get("gimbal_pitch_deg", gimbal_pitch)), -120.0, 30.0))
@@ -5838,7 +5976,12 @@ class MissionPlanner:
                         yaw_deg=pose_yaw, gimbal_pitch_deg=face_pitch,
                         primitive=name, dwell_s=dwell_s,
                         camera_yaw_locked=True, look_at_xy=look_at,
+                        # Placed against every wall of the footprint above; the generic
+                        # radial push from the centre would move it off its stand-off
+                        # line and, in a courtyard, towards another wall.
+                        clearance_planned=True,
                     ))
+        poses = self._route_facade_transits(poses, ring, face_standoffs, face_heights)
         for wall, length in blind_walls:
             self._coverage_notes.append(
                 f"Wall {wall + 1} ({length:.0f} m) is not photographed: no point at the "
@@ -5850,6 +5993,79 @@ class MissionPlanner:
                 "any frame: it could only be seen at a grazing angle from the stand-off. "
                 "Reduce the stand-off for that face to photograph it.")
         return poses
+
+    def _route_facade_transits(self, poses: list[_CapturePose], ring: np.ndarray,
+                               face_standoffs: list[float],
+                               face_heights: list[float]) -> list[_CapturePose]:
+        """Keep every leg between facade poses outside the stand-off.
+
+        Each wall's poses sit at its stand-off, but the leg from where one wall's
+        serpentine ends to where the next begins was flown straight: from the far end
+        of a finished wall it ran alongside that wall and cut the corner, passing a
+        60 x 30 m building's corner 1.4 m away while descending past it. Any leg that
+        comes inside 95% of the smallest stand-off is re-routed round the corners at
+        the stand-off (the arc round an outside corner, the mitre at an inside one).
+        If no such route exists the transit climbs above the highest facade row, and
+        that is said, since the planner does not know the roof height.
+        """
+        if len(poses) < 2 or not face_standoffs:
+            return poses
+        clearance = 0.95 * min(face_standoffs)
+        router: _FootprintRouter | None = None
+        closed = np.vstack([ring, ring[:1]])
+        climb_alt = max(face_heights) + max(5.0, min(face_standoffs))
+        climbs: list[tuple[str, str]] = []
+
+        def facing(xy: np.ndarray, alt: float) -> _CapturePose:
+            best = None
+            for i in range(len(ring)):
+                q = _closest_point_on_segment(xy, ring[i], ring[(i + 1) % len(ring)])
+                if best is None or np.linalg.norm(q - xy) < np.linalg.norm(best - xy):
+                    best = q
+            return _CapturePose(
+                x_m=float(xy[0]), y_m=float(xy[1]), alt_m=float(alt),
+                yaw_deg=_bearing_deg(xy, best), gimbal_pitch_deg=0.0,
+                primitive="facade_transit", trigger=False, camera_yaw_locked=True,
+                look_at_xy=(float(best[0]), float(best[1])), clearance_planned=True)
+
+        starts = np.array([[p.x_m, p.y_m] for p in poses[:-1]], dtype=np.float64)
+        ends = np.array([[p.x_m, p.y_m] for p in poses[1:]], dtype=np.float64)
+        moving = np.linalg.norm(ends - starts, axis=1) > 1e-6
+        tight = moving & (_segments_clearance_to_ring(starts, ends, closed[:-1]) < clearance - 1e-6)
+        if not tight.any():
+            return poses
+
+        out: list[_CapturePose] = [poses[0]]
+        for k in range(1, len(poses)):
+            a, b = poses[k - 1], poses[k]
+            if tight[k - 1]:
+                if router is None:
+                    router = _FootprintRouter(ring, face_standoffs, clearance)
+                p = np.array([a.x_m, a.y_m])
+                q = np.array([b.x_m, b.y_m])
+                via = router.route(p, q)
+                if via is None:
+                    out.append(facing(p, climb_alt))
+                    out.append(facing(q, climb_alt))
+                    climbs.append((a.primitive, b.primitive))
+                else:
+                    points = [p, *via, q]
+                    lengths = np.cumsum([0.0] + [float(np.linalg.norm(points[i + 1] - points[i]))
+                                                 for i in range(len(points) - 1)])
+                    for i, xy in enumerate(via, start=1):
+                        f = lengths[i] / max(lengths[-1], 1e-9)
+                        out.append(facing(xy, a.alt_m + (b.alt_m - a.alt_m) * f))
+            out.append(b)
+        for before, after in climbs:
+            wall_from = before.split("_")[2] if before.count("_") >= 2 else "?"
+            wall_to = after.split("_")[2] if after.count("_") >= 2 else "?"
+            label = (f"from wall {int(wall_from) + 1} to wall {int(wall_to) + 1}"
+                     if wall_from.isdigit() and wall_to.isdigit() else "between two facade passes")
+            self._coverage_notes.append(
+                f"The transit {label} climbs to {climb_alt:.0f} m, above the highest facade "
+                "row: no route round the building keeps the stand-off. The roof height is "
+                "not known to the planner; confirm that altitude clears it.")
+        return out
 
     def _compile_oblique_bands_primitive(self, params: dict[str, Any]) -> list[_CapturePose]:
         """Oblique perimeter rings that complete a 3D modelling mission.
@@ -6073,6 +6289,15 @@ class MissionPlanner:
                 item.trigger = False
                 item.dwell_s = 0.0
                 item.primitive = "turbine_transit"
+            # Check the path as it will be flown, after the band is applied: a leg
+            # that comes within the stand-off of the nacelle is stated, never hidden.
+            flown = [(np.array([item.x_m, item.y_m], dtype=np.float64), float(item.alt_m)) for item in planned]
+            closest = min((leg_clearance(a, b) for a, b in zip(flown, flown[1:])), default=float("inf"))
+            if closest < standoff - 0.05:
+                self._coverage_notes.append(
+                    f"Part of the path passes {closest:.1f} m from the nacelle, inside the "
+                    f"{standoff:.0f} m stand-off, because of the {minimum_altitude:.0f}-"
+                    f"{maximum_altitude:.0f} m altitude band. Widen the band or reduce the stand-off.")
             for name, count in lost.items():
                 part = {"turbine_nacelle": "nacelle", "turbine_tower": "tower"}.get(name, name)
                 self._coverage_notes.append(
@@ -6195,10 +6420,14 @@ class MissionPlanner:
                     if leg_clearance(previous, (point, alt)) < standoff - 0.05:
                         # Detours: over the nacelle, under it, or out to either side of
                         # it; the one that stays furthest from it is flown.
+                        # A level outside the altitude band is not a candidate: finish()
+                        # would clamp it back into the band, and the "over the nacelle"
+                        # level clamped under a low ceiling passes right over the nacelle
+                        # (hub 105 m, ceiling 120 m, stand-off 20 m went 17 m from it).
                         candidates = []
                         for level in (max(previous[1], alt, hub_height + standoff),
                                       min(previous[1], alt, hub_height - standoff)):
-                            if level >= minimum_altitude:
+                            if minimum_altitude - 1e-6 <= level <= maximum_altitude + 1e-6:
                                 candidates.append([(previous[0], level), (point, level)])
                         for sign in (1.0, -1.0):
                             shift_a = across * (sign * standoff - float(np.dot(previous[0] - hub, across)))

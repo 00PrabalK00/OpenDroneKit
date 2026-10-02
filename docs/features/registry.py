@@ -137,8 +137,10 @@ MISSION_PLANNING = [
       "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
-      "capture points sit outside the footprint with the camera facing the wall.",
-      "implemented", ["tests/test_mission_types.py::TestMultiFacade"]),
+      "capture points sit outside the footprint with the camera facing the wall, and "
+      "the transit from one face to the next goes round the corner at the stand-off.",
+      "implemented", ["tests/test_mission_types.py::TestMultiFacade",
+                      "tests/test_multi_facade_transits_keep_clear.py"]),
     F("mp.type.complex_facade", "Complex facade planning", "core", "Mission types",
       "Balconies, recesses, courtyards, overhangs and non-rectangular footprints, with "
       "occlusion reported rather than silently omitted.",
@@ -206,7 +208,8 @@ MISSION_PLANNING = [
       "Tower stack, four nacelle aspects, and per-blade stations captured from both "
       "faces at the parked rotor angles, skipping points below a safe altitude.",
       "implemented", ["tests/test_mission_types.py::TestWindTurbine",
-                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine"],
+                      "tests/test_exported_headings_face_the_subject.py::TestPylonAndTurbine",
+                      "tests/test_structure_coverage_is_stated.py::TestTurbineWholePath"],
       "Each blade face looks across the blade at the opposite face; an unset stand-off "
       "uses 12 m instead of the 2 m floor it used to reach."),
     F("mp.type.magnetic", "Magnetic mapping", "core", "Mission types",
@@ -1179,7 +1182,10 @@ INDIA_FIRST = [
       "Find deviations from a validated normal baseline without assigning an unsupported "
       "named defect class.",
       "implemented", ["tests/test_india_anomaly.py::TestValidatedBaseline",
-                      "tests/test_india_anomaly.py::TestGeospatialRefusals"],
+                      "tests/test_india_anomaly.py::TestGeospatialRefusals",
+                      "tests/test_india_pack_gaps.py::test_an_untagged_raster_needs_a_declared_schema_and_a_tag_is_never_overridden",
+                      "tests/test_india_pack_gaps.py::test_a_vegetation_index_the_app_wrote_is_a_valid_anomaly_input",
+                      "tests/test_india_pack_gaps.py::test_anomaly_pair_on_untagged_rasters_in_the_cockpit"],
       "Robust per-band baseline statistics require named validation scope; outputs are georeferenced deviation candidates, never inferred defect names."),
 
     # Photogrammetry and geometry foundation
@@ -1310,7 +1316,8 @@ INDIA_FIRST = [
       "implemented", ["tests/test_india_land_pack.py::test_land_gis_extracts_real_georeferenced_semantic_classes",
                       "tests/test_india_land_pack.py::test_metric_land_analysis_refuses_unreferenced_raster",
                       "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_land_gis",
-                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit"],
+                      "tests/test_survey_packs_reach_the_app.py::test_survey_packs_in_the_cockpit",
+                      "tests/test_india_pack_gaps.py::test_land_gis_flags_classes_the_model_does_not_validate"],
       "Reached from the app: Api.india_land_gis, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. With no raster named it reads the project's latest "
       "semantic map (Semantic Map runs the installed shared_semantic model, whose only "
       "validated classes are vegetation and building, and says so)."),
@@ -1352,7 +1359,10 @@ INDIA_FIRST = [
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
       "transformers, vegetation and validated component findings.",
-      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors"]),
+      "implemented", ["tests/test_india_assets_pack.py::test_power_and_rail_enforce_capture_geometry_and_map_real_vectors",
+                      "tests/test_india_pack_gaps.py::test_a_wgs84_power_centreline_is_measured_in_its_utm_zone"],
+      "A longitude/latitude centreline is measured in the UTM zone of its midpoint and the "
+      "summary says so (measured_in_epsg, crs_note)."),
     F("pack.rail.inspection", "Railway corridor inspection", "vision",
       "India pack: Power and rail",
       "Mapped railway track, bridge, overhead equipment and corridor findings from "
@@ -1390,6 +1400,16 @@ INSPECTION = [
                       "tests/test_raster_measurement.py::TestRefusals",
                       "tests/test_raster_measurement.py::TestHonestReporting"],
       "core/raster_measurement.py; Api.measure_on_raster."),
+    F("me.photo", "Measuring on a photograph", "hub", "Measurement",
+      "Distance, area and crack length (from a crack mask) on a dataset photograph, "
+      "clicked on the photograph in the cockpit, scaled by an operator-given mm/px or a "
+      "reference of known length on the same photograph, never by an assumed scale, and "
+      "kept in the project's measurement history with the scale and its perspective "
+      "caveat.",
+      "implemented", ["tests/test_photo_measurements.py"],
+      "core/measurements.py (measure_image_distance, measure_polygon_area, "
+      "measure_crack_length); Api.measure_on_image, Api.measure_crack_on_image; cockpit "
+      "Measurements: Photo Distance, Photo Area, Crack Length."),
     F("me.3d", "3D measurements", "hub", "Measurement",
       "Length, height, area and volume inside the 3D model, exact on a mesh of known "
       "size, with the horizontal and vertical parts of a run reported separately, "
@@ -1612,7 +1632,9 @@ PLATFORM = [
       "verified", ["tests/test_exporters.py::test_every_registered_format_writes_a_file",
                    "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members",
                    "tests/test_mission_exports_carry_the_plan.py::TestFileStructure",
-                   "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile"],
+                   "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile",
+                   "tests/test_litchi_export_live.py::TestTheActionCodesAreLitchis",
+                   "tests/test_litchi_export_live.py::TestTheMenuItemExportsLitchi"],
       "Verified by parsing the written files after planning through the Api. Loading "
       "into QGroundControl, Mission Planner, DJI Pilot 2 and Litchi themselves has not "
       "been done here; the DJI drone enum (77/0, payload 66, Mavic 3 Enterprise) and "
@@ -1715,7 +1737,7 @@ PLATFORM = [
       "gets 404 rather than 403, and nobody may grant a role above their own.",
       "implemented", ["tests/test_api.py::TestAuthorization"]),
     F("inf.docker", "Docker deployment", "infra", "Deployment",
-      "docker compose up brings PostGIS, MinIO, the API and a worker online, with "
+      "docker compose up brings PostGIS, a SeaweedFS S3 gateway, the API and a worker online, with "
       "healthchecks so the API waits for a database that actually accepts connections, "
       "and no credential committed to the repository.",
       "implemented", ["tests/test_compose.py",
@@ -1723,7 +1745,7 @@ PLATFORM = [
       "Definition verified as data; booting the stack needs a Docker daemon. The API "
       "enqueues processing jobs to the Celery worker and leaves AI jobs to the ai-worker "
       "service, both sharing the api_storage volume. Uploads are written to that volume, "
-      "not to MinIO, whatever ODK_STORAGE_BACKEND says."),
+      "not to the object store, whatever ODK_STORAGE_BACKEND says."),
     F("inf.k8s", "Kubernetes and Helm", "infra", "Deployment",
       "Helm chart deploys the API, workers and PostGIS to a cluster, using the same "
       "images the compose stack runs.",

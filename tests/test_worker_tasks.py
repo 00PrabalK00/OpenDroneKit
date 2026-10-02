@@ -158,3 +158,44 @@ class TestRegistration:
         task = register(app)
         assert task.name == "odk.processing.run"
         assert "odk.processing.run" in app.tasks
+
+
+class TestTheWorkerPoolRunsOnThisHost:
+    """Prefork fails every task on Windows ("not enough values to unpack (expected 3,
+    got 0)"), leaving jobs queued forever behind a healthy-looking worker. The live
+    stack test (tests/test_live_stack.py) is where that was seen; these pin the choice."""
+
+    def test_windows_gets_solo_and_linux_keeps_prefork(self, monkeypatch) -> None:
+        import sys
+
+        from services.worker.tasks import worker_pool
+
+        monkeypatch.delenv("ODK_WORKER_POOL", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        assert worker_pool() == "solo"
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert worker_pool() == "prefork"
+
+    def test_the_operator_can_choose(self, monkeypatch) -> None:
+        from services.worker.tasks import worker_pool
+
+        monkeypatch.setenv("ODK_WORKER_POOL", "threads")
+        assert worker_pool() == "threads"
+
+    def test_the_worker_is_started_with_that_pool(self, monkeypatch) -> None:
+        import services.worker.celery_app as celery_app
+        import services.worker.tasks as tasks
+
+        seen = {}
+
+        class FakeApp:
+            def task(self, *a, **k):
+                return lambda fn: fn
+
+            def worker_main(self, argv):
+                seen["argv"] = argv
+
+        monkeypatch.setattr(celery_app, "build_app", lambda *a, **k: FakeApp())
+        monkeypatch.setenv("ODK_WORKER_POOL", "solo")
+        assert tasks.worker_main() == 0
+        assert "--pool=solo" in seen["argv"]

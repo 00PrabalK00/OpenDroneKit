@@ -128,8 +128,11 @@ class TestConcaveBuilding:
         closest = min(distance_to_walls(p, ring) for p in points)
         assert closest >= 0.95 * standoff, f"{template}: a point {closest:.1f} m from a wall"
         closest_leg = min(distance_to_walls(q, ring) for q in legs(points))
-        # Legs between faces cut the outside corners; they stay well clear of the walls.
-        assert closest_leg >= 0.5 * standoff, f"{template}: a leg {closest_leg:.1f} m from a wall"
+        # Legs between faces go round the corners at the stand-off. Half the stand-off
+        # was allowed here while multi-facade transits cut the corners (1.4 m from a
+        # 60 x 30 m building at a 10 m stand-off): see
+        # tests/test_multi_facade_transits_keep_clear.py.
+        assert closest_leg >= 0.95 * standoff - 0.05, f"{template}: a leg {closest_leg:.1f} m from a wall"
 
     def test_multi_facade_covers_every_wall_from_outside(self, tmp_path):
         api, origin = make_api(tmp_path, L_SHAPE)

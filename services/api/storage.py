@@ -1,6 +1,6 @@
 """Object storage, behind one interface.
 
-Two backends: the local filesystem, and anything speaking S3 (MinIO, AWS S3, Ceph).
+Two backends: the local filesystem, and anything speaking S3 (SeaweedFS, AWS S3, Ceph).
 Which one runs is chosen by ODK_STORAGE_BACKEND, so a self-hosted deployment can keep
 every byte on its own disks and a larger one can move to object storage without any
 calling code changing.
@@ -124,7 +124,7 @@ class LocalStorage:
 
 @dataclass
 class S3Storage:
-    """Any S3-compatible endpoint: MinIO for self-hosting, AWS S3, Ceph."""
+    """Any S3-compatible endpoint: SeaweedFS for self-hosting, AWS S3, Ceph."""
 
     bucket: str
     endpoint_url: str = ""

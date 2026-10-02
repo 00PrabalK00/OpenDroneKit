@@ -117,6 +117,29 @@ class TestAltitudeBand:
         altitudes = [w[2] for w in plan.waypoints]
         assert min(altitudes) >= 25.0 - 1e-6, "a waypoint fell below the altitude floor"
 
+    @pytest.mark.parametrize("altitude_m", [10.0, 60.0, 120.0])
+    def test_a_plan_on_default_limits_passes_its_own_rth_check(self, altitude_m):
+        """The default RTH was 10 m above the default ceiling, so preflight blocked every
+        plan made without explicit limits ("RTH altitude exceeds max altitude") -- found
+        when a real ArduPilot SITL flight was held on the ground by it."""
+        from core.preflight import SEVERITY_PASS, check_rth_altitude
+        from core.settings import load_drone_profiles
+
+        plan = MissionPlanner().generate(mode="grid", polygon_lonlat=AOI, altitude_m=altitude_m)
+        limits = plan.safety_constraints
+        assert limits["rth_altitude_m"] <= limits["max_altitude_m"]
+        assert limits["rth_altitude_m"] > altitude_m, "RTH must still climb above the survey"
+        profile = load_drone_profiles()[0]
+        for key in ("rth_altitude_m", "min_altitude_m", "max_altitude_m"):
+            setattr(profile, key, float(limits[key]))
+        assert check_rth_altitude(profile).severity == SEVERITY_PASS
+
+    def test_an_explicit_ceiling_is_not_raised_for_the_rth(self):
+        plan = MissionPlanner().generate(
+            mode="grid", polygon_lonlat=AOI, altitude_m=60.0,
+            constraints={"geofence": AOI, "max_altitude_m": 100.0, "rth_altitude_m": 110.0})
+        assert plan.safety_constraints["max_altitude_m"] == 100.0
+
 
 class TestTemplates:
     @pytest.mark.parametrize(

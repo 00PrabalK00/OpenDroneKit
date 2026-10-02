@@ -33,12 +33,25 @@
   // machine is treated as offline and the map moves to the local cache.
   const OFFLINE_FALLBACK_ERRORS = 4;
 
+  /* Esri's tiled services send a grey "Map data not yet available" picture, with
+     HTTP 200, for any level they hold no imagery at -- and how deep they go changes
+     from place to place (z19 at the Aukerman site). js/basemap-depth.js fetches their
+     tiles through an esri:// protocol that turns that answer into "no tile here", and
+     caps the source at the deepest level the service lists for the view, so zooming in
+     enlarges the last real tile instead of showing the placeholder. `maxzoom` on these
+     two is only the ceiling the service could ever reach. */
+  const DEPTH = global.ODKBasemapDepth || null;
+  const ESRI_PROTOCOL = Boolean(DEPTH && DEPTH.registerProtocol(global.maplibregl));
+  const esri = (url) => (ESRI_PROTOCOL ? DEPTH.esriUrl(url) : url);
+
+  const MAX_MAP_ZOOM = 24;
+
   const BASEMAPS = {
     satellite: {
       label: 'Satellite',
-      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+      tiles: [esri('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}')],
       attribution: 'Esri, Maxar, Earthstar Geographics',
-      // Esri imagery reaches z23 over most populated areas.
+      // The deepest the service has anywhere; the real depth here is asked for.
       maxzoom: 23
     },
     street: {
@@ -49,7 +62,7 @@
     },
     topo: {
       label: 'Topographic',
-      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}'],
+      tiles: [esri('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}')],
       attribution: 'Esri, USGS, NOAA',
       // The topographic service stops at z19; asking beyond it returns nothing, which
       // is why this looked broken when it was set to match satellite.
@@ -103,6 +116,23 @@
         { id: 'basemap', type: 'raster', source: 'basemap' }
       ]
     };
+  }
+
+  /* The source for a project raster served as tiles. No layer maxzoom anywhere: the
+     layer stays drawn at every zoom, and past `maxzoom` (the survey's native zoom)
+     MapLibre enlarges the deepest real tile. */
+  function rasterTileSource(tiles) {
+    const base = typeof location !== 'undefined' && /^https?:$/.test(location.protocol) ? location.origin : '';
+    const url = /^https?:/.test(tiles.url) ? tiles.url : base + tiles.url;
+    const source = {
+      type: 'raster',
+      tiles: [url],
+      tileSize: tiles.tile_size || 256,
+      minzoom: tiles.minzoom || 0,
+      maxzoom: tiles.maxzoom == null ? 22 : tiles.maxzoom
+    };
+    if (Array.isArray(tiles.bounds) && tiles.bounds.length === 4) source.bounds = tiles.bounds;
+    return source;
   }
 
   function haversine(a, b) {
@@ -182,6 +212,11 @@
         style: this.opts.style || basemapStyle(this.basemap),
         center: this.opts.center || [0, 20],
         zoom: this.opts.zoom || 2,
+        // Deep enough for a centimetre survey: z22 is ~3 cm per screen pixel at mid
+        // latitudes, and a closer inspection orthomosaic goes finer still. Past a
+        // basemap's real depth the basemap is enlarged; project rasters stay sharp to
+        // their own native zoom.
+        maxZoom: MAX_MAP_ZOOM,
         attributionControl: { compact: true }
       });
 
@@ -205,8 +240,17 @@
       // online basemap fails before a single tile has loaded, switch to the offline
       // cache and say so, rather than leaving the operator staring at nothing.
       this._resetTileHealth();
+      // The basemap's real depth for the view on screen (see js/basemap-depth.js).
+      if (DEPTH) {
+        DEPTH.track(this.map, () => {
+          const spec = BASEMAPS[this.basemap];
+          return spec && !spec.offline ? spec.maxzoom : null;
+        });
+      }
       this.map.on('error', (e) => {
         if (!e || e.sourceId !== 'basemap' || this.basemap === 'offline') return;
+        // A level with no imagery is coverage, not a lost connection.
+        if (DEPTH && DEPTH.isNoImagery(e)) return;
         this._tileHealth.errors += 1;
         if (!this._tileHealth.loaded && this._tileHealth.errors >= OFFLINE_FALLBACK_ERRORS
             && !this._tileHealth.fellBack && this.opts.autoOffline !== false) {
@@ -478,11 +522,25 @@
       this._mountRaster(id, entry);
     }
 
+    /* A raster served as tiles cut from the GeoTIFF itself (Api.raster_tiles).
+       The single-PNG preview is at most 1024 px wide, so zooming in on a centimetre
+       survey only enlarged it; tiles carry the survey's own pixels down to its native
+       zoom, and MapLibre enlarges the deepest real tile past that. */
+    addRasterTiles(id, tiles, opacity) {
+      const entry = { tiles: tiles, opacity: opacity == null ? 1 : opacity };
+      this.rasterLayers.set(id, entry);
+      this._mountRaster(id, entry);
+    }
+
     _mountRaster(id, entry) {
       const sourceId = `raster-${id}`;
       if (this.map.getLayer(sourceId)) this.map.removeLayer(sourceId);
       if (this.map.getSource(sourceId)) this.map.removeSource(sourceId);
-      this.map.addSource(sourceId, { type: 'image', url: entry.dataUri, coordinates: entry.coordinates });
+      if (entry.tiles) {
+        this.map.addSource(sourceId, rasterTileSource(entry.tiles));
+      } else {
+        this.map.addSource(sourceId, { type: 'image', url: entry.dataUri, coordinates: entry.coordinates });
+      }
       this.map.addLayer({
         id: sourceId, type: 'raster', source: sourceId,
         paint: { 'raster-opacity': entry.opacity, 'raster-fade-duration': 0 }

@@ -138,6 +138,8 @@ class Cockpit:
     opened: list[str] = field(default_factory=list)
     #: Offline basemap tiles the page asked for: (path, HTTP status).
     tiles: list[tuple[str, int]] = field(default_factory=list)
+    #: Project raster tiles (core.raster_tiles) the page asked for: (path, HTTP status).
+    raster_tiles: list[tuple[str, int]] = field(default_factory=list)
     ready_delay_ms: int = 0
     bridge: bool = True
     #: The page under test: the cockpit, or "index.html" for the classic window.
@@ -145,6 +147,11 @@ class Cockpit:
     #: Browser window size, e.g. "1600,900". Headless defaults to a window small enough
     #: that the classic window's map is 21 px tall and cannot frame anything.
     window_size: str = ""
+    #: Script run in <head> before any page script, e.g. to keep a handle on each map.
+    head_script: str = ""
+    #: Let the page reach the internet. Off by default: every host but loopback fails
+    #: to resolve, as on a field laptop. Only tests that need a real provider set it.
+    network: bool = False
 
     def __post_init__(self) -> None:
         api = self.api
@@ -191,12 +198,19 @@ class Cockpit:
                 if path == "/__scenario.html":
                     return self._send(cockpit._page().encode("utf-8"), "text/html; charset=utf-8")
                 # The offline basemap, answered by the code the desktop shell uses.
+                from core.raster_tiles import raster_tile_response
                 from core.tile_cache import tile_response
 
                 tile = tile_response(path, self.path.split("?", 1)[1] if "?" in self.path else "")
                 if tile is not None:
                     code, kind, body, _ = tile
                     cockpit.tiles.append((self.path, code))
+                    return self._send(body, kind, code)
+                # The project's own rasters, cut into tiles by the code the shell uses.
+                raster = raster_tile_response(path)
+                if raster is not None:
+                    code, kind, body, _ = raster
+                    cockpit.raster_tiles.append((path, code))
                     return self._send(body, kind, code)
                 target = (WEB / path.lstrip("/")).resolve()
                 if WEB.resolve() not in target.parents or not target.is_file():
@@ -267,6 +281,8 @@ class Cockpit:
             + " document.getElementById('odk-result').textContent = JSON.stringify(result); })();"
             + "</script>"
         )
+        if self.head_script:
+            shim = "<script>" + self.head_script + "</script>" + shim
         html = html.replace("<head>", "<head>" + shim, 1)
         return html.replace("</body>", scenario + "</body>", 1)
 
@@ -281,7 +297,8 @@ class Cockpit:
         )
         # Every host but this loopback fails to resolve at once, so the satellite basemap
         # cannot hold the virtual clock waiting on a network this test must not use.
-        argv.insert(-1, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1")
+        if not self.network:
+            argv.insert(-1, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1")
         if self.window_size:
             argv.insert(-1, f"--window-size={self.window_size}")
         completed = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s,

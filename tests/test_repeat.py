@@ -133,10 +133,14 @@ class TestModifiedBoundary:
 
     def test_the_old_waypoints_are_not_carried_into_a_new_area(self):
         """They describe the old boundary and would fly outside the new one."""
-        repeat = repeat_mission(
-            original(), mode=REPEAT_MODIFIED_BOUNDARY,
-            boundary=[[-81.751, 41.303], [-81.749, 41.303], [-81.749, 41.305]])
-        assert repeat.waypoints == []
+        boundary = [[-81.751, 41.303], [-81.749, 41.303], [-81.749, 41.305]]
+        repeat = repeat_mission(original(), mode=REPEAT_MODIFIED_BOUNDARY, boundary=boundary)
+        old = {tuple(w) for w in original()["waypoints"]}
+        # Planned again over the new area, not carried over and not left empty.
+        assert repeat.waypoints
+        assert not old & {tuple(w) for w in repeat.waypoints}
+        assert all(-81.7511 < w[0] < -81.7489 and 41.3029 < w[1] < 41.3051
+                   for w in repeat.waypoints)
 
 
 class TestComparability:

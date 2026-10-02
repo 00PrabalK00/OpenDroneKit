@@ -43,6 +43,12 @@ def test_arm_takeoff_waypoints_and_rtl(sitl_client, sitl_observer, sitl_mission)
     upload = sitl_client.upload_mission(list(sitl_mission.items))
     assert upload.success, upload.message
 
+    # The SITL process is shared by the session, and the Api lifecycle test before this
+    # one ends landed in RTL -- a mode ArduCopter refuses to arm in. Choose an armable
+    # mode, as a pilot would, instead of depending on test order.
+    guided = sitl_client.set_flight_mode("GUIDED")
+    assert guided.success, guided.message
+
     arm = sitl_client.arm()
     assert arm.success, arm.message
     _wait_for(sitl_client, "armed state", lambda telemetry: telemetry.armed, 25.0)

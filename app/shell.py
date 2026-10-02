@@ -282,9 +282,10 @@ class Shell:
                     body = json.dumps(state).encode("utf-8")
                     self._send(200, "application/json", body, {"Cache-Control": "no-store"})
                     return
+                from core.raster_tiles import raster_tile_response
                 from core.tile_cache import tile_response
 
-                answer = tile_response(parts.path, parts.query)
+                answer = tile_response(parts.path, parts.query) or raster_tile_response(parts.path)
                 if answer is not None:
                     self._send(*answer)
                     return

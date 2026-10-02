@@ -60,10 +60,21 @@ postgis:
   user: odk
   storage: 50Gi
 
+# Object storage in the chart: a SeaweedFS S3 gateway. MinIO stopped publishing images
+# (minio/minio and quay.io/minio/minio both refuse pulls as of 2026-09-29), and the
+# endpoint this chart used to name, http://minio:9000, was never deployed by it. The
+# gateway's only identity is secrets.s3AccessKey / s3SecretKey, which the API and
+# worker also use. Disable it and set storage.endpoint to use an S3 you run instead.
+seaweedfs:
+  enabled: true
+  image: chrislusf/seaweedfs:latest
+  storage: 100Gi
+
 storage:
   backend: s3
   bucket: opendronekit
-  endpoint: http://minio:9000
+  # Empty: the in-chart SeaweedFS gateway (http://<release>-opendronekit-seaweedfs:8333).
+  endpoint: ""
   # Persistent volume for the API's local artefact cache.
   size: 100Gi
 

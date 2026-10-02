@@ -175,6 +175,16 @@
     }
     if (state.map.rasterLayers.has(layer.id)) return;
     if (!layer.crs_epsg) return;
+    // Full-resolution tiles when the page has a server to fetch them from (the desktop
+    // shell); the single preview image otherwise, e.g. a page opened from a file.
+    if (/^https?:$/.test(location.protocol)) {
+      let tiles = null;
+      try { tiles = await call('raster_tiles', layer.id); } catch (_err) { tiles = null; }
+      if (tiles && typeof tiles.url === 'string' && tiles.url.includes('{z}')) {
+        state.map.addRasterTiles(layer.id, tiles, layer.opacity);
+        return;
+      }
+    }
     const result = await tryCall('raster_preview', layer.id);
     if (result) state.map.addRaster(layer.id, result.data_uri, result.coordinates, layer.opacity);
   }
@@ -456,14 +466,19 @@
           label: 'Connect', primary: true, onClick: async () => {
             const driver = $('#dlg-driver').value;
             const uri = $('#dlg-uri').value.trim();
-            const result = await tryCall('connect_vehicle', uri, driver);
-            if (result) {
-              updateVehicleChip(result.vehicle);
-              status(result.vehicle.connected
-                ? `Connected to ${uri} via ${driver}.`
-                : `Connection failed: ${result.vehicle.last_error}`);
-              if (result.vehicle.connected) { startTelemetry(); switchTab('telemetry'); }
+            /* A link that did not open is refused (ok:false) with the vehicle state
+               and the reason, so the chip still shows the attempt and why it failed. */
+            let result;
+            try {
+              result = await call('connect_vehicle', uri, driver);
+            } catch (err) {
+              if (err.result && err.result.vehicle) updateVehicleChip(err.result.vehicle);
+              status(`Connection failed: ${err.message}`);
+              return;
             }
+            updateVehicleChip(result.vehicle);
+            status(`Connected to ${uri} via ${driver}.`);
+            startTelemetry(); switchTab('telemetry');
           }
         }
       ]);
@@ -944,10 +959,17 @@
     'data.import_imagery': () => pickDataset(),
     'data.import_terrain': async () => {
       const picked = await tryCall('pick_file', ['Terrain (*.tif;*.tiff;*.asc;*.csv)']);
-      if (picked && picked.path) {
-        const result = await tryCall('set_terrain_source', picked.path);
-        if (result) { $('#mission-terrain').value = result.path; status('Terrain source set. Replan to apply.'); }
-      }
+      if (!picked) return;
+      if (!picked.path) { status('Import Terrain: no file chosen; the terrain source is unchanged.'); return; }
+      const result = await tryCall('set_terrain_source', picked.path);
+      if (!result) return;
+      $('#mission-terrain').value = result.path;
+      // set_terrain_source says whether the file covers the drawn area; a DEM for the
+      // wrong valley plans as quietly as the right one, so that is what gets said.
+      const coverage = result.coverage;
+      status(!coverage ? 'Terrain source set. Draw the area of interest, then plan; the plan follows it.'
+        : coverage.covered ? `Terrain source set. ${coverage.detail || ''} Replan to apply.`
+        : `Terrain source set, but ${coverage.detail || 'it does not cover the area of interest.'}`);
     },
     'data.import_vector': () => importLayer(['GeoJSON (*.geojson;*.json)']),
     'data.import_raster': () => importLayer(['GeoTIFF (*.tif;*.tiff)']),

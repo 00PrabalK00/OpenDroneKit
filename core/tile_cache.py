@@ -42,6 +42,33 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Esri's tiled services answer a level they hold no imagery at with HTTP 200 and a
+# grey "Map data not yet available" JPEG -- at the Aukerman site, every level past z19.
+# Cached, that picture became the offline basemap wherever someone cached deeper than
+# the imagery goes, and the map showed it instead of enlarging the last real tile.
+# Requests carry blankTile=false (the service then answers 404), and the placeholder
+# is also recognised by its bytes, so it is never written and a cached one is dropped.
+ESRI_NO_TILE_QUERY = "blankTile=false"
+PLACEHOLDER_SHA256 = frozenset({
+    # World_Imagery and World_Topo_Map, 256x256 JPEG, 2521 bytes (observed 2026-09-29
+    # from server.arcgisonline.com and services.arcgisonline.com, z20-z23 at Aukerman).
+    "9eafd300d61393184a4abc1d458564cfd1cd9b6f9c4e9c74687045c0a0e5b858",
+})
+
+
+def is_placeholder(body: bytes | None) -> bool:
+    """Whether `body` is a provider's "no imagery here" picture rather than imagery."""
+    if not body or len(body) > 16384:
+        return False
+    import hashlib
+
+    return hashlib.sha256(body).hexdigest() in PLACEHOLDER_SHA256
+
+
+def _is_esri(url: str) -> bool:
+    return "/arcgis/rest/services/" in url.lower() and "/mapserver/tile/" in url.lower()
+
+
 USER_AGENT = "OpenDroneKit/1.0 (offline tile cache; +https://github.com/openDroneKit)"
 
 # A 1x1 transparent PNG, returned for a tile that was never cached.
@@ -104,12 +131,43 @@ def tile_path(provider: str, zoom: int, x: int, y: int) -> Path:
 
 
 def read_tile(provider: str, zoom: int, x: int, y: int) -> bytes | None:
-    """The cached tile's bytes, or None when that tile was never cached."""
+    """The cached tile's bytes, or None when that tile was never cached.
+
+    A cached "no imagery" placeholder (written before placeholders were recognised) is
+    deleted and reported as not cached, so the map enlarges a real parent tile instead.
+    """
     try:
         target = tile_path(provider, zoom, x, y)
     except TileCacheRefused:
         return None
-    return target.read_bytes() if target.is_file() else None
+    if not target.is_file():
+        return None
+    body = target.read_bytes()
+    if is_placeholder(body):
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return None
+    return body
+
+
+def purge_placeholders(provider: str | None = None) -> int:
+    """Delete every cached placeholder tile; return how many were removed."""
+    root = tile_root()
+    removed = 0
+    folders = [root / provider] if provider else [p for p in root.iterdir() if p.is_dir()]
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        for tile in folder.rglob("*.png"):
+            try:
+                if tile.stat().st_size <= 16384 and is_placeholder(tile.read_bytes()):
+                    tile.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    return removed
 
 
 def tile_media_type(body: bytes) -> str:
@@ -182,7 +240,7 @@ def fetch_area(
     run; it is counted and the area stays honestly incomplete.
     """
     spec = PROVIDERS[area.provider]
-    fetched = failed = already = 0
+    fetched = failed = already = missing = 0
     for zoom in range(area.min_zoom, area.max_zoom + 1):
         x0, y0 = deg_to_tile(area.west, area.north, zoom)
         x1, y1 = deg_to_tile(area.east, area.south, zoom)
@@ -190,7 +248,7 @@ def fetch_area(
             for y in range(min(y0, y1), max(y0, y1) + 1):
                 if should_cancel is not None and should_cancel():
                     return {"fetched": fetched, "failed": failed, "already_cached": already,
-                            "cancelled": 1}
+                            "no_imagery": missing, "cancelled": 1}
                 target = tile_path(area.provider, zoom, x, y)
                 if target.exists():
                     already += 1
@@ -198,26 +256,45 @@ def fetch_area(
                         on_tile(True)
                     continue
                 url = spec["url"].format(z=zoom, x=x, y=y)
+                if _is_esri(url):
+                    url += ("&" if "?" in url else "?") + ESRI_NO_TILE_QUERY
                 try:
                     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
                     with opener(request, timeout=20) as response:
                         body = response.read()
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(body)
-                    fetched += 1
-                    ok = True
+                    if is_placeholder(body):
+                        # The provider has no imagery at this level here: nothing to
+                        # store, and the offline map enlarges the parent instead.
+                        missing += 1
+                        ok = False
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        target.write_bytes(body)
+                        fetched += 1
+                        ok = True
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 404:
+                        missing += 1
+                    else:
+                        failed += 1
+                    ok = False
                 except (urllib.error.URLError, OSError):
                     failed += 1
                     ok = False
                 if on_tile:
                     on_tile(ok)
-    return {"fetched": fetched, "failed": failed, "already_cached": already, "cancelled": 0}
+    return {"fetched": fetched, "failed": failed, "already_cached": already,
+            "no_imagery": missing, "cancelled": 0}
 
 
 def summary() -> dict[str, Any]:
     """What is actually on disk, so "offline ready" is a fact rather than a hope."""
     root = tile_root()
-    out: dict[str, Any] = {"root": str(root), "providers": {}, "total_tiles": 0, "bytes": 0}
+    # Placeholders cached by an earlier version are not coverage; the deepest cached
+    # level (which caps the offline map) must not count them.
+    removed = purge_placeholders()
+    out: dict[str, Any] = {"root": str(root), "providers": {}, "total_tiles": 0, "bytes": 0,
+                           "placeholders_removed": removed}
     for provider_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         tiles = list(provider_dir.rglob("*.png"))
         size = sum(tile.stat().st_size for tile in tiles)

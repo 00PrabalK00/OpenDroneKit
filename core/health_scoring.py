@@ -91,12 +91,16 @@ def _asset_id_from_summary(summary: dict[str, Any]) -> str:
 
 def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, float]:
     n = float(max(1, len(image_rows)))
-    crack_ratio = float(sum(_safe_float(r.get("crack_ratio", 0.0)) for r in image_rows) / n)
-    crack_len = float(sum(_safe_float(r.get("crack_length_px", 0.0)) for r in image_rows) / n)
+    # Crack figures average over the images something looked at for cracks: a row whose
+    # crack_ratio is None was kept off every surface model and is not a clean image.
+    crack_rows = [r for r in image_rows if r.get("crack_ratio", 0.0) is not None]
+    cn = float(max(1, len(crack_rows)))
+    crack_ratio = float(sum(_safe_float(r.get("crack_ratio", 0.0)) for r in crack_rows) / cn)
+    crack_len = float(sum(_safe_float(r.get("crack_length_px", 0.0)) for r in crack_rows) / cn)
     # The pipeline now names this for what it is -- the thickness of the mask, not a
     # measured crack width -- and older runs still carry the old key.
     crack_width = float(sum(_safe_float(r.get("crack_mask_thickness_px", r.get("crack_max_width_px", 0.0)))
-                            for r in image_rows) / n)
+                            for r in crack_rows) / cn)
     # Metal and solar ratios count only where a trained model produced them. The
     # classical fallbacks mark colour and texture, not defects -- 0.55 to 0.98 "solar
     # defect" on a concrete wall -- and folding that into the score moved a condition
@@ -108,7 +112,14 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
     solar_rows = [r for r in image_rows if _model_backed(r, "solar")]
     metal_ratio = float(sum(_safe_float(r.get("metal_ratio", 0.0)) for r in metal_rows)
                         / max(1, len(metal_rows)))
-    structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in image_rows) / n)
+    # An image the structural detector did not read (a solar asset's EL cell, say) is
+    # not a clean one; averaged only over the images it read, and not assessed at all
+    # when it read none. Older rows carry no flag and were all read.
+    structural_rows = [r for r in image_rows if r.get("structural_run", True) is not False]
+    structural_ratio = float(sum(_safe_float(r.get("structural_ratio", 0.0)) for r in structural_rows)
+                             / max(1, len(structural_rows)))
+    # Crack segmentation skipped on every image (no surface it reads): not assessed.
+    crack_images = sum(1 for r in image_rows if r.get("crack_segmentation_run", True) is not False)
     solar_ratio = float(sum(_safe_float(r.get("solar_ratio", 0.0)) for r in solar_rows)
                         / max(1, len(solar_rows)))
     metal_excluded = sum(1 for r in image_rows if "metal_ratio" in r and not _model_backed(r, "metal"))
@@ -127,6 +138,8 @@ def _aggregate_image_metrics(image_rows: list[dict[str, Any]]) -> dict[str, floa
         "metal_heuristic_images_excluded": float(metal_excluded),
         "solar_heuristic_images_excluded": float(solar_excluded),
         "metal_model_images": float(len(metal_rows)),
+        "structural_model_images": float(len(structural_rows)),
+        "crack_segmentation_images": float(crack_images),
         "solar_model_images": float(len(solar_rows)),
     }
 
@@ -407,6 +420,10 @@ def _history_entry_from_summary(summary: dict[str, Any]) -> dict[str, Any] | Non
         return None
     health = summary.get("health_scoring", {})
     if isinstance(health, dict) and health:
+        if health.get("severity_index") is None:
+            # A run in which no model read the images for any defect has no index, and
+            # a trend through it would be a trend through a number nobody measured.
+            return None
         return {
             "run_utc": run_utc,
             "asset_id": str(health.get("asset_id", _asset_id_from_summary(summary))),
@@ -480,6 +497,64 @@ def load_asset_health_history(
     return entries
 
 
+def _not_assessed_health(
+    *, asset_id: str, run_utc: str, structure_type: str, material_type: str,
+    measured: dict[str, float | None], weights: dict[str, float], coverage_norm: float,
+    image_metrics: dict[str, Any], growth_meta: dict[str, Any],
+    critical_meta: dict[str, Any], history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The health block of a run in which no defect component was assessed."""
+    reason = ("No defect component was assessed: no crack, structural, metal or solar "
+              "model read these images, so there is no severity index, integrity score, "
+              "risk score or condition grade for this run.")
+    return {
+        "model_version": "health_scoring_v1",
+        "generated_utc": _fmt_utc(datetime.now(timezone.utc)),
+        "asset_id": str(asset_id),
+        "run_utc": str(run_utc),
+        "structure_type": str(structure_type or "generic"),
+        "material_type": str(material_type or "concrete"),
+        "assessed": False,
+        "not_assessed_reason": reason,
+        "severity_index": None,
+        "integrity_score": None,
+        "structural_risk_score": None,
+        "condition_level": None,
+        "condition_grade": "Not assessed",
+        "condition_label": "Not assessed",
+        "index_basis": reason,
+        "probabilistic_failure": {
+            "available": False,
+            "reason": "No failure probability is computed.",
+        },
+        "components": {
+            "crack_component": None,
+            "metal_component": None,
+            "structural_component": None,
+            "solar_component": None,
+            "growth_component": measured.get("growth"),
+            "criticality_component": measured.get("criticality"),
+            "quality_penalty_component": float(coverage_norm),
+            "not_assessed": sorted(k for k, v in measured.items() if v is None),
+            "weights": {k: float(v) for k, v in weights.items()},
+            "excluded_heuristic_images": {
+                "metal": int(image_metrics["metal_heuristic_images_excluded"]),
+                "solar": int(image_metrics["solar_heuristic_images_excluded"]),
+            },
+        },
+        "image_metrics": image_metrics,
+        "forecast_metrics": growth_meta,
+        "criticality_metrics": critical_meta,
+        "trend": {
+            "trend_computed": False,
+            "summary": "No trend: this run has no integrity score to place on it.",
+        },
+        "confidence": {"quality_confidence": float(_clip01(1.0 - coverage_norm)),
+                       "model_confidence": None},
+        "history": {"count": int(len(history)), "entries": list(history)},
+    }
+
+
 def evaluate_asset_health(
     asset_id: str,
     run_utc: str,
@@ -504,16 +579,17 @@ def evaluate_asset_health(
         image_metrics=image_metrics,
     )
 
-    crack_norm = _clip01(
+    crack_norm = (_clip01(
         0.70 * _clip01(image_metrics["crack_ratio_avg"] / 0.020)
         + 0.20 * _clip01(image_metrics["crack_max_width_avg_px"] / 8.0)
         + 0.10 * _clip01(image_metrics["crack_length_avg_px"] / 1800.0)
-    )
+    ) if image_metrics["crack_segmentation_images"] else None)
     # No model read any image for metal or solar (refused, heuristic or not run): the
     # component is not assessed, rather than a zero that would prop the score up.
     metal_norm = (_clip01(image_metrics["metal_ratio_avg"] / 0.015)
                   if image_metrics["metal_model_images"] else None)
-    structural_norm = _clip01(image_metrics["structural_ratio_avg"] / 0.030)
+    structural_norm = (_clip01(image_metrics["structural_ratio_avg"] / 0.030)
+                       if image_metrics["structural_model_images"] else None)
     solar_norm = (_clip01(image_metrics["solar_ratio_avg"] / 0.025)
                   if image_metrics["solar_model_images"] else None)
 
@@ -528,6 +604,17 @@ def evaluate_asset_health(
         "quality": coverage_norm,
     }
     assessed = {k: v for k, v in measured.items() if v is not None}
+    defect_components = ("crack", "metal", "structural", "solar")
+    if not any(measured[k] is not None for k in defect_components):
+        # Nothing looked for a defect (every surface model was kept off this imagery,
+        # and no solar or metal model answered). The coverage and quality penalty alone
+        # would still make an index -- 38, 'Level 3 / Fair' on three EL cells -- that
+        # reads as a condition of the asset. It is not one, so none is reported.
+        return _not_assessed_health(
+            asset_id=asset_id, run_utc=run_utc, structure_type=structure_type,
+            material_type=material_type, measured=measured, weights=w,
+            coverage_norm=coverage_norm, image_metrics=image_metrics,
+            growth_meta=growth_meta, critical_meta=critical_meta, history=history_rows)
     # Weights re-normalised over what was actually assessed, so an unmeasured component
     # neither drags the index down nor props it up.
     weight_total = sum(w[k] for k in assessed) or 1.0
@@ -586,6 +673,7 @@ def evaluate_asset_health(
         "condition_level": int(level),
         "condition_grade": f"Level {level}",
         "condition_label": level_label,
+        "assessed": True,
         "index_basis": (
             "Uncalibrated severity index: a weighted sum of the components measured in "
             "this run, weights by structure type from engineering judgement. It ranks "
@@ -601,9 +689,9 @@ def evaluate_asset_health(
             ),
         },
         "components": {
-            "crack_component": float(crack_norm),
+            "crack_component": None if crack_norm is None else float(crack_norm),
             "metal_component": None if metal_norm is None else float(metal_norm),
-            "structural_component": float(structural_norm),
+            "structural_component": None if structural_norm is None else float(structural_norm),
             "solar_component": None if solar_norm is None else float(solar_norm),
             "growth_component": None if growth_norm is None else float(growth_norm),
             "criticality_component": None if critical_norm is None else float(critical_norm),

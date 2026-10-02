@@ -130,17 +130,74 @@ class TestBackendSelection:
 
 
 # Live S3 tests are skipped rather than mocked: a mocked boto3 proves the mock works,
-# not the integration. Set ODK_TEST_S3_ENDPOINT against a real MinIO to run them.
+# not the integration. Set ODK_TEST_S3_ENDPOINT (and ODK_S3_ACCESS_KEY /
+# ODK_S3_SECRET_KEY, the keys the storage layer reads) against a real S3-compatible
+# gateway -- the compose stack's SeaweedFS, AWS, Ceph -- to run them.
 LIVE_S3 = os.environ.get("ODK_TEST_S3_ENDPOINT", "")
 
 
-@pytest.mark.skipif(not LIVE_S3, reason="Set ODK_TEST_S3_ENDPOINT to test against a live MinIO.")
+@pytest.fixture
+def live_bucket(monkeypatch):
+    """A bucket of this test's own on the live endpoint, removed afterwards.
+
+    build_storage refuses S3 without ODK_S3_BUCKET (rightly), and this test used to set
+    only the endpoint -- so against a real gateway it failed on configuration before it
+    reached the network. The bucket is created with the same keys the storage layer
+    uses, so a credential problem fails here, by name.
+    """
+    boto3 = pytest.importorskip("boto3")
+    import uuid
+
+    bucket = f"odk-test-{uuid.uuid4().hex[:12]}"
+    client = boto3.client(
+        "s3", endpoint_url=LIVE_S3, region_name=os.environ.get("ODK_S3_REGION", "us-east-1"),
+        aws_access_key_id=os.environ.get("ODK_S3_ACCESS_KEY") or None,
+        aws_secret_access_key=os.environ.get("ODK_S3_SECRET_KEY") or None,
+    )
+    client.create_bucket(Bucket=bucket)
+    monkeypatch.setenv("ODK_STORAGE_BACKEND", "s3")
+    monkeypatch.setenv("ODK_S3_ENDPOINT", LIVE_S3)
+    monkeypatch.setenv("ODK_S3_BUCKET", bucket)
+    try:
+        yield bucket
+    finally:
+        for item in client.list_objects_v2(Bucket=bucket).get("Contents", []):
+            client.delete_object(Bucket=bucket, Key=item["Key"])
+        client.delete_bucket(Bucket=bucket)
+
+
+@pytest.mark.skipif(not LIVE_S3, reason="Set ODK_TEST_S3_ENDPOINT to test against a live S3 gateway.")
 class TestLiveS3:
-    def test_round_trip(self, monkeypatch):
-        pytest.importorskip("boto3")
-        monkeypatch.setenv("ODK_STORAGE_BACKEND", "s3")
-        monkeypatch.setenv("ODK_S3_ENDPOINT", LIVE_S3)
+    def test_round_trip(self, live_bucket):
         backend = build_storage()
+        assert backend.bucket == live_bucket
         backend.put("test/round-trip.bin", b"live")
         assert backend.get("test/round-trip.bin") == b"live"
+        assert backend.exists("test/round-trip.bin") is True
         assert backend.delete("test/round-trip.bin") is True
+        assert backend.exists("test/round-trip.bin") is False
+
+    def test_streams_list_and_signed_urls(self, live_bucket):
+        import io
+        import urllib.request
+
+        backend = build_storage()
+        payload = bytes(range(256)) * 4096  # 1 MiB, uploaded as a stream
+        assert backend.put("survey/a/images.bin", io.BytesIO(payload)) == f"s3://{live_bucket}/survey/a/images.bin"
+        backend.put("survey/b/report.pdf", b"%PDF-1.4")
+        assert backend.list("survey/") == ["survey/a/images.bin", "survey/b/report.pdf"]
+        assert backend.list("survey/a/") == ["survey/a/images.bin"]
+        # A genuinely signed URL: fetchable without credentials, and it is the object.
+        with urllib.request.urlopen(backend.url("survey/a/images.bin", expires_s=120), timeout=30) as r:
+            assert r.read() == payload
+
+    def test_a_missing_object_raises_and_is_reported_absent(self, live_bucket):
+        backend = build_storage()
+        assert backend.exists("nothing/here.bin") is False
+        with pytest.raises(Exception):
+            backend.get("nothing/here.bin")
+
+    def test_keys_that_escape_are_refused_before_the_network(self, live_bucket):
+        backend = build_storage()
+        with pytest.raises(StorageError):
+            backend.put("../outside.bin", b"x")

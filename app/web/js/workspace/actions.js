@@ -53,6 +53,54 @@ async function semanticSource(ctx) {
   return [raster, (schema && schema.path) || ""];
 }
 
+/* -- photographs ------------------------------------------------------------ */
+
+/** Choose a dataset photograph and put it on the canvas; its name, or null. */
+async function photoOnCanvas(ctx, title) {
+  const images = ((await call("list_dataset_images")).images || [])
+    .map((i) => (typeof i === "string" ? i : i.name));
+  if (!images.length) throw new Error("Select a dataset with photographs first.");
+  const image = await ctx.choose(title, images);
+  if (!image) return null;
+  await ctx.showImage(image);
+  return image;
+}
+
+/**
+ * The photograph's scale: typed in mm per pixel, or a reference of known length clicked
+ * on it. Never assumed -- a photograph has no scale of its own.
+ */
+async function photoScale(ctx, image) {
+  const typed = await ctx.prompt(
+    "Scale in millimetres per pixel (blank = click a reference of known length)", "");
+  if (typed === null) return null;
+  if (String(typed).trim()) {
+    const mm = Number.parseFloat(String(typed).trim());
+    if (!(mm > 0)) throw new Error(`Not a scale: ${typed}`);
+    return { mm, reference: null, length: null };
+  }
+  const a = await ctx.pickImagePixel(
+    `Click one end of a reference of known length on ${image} (Esc to cancel).`);
+  if (!a) return null;
+  const b = await ctx.pickImagePixel("Click the other end of the reference (Esc to cancel).");
+  if (!b) return null;
+  const length = Number.parseFloat(
+    await required(ctx, "Real length of that reference, millimetres"));
+  if (!(length > 0)) throw new Error("The reference length must be a positive number of millimetres.");
+  return { mm: null, reference: [[a.x, a.y], [b.x, b.y]], length };
+}
+
+/** "412.3 mm at 0.500 mm/px (scale entered)" -- the figure with the scale it rests on. */
+function photoValue(result) {
+  const value = Number(result.value);
+  const scale = Number(result.scale_mm_per_px).toPrecision(3);
+  const text = result.unit === "m2"
+    ? (value < 1 ? `${Math.round(value * 1e6).toLocaleString()} mm²` : `${value.toFixed(3)} m²`)
+    : (value < 1 ? `${(value * 1000).toFixed(1)} mm` : `${value.toFixed(3)} m`);
+  return `${text} at ${scale} mm/px (${result.scale_source === "reference"
+    ? "from the reference" : "scale entered"})`;
+}
+
 async function required(ctx, label, fallback = "") {
   const value = await ctx.prompt(label, fallback);
   if (value === null || String(value).trim() === "") throw new Error(`${label} is required.`);
@@ -164,15 +212,31 @@ const SURVEY_PACKS = {
     }
     const by = await required(ctx, "Confirmed normal by");
     const scope = await required(ctx, "Where and when this baseline applies");
-    return call("india_anomaly_baseline", rasters, by, scope);
+    return withFeatureSchema(ctx, "india_anomaly_baseline", [rasters, by, scope]);
   },
   "Find anomalies": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "feature raster");
     const baseline = await pickPath(["json"], "validated baseline");
     const sigma = await number(ctx, "Threshold (robust sigma)", "3.5");
-    return call("india_find_anomalies", raster, baseline, sigma);
+    return withFeatureSchema(ctx, "india_find_anomalies", [raster, baseline, sigma]);
   },
 };
+
+/* Every raster the application writes except a vegetation index -- orthomosaic, DSM, a
+   raster from another tool -- has no ODK_FEATURE_SCHEMA tag, so the anomaly pack refused
+   them all. The meaning of the bands is the operator's to state; it is asked for only
+   when the raster does not carry it, and the pack records it as declared. */
+async function withFeatureSchema(ctx, method, args) {
+  const first = await tryCall(method, ...args);
+  if (first) return first;
+  const why = lastError.get(method) || "";
+  if (!/ODK_FEATURE_SCHEMA tag;/.test(why)) throw new Error(why || `${method} failed.`);
+  const schema = await ctx.prompt(
+    "What the raster bands are (feature schema, e.g. rgb_orthomosaic_8bit or dsm_elevation_m); "
+    + "rasters are only compared with the same schema", "");
+  if (!schema || !String(schema).trim()) throw new Error(why);
+  return call(method, ...args, String(schema).trim());
+}
 
 const CAPTURE_GEOMETRIES = {
   power: ["close_range_oblique", "close_range_orbit"],
@@ -211,11 +275,19 @@ function summarisePack(result) {
   }
   if (summary.categories) {
     parts.push(Object.entries(summary.categories)
-      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`).join(", "));
+      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`
+        // A class the model's holdout does not support looks as confident as one it
+        // does; the flag is said next to the number, not only in the summary file.
+        + (value && value.validated === false ? " (UNVALIDATED)" : "")
+        + (value && value.status === "available" && value.validated === null ? " (validation unknown)" : ""))
+      .join(", "));
   }
+  if (summary.crs_note) parts.push(summary.crs_note);
   if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
   const layers = (result.layer_ids || []).length;
-  return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
+  // A part that is a sentence (the CRS note) ends in its own full stop: not doubled.
+  const said = (parts.filter(Boolean).join("; ") || "done").replace(/\.+$/, "");
+  return `${said}. ${layers} layer(s) added; summary ${result.summary_path}.`;
 }
 
 /** Actions that need images on disk. */
@@ -242,7 +314,8 @@ async function pickAircraft(ctx) {
 
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
                                "Coverage QA",
-                               "Open in 3D", "Label"]);
+                               "Open in 3D", "Label",
+                               "Photo Distance", "Photo Area", "Crack Length"]);
 
 /**
  * The dispatch table.
@@ -251,6 +324,70 @@ const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match C
  * what is missing. `confirm` marks the ones that start real work or touch an aircraft --
  * a misclick on Abort should not be the same gesture as a misclick on Pan.
  */
+/* The saved mission an action is about. Version numbers count per mission name, so
+   "v2" means nothing until the mission is known. One mission: it, without asking.
+   Several: the operator picks. Returns "" when nothing is saved (the Api then answers
+   for every mission), or null when the operator cancels. */
+async function chooseMission(ctx, title) {
+  const listed = await call("list_mission_versions");
+  const names = [...new Set(((listed && listed.versions) || [])
+    .map((v) => v.mission_name || "mission"))];
+  if (names.length <= 1) return names[0] || "";
+  const picked = await ctx.choose(title, names);
+  return picked == null ? null : picked;
+}
+
+/** A history row as a chooser option: the version, its template, and what changed. */
+function versionOption(h) {
+  const changes = (h.changes || []).join("; ");
+  return {
+    label: `v${h.version_num}${h.template ? ` · ${h.template}` : ""}`
+      + (h.waypoints ? ` · ${h.waypoints} wps` : ""),
+    value: String(h.version_num),
+    hint: [h.created_at && String(h.created_at).slice(0, 16).replace("T", " "), changes]
+      .filter(Boolean).join(" — "),
+  };
+}
+
+/* What Repeat Survey can repeat. A repeat is of a SAVED survey -- the one that was
+   flown and needs flying again -- and it always repeated whatever was planned on
+   screen instead. Saved versions are offered newest first, the plan on screen last. */
+function repeatSources(listed, state) {
+  const versions = ((listed && listed.versions) || []).slice()
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))
+      || (b.version_num || 0) - (a.version_num || 0));
+  const options = versions.map((v) => ({
+    label: `${v.mission_name || "mission"} v${v.version_num}`,
+    value: JSON.stringify([v.mission_name || "", v.version_num]),
+    hint: [v.template, v.created_at && String(v.created_at).slice(0, 10)].filter(Boolean).join(" \u00b7 "),
+  }));
+  if (state && state.has_mission) {
+    options.push({ label: "The mission planned on screen", value: "current", hint: "not saved" });
+  }
+  return options;
+}
+
+/* The modes mission.repeat accepts. This offered "same-camera" and "same-terrain", which
+   it refuses as unknown, so two of three rows could only fail. "exact" keeps the lines,
+   altitudes and capture points, which is what makes two surveys comparable; a new camera
+   (altitude re-solved to hold the GSD), a new terrain model or a redrawn boundary are
+   real reasons to re-solve part of it, and each says what it changed. */
+function repeatModes(state) {
+  const terrain = (state && state.terrain_source) || "";
+  const aoi = (state && state.aoi) || [];
+  return [
+    { label: "exact", value: "exact", hint: "same lines, altitudes and capture points" },
+    { label: "exact, with a different camera", value: "camera",
+      hint: "altitude re-solved to hold the ground resolution" },
+    { label: "updated terrain", value: "updated_terrain",
+      hint: terrain ? `altitudes re-derived from ${terrain.split(/[\/]/).pop()}`
+        : "needs a terrain source (File > Import Terrain)" },
+    { label: "modified boundary", value: "modified_boundary",
+      hint: aoi.length >= 3 ? "clipped to the area of interest drawn now"
+        : "needs an area of interest drawn on the map" },
+  ];
+}
+
 export const ACTIONS = {
   /* -- projects and data ------------------------------------------------- */
   "New Project": {
@@ -314,15 +451,37 @@ export const ACTIONS = {
   Plan: {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
-      const result = await call("plan_mission", ctx.missionOptions());
+      const options = ctx.missionOptions();
+      const result = await call("plan_mission", options);
       // The Api answers ok(summary={waypoints, distance_m, ...}, warnings); reading
       // result.waypoint_count printed "Planned ? waypoints" after every successful plan.
       const summary = result.summary || {};
       const warnings = result.warnings || [];
+      // The inputs the plan was made from, so a stand-off or altitude the planner did
+      // not get cannot pass unnoticed again (the form once showed 12 m and sent nothing).
+      // Where the planner changed one (a tower lifts the altitude and RTH above its
+      // top), what it planned is said beside what was asked.
+      const differs = (planned, asked) => planned !== undefined && planned !== null
+        && asked !== undefined && Math.abs(Number(planned) - Number(asked)) > 0.05;
+      const used = [
+        summary.template || options.template,
+        options.altitude_m !== undefined
+          ? `altitude ${options.altitude_m} m AGL`
+            + (differs(summary.altitude_m, options.altitude_m)
+              ? ` (poses average ${Number(summary.altitude_m).toFixed(1)} m)` : "")
+          : "",
+        options.standoff_m !== undefined ? `stand-off ${options.standoff_m} m` : "",
+        options.rth_altitude_m !== undefined
+          ? `RTH ${options.rth_altitude_m} m`
+            + (differs(summary.rth_altitude_m, options.rth_altitude_m)
+              ? ` (planned ${Number(summary.rth_altitude_m).toFixed(1)} m)` : "")
+          : "",
+      ].filter(Boolean).join(", ");
       return {
         message: `Planned ${summary.waypoints ?? "?"} waypoints, `
           + `${((summary.distance_m || 0) / 1000).toFixed(2)} km, ${summary.duration_min ?? "?"} min`
           + (summary.gsd_cm ? `, GSD ${summary.gsd_cm} cm` : "")
+          + (used ? ` (${used})` : "")
           + (warnings.length ? `. ${warnings.join(" ")}` : "."),
         refresh: true,
       };
@@ -359,7 +518,12 @@ export const ACTIONS = {
       // after it can never run. The first version of this used call() and the mission
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
-      const result = await tryCall("export_mission");
+      // A menu item names one format (Mission > Export Litchi CSV sends
+      // {format: "litchi"}); the toolbar button and Export All Formats name none.
+      const format = ctx.payload && ctx.payload.format;
+      const result = format
+        ? await tryCall("export_mission", [String(format)])
+        : await tryCall("export_mission");
       // export_mission answers ok(written={format: path | "failed: ..."}, directory).
       // Reading result.files found nothing, so a successful export of five mission files
       // fell through to revealing the reconstruction products and said so instead.
@@ -379,7 +543,9 @@ export const ACTIONS = {
       // yet" -- true, and about something the user was not looking at. If the project has
       // products, those are the exportable thing; the mission refusal is only the right
       // answer when there is nothing else to give.
-      const listed = await tryCall("list_layers");
+      // A request for one mission format is about the mission: revealing the
+      // products instead would answer a question that was not asked.
+      const listed = format ? null : await tryCall("list_layers");
       if (((listed && listed.layers) || []).some((l) => l.path)) {
         return ACTIONS["Export Products"].run(ctx);
       }
@@ -700,10 +866,10 @@ export const ACTIONS = {
         : driver === "mock" ? "mock://" : "udpin:0.0.0.0:14550";
       const uri = await ctx.prompt("Connection (udpin:0.0.0.0:14550, tcp:127.0.0.1:5760, COM3…)", fallback);
       if (!uri) return { skipped: "No connection given." };
+      /* A link that does not open is refused (ok:false) with the reason as its error,
+         so call() throws that reason -- the toast says why, never "Connected". */
       const result = await call("connect_vehicle", uri, driver);
       const vehicle = result.vehicle || {};
-      /* connect_vehicle answers ok with connected:false and the reason when the link
-         fails, so the reason is what gets shown -- not "Connected". */
       if (vehicle.connected === false) throw new Error(vehicle.last_error || "Connection failed.");
       return {
         message: `Connected to ${uri} via ${driver}`
@@ -1013,6 +1179,66 @@ export const ACTIONS = {
           describe: "Measure an area on the map; it also becomes the selection." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
 
+  /* -- measuring on a photograph -------------------------------------------
+     core/measurements.py has measured distances, areas and crack lengths in a
+     photograph's pixels since the start, and nothing in the application called it: a
+     crack could be seen on a frame and not measured there. These three put the photo on
+     the canvas, take the clicks through the same pixel mapping Mark GCP uses, and hand
+     the pixels to the Api, which scales and stores them. The scale is the operator's --
+     typed, or from a reference of known length clicked on the same photograph. */
+  "Photo Distance": {
+    describe: "Measure a distance between two points on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Measure on which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const a = await ctx.pickImagePixel("Click the start of the distance (Esc to cancel).");
+      if (!a) return { skipped: "No point clicked." };
+      const b = await ctx.pickImagePixel("Click the end of the distance (Esc to cancel).");
+      if (!b) return { skipped: "No end point clicked." };
+      const result = await call("measure_on_image", "distance", image, [[a.x, a.y], [b.x, b.y]],
+        scale.mm, scale.reference, scale.length);
+      return { message: `Distance on ${image}: ${photoValue(result)}. Kept in the measurement `
+        + `history. ${result.caveat}`, refresh: true };
+    },
+  },
+  "Photo Area": {
+    describe: "Measure an area outlined on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Measure on which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const corners = [];
+      for (;;) {
+        const at = await ctx.pickImagePixel(
+          `Click corner ${corners.length + 1} of the area (Esc when done).`);
+        if (!at) break;
+        corners.push([at.x, at.y]);
+      }
+      if (corners.length < 3) return { skipped: "An area needs at least three corners." };
+      const result = await call("measure_on_image", "area", image, corners,
+        scale.mm, scale.reference, scale.length);
+      return { message: `Area on ${image}: ${photoValue(result)} over ${corners.length} corners. `
+        + `Kept in the measurement history. ${result.caveat}`, refresh: true };
+    },
+  },
+  "Crack Length": {
+    describe: "Length of a crack from a crack mask drawn on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Crack in which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const mask = await pickPath(["png", "tif", "tiff", "bmp", "jpg"], "crack mask");
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const result = await call("measure_crack_on_image", image, mask,
+        scale.mm, scale.reference, scale.length);
+      return { message: `Crack length on ${image}: ${photoValue(result)} (mask skeleton). `
+        + `Kept in the measurement history. ${result.caveat}`, refresh: true };
+    },
+  },
+
   /* -- fly to draw --------------------------------------------------------
      The pilot flies the aircraft to each corner of the site and presses a button. That
      is the whole feature, and it is the one case where a boundary comes from where the
@@ -1069,25 +1295,31 @@ export const ACTIONS = {
   "Compare Versions": {
     describe: "What changed between two saved versions of this mission.",
     async run(ctx) {
-      const listed = await tryCall("mission_version_history");
+      /* call(), not tryCall(): mission_version_history raised a TypeError once two
+         versions existed, tryCall turned it into null, and this said "Two saved
+         versions are needed" over three saved versions. A failure is now a failure. */
+      const mission = await chooseMission(ctx, "Compare which mission?");
+      if (mission === null) return { skipped: "No mission chosen." };
+      const listed = await call("mission_version_history", mission);
       const history = (listed && listed.history) || [];
       if (history.length < 2) {
-        return { skipped: "Two saved versions are needed to compare. Save again first." };
+        return { skipped: `"${mission || "mission"}" has ${history.length} saved version(s); `
+          + "two are needed to compare. Save again first." };
       }
-      const labels = history.map((h) => `v${h.version_num}`);
-      const from = await ctx.choose("Compare from", labels);
-      if (!from) return { skipped: "No version chosen." };
-      const to = await ctx.choose("Compare to", labels.filter((l) => l !== from));
-      if (!to) return { skipped: "No second version chosen." };
-      const result = await call("diff_mission_versions",
-        Number(from.slice(1)), Number(to.slice(1)));
+      const options = history.map(versionOption);
+      const from = await ctx.choose("Compare from", options);
+      if (from == null) return { skipped: "No version chosen." };
+      const to = await ctx.choose("Compare to", options.filter((o) => o.value !== from));
+      if (to == null) return { skipped: "No second version chosen." };
+      const result = await call("diff_mission_versions", Number(from), Number(to), mission);
       const diff = result.diff || {};
-      const changes = diff.changes || diff.fields || [];
+      /* The Api answers {summary: [...], significant, other, identical}. This read
+         diff.changes / diff.fields, which do not exist, so every pair of versions was
+         reported "identical". */
+      const lines = diff.summary || [];
       return {
-        message: changes.length
-          ? `${from} to ${to}: ${changes.length} change(s). `
-            + changes.slice(0, 4).map((c) => (typeof c === "string" ? c : c.field || "")).join(", ")
-          : `${from} and ${to} are identical.`,
+        message: diff.identical ? `${mission} v${from} and v${to} are identical.`
+          : `${mission} v${from} to v${to}: ${lines.join(" ")}`,
       };
     },
   },
@@ -1130,17 +1362,35 @@ export const ACTIONS = {
   "Repeat Survey": {
     describe: "Fly a saved mission again, so two surveys are comparable.",
     async run(ctx) {
-      const mode = await ctx.choose("Repeat as",
-        ["exact", "same-camera", "same-terrain"]);
+      // A saved survey (newest first) or the plan on screen; see repeatSources.
+      const state = await tryCall("get_state");
+      const options = repeatSources(await tryCall("list_mission_versions"), state);
+      if (!options.length) return { skipped: "Nothing to repeat: plan a mission, or save one, first." };
+      const source = await ctx.choose("Repeat which survey?", options);
+      if (source == null) return { skipped: "No survey chosen." };
+      const [name, version] = source === "current" ? ["", null] : JSON.parse(source);
+      const mode = await ctx.choose("Repeat as", repeatModes(state));
       if (!mode) return { skipped: "No mode chosen." };
-      /* "exact" is the one that makes two surveys comparable: same lines, same
-         altitudes, same capture points. The others re-solve part of the plan and are
-         offered because a changed camera or a new terrain model is a real reason to. */
-      const result = await call("repeat_mission", null, mode === "exact" ? "exact" : mode);
+      let camera = "";
+      if (mode === "camera") {
+        const cams = await call("list_cameras");
+        camera = await ctx.choose("Repeat with which camera?",
+          (cams.cameras || []).map((c) => ({ label: c.name || c.key, value: c.key || c.name })));
+        if (!camera) return { skipped: "No camera chosen." };
+      }
+      const result = await call("repeat_mission", version, mode === "camera" ? "exact" : mode,
+        camera, mode === "updated_terrain" ? (state && state.terrain_source) || "" : "", name);
       const repeat = result.repeat || {};
+      const what = version == null ? "the planned mission" : `${name || "mission"} v${version}`;
+      /* The Api answers capture_count, altitude_m, camera, achieved_gsd_cm, changes,
+         comparability and warnings. This read repeat.name and repeat.differences, which
+         it never sends, so every repeat said only "Repeat prepared." */
+      const gsd = repeat.achieved_gsd_cm != null ? `, GSD ${Number(repeat.achieved_gsd_cm).toFixed(2)} cm` : "";
       return {
-        message: `Repeat prepared${repeat.name ? ` as "${repeat.name}"` : ""}`
-          + (repeat.differences ? `; ${repeat.differences} difference(s) from the original.` : "."),
+        message: `Repeat of ${what} (${repeat.mode || mode}): ${repeat.capture_count ?? 0} capture point(s)`
+          + ` at ${repeat.altitude_m ?? "?"} m with ${repeat.camera || "the original camera"}${gsd}; `
+          + `${repeat.comparability || "comparability not stated"}. `
+          + [...(repeat.changes || []), ...(repeat.warnings || [])].join(" "),
         refresh: true,
       };
     },
@@ -1162,17 +1412,27 @@ export const ACTIONS = {
       const listed = await tryCall("list_cameras");
       const cameras = (listed && listed.cameras) || [];
       if (!cameras.length) return { skipped: "No camera profiles available." };
-      const pick = await ctx.choose("Camera", cameras.map((c) => c.name || c.key || String(c)));
+      /* The choice is the profile KEY; the name is only its label. Passing the name
+         made describe_camera fall back to the generic placeholder for every camera, and
+         the toast printed that placeholder GSD under the real camera's name. */
+      const pick = await ctx.choose("Camera", cameras.map((c) => ({
+        label: c.name || c.key, value: c.key || c.name,
+        hint: c.key && c.name ? c.key : "",
+      })));
       if (!pick) return { skipped: "No camera chosen." };
       const altitude = await ctx.prompt("At what altitude (m)?", "60");
+      if (altitude === null) return { skipped: "No altitude given." };
       const described = await call("describe_camera", pick, Number(altitude || 60));
       const cam = described.camera || {};
+      const fp = Array.isArray(cam.footprint_m)
+        ? `${cam.footprint_m[0]} x ${cam.footprint_m[1]} m` : cam.footprint_m;
       /* GSD is the number that decides whether the survey can see the defect, so it
-         leads. */
+         leads. A placeholder profile says so instead of passing as the camera's own. */
       return {
-        message: `${pick} at ${altitude} m: `
+        message: `${cam.name || pick} at ${altitude || 60} m: `
           + (cam.gsd_cm !== undefined ? `GSD ${Number(cam.gsd_cm).toFixed(2)} cm` : "GSD not reported")
-          + (cam.footprint_m ? `, footprint ${cam.footprint_m}` : ""),
+          + (fp ? `, footprint ${fp}` : "")
+          + (cam.known === false ? `. ${cam.warning || "Placeholder sensor geometry, not this camera's."}` : ""),
       };
     },
   },
@@ -1286,19 +1546,22 @@ export const ACTIONS = {
   History: {
     describe: "Every saved version of this mission, and what changed.",
     async run(ctx) {
-      const listed = await tryCall("mission_version_history");
+      const mission = await chooseMission(ctx, "History of which mission?");
+      if (mission === null) return { skipped: "No mission chosen." };
+      // call(): a failed read is an error to show, not "no saved versions".
+      const listed = await call("mission_version_history", mission);
       const history = (listed && listed.history) || [];
       if (!history.length) return { skipped: "This mission has no saved versions yet." };
-      const labels = history.map((h) =>
-        `v${h.version_num}${h.summary ? ` \u2014 ${h.summary}` : ""}`);
-      const pick = await ctx.choose("Restore which version?", labels);
-      if (!pick) return { skipped: "No version chosen." };
-      const version = history[labels.indexOf(pick)].version_num;
+      /* Each row says what changed from the version before it (the Api's `changes`);
+         the label read h.summary, which the Api never sends, so every row was "v1". */
+      const pick = await ctx.choose(`Restore which version of ${mission}?`,
+        history.slice().reverse().map(versionOption));
+      if (pick == null) return { skipped: "No version chosen." };
       /* Restoring saves the old plan as a NEW version rather than rewinding, so the
          history stays a record of what happened rather than of what is current. */
-      const result = await call("restore_mission_version", version);
+      const result = await call("restore_mission_version", Number(pick), mission);
       return {
-        message: `Restored v${version} as v${result.version?.version_num ?? "?"}.`,
+        message: `Restored ${mission} v${pick} as v${result.version?.version_num ?? "?"}.`,
         refresh: true,
       };
     },
@@ -1360,10 +1623,19 @@ export const ACTIONS = {
         if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
         point = [Number(lon), Number(lat)];
       }
-      const result = await call("add_site_marker", name, kind, [point]);
+      /* The hazard check measures the route against each marker's radius; a marker
+         made here always had radius 0, so "5 m inside the mast's radius" could never
+         be said of one. Asked for, with 0 meaning "just this point". */
+      const radiusText = await ctx.prompt("Radius around it (m, 0 for a point)", "0");
+      if (radiusText === null || radiusText === undefined) return { skipped: "No radius given." };
+      const radius = Number(String(radiusText).trim() || 0);
+      if (!Number.isFinite(radius) || radius < 0) {
+        return { skipped: `"${radiusText}" is not a radius in metres.` };
+      }
+      const result = await call("add_site_marker", name, kind, [point], "", radius);
       /* It answers with the whole marker list, not the one just added. */
       const total = (result.markers || []).length;
-      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`
+      return { message: `Added ${kind} "${name}"${radius ? ` (radius ${radius} m)` : ""}. ${total} marker(s) on this site.`
                  + (result.warning ? ` ${result.warning}` : ""),
                refresh: true };
     },

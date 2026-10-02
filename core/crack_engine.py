@@ -13,6 +13,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .measurements import skeleton_length_px
 from .errors import AppError, ERR_INVALID_INPUT
 from .propagation import (
     ILLUSTRATIVE_NOTE,
@@ -130,7 +131,7 @@ def extract_crack_geometry(mask_path: Path | str, pixel_size_mm_per_px: float) -
     except Exception:
         skel = CrackPropagationForecaster._skeletonize_binary(binary)  # type: ignore[attr-defined]
 
-    length_px = float(skel.sum())
+    length_px = skeleton_length_px(skel)
     length_m = length_px * (float(pixel_size_mm_per_px) / 1000.0)
 
     # Endpoints

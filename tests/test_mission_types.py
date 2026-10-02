@@ -35,7 +35,8 @@ class TestMultiFacade:
             "polygon_local": RECTANGLE, "standoff_m": 8.0,
             "top_altitude_m": 20.0, "bottom_altitude_m": 5.0,
         })
-        faces = {pose.primitive for pose in poses}
+        # facade_transit poses carry the aircraft round a corner between passes.
+        faces = {pose.primitive for pose in poses if pose.primitive != "facade_transit"}
         assert len(faces) == 4, f"expected one pass per edge, got {faces}"
 
     def test_capture_points_stand_off_outside_the_building(self):
@@ -81,7 +82,7 @@ class TestMultiFacade:
             "face_overrides": {"0": {"top_altitude_m": 45.0, "standoff_m": 15.0}},
         })
         face_zero = [p for p in poses if p.primitive == "facade_face_0"]
-        others = [p for p in poses if p.primitive != "facade_face_0"]
+        others = [p for p in poses if p.primitive not in ("facade_face_0", "facade_transit")]
         assert max(p.alt_m for p in face_zero) == pytest.approx(45.0)
         assert max(p.alt_m for p in others) == pytest.approx(20.0)
         # The overridden stand-off applies too.
@@ -97,7 +98,7 @@ class TestMultiFacade:
         # along +y. Primitive yaw is a local math angle (0 along +x, counter-clockwise),
         # so that is 90; the plan converts it to a compass heading on the way out, and
         # tests/test_exported_headings_face_the_subject.py checks the exported value.
-        south = [p for p in poses if p.y_m < 0]
+        south = [p for p in poses if p.y_m < 0 and p.primitive != "facade_transit"]
         assert south
         for pose in south:
             assert pose.yaw_deg == pytest.approx(90.0, abs=1.0)

@@ -18,7 +18,7 @@
  */
 
 import {
-  canvas, chip, consoleView, el, fields, meter, properties,
+  canvas, chip, consoleView, el, fields, FORM_VALUES, meter, properties,
   readouts, reference, selection, splitCanvas, table, tree,
 } from "./primitives.js";
 import { DATA, DEMO } from "./demo.js";
@@ -83,12 +83,167 @@ function readout({ calls, isEmpty, empty, render, every }) {
   });
 }
 
+/* ------------------------------------------------------- simulation timeline */
+
+/** The planned waypoints, in flying order, as [lon, lat, alt]. */
+function routePoints(geojson) {
+  return ((geojson && geojson.features) || [])
+    .filter((f) => (f.properties || {}).role === "waypoint" && (f.geometry || {}).type === "Point")
+    .sort((a, b) => (a.properties.index ?? 0) - (b.properties.index ?? 0))
+    .map((f) => f.geometry.coordinates);
+}
+
+function metresBetween(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b[1] - a[1]) * rad;
+  const dLon = (b[0] - a[0]) * rad;
+  const h = Math.sin(dLat / 2) ** 2
+    + Math.cos(a[1] * rad) * Math.cos(b[1] * rad) * Math.sin(dLon / 2) ** 2;
+  const ground = 2 * 6371008.8 * Math.asin(Math.sqrt(h));
+  return Math.hypot(ground, (b[2] || 0) - (a[2] || 0));
+}
+
+const clock = (seconds) => {
+  const s = Math.max(0, Math.round(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+/* Time along the route is the share of the route flown times the plan's estimated
+   duration, so the scrubber's clock ends where the Estimates panel says it does; the
+   speed shown is the estimate's distance over its duration. */
+function simulationTimeline(points, estimates) {
+  const cumulative = [0];
+  for (let i = 1; i < points.length; i += 1) {
+    cumulative.push(cumulative[i - 1] + metresBetween(points[i - 1], points[i]));
+  }
+  const total = cumulative[cumulative.length - 1] || 1;
+  const durationS = Number(estimates.duration_min) > 0 ? Number(estimates.duration_min) * 60 : null;
+  const speed = durationS ? (Number(estimates.distance_m) || total) / durationS : null;
+  // Proportional to distance flown, so the last waypoint is at the estimated duration.
+  const timeAt = (i) => (durationS ? (cumulative[i] / total) * durationS : null);
+  const alts = points.map((p) => Number(p[2]) || 0);
+  const lo = Math.min(...alts);
+  const hi = Math.max(...alts);
+  const span = hi - lo || 1;
+
+  const W = 600;
+  const H = 90;
+  const x = (i) => (cumulative[i] / total) * W;
+  const y = (a) => H - 8 - ((a - lo) / span) * (H - 20);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "timeline-profile");
+  svg.style.cssText = "width:100%;height:90px;display:block";
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", points.map((p, i) => `${x(i).toFixed(1)},${y(alts[i]).toFixed(1)}`).join(" "));
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "var(--accent, #4aa3ff)");
+  line.setAttribute("stroke-width", "1.5");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(line);
+  const cursor = document.createElementNS(ns, "line");
+  cursor.setAttribute("y1", "0");
+  cursor.setAttribute("y2", String(H));
+  cursor.setAttribute("stroke", "var(--warn, #e0a030)");
+  cursor.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(cursor);
+
+  const readout = el("div", { class: "timeline-readout mono" });
+  const scrub = el("input", { type: "range", min: "0", max: String(points.length - 1), value: "0",
+    class: "timeline-scrub", "aria-label": "Scrub along the planned route" });
+  scrub.style.width = "100%";
+  let marker = null;
+  const show = async (i) => {
+    const p = points[i];
+    cursor.setAttribute("x1", x(i).toFixed(1));
+    cursor.setAttribute("x2", x(i).toFixed(1));
+    const t = timeAt(i);
+    readout.textContent = `${t == null ? "time not estimated" : `${clock(t)} of ${clock(durationS)}`}`
+      + ` · waypoint ${i + 1}/${points.length} · ${(cumulative[i] / 1000).toFixed(2)} km`
+      + ` · altitude ${alts[i].toFixed(1)} m`
+      + (speed ? ` · ${speed.toFixed(1)} m/s` : "")
+      + ` · ${p[1].toFixed(6)}, ${p[0].toFixed(6)}`;
+    // The aircraft on the mission map, when the map is on screen.
+    try {
+      const { currentMap } = await import("./draw.js");
+      const map = currentMap();
+      if (map && window.maplibregl) {
+        if (!marker) {
+          const dot = el("div", { class: "timeline-aircraft", title: "Simulated aircraft position" });
+          dot.style.cssText = "width:12px;height:12px;border-radius:50%;background:var(--warn,#e0a030);border:2px solid #fff";
+          marker = new window.maplibregl.Marker({ element: dot });
+        }
+        marker.setLngLat([p[0], p[1]]).addTo(map);
+      }
+    } catch { /* no map in this view: the profile and readout still answer */ }
+  };
+  scrub.addEventListener("input", () => show(Number(scrub.value)));
+
+  let timer = null;
+  const play = el("button", { class: "tbtn", text: "Play" });
+  play.onclick = () => {
+    if (timer) { clearInterval(timer); timer = null; play.textContent = "Play"; return; }
+    if (Number(scrub.value) >= points.length - 1) scrub.value = "0";
+    play.textContent = "Pause";
+    // About twenty seconds for the whole route, whatever its length.
+    const step = Math.max(1, Math.round(points.length / 200));
+    timer = setInterval(() => {
+      if (!scrub.isConnected) { clearInterval(timer); timer = null; return; }
+      const next = Math.min(points.length - 1, Number(scrub.value) + step);
+      scrub.value = String(next);
+      show(next);
+      if (next >= points.length - 1) { clearInterval(timer); timer = null; play.textContent = "Play"; }
+    }, 100);
+  };
+
+  const legend = el("div", { class: "empty-msg" }, [el("span", {
+    text: `Altitude ${lo.toFixed(0)}–${hi.toFixed(0)} m over ${(total / 1000).toFixed(2)} km`
+      + (speed ? `, ${speed.toFixed(1)} m/s average (${clock(durationS)} estimated)` : ", no duration estimate"),
+  })]);
+  show(0);
+  return el("div", { class: "simulation-timeline", "data-rows": "timeline" }, [
+    legend, svg, el("div", { style: "display:flex;gap:8px;align-items:center" }, [play, scrub]), readout,
+  ]);
+}
+
 /* The report type and format picked in the Reports Template panel. The Readiness panel
    used to judge "standard" whatever was selected, so a type that would be refused
    (mission_summary without a mission) looked ready until Generate. */
 const reportChoice = { tpl: "standard", fmt: "PDF" };
 const REPORT_FORMATS = { PDF: ["html", "pdf"], DOCX: ["html", "docx"],
                          "PDF+DOCX": ["html", "pdf", "docx"], HTML: ["html"] };
+
+/* What the Mission and Aircraft forms show, field by field: the default until it is
+ * edited, then what was typed.
+ *
+ * The shell used to send only the fields an operator had changed. The form showed
+ * Stand-off 12 m, Altitude AGL 60 m and RTH 90 m, but none of the three reached the
+ * planner until edited, so plan_mission fell back to its own 8 m, 55 m and 80 m. A
+ * multi-facade plan with the form reading 12 m flew 7.65 m off the wall, and a tower
+ * with radius 4 flew 8 m off its surface instead of 12 -- with nothing on screen to
+ * say so. The values are registered when the forms are DEFINED, not when they are
+ * drawn, because the Aircraft tab (RTH) is never drawn unless it is opened; and a
+ * redraw shows what is held here, so the screen and the plan cannot part again.
+ */
+/* One store: primitives.FORM_VALUES (what each field holds once edited), over the
+ * MISSION_FORM / AIRCRAFT_FORM defaults (what it shows before then). The defaults are
+ * read from the specs, not from a drawn form, because the Aircraft tab (RTH) is never
+ * drawn unless it is opened. */
+/** Every Mission / Aircraft field as it is on screen now, edited or not. */
+export function missionFormValues() {
+  const out = {};
+  for (const item of [...MISSION_FORM, ...AIRCRAFT_FORM]) {
+    if (!item.key) continue;
+    out[item.key] = item.key in FORM_VALUES ? FORM_VALUES[item.key] : (item.value ?? "");
+  }
+  return out;
+}
+/** Set a field the way the operator would (the Mission Types list sets Type). */
+export function setMissionFormValue(key, value) {
+  if ([...MISSION_FORM, ...AIRCRAFT_FORM].some((f) => f.key === key)) FORM_VALUES[key] = value;
+}
 
 /* Every editable field reports onto the same bus the trees and tables use.
  *
@@ -474,6 +629,72 @@ const missionTypes = [
   "Lateral capture", "Smart adaptive", "Linked mission",
 ];
 
+/* The Mission Properties form, as one spec the panel draws and Plan reads.
+ *
+ * Plan used to send only the fields the operator had changed, so with the form
+ * untouched it sent plan_mission({}) and the planner used ITS defaults -- a 55 m grid --
+ * under a panel reading "3D modelling, 60 m, 80/70 %, 8 m/s". The shell now starts
+ * from these values (formDefaults) and overlays what was typed, so what the panel shows
+ * is what is planned. */
+export const MISSION_FORM = [
+        { group: "Geometry" },
+        { key: "type", label: "Type", value: "3D modelling", options: missionTypes },
+        { key: "alt", label: "Altitude AGL", value: "60", unit: "m" },
+        /* The camera Plan sizes the lines for. plan_mission uses mavic2pro when it is
+           given none, and the Camera tab below used to describe a P1 / 35 mm that no
+           plan ever used. Any key or name from the Cameras list is accepted. */
+        { key: "camera", label: "Camera", value: "mavic2pro" },
+        { key: "gsd", label: "Target GSD (not used by Plan)", value: "1.8", unit: "cm",
+          hint: "The planner solves altitude from overlap and camera; this target is not read." },
+        { key: "fwd", label: "Front overlap", value: "80", unit: "%" },
+        { key: "side", label: "Side overlap", value: "70", unit: "%" },
+        { group: "Path" },
+        { key: "speed", label: "Speed", value: "8", unit: "m/s" },
+        { key: "angle", label: "Line heading (not used by Plan)", value: "90", unit: "°",
+          hint: "The grid generator chooses the line heading; there is no override yet." },
+        { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
+        /* Inputs only some mission types read. Left blank they are not sent as values:
+           plan_mission refuses a thermal, multispectral or pylon plan that lacks its
+           one essential input, and says which. */
+        { group: "Mission type inputs" },
+        { key: "thermal_camera", label: "Thermal camera", value: "" },
+        { key: "target_gsd_cm", label: "Thermal GSD", value: "", unit: "cm" },
+        { key: "rgb_camera", label: "Paired RGB camera", value: "" },
+        { key: "payload_key", label: "Multispectral payload", value: "" },
+        { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
+        { key: "accept_relative_values", label: "No panel: relative values", value: "no",
+          options: ["no", "yes"] },
+        { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
+        { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
+        { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },
+        { key: "facade_bottom_altitude_m", label: "Wall base", value: "", unit: "m" },
+        { key: "facade_top_altitude_m", label: "Wall top", value: "", unit: "m" },
+        { key: "tower_bottom_altitude_m", label: "Tower base", value: "", unit: "m" },
+        { key: "tower_top_altitude_m", label: "Tower top", value: "", unit: "m" },
+        { key: "tower_object_radius_m", label: "Tower radius", value: "", unit: "m" },
+        { key: "turbine_rotor_facing_deg", label: "Rotor faces", value: "", unit: "°" },
+        { key: "turbine_hub_height_m", label: "Hub height", value: "", unit: "m" },
+        { key: "turbine_blade_length_m", label: "Blade length", value: "", unit: "m" },
+        { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
+        { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
+        { key: "linked_version_ids", label: "Linked version ids", value: "" },
+];
+
+export const AIRCRAFT_FORM = [
+        { key: "air", label: "Aircraft (not used by Plan)", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"],
+          hint: "Battery and speed limits are not taken from the aircraft model yet." },
+        { key: "batt", label: "Batteries (not used by Plan)", value: "3",
+          hint: "Batteries are an estimate of the plan (see Estimates), not an input to it." },
+        { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
+];
+
+const missionDefault = (key) => (MISSION_FORM.find((f) => f.key === key) || {}).value;
+const airDefault = (key) => (AIRCRAFT_FORM.find((f) => f.key === key) || {}).value;
+/* The Camera tab's describe_camera arguments: the Camera field's camera at the Altitude
+   field's height. Kept out of the calls list so only method names appear there. */
+const cameraTabArgs = () => [String(FORM_VALUES.camera ?? missionDefault("camera")),
+  Number(FORM_VALUES.alt ?? missionDefault("alt")) || 60];
+
 const planning = {
   id: "planning",
   title: "Mission Planning",
@@ -544,73 +765,96 @@ const planning = {
           ];
         },
       }) },
-      { at: "bl", html: `Terrain: <span class="chip warn">flat plane — no DEM loaded</span>` },
+      /* Was a fixed "flat plane — no DEM loaded", still printed after File > Import
+         Terrain had loaded one. It is the terrain source Plan will use. */
+      { at: "bl", node: readout({
+        calls: ["get_state"],
+        empty: "Terrain: not known",
+        isEmpty: ([s]) => !s,
+        render: ([s]) => {
+          const source = String(s.terrain_source || "");
+          const name = source.split(/[\/]/).pop();
+          return [
+            el("span", { text: "Terrain: " }),
+            source ? chip(name, "ok") : chip("flat plane — no DEM loaded", "warn"),
+          ];
+        },
+      }) },
     ],
   }),
   right: [
     { id: "plan.props", title: "Mission Properties", tabs: [
-      { title: "Mission", render: () => fields([
-        { group: "Geometry" },
-        { key: "type", label: "Type", value: "3D modelling", options: missionTypes },
-        { key: "alt", label: "Altitude AGL", value: "60", unit: "m" },
-        { key: "gsd", label: "Target GSD", value: "1.8", unit: "cm" },
-        { key: "fwd", label: "Front overlap", value: "80", unit: "%" },
-        { key: "side", label: "Side overlap", value: "70", unit: "%" },
-        { group: "Path" },
-        { key: "speed", label: "Speed", value: "8", unit: "m/s" },
-        { key: "angle", label: "Line heading", value: "90", unit: "°" },
-        { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
-        /* Inputs only some mission types read. Left blank they are not sent as values:
-           plan_mission refuses a thermal, multispectral or pylon plan that lacks its
-           one essential input, and says which. */
-        { group: "Mission type inputs" },
-        { key: "thermal_camera", label: "Thermal camera", value: "" },
-        { key: "target_gsd_cm", label: "Thermal GSD", value: "", unit: "cm" },
-        { key: "rgb_camera", label: "Paired RGB camera", value: "" },
-        { key: "payload_key", label: "Multispectral payload", value: "" },
-        { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
-        { key: "accept_relative_values", label: "No panel: relative values", value: "no",
-          options: ["no", "yes"] },
-        { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
-        { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
-        { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },
-        { key: "facade_bottom_altitude_m", label: "Wall base", value: "", unit: "m" },
-        { key: "facade_top_altitude_m", label: "Wall top", value: "", unit: "m" },
-        { key: "tower_bottom_altitude_m", label: "Tower base", value: "", unit: "m" },
-        { key: "tower_top_altitude_m", label: "Tower top", value: "", unit: "m" },
-        { key: "tower_object_radius_m", label: "Tower radius", value: "", unit: "m" },
-        { key: "turbine_rotor_facing_deg", label: "Rotor faces", value: "", unit: "°" },
-        { key: "turbine_hub_height_m", label: "Hub height", value: "", unit: "m" },
-        { key: "turbine_blade_length_m", label: "Blade length", value: "", unit: "m" },
-        { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
-        { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
-        { key: "linked_version_ids", label: "Linked version ids", value: "" },
-      ], settingChanged) },
-      { title: "Aircraft", render: () => fields([
-        { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },
-        { key: "batt", label: "Batteries", value: "3" },
-        { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
-      ], settingChanged) },
-      { title: "Camera", render: () => properties([
-        { group: "P1 / 35 mm" },
-        { label: "Sensor", value: "35.9 × 24.0", unit: "mm" },
-        { label: "Resolution", value: "8192 × 5460" },
-        { label: "Pixel pitch", value: "4.4", unit: "µm" },
-        { label: "Focal length", value: "35", unit: "mm" },
-        { label: "Footprint @60 m", value: "61 × 41", unit: "m" },
-      ]) },
-      { title: "Payload", render: () => properties([
-        { label: "Type", value: "RGB + RTK" },
-        { label: "Weight", value: "930", unit: "g" },
-        { label: "Trigger", value: "Shutter" },
-        { label: "Interval", value: "1.4", unit: "s" },
-      ]) },
-      { title: "Safety", render: () => properties([
-        { label: "Geofence", value: chip("contained", "ok") },
-        { label: "Terrain clearance", value: chip("assumed flat", "warn") },
-        { label: "Rally points", value: "2" },
-        { label: "Obstacles", value: "1" },
-      ]) },
+      { title: "Mission", render: () => fields(MISSION_FORM, settingChanged) },
+      { title: "Aircraft", render: () => fields(AIRCRAFT_FORM, settingChanged) },
+      /* Was a fixed "P1 / 35 mm" sheet with a footprint at 60 m. The planner has never
+         used a P1 unless told to, so the tab described a camera the plan was not sized
+         for. It now describes the Camera field's camera at the Altitude field's height,
+         from the camera database -- the same numbers Plan uses. */
+      { title: "Camera", render: () => live({
+        calls: [() => ["describe_camera", ...cameraTabArgs()]],
+        empty: "That camera is not in the camera database; see Cameras for the list.",
+        isEmpty: ([d]) => !(d && d.camera),
+        render: ([d]) => {
+          const c = d.camera;
+          const round = (v, n = 1) => (v == null ? null : Number(v).toFixed(n));
+          return properties([
+            { group: c.name || c.key },
+            { label: "Sensor", value: `${c.sensor_w_mm} × ${c.sensor_h_mm}`, unit: "mm" },
+            { label: "Resolution", value: `${c.image_w_px} × ${c.image_h_px}` },
+            { label: "Pixel pitch", value: round(c.pixel_pitch_um, 2), unit: "µm" },
+            { label: "Focal length", value: c.focal_mm, unit: "mm" },
+            { label: `GSD @${c.altitude_m} m`, value: round(c.gsd_cm, 2), unit: "cm" },
+            { label: `Footprint @${c.altitude_m} m`,
+              value: (c.footprint_m || []).map((v) => round(v, 0)).join(" × ") || null, unit: "m" },
+            { label: "Source", value: c.known === false ? chip("not in database", "warn") : c.source },
+          ]);
+        },
+      }) },
+      /* Was "RGB + RTK, 930 g, shutter, 1.4 s" for every mission. The payload is the
+         one named in the Multispectral payload field, from the payload database; with
+         none named the plan carries the camera alone, and the tab says that. */
+      { title: "Payload", render: () => live({
+        calls: [() => (FORM_VALUES.payload_key
+          ? ["describe_payload", String(FORM_VALUES.payload_key)] : ["list_payloads"])],
+        empty: "No payload named. The plan carries the camera alone; name one in "
+          + "Mission > Multispectral payload (see Payloads for the list).",
+        isEmpty: ([d]) => !(d && d.payload),
+        render: ([d]) => {
+          const pl = d.payload;
+          return el("div", {}, [properties([
+            { group: pl.name || pl.key },
+            { label: "Kind", value: pl.kind },
+            { label: "Bands", value: (pl.bands_nm || []).length ? `${pl.bands_nm.join(", ")} nm` : null },
+            { label: "Mass", value: pl.mass_known ? pl.mass_g : null, unit: pl.mass_known ? "g" : "" },
+            { label: "Trigger", value: pl.capture_command },
+            { label: "Calibration", value: pl.requires_calibration ? chip("required", "warn") : "not required" },
+          ]), ...(d.plan_notes || []).map((n) => el("p", { class: "empty-msg", text: String(n) }))]);
+        },
+      }) },
+      /* Was "Geofence contained, terrain assumed flat, 2 rally points, 1 obstacle" over
+         every project. Each row is now read: the drawn area, the no-fly zones, the
+         terrain source Plan will use, the site markers and the RTH altitude sent. */
+      { title: "Safety", render: () => live({
+        calls: ["get_state", "list_site_markers"],
+        isEmpty: ([st]) => !st,
+        empty: "Not connected to the application.",
+        render: ([st, m]) => {
+          const aoi = st.aoi || [];
+          const markers = (m && m.markers) || [];
+          const hazards = markers.filter((x) => x.kind === "hazard" || x.kind === "obstacle");
+          const terrain = String(st.terrain_source || "");
+          return properties([
+            { label: "Geofence", value: aoi.length >= 3 ? chip(`area drawn, ${aoi.length} vertices`, "ok")
+              : chip("no area of interest drawn", "warn") },
+            { label: "No-fly zones", value: String((st.no_fly || []).length) },
+            { label: "Terrain clearance", value: terrain ? chip(`follows ${terrain.split(/[\/]/).pop()}`, "ok")
+              : chip("assumed flat — no DEM loaded", "warn") },
+            { label: "Hazards / obstacles", value: String(hazards.length) },
+            { label: "Other site markers", value: String(markers.length - hazards.length) },
+            { label: "RTH altitude sent", value: String(FORM_VALUES.rth ?? airDefault("rth")), unit: "m" },
+          ]);
+        },
+      }) },
     ] },
     /* Six fixed numbers -- 14.2 ha, 3.1 km, 18 min, 214 images, 1 battery, 12.4 GB --
        shown whether or not a mission had been planned. "Batteries 1" is the one that
@@ -640,8 +884,15 @@ const planning = {
     }) },
   ],
   bottom: [
-    { id: "plan.timeline", title: "Simulation Timeline", flex: 3, render: () => canvas({
-      title: "Altitude and speed over time", note: "Scrub to preview the flight. Playback follows the aircraft along the route.",
+    /* Was a labelled frame -- "Scrub to preview the flight. Playback follows the
+       aircraft along the route." -- with nothing behind it. It is now drawn from the
+       planned route: altitude over flight time, the plan's speed, a scrubber and Play,
+       and a marker on the mission map at the scrubbed point. */
+    { id: "plan.timeline", title: "Simulation Timeline", flex: 3, render: () => live({
+      calls: ["mission_geojson", "mission_estimates"],
+      empty: "Plan a mission to see its altitude and speed over time, and scrub along it.",
+      isEmpty: ([g]) => !(g && g.geojson && routePoints(g.geojson).length >= 2),
+      render: ([g, e]) => simulationTimeline(routePoints(g.geojson), (e && e.estimates) || {}),
     }) },
     /* Four segments with capture counts, for a mission that had not been planned.
        plan_battery_segments() computes the real split -- sorties sized so each fits
@@ -1536,6 +1787,11 @@ const inspection = {
         unit: "which solar model reads it" },
       { key: "run_metal_detection", label: "Metal detection", value: "auto",
         options: ["auto", "on", "off"], unit: "auto: steel / towers" },
+      /* The concrete crack and structural models. On a solar asset they read cells as
+         concrete ('Spallation' on an EL cell), so auto leaves them off there; on EL or
+         IR module images they never run. On runs them on a solar asset's photographs. */
+      { key: "run_structural_detection", label: "Structural detection", value: "auto",
+        options: ["auto", "on", "off"], unit: "auto: not on solar" },
       { key: "crack_presence_gate", label: "Crack presence gate", value: "off",
         options: ["off", "on"], unit: "on: skip segmenter when no tile flagged" },
     ], settingChanged) },
@@ -1748,7 +2004,8 @@ const measurements = {
   id: "measurements",
   title: "Measurements",
   toolbar: ["Distance", "Area", "Volume", "Stockpile", "Cut & Fill", "Slope", "Profile",
-            "Ponding", "Measure in 3D", "|", "Compare Dates", "Survey Packs", "Export"],
+            "Ponding", "Measure in 3D", "Photo Distance", "Photo Area", "Crack Length", "|",
+            "Compare Dates", "Survey Packs", "Export"],
   left: [
     { id: "ms.tools", title: "Tools", render: () => reference(tree([
       { id: "t1", label: "Distance", icon: "↔", action: "Distance" },
@@ -1759,6 +2016,9 @@ const measurements = {
       { id: "t6", label: "Slope", icon: "◺", action: "Slope" },
       { id: "t7", label: "Profile line", icon: "∿", action: "Profile" },
       { id: "t8", label: "Ponding", icon: "≈", action: "Ponding" },
+      { id: "t9", label: "Distance on a photo", icon: "↔", action: "Photo Distance" },
+      { id: "t10", label: "Area on a photo", icon: "▭", action: "Photo Area" },
+      { id: "t11", label: "Crack length on a photo", icon: "≀", action: "Crack Length" },
     ], { selectKind: "tool" })) },
     /* Measurement works on rasters -- orthomosaic, DSM, DTM -- so this filters rather
        than listing every layer in the project. */

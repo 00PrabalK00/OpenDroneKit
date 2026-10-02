@@ -5,6 +5,11 @@
   <img src="logo.png" alt="OpenDroneKit" width="300" />
 </picture>
 
+[![CI](https://github.com/00PrabalK00/OpenDroneKit/actions/workflows/ci.yml/badge.svg)](https://github.com/00PrabalK00/OpenDroneKit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+Website: [opendronekit.com](https://opendronekit.com)
+
 Offline-first drone inspection and geospatial toolkit: plan repeatable inspection
 missions, fly them over MAVLink, then turn the imagery into georeferenced
 reconstruction products and defect analytics.
@@ -207,3 +212,18 @@ Measurements and volumes need the georeferenced rasters, so they are only produc
 by the COLMAP engine. When they are absent the report states that rather than
 printing zeros — a defect area in square metres means nothing unless something
 actually measured it.
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the development setup, running the tests (including PostGIS, Redis, S3 and SITL), and the two rules every change is held to: a feature is done only when the tests it names pass, and nothing synthesised is presented as measured.
+
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security policy](SECURITY.md): report vulnerabilities privately, not in issues
+- [Getting help](SUPPORT.md)
+- [Changelog](CHANGELOG.md)
+- [How to cite](CITATION.cff)
+- Website: [opendronekit.com](https://opendronekit.com)
+
+## License
+
+OpenDroneKit is released under the [MIT License](LICENSE). Trained model weights and third-party datasets keep their own licences, recorded alongside them (see "Model assets and licensing" above).

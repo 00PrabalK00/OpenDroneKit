@@ -12,6 +12,7 @@ from .india_geospatial import (
     IndiaPackRefused,
     IndiaPackResult,
     assert_aligned,
+    canonical_name,
     ids_for_names,
     load_class_names,
     polygonize_mask,
@@ -44,11 +45,18 @@ def extract_land_gis(
     output_dir: str | Path,
     *,
     min_polygon_area_m2: float = 1.0,
+    validated_classes: Sequence[str] | None = None,
 ) -> IndiaPackResult:
     """Extract observed land-cover vectors from a georeferenced semantic layer.
 
     The survey extent is also emitted, but it is explicitly not represented as a
     cadastral parcel.  Legal boundaries must come from an authoritative import.
+
+    ``validated_classes`` are the classes the model's holdout says hold up. Every
+    category is flagged against it: a water polygon from a model whose water IoU is
+    0.003 looks exactly as confident as a building one, so the flag travels with the
+    area and with each polygon. ``None`` means nobody said -- reported as unknown, never
+    as validated.
     """
 
     if min_polygon_area_m2 < 0:
@@ -60,6 +68,22 @@ def extract_land_gis(
     valid = semantic_valid_mask(raster)
     if not np.any(valid):
         raise IndiaPackRefused("The semantic class raster contains no valid survey pixels.")
+
+    validated = (None if validated_classes is None
+                 else {canonical_name(str(name)) for name in validated_classes})
+
+    def validation(class_ids: set[int]) -> dict:
+        if validated is None:
+            return {"validated": None,
+                    "validation": "Unknown: no holdout validation was supplied with this "
+                                  "semantic map, so this class is not claimed as validated."}
+        names = {canonical_name(class_names[i]) for i in class_ids}
+        if names & validated:
+            return {"validated": True,
+                    "validation": "Validated on the model's holdout."}
+        return {"validated": False,
+                "validation": "UNVALIDATED: the model's holdout does not support this "
+                              "class; its area and polygons are shown for review only."}
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -76,6 +100,7 @@ def extract_land_gis(
             }
             continue
         mask = valid & np.isin(raster.data, list(class_ids))
+        flag = validation(class_ids)
         category_features = polygonize_mask(
             mask,
             raster,
@@ -83,6 +108,7 @@ def extract_land_gis(
                 "layer": category,
                 "source": "semantic_class_raster",
                 "source_class_ids": sorted(class_ids),
+                "validated": flag["validated"],
             },
             min_area_m2=min_polygon_area_m2,
         )
@@ -92,6 +118,7 @@ def extract_land_gis(
             "area_m2": round(float(mask.sum()) * float(raster.pixel_area_m2), 6),
             "polygon_count": len(category_features),
             "source_class_ids": sorted(class_ids),
+            **flag,
         }
 
     extent_features = polygonize_mask(
@@ -128,6 +155,10 @@ def extract_land_gis(
             "source": {"semantic_class_raster": raster.path, "epsg": raster.epsg},
             "units": {"area": "m2"},
             "categories": categories,
+            "validated_classes": None if validated is None else sorted(validated),
+            "unvalidated_categories": sorted(
+                name for name, item in categories.items()
+                if item["status"] == "available" and item.get("validated") is not True),
             "survey_extent_area_m2": round(
                 float(valid.sum()) * float(raster.pixel_area_m2), 6
             ),

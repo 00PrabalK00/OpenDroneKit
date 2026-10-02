@@ -69,6 +69,12 @@ def test_the_guide_names_every_chip_state_and_every_empty_frame() -> None:
     for _, title in LABELLED_FRAMES:
         assert title in section
     assert "API console" in section
+    # The Settings canvas is a labelled frame too, and the Simulation Timeline is not:
+    # it is drawn from the plan (test_the_frame_names_the_project_crs_and_route.py).
+    assert "Select a section." in section
+    assert "Simulation Timeline" in section and "drawn from the planned route" in section
+    # The status bar's project CRS is the layers', not the map's.
+    assert "project CRS not known yet" in section and "project EPSG:32617" in section
     for source in ("actions.js", "mapview.js", "viewer3d.js"):
         assert source in section
         assert (ROOT / "app" / "web" / "js" / "workspace" / source).is_file()
@@ -124,6 +130,9 @@ def test_the_frames_the_guide_calls_empty_exist_and_show_no_numbers(tmp_path) ->
             await ODK.nav("Developers");
             const c = ODK.$('.workspace .canvas');
             out["API console"] = c ? c.textContent : null;
+            await ODK.nav("Settings");
+            const sc = ODK.$('.workspace .canvas');
+            out["Settings canvas"] = sc && /Select a section\./.test(sc.textContent) ? sc.textContent : null;
             return out;
         """)
     for title, text in seen.items():
