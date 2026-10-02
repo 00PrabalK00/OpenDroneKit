@@ -68,8 +68,11 @@ function trim(value) {
 
 /** "1 : 1,680": ground distance over the same distance on a 96 dpi screen. */
 export function scaleRatio(mpp) {
+  // Three significant figures, the same rule as the footer's scale (shell.formatScale),
+  // so the map and the footer never show two different ratios for one view.
   const denominator = mpp * PX_PER_M;
-  const rounded = denominator >= 100 ? Math.round(denominator / 10) * 10 : Math.round(denominator);
+  const step = 10 ** Math.max(0, Math.floor(Math.log10(Math.max(1, denominator))) + 1 - 3);
+  const rounded = Math.round(denominator / step) * step;
   return `1 : ${rounded.toLocaleString("en-US")}`;
 }
 

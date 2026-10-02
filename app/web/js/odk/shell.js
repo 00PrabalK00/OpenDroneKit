@@ -522,14 +522,20 @@ export class Shell {
     // CRS.
     let crsText = null;
     let crsTitle = "";
+    // The EPSG the cursor's E/N are given in: the project's, else its layers'.
+    this.footerEpsg = null;
     if (live && project) {
       const layerEpsg = ((this.state && this.state.layers) || []).map((l) => l.crs_epsg).filter(Boolean);
       const fromLayers = layerEpsg.find((e) => Number(e) !== 4326) || layerEpsg[0];
       if (this.crs && this.crs.epsg) {
+        this.footerEpsg = this.crs.epsg;
         crsText = `EPSG:${this.crs.epsg} · ${shortCrsName(this.crs.name)}`;
         crsTitle = `Project CRS: ${this.crs.name}`;
       } else if (fromLayers) {
-        crsText = `EPSG:${fromLayers} · from layers`;
+        this.footerEpsg = fromLayers;
+        // The zone is read off the EPSG code itself (326zz / 327zz), not looked up.
+        const zone = utmZoneOf(fromLayers);
+        crsText = `EPSG:${fromLayers} · ${zone ? `UTM ${zone.zone}${zone.south ? "S" : "N"}` : "from layers"}`;
         crsTitle = "No project CRS is set; this is the CRS the project's layers are in.";
       } else {
         crsText = "CRS auto · UTM from imagery";
@@ -641,7 +647,7 @@ export class Shell {
     };
     const cursor = (lon, lat) => {
       const parts = [formatLonLat(lon, lat)];
-      const utm = this.crs && utmZoneOf(this.crs.epsg);
+      const utm = this.footerEpsg ? utmZoneOf(this.footerEpsg) : null;
       if (utm) {
         const { easting, northing } = toUtm(lon, lat, utm.zone, utm.south);
         parts.push(`E ${Math.round(easting).toLocaleString("en-US")} N ${Math.round(northing).toLocaleString("en-US")}`);
