@@ -36,7 +36,7 @@ from core.mission_planner_bridge import (  # noqa: E402
 from mission.exporters import (  # noqa: E402
     MAV_CMD_CONDITION_YAW,
     MAV_CMD_DO_DIGICAM_CONTROL,
-    MAV_CMD_DO_MOUNT_CONTROL,
+    MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
     MAV_CMD_NAV_LOITER_TIME,
     MAV_CMD_NAV_RETURN_TO_LAUNCH,
     build_mission_items,
@@ -221,7 +221,7 @@ def test_capture_commands_reach_the_vehicle(linked_vehicle):
 
     commands = [int(m.command) for m in vehicle.stored[MAV_MISSION_TYPE_MISSION]]
     for expected in (
-        MAV_CMD_DO_MOUNT_CONTROL,
+        MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
         MAV_CMD_CONDITION_YAW,
         MAV_CMD_NAV_LOITER_TIME,
         MAV_CMD_DO_DIGICAM_CONTROL,

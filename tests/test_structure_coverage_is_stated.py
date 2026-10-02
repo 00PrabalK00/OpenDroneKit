@@ -25,7 +25,7 @@ from test_structure_missions_keep_clear import (
     local, make_api, nav_points, plan_export, rotated_rectangle, turbine_geometry,
 )
 
-DO_MOUNT_CONTROL = 205
+DO_GIMBAL_PITCHYAW = 1000  # the exporter sets the gimbal with DO_GIMBAL_MANAGER_PITCHYAW
 # Default camera (mavic2pro): 13.2 mm sensor width, 10.26 mm focal length.
 HALF_FOV = math.degrees(math.atan(6.6 / 10.26))
 
@@ -42,7 +42,7 @@ def shots(items, origin):
     """(position xyz, compass heading, gimbal pitch) of each NAV item a heading precedes."""
     out, heading, pitch = [], None, None
     for item in items:
-        if item["command"] == DO_MOUNT_CONTROL:
+        if item["command"] == DO_GIMBAL_PITCHYAW:
             pitch = item["params"][0]
         elif item["command"] == CONDITION_YAW:
             heading = item["params"][0]

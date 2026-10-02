@@ -15,6 +15,7 @@ from mission.exporters import (
     EXPORTERS,
     MAV_CMD_CONDITION_YAW,
     MAV_CMD_DO_DIGICAM_CONTROL,
+    MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
     MAV_CMD_DO_MOUNT_CONTROL,
     MAV_CMD_NAV_LOITER_TIME,
     MAV_CMD_NAV_RETURN_TO_LAUNCH,
@@ -63,7 +64,7 @@ PLAN = {
 def test_capture_commands_survive_export():
     commands = [item.command for item in build_mission_items(PLAN)]
     for expected in (
-        MAV_CMD_DO_MOUNT_CONTROL,
+        MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
         MAV_CMD_CONDITION_YAW,
         MAV_CMD_NAV_LOITER_TIME,
         MAV_CMD_DO_DIGICAM_CONTROL,
@@ -72,11 +73,17 @@ def test_capture_commands_survive_export():
         assert expected in commands, f"MAV_CMD {expected} was dropped by the exporter"
 
 
-def test_gimbal_pitch_and_mount_mode_land_in_the_right_slots():
-    """DO_MOUNT_CONTROL carries pitch in param1 and the mount mode in the z slot."""
-    mount = next(i for i in build_mission_items(PLAN) if i.command == MAV_CMD_DO_MOUNT_CONTROL)
-    assert mount.param1 == pytest.approx(-90.0)
-    assert mount.altitude == pytest.approx(2.0)  # MAV_MOUNT_MODE_MAVLINK_TARGETING
+def test_gimbal_pitch_lands_in_the_right_slot_and_the_heading_is_left_alone():
+    """DO_GIMBAL_MANAGER_PITCHYAW: pitch in param1, body-frame yaw 0, no flags.
+
+    DO_MOUNT_CONTROL is no longer emitted: on a tilt-only gimbal ArduCopter takes its yaw
+    as a vehicle heading, and turned the aircraft north at every viewpoint (SITL)."""
+    items = build_mission_items(PLAN)
+    assert MAV_CMD_DO_MOUNT_CONTROL not in {i.command for i in items}
+    gimbal = next(i for i in items if i.command == MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW)
+    assert gimbal.param1 == pytest.approx(-90.0)
+    assert (gimbal.param2, gimbal.param3, gimbal.param4) == (0.0, 0.0, 0.0)
+    assert gimbal.latitude == 0.0 and gimbal.altitude == 0.0  # flags, gimbal id
 
 
 def test_fence_covers_inclusion_and_exclusion():

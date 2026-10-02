@@ -37,7 +37,8 @@ NO_FLY = [
 ]
 WPML = "{http://www.dji.com/wpmz/1.0.2}"
 
-CONDITION_YAW, DO_CHANGE_SPEED, DO_MOUNT_CONTROL = 115, 178, 205
+# The gimbal is set with DO_GIMBAL_MANAGER_PITCHYAW (1000), pitch in param1.
+CONDITION_YAW, DO_CHANGE_SPEED, DO_GIMBAL_PITCHYAW = 115, 178, 1000
 NAV_WAYPOINT, NAV_LOITER_TIME, NAV_TAKEOFF = 16, 19, 22
 
 
@@ -88,7 +89,7 @@ class TestTheCameraPoseReachesTheFile:
         assert [round(i["params"][0], 1) for i in yaws] == [
             round(p["yaw_deg"] % 360.0, 1) for p in locked]
 
-        pitches = [round(i["params"][0], 1) for i in items if i["command"] == DO_MOUNT_CONTROL]
+        pitches = [round(i["params"][0], 1) for i in items if i["command"] == DO_GIMBAL_PITCHYAW]
         assert pitches == [round(p["gimbal_pitch_deg"], 1) for p in props]
         assert set(pitches) != {-90.0}, f"{template} exported as nadir photographs"
 

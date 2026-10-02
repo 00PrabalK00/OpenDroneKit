@@ -29,6 +29,7 @@ MAV_CMD_CONDITION_YAW = 115
 MAV_CMD_DO_CHANGE_SPEED = 178
 MAV_CMD_DO_DIGICAM_CONTROL = 203
 MAV_CMD_DO_MOUNT_CONTROL = 205
+MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW = 1000
 MAV_CMD_DO_SET_CAM_TRIGG_DIST = 206
 MAV_CMD_NAV_FENCE_RETURN_POINT = 5000
 MAV_CMD_NAV_FENCE_POLYGON_VERTEX_INCLUSION = 5001
@@ -282,18 +283,28 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
 
     for index, pose in enumerate(viewpoints):
         gimbal = pose["gimbal_pitch_deg"]
-        # DO_MOUNT_CONTROL: params 1-3 are pitch/roll/yaw and param7 (the z slot) is
-        # the mount mode, which is why the mode is written to `altitude` here. Mount yaw
-        # is relative to the airframe, and CONDITION_YAW below turns the airframe to the
-        # heading, so the mount stays centred; an absolute heading here would be added
-        # on top by any gimbal with a yaw axis.
+        # DO_GIMBAL_MANAGER_PITCHYAW: param1 pitch, param2 yaw (body frame: flags in x
+        # are 0, no YAW_LOCK), params 3-4 rates (unused with an angle; 0, not NaN, which
+        # ArduPilot rejects). The yaw stays centred on the airframe and CONDITION_YAW
+        # below turns the airframe to the heading.
+        #
+        # This was DO_MOUNT_CONTROL, and a real ArduCopter flew it wrongly. On a gimbal
+        # without a pan axis -- the usual survey tilt gimbal -- Copter takes
+        # DO_MOUNT_CONTROL's yaw as a vehicle heading (ModeAuto::do_mount_control ->
+        # set_yaw_angle_rate), so every viewpoint first turned the aircraft to north:
+        # a grid flew its east-west rows facing north, and an orbit's CONDITION_YAW slewed
+        # from north each leg and never reached its target (photos up to 115 deg off).
+        # The gimbal-manager command sets the gimbal and leaves the heading alone, on
+        # gimbals with and without a pan axis, in ArduPilot (4.3+) and PX4 alike.
         add(
-            MAV_CMD_DO_MOUNT_CONTROL,
+            MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
             frame=MAV_FRAME_MISSION,
             param1=gimbal,
             param2=0.0,
             param3=0.0,
-            altitude=float(MAV_MOUNT_MODE_MAVLINK_TARGETING),
+            param4=0.0,
+            latitude=0.0,   # x: GIMBAL_MANAGER_FLAGS -- none: yaw follows the airframe
+            altitude=0.0,   # z: gimbal device id, 0 = the primary gimbal
             label=f"gimbal {gimbal:.1f} deg",
         )
 
@@ -302,7 +313,11 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
                 MAV_CMD_CONDITION_YAW,
                 frame=MAV_FRAME_MISSION,
                 param1=pose["yaw_deg"] % 360.0,
-                param2=25.0,
+                # 0 = the autopilot's own maximum yaw slew (ArduCopter ATC_SLEW_YAW,
+                # 60 deg/s by default). A fixed 25 deg/s was too slow to arrive on
+                # heading: Copter re-aims at the next waypoint at the start of every leg,
+                # and an orbit flown by ArduCopter shot every photo ~41 deg off.
+                param2=0.0,
                 param3=0.0,
                 param4=0.0,
                 label=f"yaw {pose['yaw_deg']:.1f} deg",

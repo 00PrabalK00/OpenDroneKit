@@ -127,6 +127,17 @@ def settle_on_ground(api, timeout_s: float = 240.0) -> None:
             api.vehicle_command("disarm")
 
 
+def fresh_battery(observer) -> None:
+    """Harness: swap in a charged battery (ArduPilot's MAV_CMD_BATTERY_RESET, 42651).
+
+    SITL drains its simulated battery across flights in one session, and preflight then
+    (rightly) blocks the next start on "Battery critically low".
+    """
+    observer.mav.command_long_send(observer.target_system, observer.target_component,
+                                   42651, 0, 0xFF, 100.0, 0, 0, 0, 0, 0)
+    time.sleep(1.0)
+
+
 # ── Independent MAVLink trace ────────────────────────────────────────────────
 
 @dataclass

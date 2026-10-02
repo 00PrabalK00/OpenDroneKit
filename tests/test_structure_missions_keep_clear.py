@@ -36,7 +36,8 @@ from app.store import ProjectStore
 LAT0, LON0 = 52.2051, 0.1180
 M_PER_DEG = 6371008.8 * math.pi / 180.0
 NAV = (16, 19, 22)
-CONDITION_YAW, DO_MOUNT_CONTROL = 115, 205
+# The gimbal is set with DO_GIMBAL_MANAGER_PITCHYAW (1000), pitch in param1.
+CONDITION_YAW, DO_GIMBAL_PITCHYAW = 115, 1000
 
 
 def lonlat(x: float, y: float) -> list[float]:
@@ -201,7 +202,7 @@ class TestTower:
         # Default tower radius 2 m plus the 8 m structure stand-off.
         assert min(radii) >= 10.0 - 0.05
         assert 20.0 - 0.05 <= min(p[2] for p in points) and max(p[2] for p in points) <= 45.0 + 0.05
-        pitches = {round(i["params"][0], 3) for i in items if i["command"] == DO_MOUNT_CONTROL}
+        pitches = {round(i["params"][0], 3) for i in items if i["command"] == DO_GIMBAL_PITCHYAW}
         assert pitches == {0.0}
         assert not [w for w in planned["warnings"] if "Tower height not given" in w]
 

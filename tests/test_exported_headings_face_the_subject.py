@@ -27,7 +27,7 @@ from app.session import AppSession
 from app.store import ProjectStore
 
 AOI = [[-81.7535, 41.3035], [-81.7521, 41.3035], [-81.7521, 41.3044], [-81.7535, 41.3044]]
-CONDITION_YAW, DO_MOUNT_CONTROL, NAV_WAYPOINT, NAV_LOITER_TIME = 115, 205, 16, 19
+CONDITION_YAW, DO_GIMBAL_MANAGER_PITCHYAW, NAV_WAYPOINT, NAV_LOITER_TIME = 115, 1000, 16, 19
 
 LON0 = sum(p[0] for p in AOI) / len(AOI)
 LAT0 = sum(p[1] for p in AOI) / len(AOI)
@@ -83,8 +83,9 @@ def headed_positions(written: dict) -> list[tuple[float, tuple[float, float], fl
     items = json.loads(Path(written["qgc_plan"]).read_text())["mission"]["items"]
     out, heading, mount_yaw = [], None, None
     for item in items:
-        if item["command"] == DO_MOUNT_CONTROL:
-            mount_yaw = item["params"][2]
+        if item["command"] == DO_GIMBAL_MANAGER_PITCHYAW:
+            # yaw (param2), and whether it is locked to the earth frame (flags, x)
+            mount_yaw = (item["params"][1], item["params"][4])
         elif item["command"] == CONDITION_YAW:
             heading = item["params"][0]
         elif item["command"] in (NAV_WAYPOINT, NAV_LOITER_TIME) and heading is not None:
@@ -143,9 +144,13 @@ class TestRingsFaceTheirCentre:
         assert errs and max(errs) < 6.0, f"off by up to {max(errs):.0f} deg after projection"
 
     def test_the_mount_is_not_given_an_absolute_heading(self, api, tmp_path):
-        """DO_MOUNT_CONTROL yaw is body-relative; the vehicle does the turning."""
+        """The gimbal yaw is centred on the airframe (no YAW_LOCK); the vehicle turns.
+
+        DO_MOUNT_CONTROL was used before, and on a tilt-only gimbal ArduCopter reads its
+        yaw as a vehicle heading -- every viewpoint turned the aircraft to north
+        (tests/sitl/test_copter_template_flights.py)."""
         _, written = plan_and_export(api, tmp_path, {"template": "orbit", "altitude_m": 50})
-        assert {m for _, _, m in headed_positions(written)} == {0.0}
+        assert {m for _, _, m in headed_positions(written)} == {(0.0, 0.0)}
 
     def test_litchi_headings_agree_with_the_plan(self, api, tmp_path):
         _, written = plan_and_export(api, tmp_path, {"template": "tower_mapping", "altitude_m": 50})
