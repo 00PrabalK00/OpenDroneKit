@@ -5564,7 +5564,10 @@ class Api:
             # session's current log, which is the PREVIOUS connection's, so a failed
             # pymavlink attempt after a mock flight reported {driver: 'mock'}. It now
             # describes the attempt the operator just made, and says no log began.
-            return ok(vehicle=vehicle, flight_log={
+            # The reply is a refusal (ok:false): a link that did not open is not a
+            # successful connect, and callers that only read `ok` must see that.
+            return fail(vehicle.get("last_error") or "The vehicle link did not open.",
+                        vehicle=vehicle, flight_log={
                 "driver": vehicle.get("driver", ""),
                 "uri": vehicle.get("uri", uri),
                 "simulated": bool(vehicle.get("is_simulated", False)),

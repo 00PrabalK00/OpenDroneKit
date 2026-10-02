@@ -700,10 +700,10 @@ export const ACTIONS = {
         : driver === "mock" ? "mock://" : "udpin:0.0.0.0:14550";
       const uri = await ctx.prompt("Connection (udpin:0.0.0.0:14550, tcp:127.0.0.1:5760, COM3…)", fallback);
       if (!uri) return { skipped: "No connection given." };
+      /* A link that does not open is refused (ok:false) with the reason as its error,
+         so call() throws that reason -- the toast says why, never "Connected". */
       const result = await call("connect_vehicle", uri, driver);
       const vehicle = result.vehicle || {};
-      /* connect_vehicle answers ok with connected:false and the reason when the link
-         fails, so the reason is what gets shown -- not "Connected". */
       if (vehicle.connected === false) throw new Error(vehicle.last_error || "Connection failed.");
       return {
         message: `Connected to ${uri} via ${driver}`

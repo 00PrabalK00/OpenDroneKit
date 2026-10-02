@@ -50,7 +50,10 @@ def test_a_failed_link_after_a_mock_flight_reports_the_attempt(api):
 
     uri = _dead_uri()
     failed = api.connect_vehicle(uri, "pymavlink")
-    assert failed["ok"] is True
+    # A link that did not open is a refusal, with the reason as the error.
+    assert failed["ok"] is False
+    assert failed["error"] == failed["vehicle"]["last_error"]
+    assert "heartbeat" in failed["error"].lower(), failed["error"]
     assert failed["vehicle"]["connected"] is False and failed["vehicle"]["last_error"]
     log = failed["flight_log"]
     assert log["driver"] == "pymavlink", log
@@ -73,7 +76,11 @@ def test_the_cockpit_connect_button_gets_the_attempt_back(api):
     server, base = serve(api)
     browser = Browser(executable)
     try:
-        browser.open(f"{base}/workspace.html", settle_s=3)
+        browser.open(f"{base}/workspace.html", settle_s=0.5)
+        # Wait for the shell itself, not a fixed delay: under load 3 s was too short.
+        browser.wait_for("!!(window.pywebview && window.pywebview.api"
+                         " && [...document.querySelectorAll('.nav-item')]"
+                         ".some((x) => x.textContent === 'Flight'))", timeout_s=60)
         browser.js("""
 window.__toasts = [];
 new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
@@ -103,12 +110,14 @@ window.__answer = (value) => {
 true
 """)
         browser.js("[...document.querySelectorAll('.nav-item')].find((x) => x.textContent === 'Flight').click(); true")
-        time.sleep(0.5)
+        browser.wait_for("[...document.querySelectorAll('.toolbar button')]"
+                         ".some((x) => x.textContent.trim() === 'Connect')", timeout_s=30)
         uri = _dead_uri()
         browser.js("__click('Connect')")
         browser.wait_for("__choose('MAVLink autopilot')")
         browser.wait_for(f"__answer({uri!r})")
         result = browser.wait_for("window.__connects[0]", timeout_s=40)
+        assert result["ok"] is False and "heartbeat" in result["error"].lower(), result
         assert result["vehicle"]["connected"] is False
         log = result["flight_log"]
         assert log["driver"] == "pymavlink" and log["uri"] == uri, log
@@ -117,6 +126,40 @@ true
         browser.wait_for("__toasts.length > 0", timeout_s=10)
         toasts = browser.js("__toasts")
         assert not any("Connected to" in t for t in toasts), toasts
+        assert any("heartbeat" in t.lower() for t in toasts), toasts
+    finally:
+        browser.close()
+        server.shutdown()
+
+
+def test_the_classic_connect_dialog_reports_the_refusal(api):
+    """index.html's Connect dialog: a refused link says why and never 'Connected'."""
+    pytest.importorskip("websocket")
+    pytest.importorskip("requests")
+    from ui_live_bridge import Browser, chromium_path, serve
+
+    executable = chromium_path()
+    if executable is None:
+        pytest.skip("No Chromium-family browser is installed to drive the UI.")
+    server, base = serve(api)
+    browser = Browser(executable)
+    try:
+        browser.open(f"{base}/index.html", settle_s=0.5)
+        browser.wait_for("!!(window.pywebview && window.pywebview.api"
+                         " && document.querySelector('#btn-connect'))", timeout_s=60)
+        status = "document.querySelector('#status-message').textContent"
+        uri = _dead_uri()
+        browser.js("document.querySelector('#btn-connect').click(); true")
+        browser.wait_for("!!document.querySelector('#dlg-uri')")
+        browser.js(f"document.querySelector('#dlg-driver').value = 'pymavlink';"
+                   f"document.querySelector('#dlg-uri').value = {uri!r};"
+                   "[...document.querySelectorAll('#modal-actions button')]"
+                   ".find((x) => x.textContent === 'Connect').click(); true")
+        browser.wait_for(f"{status}.includes('Connection failed')", timeout_s=40)
+        text = browser.js(status)
+        assert "heartbeat" in text.lower() and "Connected to" not in text, text
+        chip = browser.js("document.querySelector('#vehicle-chip').textContent")
+        assert "LIVE" not in chip, chip
     finally:
         browser.close()
         server.shutdown()
