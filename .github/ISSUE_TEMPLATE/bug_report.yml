@@ -1,0 +1,98 @@
+name: Bug report
+description: Something is broken, produces a wrong number, or refuses when it should not.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through SECURITY.md, not here.
+        Please remove anything private (site coordinates, imagery, tokens, `.env` contents) before posting.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Mission planning / export
+        - Flight / MAVLink / SITL
+        - Reconstruction (COLMAP / custom engine)
+        - Measurement / analysis (DSM, volume, coverage, terrain)
+        - AI detection / models / training
+        - Reports
+        - Desktop UI (classic)
+        - Desktop UI (cockpit)
+        - Hub / HTTP API / workers
+        - Deployment (Docker / Helm)
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem is it?
+      options:
+        - It crashes or errors
+        - It gives a wrong or misleading result
+        - It presents something as measured that was not measured
+        - It refuses when it should be able to answer
+        - The refusal or error message is unclear
+        - Something in the UI does nothing or the wrong thing
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact refusal or error text.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. python main.py --ui cockpit
+        2. Open project ..., press ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of `git rev-parse --short HEAD`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Windows 11 23H2 / Ubuntu 22.04 / macOS 14
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: How you installed (odk conda env, venv, OpenDroneKit.bat), `python --version`, and the output of `python main.py --check-deps`.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Contents of `final_toolkit_outputs/logs/startup-error.log` (or `<ODK_DATA_DIR>/logs/`), a traceback, or the run's `summary.json` if relevant.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, sample data you can share, autopilot/firmware version for flight issues.

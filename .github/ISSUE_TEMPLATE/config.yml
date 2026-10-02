@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/00PrabalK00/OpenDroneKit/tree/main/docs
+    about: Installation, user, pilot, UI, API, plugin and deployment guides.
+  - name: Website
+    url: https://opendronekit.com
+    about: The OpenDroneKit website.
+  - name: Report a security vulnerability
+    url: https://github.com/00PrabalK00/OpenDroneKit/security/advisories/new
+    about: Please report security problems privately, never in a public issue.
+  - name: Questions and ideas
+    url: https://github.com/00PrabalK00/OpenDroneKit/discussions
+    about: Ask a question or discuss an idea (if Discussions are enabled for the repository).

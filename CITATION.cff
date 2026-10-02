@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use OpenDroneKit in your work, please cite it using the metadata below."
+type: software
+title: "OpenDroneKit"
+abstract: >-
+  Offline-first drone inspection and geospatial toolkit: plan repeatable inspection
+  missions, fly them over MAVLink, and turn the imagery into georeferenced
+  reconstruction products and defect analytics.
+authors:
+  - given-names: Prabal
+    family-names: Khare
+    alias: 00PrabalK00
+license: MIT
+repository-code: "https://github.com/00PrabalK00/OpenDroneKit"
+url: "https://opendronekit.com"
+keywords:
+  - drone
+  - UAV
+  - photogrammetry
+  - structure from motion
+  - geospatial
+  - GIS
+  - mission planning
+  - MAVLink
+  - ArduPilot
+  - infrastructure inspection
+  - defect detection
+  - orthomosaic
