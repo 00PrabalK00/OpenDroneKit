@@ -200,17 +200,39 @@ def repeat_mission(plan: dict[str, Any] | Any,
         if not boundary or len(boundary) < 3:
             raise ValueError(
                 "A modified-boundary repeat needs a boundary of at least three points.")
+        # The old waypoints describe the old area and would fly outside the new one, so
+        # the new area is planned again -- by the real planner, to the original's
+        # specification. This used to clear the waypoints and leave them cleared,
+        # reporting "Re-planned" over zero capture points.
+        repeat.waypoints = _replan_over(boundary, summary, repeat, terrain_source)
+        original_polygon = [list(p[:2]) for p in (summary.get("polygon") or [])
+                            if isinstance(p, (list, tuple)) and len(p) >= 2]
+        shared = _shared_fraction(original_polygon, boundary) if len(original_polygon) >= 3 else None
         repeat.changes.append(
-            f"Re-planned over a new boundary of {len(boundary)} vertices, holding the "
-            "original overlap, camera and ground resolution."
+            f"Re-planned over the boundary drawn now ({len(boundary)} vertices), holding the "
+            "original template, overlap, camera and ground resolution: "
+            f"{len(repeat.waypoints)} capture point(s)."
         )
-        repeat.comparability = "partial_overlap"
-        repeat.warnings.append(
-            "Only the area common to both surveys can be compared. Change measured "
-            "outside the original boundary is new coverage, not new damage."
-        )
-        # Geometry is recomputed by the planner; the waypoints are not carried over.
-        repeat.waypoints = []
+        if shared is not None and shared["same"]:
+            repeat.changes.append(
+                "The boundary is the original's own, so this covers the same area as the "
+                "original survey.")
+        else:
+            repeat.comparability = "partial_overlap"
+            if shared is not None:
+                repeat.changes.append(
+                    f"About {shared['new_in_original'] * 100:.0f}% of the new area lies "
+                    f"inside the original boundary, and about "
+                    f"{shared['original_in_new'] * 100:.0f}% of the original area inside "
+                    "the new one (estimated by sampling both outlines).")
+            repeat.warnings.append(
+                "Only the area common to both surveys can be compared. Change measured "
+                "outside the original boundary is new coverage, not new damage."
+            )
+        if not repeat.waypoints:
+            repeat.warnings.append(
+                "The planner placed no capture points inside the new boundary, so there "
+                "is nothing to fly. Draw a larger area.")
 
     # Final comparability judgement on resolution.
     if (repeat.target_gsd_cm and repeat.achieved_gsd_cm
@@ -229,6 +251,74 @@ def repeat_mission(plan: dict[str, Any] | Any,
         repeat.changes.append("Nothing changed; this re-flies the original exactly.")
 
     return repeat
+
+
+def _replan_over(boundary: list[list[float]], summary: dict[str, Any],
+                 repeat: RepeatPlan, terrain_source: str) -> list[list[float]]:
+    """Capture points the planner lays over `boundary` to the original specification."""
+    from .planner import MissionPlanner
+
+    kwargs: dict[str, Any] = {
+        "polygon_lonlat": [list(map(float, p[:2])) for p in boundary],
+        "altitude_m": float(repeat.altitude_m or summary.get("altitude_m") or 60.0),
+        "mode": str(summary.get("template") or summary.get("mode") or "grid"),
+        "camera": repeat.camera or "mavic2pro",
+    }
+    for key in ("front_overlap_pct", "side_overlap_pct"):
+        if summary.get(key) is not None:
+            kwargs[key] = float(summary[key])
+    speed = summary.get("cruise_speed_m_s") or summary.get("speed_m_s")
+    if speed:
+        kwargs["speed_m_s"] = float(speed)
+    if terrain_source:
+        kwargs["terrain_follow_enabled"] = True
+        kwargs["terrain_source_path"] = terrain_source
+    plan = MissionPlanner().generate(**kwargs)
+    return [list(w) for w in plan.waypoints]
+
+
+def _inside(x: float, y: float, ring: list[list[float]]) -> bool:
+    hit = False
+    j = len(ring) - 1
+    for i in range(len(ring)):
+        xi, yi = ring[i][0], ring[i][1]
+        xj, yj = ring[j][0], ring[j][1]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-300) + xi:
+            hit = not hit
+        j = i
+    return hit
+
+
+def _shared_fraction(original: list[list[float]], new: list[list[float]],
+                     samples: int = 80) -> dict[str, Any]:
+    """How much of each outline lies inside the other, by sampling a grid over both."""
+    def ring(points):
+        pts = [list(map(float, p[:2])) for p in points]
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        return pts
+
+    a, b = ring(original), ring(new)
+    if len(a) == len(b) and all(abs(p[0] - q[0]) < 1e-7 and abs(p[1] - q[1]) < 1e-7
+                                for p, q in zip(a, b)):
+        return {"same": True, "new_in_original": 1.0, "original_in_new": 1.0}
+    xs = [p[0] for p in a + b]
+    ys = [p[1] for p in a + b]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    in_a = in_b = both = 0
+    for i in range(samples):
+        for j in range(samples):
+            x = x0 + (x1 - x0) * (i + 0.5) / samples
+            y = y0 + (y1 - y0) * (j + 0.5) / samples
+            ia, ib = _inside(x, y, a), _inside(x, y, b)
+            in_a += ia
+            in_b += ib
+            both += ia and ib
+    new_in_original = both / in_b if in_b else 0.0
+    original_in_new = both / in_a if in_a else 0.0
+    same = new_in_original > 0.999 and original_in_new > 0.999
+    return {"same": same, "new_in_original": new_in_original,
+            "original_in_new": original_in_new}
 
 
 def compare_specifications(first: dict[str, Any] | Any,

@@ -1250,17 +1250,27 @@ export const ACTIONS = {
       const listed = await tryCall("list_cameras");
       const cameras = (listed && listed.cameras) || [];
       if (!cameras.length) return { skipped: "No camera profiles available." };
-      const pick = await ctx.choose("Camera", cameras.map((c) => c.name || c.key || String(c)));
+      /* The choice is the profile KEY; the name is only its label. Passing the name
+         made describe_camera fall back to the generic placeholder for every camera, and
+         the toast printed that placeholder GSD under the real camera's name. */
+      const pick = await ctx.choose("Camera", cameras.map((c) => ({
+        label: c.name || c.key, value: c.key || c.name,
+        hint: c.key && c.name ? c.key : "",
+      })));
       if (!pick) return { skipped: "No camera chosen." };
       const altitude = await ctx.prompt("At what altitude (m)?", "60");
+      if (altitude === null) return { skipped: "No altitude given." };
       const described = await call("describe_camera", pick, Number(altitude || 60));
       const cam = described.camera || {};
+      const fp = Array.isArray(cam.footprint_m)
+        ? `${cam.footprint_m[0]} x ${cam.footprint_m[1]} m` : cam.footprint_m;
       /* GSD is the number that decides whether the survey can see the defect, so it
-         leads. */
+         leads. A placeholder profile says so instead of passing as the camera's own. */
       return {
-        message: `${pick} at ${altitude} m: `
+        message: `${cam.name || pick} at ${altitude || 60} m: `
           + (cam.gsd_cm !== undefined ? `GSD ${Number(cam.gsd_cm).toFixed(2)} cm` : "GSD not reported")
-          + (cam.footprint_m ? `, footprint ${cam.footprint_m}` : ""),
+          + (fp ? `, footprint ${fp}` : "")
+          + (cam.known === false ? `. ${cam.warning || "Placeholder sensor geometry, not this camera's."}` : ""),
       };
     },
   },

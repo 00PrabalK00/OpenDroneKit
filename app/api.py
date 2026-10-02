@@ -886,6 +886,10 @@ class Api:
         if not source:
             return fail("No mission to repeat. Plan one, or name a saved version.")
 
+        # A redrawn boundary is planned again, so it follows the terrain the session has
+        # loaded, as a fresh plan over that area would.
+        if mode == "modified_boundary" and not terrain_source:
+            terrain_source = self._session.terrain_source_path or ""
         try:
             repeat = plan_repeat(source, mode=mode, camera=camera,
                                  terrain_source=terrain_source,
