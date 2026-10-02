@@ -153,7 +153,8 @@ def test_a_wgs84_power_centreline_is_measured_in_its_utm_zone(api, tmp_path):
          "answers": ["insulator model, 2cm GSD, oblique captures"]},
     ], picks=[detections, centreline])
     assert "[ok] Power corridor:" in results["power"], results
-    assert "projecting it to its UTM zone, EPSG:32643" in results["power"]
+    assert "projecting it to its UTM zone, EPSG:32643. " in results["power"]
+    assert ".." not in results["power"]   # the note's own full stop is not doubled
     summary = next((Path(api._session.project_root()) / "survey_packs").rglob(
         "power_inspection.json"))
     data = json.loads(summary.read_text(encoding="utf-8"))

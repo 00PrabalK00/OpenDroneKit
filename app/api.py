@@ -4228,6 +4228,27 @@ class Api:
         removed = delete_measurement(self._session.project_root(), str(measurement_id))
         return ok(removed=True) if removed else fail(f"No measurement {measurement_id}.")
 
+    @staticmethod
+    def _displayed_size(path: Path) -> tuple[int, int]:
+        """Width and height of a photograph as it is shown, EXIF orientation applied.
+
+        image_preview (and so every click the cockpit maps back to the frame) reads the
+        photograph with cv2.imread, which turns it upright by its EXIF Orientation tag. A
+        portrait frame stored landscape with Orientation 5-8 is therefore clicked in its
+        rotated axes, and its bounds must be the rotated ones too.
+        """
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+            try:
+                orientation = image.getexif().get(0x0112)
+            except Exception:  # noqa: BLE001 - no readable EXIF: shown as stored
+                orientation = None
+        if orientation in (5, 6, 7, 8):
+            return int(height), int(width)
+        return int(width), int(height)
+
     def _dataset_image(self, name: str) -> tuple[Path | None, str]:
         """A photograph in the active dataset, contained the way image_preview checks it."""
         folder = self._session.active_dataset_dir
@@ -4292,8 +4313,6 @@ class Api:
         downscaled preview). The scale is the operator's: typed, or from a reference of
         known length on the same photograph -- and the record says which.
         """
-        from PIL import Image
-
         from core.measurements import measure_image_distance, measure_polygon_area
 
         root = self._session.project_root()
@@ -4305,8 +4324,7 @@ class Api:
         target, why = self._dataset_image(image_name)
         if target is None:
             return fail(why)
-        with Image.open(target) as image:
-            width, height = image.size
+        width, height = self._displayed_size(target)
         points = [[float(v) for v in list(p)[:2]] for p in (pixels or [])]
         if any(len(p) != 2 for p in points):
             return fail("Each point is [x, y] in the photograph's pixels.")
@@ -4346,7 +4364,6 @@ class Api:
         A mask that is not the photograph's size is refused rather than stretched onto it.
         """
         import cv2
-        from PIL import Image
 
         from core.measurements import measure_crack_length
 
@@ -4362,8 +4379,7 @@ class Api:
         mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
         if mask is None:
             return fail(f"Could not read {mask_file.name} as an image mask.")
-        with Image.open(target) as image:
-            width, height = image.size
+        width, height = self._displayed_size(target)
         if (mask.shape[1], mask.shape[0]) != (width, height):
             return fail(f"The mask is {mask.shape[1]}x{mask.shape[0]} but {target.name} is "
                         f"{width}x{height}; a crack mask must be drawn on the photograph "
@@ -4376,7 +4392,8 @@ class Api:
             return fail(why)
         details.update({"image": str(target), "mask": str(mask_file),
                         "image_width": width, "image_height": height,
-                        "method": "skeleton (scikit-image) centre-line pixel count"})
+                        "method": ("skeleton (scikit-image) centre line, measured along each branch "
+                                   "as a polyline")})
         try:
             m = measure_crack_length(Path(root), str(self._session.project_id()), str(target),
                                      mask, scale, label=str(label or ""), details=details)

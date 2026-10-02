@@ -285,7 +285,9 @@ function summarisePack(result) {
   if (summary.crs_note) parts.push(summary.crs_note);
   if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
   const layers = (result.layer_ids || []).length;
-  return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
+  // A part that is a sentence (the CRS note) ends in its own full stop: not doubled.
+  const said = (parts.filter(Boolean).join("; ") || "done").replace(/\.+$/, "");
+  return `${said}. ${layers} layer(s) added; summary ${result.summary_path}.`;
 }
 
 /** Actions that need images on disk. */
