@@ -367,7 +367,11 @@ export function installMenu(shell) {
   window.odk = window.odk || {};
   window.odk.onMenu = ({ action, payload } = {}) => {
     if (!action) return Promise.resolve(null);
-    return dispatchMenu(shell, action, payload || {});
+    // pywebview's evaluate_js serialises what the page returns: hand back plain data,
+    // never a live object (the palette handler resolves to the Palette, which is circular).
+    return dispatchMenu(shell, action, payload || {}).then((result) => {
+      try { return result === undefined ? null : JSON.parse(JSON.stringify(result)); } catch { return null; }
+    });
   };
   window.odk.menuIds = () => Object.keys(MENU);
 }
