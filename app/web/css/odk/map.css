@@ -150,6 +150,8 @@
 [data-mode="field"] .odk-mapf-legend-head > :last-child, [data-mode="field"] .odk-mapf-ticks { color: var(--text); }
 [data-mode="field"] .odk-mapf-ramp { height: 16px; outline: 2px solid var(--line); }
 [data-mode="field"] .odk-mapf-legend .odk-geom-key { display: none; }
+/* Field keeps only the elevation ramp; with no ramp the plate would be an empty white box. */
+[data-mode="field"] .odk-mapf-legend:not([data-min]) { display: none; }
 [data-mode="field"] .odk-mapf-base { display: flex; border: var(--rule) solid var(--line); background: var(--bg); }
 [data-mode="field"] .odk-mapf-base button {
   height: 64px; min-width: 64px; padding: 0 20px; border: 0; background: var(--bg); color: var(--text);

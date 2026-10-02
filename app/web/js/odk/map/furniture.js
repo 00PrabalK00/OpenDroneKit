@@ -738,6 +738,7 @@ export function mountMapFurniture(map, host, {
     /** mapview's onNotice: an offline basemap or a cache with no tiles here. */
     notice(value) { state.notice = value; renderNotice(); },
     openLayers() { if (pop.node.hidden) layersButton.click(); return pop.node; },
+    closeLayers() { if (!pop.node.hidden) pop.close(); },
     state: () => ({ ...state, crs: state.crs && { ...state.crs } }),
     destroy() {
       map.off("move", onMove);
@@ -791,5 +792,31 @@ export async function mountProjectMap(container, options = {}) {
   map.once("style.load", () => setTimeout(() => draw(map), 0));
   furniture = mountMapFurniture(map, container, options);
   pendingNotices.forEach((value) => furniture.notice(value));
+  releaseWhenDetached(container, map, furniture);
   return { map, furniture };
+}
+
+/**
+ * The shell empties its regions on every screen change and mode switch without telling
+ * what was in them. A map left behind keeps its WebGL context (the browser allows about
+ * sixteen, then drops the oldest, which can be the one on screen) and its Layers
+ * popover, which lives on <body> and stayed open over the next screen. Once the
+ * container has been out of the document for a moment, the popover closes and the map
+ * is released. A screen that moves its map to another region inside that moment keeps it.
+ */
+function releaseWhenDetached(container, map, furniture) {
+  let pending = null;
+  const watch = new MutationObserver(() => {
+    if (container.isConnected) { clearTimeout(pending); pending = null; return; }
+    furniture.closeLayers();
+    if (pending) return;
+    pending = setTimeout(() => {
+      pending = null;
+      if (container.isConnected) return;
+      watch.disconnect();
+      furniture.destroy();
+      try { map.remove(); } catch { /* already gone */ }
+    }, 1500);
+  });
+  watch.observe(document.body, { childList: true, subtree: true });
 }
