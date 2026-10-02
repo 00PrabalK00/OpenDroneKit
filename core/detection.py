@@ -1030,6 +1030,7 @@ def detect_structural_defects(
     min_area_px: int = 40,
     model_key: str = "structural_multiclass_detector",
     use_model: bool = True,
+    score_threshold: float | None = None,
 ) -> StructuralDefectResult:
     """
     Detect broad structural defects.
@@ -1062,7 +1063,8 @@ def detect_structural_defects(
                     image_bgr=image_bgr,
                     model_path=Path(path_str),
                     labels=spec.labels,
-                    score_threshold=float(spec.score_threshold),
+                    score_threshold=float(spec.score_threshold if score_threshold is None
+                                          else score_threshold),
                     iou_threshold=float(spec.iou_threshold),
                     input_size=int(spec.input_size),
                 )
