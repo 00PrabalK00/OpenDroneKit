@@ -143,6 +143,18 @@ _MISSION_RESULT_TEXT = {
     15: "operation cancelled",
 }
 
+# MAV_FRAME_*_INT frames are deprecated aliases of the plain ones: in MISSION_ITEM_INT
+# both carry degrees x 1e7 and mean the same altitude reference. PX4 answers a download
+# over MISSION_ITEM_INT in the alias (a plan sent in GLOBAL_RELATIVE_ALT, 3, came back
+# from PX4 v1.15.4 as GLOBAL_RELATIVE_ALT_INT, 6), so read-back items are given in the
+# frame the planner writes; a comparison then sees the plan, not the spelling.
+_INT_FRAME_ALIASES = {5: 0, 6: 3, 11: 10}
+
+
+def _planner_frame(frame: int) -> int:
+    return _INT_FRAME_ALIASES.get(int(frame), int(frame))
+
+
 # Commands whose x/y fields carry plain numbers rather than degrees. Scaling these
 # by 1e7 like a coordinate is the classic way to make an autopilot reject a mission,
 # so the uploader checks membership here before converting.
@@ -1045,7 +1057,7 @@ class MissionPlannerDroneClient:
                     {
                         "seq": int(item.seq),
                         "command": int(item.command),
-                        "frame": int(item.frame),
+                        "frame": _planner_frame(item.frame),
                         "param1": float(item.param1),
                         "param2": float(item.param2),
                         "param3": float(item.param3),

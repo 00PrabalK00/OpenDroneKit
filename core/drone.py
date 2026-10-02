@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import math
 import random
 import threading
@@ -496,6 +497,8 @@ class MAVSDKDroneClient:
     # the 10 s the whole connect used to get reported "no vehicle answered" about a PX4
     # that was streaming the whole time.
     SERVER_START_TIMEOUT_S = 60.0
+    # The flight stack mission items are written for (mission.exporters).
+    autopilot = "px4"
 
     def __init__(self):
         self._drone = None
@@ -507,6 +510,8 @@ class MAVSDKDroneClient:
         self._tasks: list[Any] = []
         self._sdk_major = 2
         self._mission_raw: Any = None
+        # Items in the flight plan the vehicle holds, as this link uploaded or read it.
+        self._mission_total: int | None = None
 
     # -- event loop ---------------------------------------------------------
 
@@ -537,6 +542,9 @@ class MAVSDKDroneClient:
 
     def _stop_loop(self) -> None:
         loop = self._loop
+        # The System is released on its own loop, below; nothing else may hold it.
+        holder = [self._drone] if self._drone is not None else []
+        self._drone = None
         if loop is None:
             return
 
@@ -546,10 +554,28 @@ class MAVSDKDroneClient:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Every gRPC object -- the stream tasks, the System and its grpc.aio channel --
+            # is released here, on the loop that owns it, and mavsdk_server is killed.
+            # Released on another thread after the loop had stopped (`self._tasks = []`,
+            # `self._drone = None`), grpc.aio's finalisers spun at 100% CPU holding the
+            # GIL and Disconnect never returned: against a real PX4, every disconnect
+            # after a flight, and some after only a connect.
+            del tasks
+            self._tasks = []
+            while holder:
+                system = holder.pop()
+                stop_server = getattr(system, "_stop_mavsdk_server", None)
+                if callable(stop_server):
+                    stop_server()
+                del system
+            # Objects in reference cycles (a cancelled stream's frame and its call) are
+            # finalised now, on this thread, not by a later collection elsewhere.
+            gc.collect()
+            await asyncio.sleep(0)
 
         if loop.is_running():
             try:
-                asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=3.0)
+                asyncio.run_coroutine_threadsafe(shutdown(), loop).result(timeout=10.0)
             except Exception:  # noqa: BLE001 - shutting down regardless
                 pass
             loop.call_soon_threadsafe(loop.stop)
@@ -557,7 +583,6 @@ class MAVSDKDroneClient:
             self._thread.join(timeout=2.0)
         if not loop.is_running():
             loop.close()
-        self._tasks = []
         self._thread = None
         self._loop = None
 
@@ -582,7 +607,6 @@ class MAVSDKDroneClient:
             # reported as connected.
             self._run(self._await_vehicle(), timeout=self.CONNECT_TIMEOUT_S)
         except Exception as exc:  # noqa: BLE001
-            self._drone = None
             self._stop_loop()
             reason = str(exc) or ("no vehicle answered within "
                                   f"{self.CONNECT_TIMEOUT_S:.0f} s")
@@ -591,6 +615,7 @@ class MAVSDKDroneClient:
         self._connected = True
         with self._lock:
             self._telemetry = DroneTelemetry(connected=True)
+            self._mission_total = None
         self._start_telemetry()
 
     async def _await_vehicle(self) -> None:
@@ -601,7 +626,6 @@ class MAVSDKDroneClient:
     def disconnect(self) -> None:
         self._connected = False
         self._stop_loop()
-        self._drone = None
         with self._lock:
             self._telemetry.connected = False
 
@@ -712,10 +736,14 @@ class MAVSDKDroneClient:
         tel.home_alt = float(p.absolute_altitude_m)
         tel.home_set = True
 
-    @staticmethod
-    def _on_progress(tel: DroneTelemetry, progress: Any) -> None:
+    def _on_progress(self, tel: DroneTelemetry, progress: Any) -> None:
         tel.waypoint_index = int(getattr(progress, "current", 0) or 0)
-        tel.waypoint_total = int(getattr(progress, "total", 0) or 0)
+        # mission_raw's total follows the last list transferred, whatever its type:
+        # after the fence (4 vertices) was read back from a real PX4, a 273-item survey
+        # showed as "item 0 of 4". The flight plan's own count is used once known.
+        total = self._mission_total
+        tel.waypoint_total = int(total if total is not None
+                                 else (getattr(progress, "total", 0) or 0))
 
     def get_telemetry(self) -> DroneTelemetry:
         with self._lock:
@@ -773,6 +801,7 @@ class MAVSDKDroneClient:
             # Progress is shown against the plan from the moment the vehicle holds it;
             # MAVSDK's mission_progress only speaks once the mission is running.
             with self._lock:
+                self._mission_total = len(items)
                 self._telemetry.waypoint_total = len(items)
                 self._telemetry.waypoint_index = 0
         return CommandResult(True, name,
@@ -806,14 +835,14 @@ class MAVSDKDroneClient:
         downloader = getattr(getattr(self._drone, "mission_raw", None), method, None)
         if downloader is None:
             raise RuntimeError(f"This MAVSDK version has no mission_raw.{method}.")
-        from .mission_planner_bridge import _NON_POSITIONAL_COMMANDS
+        from .mission_planner_bridge import _NON_POSITIONAL_COMMANDS, _planner_frame
 
         items = []
         for raw in self._run(downloader(), timeout=timeout_s):
             command = int(raw.command)
             positional = command not in _NON_POSITIONAL_COMMANDS
             items.append({
-                "seq": int(raw.seq), "command": command, "frame": int(raw.frame),
+                "seq": int(raw.seq), "command": command, "frame": _planner_frame(raw.frame),
                 "param1": float(raw.param1), "param2": float(raw.param2),
                 "param3": float(raw.param3), "param4": float(raw.param4),
                 "lat": float(raw.x) / 1e7 if positional else float(raw.x),
@@ -824,7 +853,11 @@ class MAVSDKDroneClient:
 
     def download_mission(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
         """The flight plan stored on the vehicle. PX4 keeps no home slot to strip."""
-        return self._download("download_mission", timeout_s)
+        items = self._download("download_mission", timeout_s)
+        with self._lock:
+            self._mission_total = len(items)
+            self._telemetry.waypoint_total = len(items)
+        return items
 
     def download_geofence(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
         return self._download("download_geofence", timeout_s)

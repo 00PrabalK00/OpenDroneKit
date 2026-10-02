@@ -99,6 +99,24 @@ def test_the_mission_uploads_with_fence_and_without_a_home_slot(api, px4):
     assert len(px4.stored[1]) == len(AOI)
 
 
+def test_the_mission_reads_back_in_the_frames_it_was_planned_in(api, px4):
+    """PX4 v1.15.4 returned every GLOBAL_RELATIVE_ALT (3) item as its *_INT alias (6).
+
+    Same meaning, different number: a read-back compared with the plan showed every
+    waypoint as changed. The driver gives read-back items in the planner's frames.
+    """
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 50})["ok"]
+    assert api.upload_mission()["ok"] is True
+    held = api._session._drone_client.download_mission()
+    sent = px4.stored[0]
+    assert [item["frame"] for item in held] == [item.frame for item in sent]
+    assert 3 in {item["frame"] for item in held}
+    assert not {5, 6, 11} & {item["frame"] for item in held}
+    waypoint = next(item for item in held if item["command"] == 16)
+    assert 47.39 < waypoint["lat"] < 47.40 and 8.54 < waypoint["lon"] < 8.55
+
+
 def test_a_rejected_upload_is_a_failure(api, px4):
     px4.reject_upload = True
     api.set_aoi(AOI)
@@ -153,6 +171,18 @@ def test_a_vehicle_that_never_appears_is_not_connected(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="Failed to connect"):
         client.connect("udp://:14540")
     assert client.is_connected() is False
+
+
+def test_disconnect_releases_the_sdk_on_its_own_event_loop(api, px4):
+    """After a real PX4 takeoff and landing, Disconnect never returned.
+
+    The System (and its grpc.aio channel) was dropped on the caller's thread after the
+    event loop had stopped; grpc's finaliser then spun holding the GIL. mavsdk_server is
+    now stopped and the System released on the loop that owns the channel.
+    """
+    api.disconnect_vehicle()
+    stops = [c for c in px4.calls if c.startswith("stop_server:")]
+    assert stops == ["stop_server:mavsdk-loop:True"], px4.calls
 
 
 def test_start_enters_mission_then_arms(api, px4):

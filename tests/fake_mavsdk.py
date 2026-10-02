@@ -14,6 +14,7 @@ the Api and session above it -- is the production code.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import types
 from dataclasses import dataclass
 from typing import Any
@@ -145,10 +146,23 @@ def build_module(vehicle: FakePX4, version: str = "2.8.0") -> types.ModuleType:
             vehicle.stored[kind] = list(items)
         return run
 
+    def download(kind: int):
+        # PX4 answers a MISSION_ITEM_INT download in the *_INT alias of the frame it was
+        # given (GLOBAL_RELATIVE_ALT 3 -> GLOBAL_RELATIVE_ALT_INT 6), as v1.15.4 SITL did.
+        aliases = {0: 5, 3: 6, 10: 11}
+
+        async def run():
+            vehicle.calls.append(f"download:{kind}")
+            return [dataclasses.replace(item, frame=aliases.get(item.frame, item.frame))
+                    for item in vehicle.stored[kind]]
+        return run
+
     class MissionRaw:
         upload_mission = staticmethod(upload(0))
         upload_geofence = staticmethod(upload(1))
         upload_rally_points = staticmethod(upload(2))
+        download_mission = staticmethod(download(0))
+        download_geofence = staticmethod(download(1))
 
     class System:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -160,6 +174,18 @@ def build_module(vehicle: FakePX4, version: str = "2.8.0") -> types.ModuleType:
 
         async def connect(self, system_address: str = "") -> None:
             vehicle.calls.append(f"connect:{system_address}")
+
+        def _stop_mavsdk_server(self) -> None:
+            # The real one kills mavsdk_server and drops the gRPC channel. Recorded with
+            # the thread it ran on and whether that thread's event loop was running.
+            import asyncio
+            import threading
+
+            try:
+                running = asyncio.get_running_loop().is_running()
+            except RuntimeError:
+                running = False
+            vehicle.calls.append(f"stop_server:{threading.current_thread().name}:{running}")
 
     module = types.ModuleType("mavsdk")
     module.__version__ = version
