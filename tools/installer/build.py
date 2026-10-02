@@ -208,6 +208,23 @@ def install_packages(wheel_dir: Path, site_packages: Path) -> None:
     shutil.rmtree(site_packages / "bin", ignore_errors=True)
 
 
+STAMP_NAME = ".odk-runtime-stamp"
+
+
+def runtime_stamp(cfg: dict) -> str:
+    """Identity of a staged runtime: the embeddable zip's pinned sha256, the lock's sha256
+    and the ._pth contents. A runtime is reused only when all three are unchanged."""
+    py = cfg["python"]
+    parts = [py["embed_sha256"], sha256_file(LOCK), pth_contents(py["version"])]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def runtime_reusable(runtime: Path, stamp: str) -> bool:
+    marker = runtime / STAMP_NAME
+    return (marker.is_file() and marker.read_text(encoding="ascii").strip() == stamp
+            and (runtime / "python.exe").is_file())
+
+
 # -- 3. payload -------------------------------------------------------------------
 
 def git(*args: str) -> str:
@@ -286,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--relock", action="store_true", help="regenerate requirements-lock.txt")
     parser.add_argument("--no-tool-install", action="store_true", help="never install Inno Setup")
     parser.add_argument("--skip-installer", action="store_true", help="stage only; do not run ISCC")
+    parser.add_argument("--reuse-runtime", action="store_true",
+                        help="keep a staged runtime built from the same embed zip and lock "
+                             "(the app payload, manifest and installer are always rebuilt)")
     args = parser.parse_args(argv)
 
     started = time.time()
@@ -310,17 +330,28 @@ def main(argv: list[str] | None = None) -> int:
         relock(wheel_dir)
 
     stage = stage_root / cfg["app_name"]
-    if stage_root.exists():
-        shutil.rmtree(stage_root)
     runtime = stage / "runtime"
-    runtime.mkdir(parents=True)
-    with zipfile.ZipFile(embed) as archive:
-        archive.extractall(runtime)
-    tag = "".join(cfg["python"]["version"].split(".")[:2])
-    (runtime / f"python{tag}._pth").write_text(pth_contents(cfg["python"]["version"]), encoding="ascii")
-    site_packages = runtime / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
-    install_packages(wheel_dir, site_packages)
+    stamp = runtime_stamp(cfg)
+    reuse = args.reuse_runtime and runtime_reusable(runtime, stamp)
+    if args.reuse_runtime and not reuse:
+        log("--reuse-runtime: no runtime staged from this embed + lock; building it")
+    if reuse:
+        log(f"reusing the staged runtime (stamp {stamp[:12]} = embed sha256 + lock sha256)")
+        for child in stage.iterdir():
+            if child.name != "runtime":
+                shutil.rmtree(child) if child.is_dir() else child.unlink()
+    else:
+        if stage_root.exists():
+            shutil.rmtree(stage_root)
+        runtime.mkdir(parents=True)
+        with zipfile.ZipFile(embed) as archive:
+            archive.extractall(runtime)
+        tag = "".join(cfg["python"]["version"].split(".")[:2])
+        (runtime / f"python{tag}._pth").write_text(pth_contents(cfg["python"]["version"]), encoding="ascii")
+        site_packages = runtime / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+        install_packages(wheel_dir, site_packages)
+        (runtime / STAMP_NAME).write_text(stamp + "\n", encoding="ascii")
 
     git_meta = stage_payload(stage / "odk", cfg["payload_exclude"])
     shutil.copy2(HERE / "launch.py", stage / "launch.py")

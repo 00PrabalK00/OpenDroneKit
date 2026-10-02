@@ -126,6 +126,25 @@ class TestRuntimeLayout:
             assert build.normalize(req.name) in names, f"{req.name} is not in the lock"
         assert "onnxruntime-gpu" not in names and "torch" not in names
 
+    def test_runtime_is_reused_only_for_the_same_embed_and_lock(self, tmp_path, monkeypatch):
+        cfg = json.loads((INSTALLER / "config.json").read_text(encoding="utf-8"))
+        lock = tmp_path / "lock.txt"
+        lock.write_text("numpy==2.3.5 --hash=sha256:" + "a" * 64 + "\n")
+        monkeypatch.setattr(build, "LOCK", lock)
+        runtime = tmp_path / "runtime"
+        runtime.mkdir()
+        stamp = build.runtime_stamp(cfg)
+        assert not build.runtime_reusable(runtime, stamp), "no stamp, no reuse"
+        (runtime / build.STAMP_NAME).write_text(stamp + "\n")
+        assert not build.runtime_reusable(runtime, stamp), "no interpreter, no reuse"
+        (runtime / "python.exe").write_bytes(b"MZ")
+        assert build.runtime_reusable(runtime, stamp)
+        lock.write_text("numpy==2.3.4 --hash=sha256:" + "b" * 64 + "\n")
+        assert not build.runtime_reusable(runtime, build.runtime_stamp(cfg)), "lock changed"
+        other = {**cfg, "python": {**cfg["python"], "embed_sha256": "0" * 64}}
+        lock.write_text("numpy==2.3.5 --hash=sha256:" + "a" * 64 + "\n")
+        assert not build.runtime_reusable(runtime, build.runtime_stamp(other)), "embed changed"
+
     def test_distribution_file_names_parse(self):
         for name, want in (("pywebview-6.2.1-py3-none-any.whl", ("pywebview", "6.2.1")),
                            ("open3d-0.19.0-cp311-cp311-win_amd64.whl", ("open3d", "0.19.0")),
