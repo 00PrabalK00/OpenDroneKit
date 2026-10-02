@@ -169,6 +169,53 @@ def home_elevation_from_xmp(image_paths: Sequence[str | Path]) -> float | None:
     return float(np.median(values)) if values else None
 
 
+def camera_from_exif(image_paths: Sequence[str | Path]) -> tuple[str | None, str]:
+    """The camera profile the survey frames were taken with, read from their EXIF.
+
+    Matches on focal length (to 0.05 mm) and image width against the profile table, and
+    uses the EXIF ``Model`` to choose between profiles that share a sensor (the M30T and
+    Mavic 3T wide cameras are both 4.4 mm on 4000 px). Returns ``(key, reason)``; the key
+    is ``None`` when the frames do not identify exactly one profile, and the reason says
+    why, so the caller asks for a camera instead of planning on a guess.
+    """
+    from PIL import Image
+
+    from mission.cameras import all_profiles
+
+    seen: dict[tuple[str, float, int], int] = {}
+    for path in list(image_paths)[:20]:
+        try:
+            with Image.open(path) as im:
+                exif = im.getexif()
+                sub = exif.get_ifd(0x8769)
+                width = int(sub.get(0xA002) or im.width)
+        except (OSError, ValueError):
+            continue
+        model = str(exif.get(0x0110) or "").strip()
+        focal = sub.get(0x920A)
+        if focal is None:
+            continue
+        key = (model, round(float(focal), 2), width)
+        seen[key] = seen.get(key, 0) + 1
+    if not seen:
+        return None, "The frames carry no EXIF focal length to identify the camera by."
+    model, focal, width = max(seen, key=seen.get)
+    matches = [k for k, prof in all_profiles().items()
+               if abs(prof.focal_mm - focal) <= 0.05 and int(prof.image_w_px) == width
+               and not prof.thermal]
+    token = "".join(ch for ch in model.lower() if ch.isalnum())
+    named = [k for k in matches if token and k.split("_")[0] in token]
+    chosen = named if named else matches
+    if len(chosen) == 1:
+        return chosen[0], (f"EXIF Model {model!r}, focal {focal} mm, {width} px wide "
+                           f"matches the {chosen[0]} profile.")
+    if not chosen:
+        return None, (f"No camera profile has a {focal} mm lens on a {width} px sensor "
+                      f"(EXIF Model {model!r}); add it under Cameras or choose one.")
+    return None, (f"EXIF Model {model!r}, focal {focal} mm, {width} px matches "
+                  f"{', '.join(sorted(chosen))}; choose which one flew.")
+
+
 def facade_from_run(run_dir: str | Path, image_dir: str | Path | None = None) -> FacadeWall:
     """Measure the facade in a COLMAP run's output folder (sparse model + geo_anchor.json)."""
     import json

@@ -2209,6 +2209,89 @@ class Api:
         return ok(plan=summary_plan, **adopted)
 
     @guard
+    def plan_facade_from_reconstruction(self, reconstruction_dir: str = "",
+                                        image_dir: str = "", camera: str = "",
+                                        standoff_m: float | None = None,
+                                        bottom_m: float | None = None,
+                                        top_m: float | None = None,
+                                        depth_m: float = 5.0,
+                                        options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Measure the facade in a georeferenced reconstruction and plan a mission on it.
+
+        core/facade_survey.py measured the wall and planned on it, and only tests could
+        call it. The wall comes from the project's reconstruction (or the folder given):
+        its ground line, its height band above take-off from the frames' DJI
+        RelativeAltitude, its flatness and sparse coverage, and the stand-off it was
+        flown at, which is the default stand-off of the new plan. The camera defaults to
+        the one the frames' EXIF identifies; if they do not identify exactly one profile
+        the plan is refused with the reason rather than planned on a fallback camera.
+        """
+        import numpy as np
+
+        from core.facade_survey import (FacadeError, camera_from_exif, facade_from_run,
+                                        plan_facade_mission, waypoint_offsets_from_wall)
+        from mission.cameras import UnknownCamera, require
+
+        run = Path(reconstruction_dir) if reconstruction_dir else (
+            self._session.project_root() / "reconstruction")
+        if not (run / "colmap" / "sparse").is_dir():
+            return fail(f"No reconstruction at {run}: run Process on the facade survey "
+                        "first, then the wall can be measured from it.")
+        images = image_dir or self._session.active_dataset_dir or ""
+        if not images or not Path(images).is_dir():
+            return fail("The survey's image folder is needed to read the take-off height "
+                        "from its frames; select the dataset or give image_dir.")
+        try:
+            wall = facade_from_run(run, images)
+        except FacadeError as exc:
+            return fail(str(exc))
+        except ImportError as exc:
+            return fail(f"Reading the COLMAP model needs pycolmap: {exc}")
+
+        camera_note = "chosen by the operator"
+        if not camera:
+            frames = sorted(p for p in Path(images).iterdir()
+                            if p.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff"))
+            camera, camera_note = camera_from_exif(frames)
+            if not camera:
+                return fail(camera_note + " Give the camera that will fly the mission.",
+                            wall=wall.to_dict())
+        try:
+            require(camera)
+        except UnknownCamera as exc:
+            return fail(str(exc), wall=wall.to_dict())
+        try:
+            plan, polygon = plan_facade_mission(wall, standoff_m=standoff_m, depth_m=depth_m,
+                                                camera=camera, bottom_m=bottom_m, top_m=top_m)
+        except FacadeError as exc:
+            return fail(str(exc), wall=wall.to_dict())
+
+        offsets = waypoint_offsets_from_wall(plan, wall)
+        warnings: list[str] = []
+        if len(offsets) and float(offsets.min()) <= 0.5:
+            warnings.append(f"A planned waypoint is {float(offsets.min()):.2f} m from the "
+                            "measured wall line; check the plan before flying it.")
+        facade = {
+            "wall": wall.to_dict(),
+            "reconstruction": str(run),
+            "camera": camera,
+            "camera_source": camera_note,
+            "waypoint_standoff_m": {"min": round(float(offsets.min()), 3),
+                                    "median": round(float(np.median(offsets)), 3),
+                                    "max": round(float(offsets.max()), 3)} if len(offsets) else {},
+            "footprint_lonlat": polygon,
+            "notes": [wall.coverage_note,
+                      "Heights are above the take-off point of the survey the wall was "
+                      "measured from; fly from the same take-off point or adjust them."],
+        }
+        adopted = self._adopt_plan(plan, "facade_from_model", warnings,
+                                   extra={"facade_from_model": facade}, options=options)
+        self._session.audit("facade_from_model_planned",
+                            {"reconstruction": str(run), "camera": camera,
+                             "waypoints": len(plan.waypoints)})
+        return ok(facade=facade, **adopted)
+
+    @guard
     def plan_thermal_survey(self, thermal_camera: str, target_gsd_cm: float,
                             rgb_camera: str = "",
                             front_overlap_pct: float = 80.0,
@@ -5124,7 +5207,23 @@ class Api:
         ]
 
     def _plan_special(self, template: str, opts: dict[str, Any]) -> dict[str, Any]:
-        """pylon_inspection / thermal / multispectral, reached with the same form."""
+        """pylon_inspection / thermal / multispectral / facade_from_model, one form."""
+        if template == "facade_from_model":
+            def number(value: Any) -> float | None:
+                return None if value in (None, "") else float(value)
+
+            return self.plan_facade_from_reconstruction(
+                reconstruction_dir=str(opts.get("reconstruction_dir") or ""),
+                image_dir=str(opts.get("image_dir") or ""),
+                camera=str(opts.get("camera") or ""),
+                # The form's general Stand-off defaults to 12 m; this mission's default
+                # is the stand-off the survey was measured to have been flown at, so
+                # only its own field overrides it.
+                standoff_m=number(opts.get("model_standoff_m")),
+                bottom_m=number(opts.get("facade_bottom_altitude_m")),
+                top_m=number(opts.get("facade_top_altitude_m")),
+                options=opts,
+            )
         if template == "pylon_inspection":
             center = opts.get("pylon_center_lonlat") or opts.get("center_lonlat")
             if not center:

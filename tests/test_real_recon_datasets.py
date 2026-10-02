@@ -219,3 +219,26 @@ def test_the_hagenberg_facade_is_measured_and_a_mission_planned_on_it(tmp_path):
     # The wall is imaged across the stand-off: GSD = distance x pixel pitch / focal.
     expected = wall.camera_standoff_m["median"] * 6.4 / 4.4 / 4000 * 100
     assert plan.estimated_gsd_cm == pytest.approx(expected, rel=0.05)
+
+    # The same mission through the application, as the Mission form sends it: the
+    # camera is identified from the frames' EXIF (M30T, 4.4 mm, 4000 px), the general
+    # 12 m stand-off field does not override the measured one, and the plan becomes
+    # the session's mission so it can be exported and saved.
+    from app.api import Api
+    from app.session import AppSession
+    from app.store import ProjectStore
+
+    api = Api(AppSession(store=ProjectStore(tmp_path / "p.db")))
+    api.create_project("facade", str(tmp_path / "project"))
+    result = api.plan_mission({"template": "facade_from_model", "standoff_m": 12,
+                               "reconstruction_dir": str(tmp_path / "run"),
+                               "image_dir": str(images)})
+    assert result["ok"], result.get("error")
+    assert result["facade"]["camera"] == "m30t_wide"
+    assert result["summary"]["template"] == "facade_from_model"
+    assert result["summary"]["waypoints"] == len(plan.waypoints)
+    assert result["facade"]["waypoint_standoff_m"]["median"] == pytest.approx(
+        wall.camera_standoff_m["median"], abs=1.0)
+    assert result["summary"]["gsd_cm"] == pytest.approx(expected, rel=0.05)
+    exported = api.export_mission(["geojson"], str(tmp_path / "export"))
+    assert Path(exported["written"]["geojson"]).is_file()

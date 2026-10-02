@@ -143,7 +143,12 @@ MISSION_PLANNING = [
       "measured stand-off, the GSD taken across the stand-off with the real camera.",
       "implemented", ["tests/test_facade_survey.py",
                       "tests/test_real_recon_datasets.py::test_the_hagenberg_facade_is_measured_and_a_mission_planned_on_it"],
-      "core/facade_survey.py. NVS Hagenberg (Praschl & Schedl 2025, CC BY 4.0), 60 DJI "
+      "core/facade_survey.py, reached from the Mission form's 'Facade from model' type "
+      "(plan_mission template facade_from_model -> Api.plan_facade_from_reconstruction); "
+      "the camera is identified from the frames' EXIF (Model M30T, 4.4 mm, 4000 px -> "
+      "m30t_wide) and an unidentified one is refused, not defaulted. Through the Api on "
+      "the saved full-run model: 12 waypoints, all 33.60 m off the wall, 1.22 cm GSD, "
+      "exported to QGC/WPL/DJI WPML/Litchi/KML/GeoJSON and saved as a version. NVS Hagenberg (Praschl & Schedl 2025, CC BY 4.0), 60 DJI "
       "M30T wide frames, full resolution: wall 62.0 m long, 2.9-12.5 m above take-off "
       "(from DJI RelativeAltitude), normal (0.05, -1.00) towards the camera track, "
       "4,216 of 36,503 tie points on it, flatness 0.14 m RMS, 52 per cent of 0.5 m "

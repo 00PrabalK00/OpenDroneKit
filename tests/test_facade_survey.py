@@ -88,3 +88,52 @@ def test_a_facade_is_imaged_across_the_standoff_with_the_camera_that_flies_it():
     storage = plan.estimates()["storage"]
     assert storage["megapixels"] == pytest.approx(12.0)
     assert not any("not in the preset database" in a for a in storage["assumptions"])
+
+
+def _jpeg_with_exif(path, model, focal_mm, width):
+    """A small JPEG carrying the EXIF tags a camera writes: Model, FocalLength, width."""
+    from PIL import Image
+
+    image = Image.new("RGB", (64, 48))
+    exif = Image.Exif()
+    exif[0x0110] = model
+    sub = exif.get_ifd(0x8769)
+    sub[0x920A] = focal_mm
+    sub[0xA002] = width
+    image.save(path, exif=exif)
+    return path
+
+
+def test_the_camera_is_read_from_the_frames_exif(tmp_path):
+    from core.facade_survey import camera_from_exif
+
+    frames = [_jpeg_with_exif(tmp_path / f"f{i}.jpg", "M30T", 4.4, 4000) for i in range(3)]
+    key, reason = camera_from_exif(frames)
+    # The Mavic 3T wide camera has the same 4.4 mm / 4000 px geometry; the model decides.
+    assert key == "m30t_wide", reason
+
+
+def test_an_unknown_camera_is_not_guessed(tmp_path):
+    from core.facade_survey import camera_from_exif
+
+    frames = [_jpeg_with_exif(tmp_path / "f.jpg", "Canon PowerShot S110", 5.2, 4000)]
+    key, reason = camera_from_exif(frames)
+    assert key is None
+    assert "5.2 mm" in reason
+
+
+def test_the_mission_form_reaches_the_facade_from_model_planner(tmp_path):
+    """Implemented-but-unreachable was the defect: the form's type routes to it, and
+    with no reconstruction it says what to do rather than planning anything."""
+    from app.api import Api
+    from app.session import AppSession
+    from app.store import ProjectStore
+    from mission.mission_types import SPECIAL_MISSION_TYPES
+
+    assert "facade_from_model" in SPECIAL_MISSION_TYPES
+    api = Api(AppSession(store=ProjectStore(tmp_path / "p.db")))
+    api.create_project("facade", str(tmp_path / "project"))
+    assert "facade_from_model" in api.mission_templates()["special_templates"]
+    result = api.plan_mission({"template": "facade_from_model", "image_dir": str(tmp_path)})
+    assert not result["ok"]
+    assert "No reconstruction" in result["error"]
