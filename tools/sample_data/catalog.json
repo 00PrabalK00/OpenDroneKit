@@ -1,0 +1,151 @@
+{
+  "about": "Open sample datasets OpenDroneKit is tested and documented against. Files are always fetched from the original publisher, never mirrored by OpenDroneKit; every file is checked against the pinned sha256 in manifests/<name>.sha256 (the hashes of the copies the test suite was run on, see odk-testdata/INDEX.md). Licences are the publishers'.",
+  "datasets": [
+    {
+      "name": "odm_aukerman",
+      "title": "OpenDroneMap Aukerman park survey (77 nadir images, GPS)",
+      "licence": "CC0-1.0",
+      "source": "https://github.com/OpenDroneMap/odm_data_aukerman",
+      "commit": "4e8031630f4193494c79b1c1d3524108826d1ba9",
+      "size_mb": 523,
+      "fetch": "files",
+      "base_url": "https://raw.githubusercontent.com/OpenDroneMap/odm_data_aukerman/4e8031630f4193494c79b1c1d3524108826d1ba9/",
+      "used_by": ["docs/tutorials/01-aukerman-end-to-end.md"]
+    },
+    {
+      "name": "odm_bellus_gcp",
+      "title": "OpenDroneMap bellus (122 images + GCP list)",
+      "licence": "CC0-1.0",
+      "source": "https://github.com/OpenDroneMap/odm_data_bellus",
+      "commit": "36f80864035e243aa443420b9be867770d7e8118",
+      "size_mb": 726,
+      "fetch": "files",
+      "base_url": "https://raw.githubusercontent.com/OpenDroneMap/odm_data_bellus/36f80864035e243aa443420b9be867770d7e8118/"
+    },
+    {
+      "name": "odm_sheffield_cross",
+      "title": "Sheffield cross (172 oblique DJI images + 5 GCPs)",
+      "licence": "Unlicense",
+      "source": "https://github.com/pierotofy/drone_dataset_sheffield_cross",
+      "commit": "143f556ea3128835ab46cd694714f8f78319699b",
+      "size_mb": 860,
+      "fetch": "files",
+      "base_url": "https://raw.githubusercontent.com/pierotofy/drone_dataset_sheffield_cross/143f556ea3128835ab46cd694714f8f78319699b/",
+      "strip_prefix": {"images/": ""}
+    },
+    {
+      "name": "multispectral_buergewald_rededgep",
+      "title": "Buergewald MicaSense RedEdge-P subset (24 captures x 6 bands)",
+      "licence": "CC0-1.0",
+      "source": "https://github.com/OpenDroneMap/odm_data_buergewald",
+      "commit": "003780e8881269c5f638a9dcb468d4ee13d2fbd8",
+      "size_mb": 613,
+      "fetch": "files",
+      "base_url": "https://raw.githubusercontent.com/OpenDroneMap/odm_data_buergewald/003780e8881269c5f638a9dcb468d4ee13d2fbd8/"
+    },
+    {
+      "name": "multispectral_micasense_panels",
+      "title": "MicaSense RedEdge-P and Altum calibration-panel captures",
+      "licence": "MIT",
+      "source": "https://github.com/micasense/imageprocessing",
+      "commit": "3a903861b2f38c1717a5b6d918a2d9196db507ae",
+      "size_mb": 101,
+      "fetch": "files",
+      "base_url": "https://media.githubusercontent.com/media/micasense/imageprocessing/3a903861b2f38c1717a5b6d918a2d9196db507ae/data/",
+      "rename": {"LICENSE.micasense-imageprocessing.txt": "https://raw.githubusercontent.com/micasense/imageprocessing/3a903861b2f38c1717a5b6d918a2d9196db507ae/LICENSE"}
+    },
+    {
+      "name": "thermal_rjpeg_samples_thermal_parser",
+      "title": "65 radiometric thermal JPEGs from 16 camera models",
+      "licence": "MIT",
+      "source": "https://github.com/SanNianYiSi/thermal_parser",
+      "commit": "b513647ef2318ba99dd2e2a543fa0fb071fd9579",
+      "size_mb": 106,
+      "fetch": "files",
+      "base_url": "https://raw.githubusercontent.com/SanNianYiSi/thermal_parser/b513647ef2318ba99dd2e2a543fa0fb071fd9579/images/",
+      "rename": {"LICENSE.thermal_parser.txt": "https://raw.githubusercontent.com/SanNianYiSi/thermal_parser/b513647ef2318ba99dd2e2a543fa0fb071fd9579/LICENSE"}
+    },
+    {
+      "name": "thermal_pv_panel_detection_mavic3t",
+      "title": "Thermal PV panel detection (353 Mavic 3T images, YOLO labels)",
+      "licence": "CC-BY-4.0",
+      "attribution": "Thermal PV Panel Detection Dataset for UAV Inspection, Zenodo, DOI 10.5281/zenodo.16420123",
+      "source": "https://zenodo.org/records/16420123",
+      "size_mb": 103,
+      "fetch": "archive",
+      "archives": [
+        {"url": "https://zenodo.org/api/records/16420123/files/Thermal%20PV%20Panel%20Detection%20Dataset%20for%20UAV%20Inspection.zip/content",
+         "save_as": "pv_thermal_detection.zip", "extract": true}
+      ]
+    },
+    {
+      "name": "road_damage_rdd2022_subset",
+      "title": "RDD2022 subset: 120 drone + 80 Indian road images with damage boxes",
+      "licence": "CC-BY-4.0",
+      "attribution": "Arya et al. (2022), RDD2022, figshare, DOI 10.6084/m9.figshare.21431547",
+      "source": "https://figshare.com/articles/dataset/RDD2022_-_The_multi-national_Road_Damage_Dataset_released_through_CRDDC_2022/21431547",
+      "size_mb": 51,
+      "fetch": "manual",
+      "manual": "The subset was cut out of the 13.3 GB release archive with HTTP range requests (random.seed(2022) samples of China_Drone/train and India/train). Download the archive from the source page, take the files named in the manifest, and run `verify` on the folder.",
+      "used_by": ["docs/tutorials/02-crack-detection.md"]
+    },
+    {
+      "name": "bridge_inspection_h20t_boga_cayi",
+      "title": "Boga Cayi bridge, DJI H20T (RGB, R-JPEG, SDK-decoded C arrays, thermal ortho)",
+      "licence": "CC-BY-4.0",
+      "attribution": "Boga Cayi bridge inspection dataset, Zenodo, DOI 10.5281/zenodo.22298893",
+      "source": "https://zenodo.org/records/22298893",
+      "size_mb": 911,
+      "fetch": "archive",
+      "archives": [
+        {"url": "https://zenodo.org/api/records/22298893/files/B1_Orthophoto.zip/content", "save_as": "B1_Orthophoto.zip"},
+        {"url": "https://zenodo.org/api/records/22298893/files/Boga_Cayi_Reproducibility_Package.zip/content", "save_as": "Boga_Cayi_Reproducibility_Package.zip"}
+      ],
+      "manual": "Frames 0100-0180 of B1_Wide and B1_Thermal were taken out of 4.5 GB and 2.2 GB archives with range requests; download B1_Wide.zip / B1_Thermal.zip from the source page and keep those frames."
+    },
+    {
+      "name": "thermal_nvs_praschl_zenodo",
+      "title": "Building facade, DJI M30T (227 thermal R-JPEGs + 60 wide RGB)",
+      "licence": "CC-BY-4.0",
+      "attribution": "Praschl et al., NVS dataset, Zenodo, DOI 10.5281/zenodo.17647950",
+      "source": "https://zenodo.org/records/17647950",
+      "size_mb": 932,
+      "fetch": "archive",
+      "archives": [
+        {"url": "https://zenodo.org/api/records/17647950/files/T.zip/content", "save_as": "T.zip", "extract": true}
+      ],
+      "manual": "W_subset holds 60 of the wide RGB frames taken out of W.zip (1.3 GB) with range requests; download W.zip from the source page and keep the frames named in the manifest."
+    },
+    {
+      "name": "thermal_pv_thedpv_subset",
+      "title": "THED-PV, FLIR Duo Pro R solar array session (58 radiometric TIFF + RGB pairs)",
+      "licence": "CC-BY-4.0",
+      "attribution": "THED-PV dataset, Zenodo, DOI 10.5281/zenodo.17404247",
+      "source": "https://zenodo.org/records/17404247",
+      "size_mb": 136,
+      "fetch": "archive",
+      "archives": [
+        {"url": "https://zenodo.org/api/records/17404247/files/Metadata.zip/content", "save_as": "Metadata.zip"},
+        {"url": "https://zenodo.org/api/records/17404247/files/Code.zip/content", "save_as": "Code.zip"}
+      ],
+      "manual": "One capture session (Raw Dataset/2024-12-21/12/20241221_120152) was read out of the 22.8 GB Raw Dataset.zip with range requests; download it from the source page and keep that folder."
+    },
+    {
+      "name": "university_of_guam_thermal",
+      "title": "University of Guam radiometric thermal sets (DJI XT2)",
+      "licence": "CC-BY-4.0",
+      "attribution": "University of Guam radiometric thermal datasets, Zenodo records 16741416, 16741344, 16741334, 16741435, 16741451",
+      "source": "https://zenodo.org/records/16741416",
+      "fetch": "restricted",
+      "manual": "Access-restricted on Zenodo: request access on the record pages (16741416, 16741344, 16741334, 16741435, 16741451) yourself. OpenDroneKit does not fetch files that sit behind an access request."
+    },
+    {
+      "name": "dji_thermal_sdk",
+      "title": "DJI Thermal SDK (decodes DJI R-JPEG to degrees C)",
+      "licence": "DJI proprietary licence agreement",
+      "source": "https://www.dji.com/downloads/softwares/dji-thermal-sdk",
+      "fetch": "restricted",
+      "manual": "Proprietary: accept DJI's licence and download it yourself, then point ODK_DJI_TSDK_DIR at it. OpenDroneKit never downloads, ships or redistributes it."
+    }
+  ]
+}
