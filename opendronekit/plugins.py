@@ -145,9 +145,11 @@ class PluginDetections:
 
     @property
     def model_used(self) -> str:
+        """``plugin:<name>``, the label stored with the detections."""
         return f"plugin:{self.plugin}"
 
     def to_dict(self) -> dict[str, Any]:
+        """Plain data for JSON and the audit log."""
         return {"plugin": self.plugin, "plugin_version": self.plugin_version,
                 "model_used": self.model_used, "model_key": self.model_key,
                 "model_sha256": self.model_sha256, "image_size": list(self.image_size),
@@ -197,6 +199,7 @@ class PluginHost:
         return payload
 
     def names(self, kind: PluginKind | str) -> list[str]:
+        """Names of the loaded plugins of one kind."""
         self.load()
         return [spec.name for spec in self.registry.list(kind)]
 
@@ -214,6 +217,7 @@ class PluginHost:
         return PluginError(spec_key, stage, reason)
 
     def spec(self, kind: PluginKind | str, name: str) -> PluginSpec:
+        """The loaded plugin's spec; :class:`PluginError` (stage ``lookup``) if none is installed."""
         self.load()
         kind = PluginKind(kind)
         try:

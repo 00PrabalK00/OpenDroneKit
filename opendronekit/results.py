@@ -13,6 +13,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ProjectInfo:
+    """A project as listed in a workspace: id, name, folder and description."""
+
     id: int
     name: str
     root: Path
@@ -21,6 +23,8 @@ class ProjectInfo:
 
 @dataclass(frozen=True)
 class MissionSummary:
+    """The planner's figures for one mission, as the application shows them."""
+
     template: str
     waypoints: int
     distance_m: float
@@ -34,6 +38,8 @@ class MissionSummary:
 
 @dataclass(frozen=True)
 class Dataset:
+    """An image folder registered with a project, with the counts read from its EXIF."""
+
     name: str
     path: Path
     image_count: int | None
@@ -102,6 +108,10 @@ class Detections:
 
 @dataclass(frozen=True)
 class Measurement:
+    """One recorded measurement: value and unit, the caveat that limits it, and the
+    full payload (``raw``) with the inputs it was made from.
+    """
+
     id: str
     kind: str
     value: float
@@ -112,6 +122,8 @@ class Measurement:
 
 @dataclass(frozen=True)
 class Report:
+    """A written report: where its files are, how many findings it holds, its warnings."""
+
     id: str
     title: str
     report_type: str

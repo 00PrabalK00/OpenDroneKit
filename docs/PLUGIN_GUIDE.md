@@ -27,24 +27,37 @@ broken plugins are reported) is [plugins.md](plugins.md). This guide covers the 
 ## Writing one
 
 ```python
-from sdk.plugins import PluginKind, PluginSpec, PluginRegistry
+from pathlib import Path
 
-def make_exporter(**config):
-    class ShapefileExporter:
-        def export(self, features, destination):
-            ...
-    return ShapefileExporter()
+from opendronekit.plugins import PluginKind, PluginRegistry, PluginSpec
+
+
+class WaypointTextExporter:
+    """The exporter contract: a ``suffix`` and ``export(plan, path)``."""
+
+    suffix = ".waypoints.txt"
+
+    def export(self, plan: dict, path: Path) -> str:
+        rows = [f"{lon:.7f} {lat:.7f} {alt:.1f}" for lon, lat, alt in plan["waypoints"]]
+        Path(path).write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return str(path)
+
 
 SPEC = PluginSpec(
     kind=PluginKind.EXPORTER,
-    name="shapefile",
-    factory=make_exporter,
-    description="ESRI Shapefile export.",
+    name="waypoints_txt",
+    factory=WaypointTextExporter,
+    api_version="1.1",
+    description="Waypoints as plain text.",
 )
 
 registry = PluginRegistry()
 registry.register(SPEC)
 ```
+
+To ship it, put the spec in a `PluginManifest` and declare an entry point in the
+`opendronekit.plugins` group; [plugins.md](plugins.md) and
+[tutorial 3](tutorials/03-custom-plugin.md) walk through it.
 
 A factory may also be given as a dotted reference, `module.path:callable`, which is how
 plugins are loaded from configuration without importing them eagerly.
@@ -99,7 +112,7 @@ Register it, build it, and exercise the real path rather than the factory:
 ```python
 registry = PluginRegistry()
 registry.register(SPEC)
-exporter = registry.create(PluginKind.EXPORTER, "shapefile")
+exporter = registry.create(PluginKind.EXPORTER, "waypoints_txt")
 ```
 
 A factory that returns an object is not evidence the object works. Test the output the

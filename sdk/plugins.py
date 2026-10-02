@@ -86,6 +86,10 @@ def api_compatibility(requested: str) -> tuple[bool, str]:
 
 @dataclass(frozen=True)
 class PluginSpec:
+    """One plugin: its kind, a unique name within the kind, and the factory that
+    builds it. ``api_version`` is checked when the spec is constructed.
+    """
+
     kind: PluginKind
     name: str
     factory: Callable[..., Any]
@@ -110,9 +114,11 @@ class PluginSpec:
 
     @property
     def key(self) -> str:
+        """``<kind>:<name>``, unique across the registry."""
         return f"{self.kind.value}:{self.name}"
 
     def describe(self) -> dict[str, Any]:
+        """Plain data describing this object, for listings and JSON."""
         payload = asdict(self)
         payload["kind"] = self.kind.value
         payload["factory"] = f"{self.factory.__module__}:{self.factory.__qualname__}"
@@ -160,6 +166,7 @@ class PluginManifest:
         object.__setattr__(self, "plugins", tuple(filled))
 
     def describe(self) -> dict[str, Any]:
+        """Plain data describing this object, for listings and JSON."""
         return {
             "name": self.name, "version": self.version, "api_version": self.api_version,
             "description": self.description, "homepage": self.homepage,
@@ -180,6 +187,7 @@ class PluginFailure:
     detail: str = ""     # the last frames of the traceback, for the plugin's author
 
     def to_dict(self) -> dict[str, str]:
+        """Plain data for JSON."""
         return asdict(self)
 
 
@@ -192,6 +200,7 @@ class DiscoveryReport:
     failures: list[PluginFailure] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Plain data for JSON."""
         return {
             "api_version": PLUGIN_API_LEVEL,
             "entry_point_group": ENTRY_POINT_GROUP,
@@ -242,6 +251,7 @@ class PluginRegistry:
         self.failures: list[PluginFailure] = []
 
     def register(self, spec: PluginSpec, *, replace: bool = False) -> PluginSpec:
+        """Add ``spec``; a name already taken in its kind raises unless ``replace``."""
         key = (spec.kind, spec.name.casefold())
         with self._lock:
             if key in self._plugins and not replace:
@@ -252,6 +262,7 @@ class PluginRegistry:
         return spec
 
     def unregister(self, kind: PluginKind | str, name: str) -> None:
+        """Remove a plugin; :class:`KeyError` if it is not registered."""
         key = (PluginKind(kind), name.casefold())
         with self._lock:
             if key not in self._plugins:
@@ -259,6 +270,7 @@ class PluginRegistry:
             del self._plugins[key]
 
     def get(self, kind: PluginKind | str, name: str) -> PluginSpec:
+        """The spec for ``kind``/``name``; :class:`KeyError` if it is not registered."""
         key = (PluginKind(kind), name.casefold())
         with self._lock:
             try:
@@ -267,13 +279,16 @@ class PluginRegistry:
                 raise KeyError(f"Unknown plugin {key[0].value}:{name}.") from exc
 
     def has(self, kind: PluginKind | str, name: str) -> bool:
+        """Whether ``kind``/``name`` is registered."""
         with self._lock:
             return (PluginKind(kind), str(name).casefold()) in self._plugins
 
     def create(self, kind: PluginKind | str, name: str, **configuration: Any) -> Any:
+        """Build the plugin by calling its factory with ``configuration``."""
         return self.get(kind, name).factory(**configuration)
 
     def list(self, kind: PluginKind | str | None = None) -> list[PluginSpec]:
+        """Registered specs, of one kind or of all kinds, sorted by kind and name."""
         selected = PluginKind(kind) if kind is not None else None
         with self._lock:
             values = [
@@ -283,6 +298,7 @@ class PluginRegistry:
         return sorted(values, key=lambda spec: (spec.kind.value, spec.name.casefold()))
 
     def clear(self) -> None:
+        """Forget every registered plugin and recorded failure."""
         with self._lock:
             self._plugins.clear()
             self.failures = []

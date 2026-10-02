@@ -123,6 +123,7 @@ class Workspace:
         return Project(self, match[0].id)
 
     def list_projects(self) -> list[ProjectInfo]:
+        """Every project in this workspace."""
         with self._lock:
             rows = _unwrap(self._api.list_projects())["projects"]
         return [ProjectInfo(int(r["id"]), str(r.get("name", "")), Path(str(r.get("root_dir", ""))),
@@ -181,6 +182,7 @@ class MissionPlan:
 
     @staticmethod
     def builtin_formats() -> list[str]:
+        """The mission export formats built into OpenDroneKit (plugins not included)."""
         from mission import exporters
 
         return list(exporters.EXPORTERS)
@@ -245,6 +247,7 @@ class Project:
 
     @property
     def info(self) -> ProjectInfo:
+        """This project's row in the workspace index (refused if it was deleted)."""
         for row in self.workspace.list_projects():
             if row.id == self.id:
                 return row
@@ -252,13 +255,16 @@ class Project:
 
     @property
     def name(self) -> str:
+        """The project's name."""
         return self.info.name
 
     @property
     def root(self) -> Path:
+        """The project's folder on disk."""
         return self.info.root
 
     def audit_log(self, limit: int = 200) -> list[dict[str, Any]]:
+        """The project's audit trail, newest first (up to ``limit`` events)."""
         return self._call("audit_log", limit)["events"]
 
     # -- missions -----------------------------------------------------------
@@ -393,7 +399,8 @@ class Project:
 
     def detect_cracks(self, image: str | os.PathLike[str], *, use_model: bool = True,
                       min_area_px: int = 30) -> CrackDetection:
-        """Segment cracks on one photograph; the mask and overlay are saved in the project.
+        """Segment cracks on one photograph; the mask and overlay are saved in the project
+        under ``analysis/cracks/<image stem>/<source>/``.
 
         With ``use_model`` the installed ``crack_segmentation`` model runs; when it is
         not installed the classical heuristic runs instead and the result says
@@ -407,12 +414,13 @@ class Project:
         if not path.is_file():
             raise Refused(f"No such image: {image}")
         result = detect_cracks(load_image(path), min_area_px=min_area_px, use_model=use_model)
-        out = self.root / "analysis" / "cracks" / path.stem
+        source = "model" if str(result.model_used).startswith("onnx:") else "heuristic"
+        # One folder per source: a heuristic run never overwrites a model's mask.
+        out = self.root / "analysis" / "cracks" / path.stem / source
         out.mkdir(parents=True, exist_ok=True)
         mask_path, overlay_path = out / "crack_mask.png", out / "crack_overlay.jpg"
         if not cv2.imwrite(str(mask_path), result.mask) or not cv2.imwrite(str(overlay_path), result.overlay):
             raise OdkError(f"Could not write the crack mask under {out}.")
-        source = "model" if str(result.model_used).startswith("onnx:") else "heuristic"
         with self.workspace._lock:
             self._api()
             self.workspace._session.audit("crack_detection", {
@@ -519,11 +527,15 @@ class Project:
                            float(value or 0.0), str(payload.get("unit", "")), "", payload)
 
     def measurements(self) -> list[dict[str, Any]]:
+        """Every measurement recorded in this project, as stored."""
         return self._call("list_measurements")["measurements"]
 
     # -- reports ------------------------------------------------------------
 
     def report_readiness(self, report_type: str = "standard") -> dict[str, Any]:
+        """The report checklist for ``report_type``: what the project holds, what is
+        missing and the warnings the report would carry.
+        """
         return self._call("report_readiness", "", report_type)
 
     def generate_report(self, *, title: str = "Inspection report", report_type: str = "standard",
