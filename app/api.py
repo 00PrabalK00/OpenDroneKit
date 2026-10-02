@@ -753,6 +753,46 @@ class Api:
         return ok(**raster_tiles.register(layer.path))
 
     @guard
+    def sample_elevation(self, lon: float, lat: float) -> dict[str, Any]:
+        """The project DSM's value at one map position, for the footer's ELEV readout.
+
+        Read from the GeoTIFF itself: the one pixel under the point, no interpolation.
+        `z` is None, with the reason, where there is no DSM, the point is off it, or the
+        pixel holds no data -- the readout then shows a dash, never a number.
+        """
+        import math
+
+        import numpy as np
+        import rasterio
+        from rasterio.windows import Window
+
+        from core import geo
+
+        dsm = self._product_path("dsm")
+        if not dsm:
+            return ok(z=None, dsm=None, reason="No DSM is loaded in this project")
+        name = next((layer.name for layer in self._session.layers.values()
+                     if layer.path and str(layer.path) == dsm), Path(dsm).stem)
+        lon, lat = float(lon), float(lat)
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            return ok(z=None, dsm=name, reason="not a position on the map")
+        with rasterio.open(dsm) as src:
+            epsg = src.crs.to_epsg() if src.crs else None
+            if not epsg:
+                return ok(z=None, dsm=name, reason="the DSM has no CRS")
+            east, north = geo.wgs84_to_projected([lon], [lat], int(epsg))
+            x, y = float(east[0]), float(north[0])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return ok(z=None, dsm=name, epsg=epsg, reason="outside the DSM")
+            row, col = src.index(x, y)
+            if not (0 <= row < src.height and 0 <= col < src.width):
+                return ok(z=None, dsm=name, epsg=epsg, reason="outside the DSM")
+            value = src.read(1, window=Window(col, row, 1, 1), masked=True)
+        if np.ma.is_masked(value) or not math.isfinite(float(value[0, 0])):
+            return ok(z=None, dsm=name, epsg=epsg, reason="no data in the DSM here")
+        return ok(z=float(value[0, 0]), dsm=name, epsg=epsg, unit="m", row=int(row), col=int(col))
+
+    @guard
     def raster_preview(self, layer_id: str, max_size: int = 1024) -> dict[str, Any]:
         """Render a raster layer to a PNG data URI with its geographic bounds.
 

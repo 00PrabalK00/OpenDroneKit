@@ -3587,6 +3587,23 @@
    "origin": "U3 map module"
   },
   {
+   "id": "shell.footer-elevation",
+   "workspace": "shell",
+   "feature": "Footer ELEV: the DSM's value under the cursor",
+   "sources": "— (new; SysAnalyse footer)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "sample_elevation"
+   ],
+   "star_methods": [],
+   "new_home": "Desk footer, between the cursor's E/N and the CRS: the project DSM's own pixel under the cursor; \"ELEV —\" with the reason when there is no DSM or no data there",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U3 finish review"
+  },
+  {
    "id": "review.measure-on-a-photograph",
    "workspace": "review",
    "feature": "Distance, area and crack length on a photograph",
@@ -5167,6 +5184,9 @@
   ],
   "measure_crack_on_image": [
    "review.measure-on-a-photograph"
+  ],
+  "sample_elevation": [
+   "shell.footer-elevation"
   ]
  },
  "internal_api": {

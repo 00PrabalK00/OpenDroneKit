@@ -32,6 +32,10 @@ _ORIGIN = 20037508.342789244
 # Past the survey's native resolution the map enlarges the deepest real tile; asking
 # for deeper tiles would only resample the same pixels bigger.
 MAX_NATIVE_ZOOM = 24
+# A single-band raster up to this many pixels is read whole for its value range, so the
+# ramp (and the legend drawn from it) spans the data's own min..max. Larger ones are
+# stretched from an overview and say so (value_range_source "overview").
+EXACT_RANGE_MAX_PIXELS = 64_000_000
 
 _LOCK = threading.Lock()
 _BY_TOKEN: dict[str, "_Registered"] = {}
@@ -75,9 +79,18 @@ def _describe(path: str) -> tuple[dict[str, Any], tuple[float, float] | None]:
         # The zoom at which one screen pixel covers one raster pixel.
         native = math.log2(156543.03392804097 * math.cos(lat) / max(metres_per_px, 1e-6))
         maxzoom = max(0, min(MAX_NATIVE_ZOOM, int(math.ceil(native))))
+        # The GeoTIFF's own pixel size, where its CRS is in metres.
+        pixel_size_m = None
+        if src.crs.is_projected and abs(src.res[0] - src.res[1]) <= 1e-9 * max(src.res):
+            units = (src.crs.linear_units or "").lower()
+            if units in ("metre", "meter", "m", "metres", "meters"):
+                pixel_size_m = float(src.res[0])
         stretch = None
+        range_source = None
         if src.count < 3:
-            factor = max(1.0, max(src.width, src.height) / 2048.0)
+            exact = src.width * src.height <= EXACT_RANGE_MAX_PIXELS
+            factor = 1.0 if exact else max(1.0, max(src.width, src.height) / 2048.0)
+            range_source = "full" if exact or factor == 1.0 else "overview"
             shape = (max(1, int(src.height / factor)), max(1, int(src.width / factor)))
             band = src.read(1, out_shape=shape, masked=True).astype("float64")
             valid = band.compressed()
@@ -90,7 +103,9 @@ def _describe(path: str) -> tuple[dict[str, Any], tuple[float, float] | None]:
             "maxzoom": maxzoom,
             "tile_size": TILE_SIZE,
             "native_resolution_m": metres_per_px,
+            "pixel_size_m": pixel_size_m,
             "bands": src.count,
+            "value_range_source": range_source if stretch else None,
         }
     return info, stretch
 
@@ -117,7 +132,10 @@ def _answer(token: str, info: dict[str, Any], stretch: tuple[float, float] | Non
     `value_range` is the [low, high] a single-band raster's tiles are coloured with --
     the turbo ramp runs from low to high -- so a legend drawn from it says exactly what
     each colour on the map means. None for an RGB raster, which is drawn as its own
-    colours.
+    colours. `value_range_source` is "full" when it is the whole file's min..max and
+    "overview" when the file was too large to read whole. `pixel_size_m` is the
+    GeoTIFF's own pixel size (None unless its CRS is in metres); `native_resolution_m`
+    is the ground size of a pixel at its centre, which sets the deepest zoom.
     """
     return {"token": token, "url": f"/raster-tiles/{token}/{{z}}/{{x}}/{{y}}.png", **info,
             "value_range": [stretch[0], stretch[1]] if stretch else None}

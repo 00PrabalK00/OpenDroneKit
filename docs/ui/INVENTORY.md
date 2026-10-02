@@ -8,12 +8,12 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 
 | Measure | Count |
 |---|---:|
-| Rows | 181 |
+| Rows | 182 |
 | Native menu items covered | 66 |
 | Cockpit ACTIONS keys covered | 132 |
-| Api methods covered (plus 1 internal) | 217 |
+| Api methods covered (plus 1 internal) | 218 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
-| Placement: artboard (drawn in an approved artboard) | 104 |
+| Placement: artboard (drawn in an approved artboard) | 105 |
 | Placement: proposed (placed with an approved component pattern, not drawn) | 65 |
 | Placement: artboard+proposed (partly drawn, partly proposed) | 5 |
 | Placement: gap (the design shows it but the Api cannot back it yet (owner decision 2026-09-29: build the backend for real)) | 3 |
@@ -21,7 +21,7 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 
 Columns: **Menu** native menu ids (payload variants in braces); **Actions** cockpit `ACTIONS` keys; **Api** methods, ★ = reached by neither old UI before v1; **Placement** as defined above.
 
-## Global shell (every workspace) (21)
+## Global shell (every workspace) (22)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
@@ -46,6 +46,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `shell.settings` | Settings | `view.settings` | — | — | Header gear button | artboard |
 | `shell.exit` | Exit | — | — | — | Unchanged | none |
 | `shell.map-crs-chip` | Map CRS chip (copies the WKT) <sup>U00</sup> | — | — | `get_project_crs`, `describe_crs` | Map furniture, top left of every map: EPSG and short name; a click copies PROJ's WKT | artboard |
+| `shell.footer-elevation` | Footer ELEV: the DSM's value under the cursor <sup>U00</sup> | — | — | `sample_elevation` | Desk footer, between the cursor's E/N and the CRS: the project DSM's own pixel under the cursor; "ELEV —" with the reason when there is no DSM or no data there | artboard |
 
 ## Home (20)
 
