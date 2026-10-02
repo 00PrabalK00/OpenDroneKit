@@ -314,15 +314,37 @@ export const ACTIONS = {
   Plan: {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
-      const result = await call("plan_mission", ctx.missionOptions());
+      const options = ctx.missionOptions();
+      const result = await call("plan_mission", options);
       // The Api answers ok(summary={waypoints, distance_m, ...}, warnings); reading
       // result.waypoint_count printed "Planned ? waypoints" after every successful plan.
       const summary = result.summary || {};
       const warnings = result.warnings || [];
+      // The inputs the plan was made from, so a stand-off or altitude the planner did
+      // not get cannot pass unnoticed again (the form once showed 12 m and sent nothing).
+      // Where the planner changed one (a tower lifts the altitude and RTH above its
+      // top), what it planned is said beside what was asked.
+      const differs = (planned, asked) => planned !== undefined && planned !== null
+        && asked !== undefined && Math.abs(Number(planned) - Number(asked)) > 0.05;
+      const used = [
+        summary.template || options.template,
+        options.altitude_m !== undefined
+          ? `altitude ${options.altitude_m} m AGL`
+            + (differs(summary.altitude_m, options.altitude_m)
+              ? ` (poses average ${Number(summary.altitude_m).toFixed(1)} m)` : "")
+          : "",
+        options.standoff_m !== undefined ? `stand-off ${options.standoff_m} m` : "",
+        options.rth_altitude_m !== undefined
+          ? `RTH ${options.rth_altitude_m} m`
+            + (differs(summary.rth_altitude_m, options.rth_altitude_m)
+              ? ` (planned ${Number(summary.rth_altitude_m).toFixed(1)} m)` : "")
+          : "",
+      ].filter(Boolean).join(", ");
       return {
         message: `Planned ${summary.waypoints ?? "?"} waypoints, `
           + `${((summary.distance_m || 0) / 1000).toFixed(2)} km, ${summary.duration_min ?? "?"} min`
           + (summary.gsd_cm ? `, GSD ${summary.gsd_cm} cm` : "")
+          + (used ? ` (${used})` : "")
           + (warnings.length ? `. ${warnings.join(" ")}` : "."),
         refresh: true,
       };
@@ -359,7 +381,12 @@ export const ACTIONS = {
       // after it can never run. The first version of this used call() and the mission
       // refusal propagated straight past the products branch, which is why the button
       // still said "No mission has been planned yet" on screens that had products.
-      const result = await tryCall("export_mission");
+      // A menu item names one format (Mission > Export Litchi CSV sends
+      // {format: "litchi"}); the toolbar button and Export All Formats name none.
+      const format = ctx.payload && ctx.payload.format;
+      const result = format
+        ? await tryCall("export_mission", [String(format)])
+        : await tryCall("export_mission");
       // export_mission answers ok(written={format: path | "failed: ..."}, directory).
       // Reading result.files found nothing, so a successful export of five mission files
       // fell through to revealing the reconstruction products and said so instead.
@@ -379,7 +406,9 @@ export const ACTIONS = {
       // yet" -- true, and about something the user was not looking at. If the project has
       // products, those are the exportable thing; the mission refusal is only the right
       // answer when there is nothing else to give.
-      const listed = await tryCall("list_layers");
+      // A request for one mission format is about the mission: revealing the
+      // products instead would answer a question that was not asked.
+      const listed = format ? null : await tryCall("list_layers");
       if (((listed && listed.layers) || []).some((l) => l.path)) {
         return ACTIONS["Export Products"].run(ctx);
       }

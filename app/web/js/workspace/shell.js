@@ -8,7 +8,9 @@
 
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
-import { WORKSPACES, WORKSPACE_BY_ID, auditLine } from "./workspaces.js";
+import {
+  WORKSPACES, WORKSPACE_BY_ID, auditLine, missionFormValues, setMissionFormValue,
+} from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
@@ -537,6 +539,17 @@ export class Shell {
           + "Copy cURL and Send Request act on this one.", "ok");
         return;
       }
+      case "template": {
+        // Picking a type in the Mission Types list sets the form's Type, so Plan plans
+        // it and the Mission tab shows it. It used to print the name and do nothing.
+        const label = String(value.label || name);
+        this.settings = this.settings || {};
+        this.settings.type = label;
+        setMissionFormValue("type", label);
+        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+        this.toast(`Mission type: ${label}. Plan uses it.`, "ok");
+        return;
+      }
       case "setting": {
         // Kept, so Plan uses what the operator typed. Without this the field updated
         // its own input and the planner ran on defaults -- the worst kind of broken,
@@ -762,7 +775,10 @@ export class Shell {
 
       const mapped = toAction[action];
       if (mapped) {
-        await this.runAction(mapped);
+        // The payload goes with the verb. "Export Litchi CSV" is mission.export with
+        // {format: "litchi"}; dropping the payload here made every one of the six
+        // single-format items write all six formats.
+        await this.runAction(mapped, payload);
         return;
       }
 
@@ -1089,7 +1105,7 @@ export class Shell {
    * appended to the console. The old version wrote to the status bar in 11px text at the
    * bottom of the screen, which is indistinguishable from the app doing nothing.
    */
-  async runAction(action) {
+  async runAction(action, payload = null) {
     const missing = UNWIRED[action];
     if (missing) {
       this.toast(`${action}: not available. ${missing}`, "warn");
@@ -1166,7 +1182,7 @@ export class Shell {
     try {
       const result = entry.vehicle
         ? await this.runVehicle(entry.vehicle, action)
-        : await entry.run(this.actionContext());
+        : await entry.run({ ...this.actionContext(), payload: payload || {} });
       if (result && result.skipped) {
         this.toast(`${action}: ${result.skipped}`);
         return;
@@ -1324,7 +1340,12 @@ export class Shell {
         // planned template=grid at altitude 55. That is the worst shape a bug can take
         // here -- a plausible mission that is not the one that was asked for, with
         // nothing on screen to say so.
-        const raw = this.settings || {};
+        //
+        // The same fault survived in a second form: only EDITED fields were sent. The
+        // form read Stand-off 12, Altitude 60 and RTH 90 while the planner used its own
+        // 8, 55 and 80, so a facade was flown 4 m closer than the screen said. What is
+        // on the form now goes, edited or not; an edit (this.settings) is on top.
+        const raw = { ...missionFormValues(), ...(this.settings || {}) };
         const numeric = {};
         for (const [key, value] of Object.entries(raw)) {
           const asNumber = Number(value);

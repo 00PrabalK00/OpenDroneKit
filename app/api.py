@@ -5314,6 +5314,11 @@ class Api:
         plan = MissionPlanner().generate(**kwargs)
         adopted = self._adopt_plan(plan, kwargs["mode"], warnings, options=opts)
         adopted["summary"]["template"] = kwargs["mode"]
+        # The return-to-home height the plan will fly, which the planner may raise above
+        # what was asked (a tower's top + 10 m), so the Planned message can say so.
+        safety = self._session.mission_plan_dict.get("safety_constraints") or {}
+        if safety.get("rth_altitude_m") is not None:
+            adopted["summary"]["rth_altitude_m"] = float(safety["rth_altitude_m"])
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
         # from the recipe root silently yielded None, so no terrain warning ever fired.

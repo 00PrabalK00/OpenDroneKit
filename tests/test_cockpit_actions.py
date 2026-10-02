@@ -61,7 +61,9 @@ class TestTheStubIsGone:
         assert "not wired to the API yet" not in shell_js
 
     def test_actions_run_against_the_bridge(self, shell_js) -> None:
-        assert "await entry.run(this.actionContext())" in shell_js
+        """Every toolbar/menu action runs with the real action context (the bridge), and
+        the menu payload (for example ``{format: 'litchi'}``) rides along with it."""
+        assert re.search(r"await entry\.run\(\{\s*\.\.\.this\.actionContext\(\),\s*payload:", shell_js)
 
 
 class TestEveryCalledMethodExists:
