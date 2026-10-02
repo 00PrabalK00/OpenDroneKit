@@ -211,12 +211,21 @@ def _altitude_frame(plan: dict[str, Any]) -> tuple[str, float]:
 
 
 def _capture_spacing(plan: dict[str, Any]) -> float:
-    """Distance-triggered capture spacing in metres, 0 when triggering per waypoint."""
-    recipe = plan.get("flight_recipe") or {}
-    capture = recipe.get("capture") or {}
-    if not bool(capture.get("continuous_capture", False)):
-        return 0.0
-    return float(capture.get("capture_spacing_m", 0.0) or 0.0)
+    """Distance-triggered capture spacing in metres, 0 when triggering per waypoint.
+
+    The planner records its resolved capture mode in the plan's autopilot_commands: a
+    SET_CAMERA_TRIGGER_DISTANCE command (distance_m) exactly when the mission captures
+    continuously with a spacing, after its own per-template gating. That is the one
+    source of truth; the exporters used to read flight_recipe["capture"], which no
+    planner or app code writes, so every real mapping mission exported per-waypoint.
+    """
+    for command in plan.get("autopilot_commands") or []:
+        if isinstance(command, dict) and command.get("command") == "SET_CAMERA_TRIGGER_DISTANCE":
+            try:
+                return max(0.0, float(command.get("distance_m", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
 
 
 def _capture_legs(viewpoints: list[dict[str, Any]]) -> list[tuple[int, int]]:
@@ -655,10 +664,13 @@ def export_qgc_plan(
 
     simple_items: list[dict[str, Any]] = []
     for index, item in enumerate(items):
-        params: list[Any] = [item.param1, item.param2, item.param3, item.param4]
-        params.append(item.latitude if item.frame != MAV_FRAME_MISSION else 0.0)
-        params.append(item.longitude if item.frame != MAV_FRAME_MISSION else 0.0)
-        params.append(item.altitude if item.frame != MAV_FRAME_MISSION else 0.0)
+        # A .plan SimpleItem's params is the item's 7 MAVLink params. Params 5-7 are the
+        # x/y/z slots, which carry real values on non-positional commands too:
+        # DO_DIGICAM_CONTROL's shoot command is param5 and DO_MOUNT_CONTROL's mount mode
+        # is param7. Zeroing them on MISSION-frame items turned every photo into "no
+        # shot" and every mount command into MAV_MOUNT_MODE_RETRACT.
+        params: list[Any] = [item.param1, item.param2, item.param3, item.param4,
+                             item.latitude, item.longitude, item.altitude]
         params = [None if isinstance(p, float) and math.isnan(p) else p for p in params]
         simple_items.append(
             {

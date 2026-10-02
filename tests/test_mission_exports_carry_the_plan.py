@@ -406,4 +406,7 @@ class TestMissionManager:
         rows = [line.split("\t") for line in Path(saved.qgc_wpl_path).read_text().splitlines()[1:]]
         commands = [int(r[3]) for r in rows]
         assert commands[0] == NAV_WAYPOINT and commands[1] == NAV_TAKEOFF
-        assert 203 in commands, "no camera trigger in the saved mission"
+        # A per-waypoint plan shoots with DO_DIGICAM_CONTROL (203); a mapping plan the
+        # planner marks continuous shoots by distance, DO_SET_CAM_TRIGG_DIST (206) > 0 m.
+        assert 203 in commands or any(
+            int(r[3]) == 206 and float(r[4]) > 0.0 for r in rows), "no camera trigger in the saved mission"

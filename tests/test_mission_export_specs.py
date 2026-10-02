@@ -76,7 +76,6 @@ def make_plan(*, dwell_s: float = 0.0, yaws=(90.0, 200.0, 300.0, 10.0), capture=
                 }
                 for index, yaw in enumerate(yaws)
             ],
-            "capture": dict(capture or PER_WAYPOINT),
         },
         "safety_constraints": {
             "geofence": [
@@ -87,6 +86,15 @@ def make_plan(*, dwell_s: float = 0.0, yaws=(90.0, 200.0, 300.0, 10.0), capture=
             "rth_altitude_m": 75.0,
         },
     }
+    capture = capture or PER_WAYPOINT
+    if capture.get("continuous_capture") and capture.get("capture_spacing_m", 0.0) > 0.0:
+        # The shape the planner writes (MissionPlanner._build_autopilot_commands).
+        plan["autopilot_commands"] = [{
+            "command": "SET_CAMERA_TRIGGER_DISTANCE",
+            "distance_m": float(capture["capture_spacing_m"]),
+            "min_interval_s": 0.0,
+            "capture_mode": "continuous_photo",
+        }]
     plan.update(extra)
     return plan
 
@@ -354,6 +362,29 @@ class TestQgcPlan:
             elif item["command"] == exporters.MAV_CMD_DO_DIGICAM_CONTROL:
                 trail.append("photo")
         assert trail == ["wp", "photo", "wp", "wp", ("dist", 12.0), "wp", ("dist", 0.0)]
+
+    @pytest.mark.parametrize("capture", [PER_WAYPOINT, DISTANCE], ids=["per_waypoint", "distance"])
+    def test_the_plan_keeps_all_seven_params_of_every_command(self, tmp_path, capture):
+        """A .plan SimpleItem's params is the 7 MAVLink params. Params 5-7 of DO_ items
+        carry meaning (DO_DIGICAM_CONTROL shoot = param5, DO_MOUNT_CONTROL mode =
+        param7), so the .plan must hold exactly what the .waypoints file holds."""
+        plan = make_plan(dwell_s=2.0, capture=capture)
+        items = write_plan(tmp_path, plan)["mission"]["items"]
+        rows = Path(export_qgc_wpl(tmp_path / "m.waypoints", plan)).read_text().splitlines()[2:]
+        assert len(rows) == len(items)
+        for row, item in zip(rows, items):
+            fields = row.split("	")
+            assert int(fields[3]) == item["command"]
+            wpl = [float(v) for v in fields[4:11]]
+            plan_params = [0.0 if v is None else float(v) for v in item["params"]]
+            assert len(item["params"]) == 7
+            assert plan_params == pytest.approx(wpl, abs=1e-5), item["command"]
+        by_command = {}
+        for item in items:
+            by_command.setdefault(item["command"], []).append(item["params"])
+        assert all(p[6] == 2.0 for p in by_command[exporters.MAV_CMD_DO_MOUNT_CONTROL])
+        for params in by_command.get(exporters.MAV_CMD_DO_DIGICAM_CONTROL, []):
+            assert params[4] == 1.0
 
     def test_per_waypoint_capture_never_sets_a_trigger_distance(self, tmp_path):
         commands = [item["command"] for item in write_plan(tmp_path, make_plan())["mission"]["items"]]
@@ -647,3 +678,38 @@ def test_planned_missions_export_spec_complete_wpml(tmp_path, template):
         assert children(placemark) >= WAYLINES_PLACEMARK_REQUIRED
     assert_common_elements(template_root)
     assert_common_elements(waylines)
+
+
+@pytest.mark.parametrize("template", ["grid", "facade_mapping"])
+def test_a_planned_mapping_mission_exports_distance_triggering_everywhere(tmp_path, template):
+    """The planner decides continuous capture; nothing here injects capture keys. A real
+    mapping plan must reach every exporter as distance-triggered capture."""
+    from app.api import Api
+    from app.session import AppSession
+    from app.store import ProjectStore
+
+    session = AppSession(store=ProjectStore(tmp_path / "projects.db"))
+    session.create_project("dist", root_dir=str(tmp_path / "project"))
+    api = Api(session)
+    assert api.set_aoi([[-81.7535, 41.3035], [-81.7521, 41.3035],
+                        [-81.7521, 41.3044], [-81.7535, 41.3044]])["ok"]
+    assert api.plan_mission({"template": template})["ok"]
+    written = api.export_mission(["qgc_plan", "litchi", "dji_wpml"], str(tmp_path / "out"))["written"]
+    assert not [v for v in written.values() if str(v).startswith("failed")], written
+
+    items = json.loads(Path(written["qgc_plan"]).read_text())["mission"]["items"]
+    distances = [i["params"][0] for i in items if i["command"] == exporters.MAV_CMD_DO_SET_CAM_TRIGG_DIST]
+    assert distances and distances[0] > 0.0 and distances[-1] == 0.0
+
+    litchi_paths = [path for name, path in written.items() if name.startswith("litchi")]
+    assert litchi_paths
+    intervals = []
+    for csv_path in litchi_paths:
+        with open(csv_path, encoding="utf-8", newline="") as handle:
+            intervals += [float(r["photo_distinterval"]) for r in csv.DictReader(handle)]
+    assert any(v > 0.0 for v in intervals)
+
+    for root in read_kmz(written["dji_wpml"]):
+        groups = photo_groups(root)
+        assert any(kind == "multipleDistance" and end > start for kind, start, end, _ in groups)
+        assert_common_elements(root)
