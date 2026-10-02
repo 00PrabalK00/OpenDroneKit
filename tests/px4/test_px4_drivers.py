@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from ._support import (PX4_LOITER, PX4_MISSION, PX4_RTL, connect, distance_m, fields_compared,
+from ._support import (PLAN_OPTIONS, PX4_LOITER, PX4_MISSION, PX4_RTL, connect, distance_m, fields_compared,
                        item_mismatches, make_api, plan, planned_items, telemetry, wait_telemetry,
                        when_armable, write_json)
 from .conftest import evidence_dir
@@ -250,6 +250,11 @@ def test_mission_flight_pause_resume_rtl(px4, driver, observer, tmp_path, reques
         assert uploaded["ok"], uploaded
         total = len(planned_items(api)[0])
         log["items"] = total
+        # The plan's return altitude is on the vehicle, read back from PX4 itself.
+        rth_planned = PLAN_OPTIONS["rth_altitude_m"]
+        log["return_altitude_upload"] = uploaded["upload"].get("return_altitude")
+        log["px4_RTL_RETURN_ALT"] = observer.param("RTL_RETURN_ALT")
+        assert log["px4_RTL_RETURN_ALT"] == pytest.approx(rth_planned), log
 
         # Start: the pilot overrides the checklist's manual items (camera, weather, ...)
         # that a simulator cannot confirm; PX4's own arming checks still apply.
@@ -338,6 +343,8 @@ def test_mission_flight_pause_resume_rtl(px4, driver, observer, tmp_path, reques
                              "peak_rel_alt_during_rtl_m": peak,
                              "rtl_seconds": round(down.t - mark, 1)}
         assert landed_from_home < 5.0, log["rtl_result"]
+        # PX4 returned at its own default (30 m here) before the plan's RTH was set.
+        assert peak <= rth_planned + 1.5, log["rtl_result"]
         assert abs(final["relative_alt"] / 1000.0) < 1.0, log["rtl_result"]
         wait_telemetry(api, "the app to show the vehicle disarmed",
                        lambda t: t.get("armed") is False, 10.0)

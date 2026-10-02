@@ -47,7 +47,7 @@ class Observer:
 
     KEEP = {"HEARTBEAT", "COMMAND_ACK", "STATUSTEXT", "MISSION_CURRENT", "MISSION_ITEM_REACHED",
             "MISSION_ACK", "MISSION_COUNT", "HOME_POSITION", "GLOBAL_POSITION_INT", "VFR_HUD",
-            "BATTERY_STATUS", "GPS_RAW_INT", "SYS_STATUS", "EXTENDED_SYS_STATE"}
+            "BATTERY_STATUS", "GPS_RAW_INT", "SYS_STATUS", "EXTENDED_SYS_STATE", "PARAM_VALUE"}
     HIGH_RATE = {"GLOBAL_POSITION_INT", "VFR_HUD", "HEARTBEAT", "BATTERY_STATUS", "GPS_RAW_INT",
                  "SYS_STATUS", "EXTENDED_SYS_STATE", "HOME_POSITION"}
     PROTOCOL = {"MISSION_COUNT", "MISSION_ITEM_INT", "MISSION_ACK"}
@@ -121,6 +121,18 @@ class Observer:
                 if predicate(entry.data):
                     return entry
             time.sleep(0.1)
+        return None
+
+    def param(self, name: str, timeout_s: float = 3.0) -> float | None:
+        """A parameter's value as PX4 reports it (PARAM_REQUEST_READ on this link)."""
+        for _ in range(3):
+            mark = self.mark()
+            self.conn.mav.param_request_read_send(1, 1, name.encode("ascii"), -1)
+            found = self.wait_for("PARAM_VALUE",
+                                  lambda d: str(d.get("param_id", "")).strip(chr(0)) == name,
+                                  since=mark, timeout_s=timeout_s)
+            if found is not None:
+                return float(found.data["param_value"])
         return None
 
     def mode(self) -> str:
@@ -202,8 +214,11 @@ class Observer:
                     last[e.type] = e.t
                     if e.type == "HEARTBEAT":
                         last_mode = (e.data["mode"], e.data["armed"])
+                data = dict(e.data)
+                if "type" in data:   # HEARTBEAT / BATTERY_STATUS carry a MAV_TYPE field
+                    data["mav_type"] = data.pop("type")
                 handle.write(json.dumps({"t": round(e.t - self.origin, 3), "type": e.type,
-                                         **e.data}, default=str) + "\n")
+                                         **data}, default=str) + "\n")
         return path
 
 
@@ -269,7 +284,11 @@ def plan(api, template: str) -> dict[str, Any]:
     t = telemetry(api)
     lat0, lon0 = float(t["home_lat"]), float(t["home_lon"])
     if template == "orbit":
-        polygon = [offset_lonlat(lat0, lon0, n, e) for n, e in ((12, 18), (12, 30), (22, 30), (22, 18))]
+        # The launch point sits ~15 m inside the orbit's fence. With the building at
+        # 12-22 m N / 18-30 m E it was 1.2 m inside, and PX4's predictive geofence
+        # failsafed one RTL into a hold at the fence edge ("Geofence violation:
+        # approaching or outside geofence").
+        polygon = [offset_lonlat(lat0, lon0, n, e) for n, e in ((2, 8), (2, 20), (12, 20), (12, 8))]
         options = {"orbit_radius_m": 15.0}
     else:
         polygon = [offset_lonlat(lat0, lon0, n, e) for n, e in ((-10, -10), (-10, 50), (40, 50), (40, -10))]
