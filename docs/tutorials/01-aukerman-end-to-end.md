@@ -129,9 +129,13 @@ for caveat in (square.raw.get("measurement") or {}).get("caveats", []):
     print("caveat:", caveat)
 ```
 
-Both numbers come from the orthomosaic's georeferencing, not from the lon/lat you typed:
-the points are converted to raster pixels and measured there, so they inherit the
-model's accuracy (step 3).
+The points are converted to the orthomosaic's pixels and measured there, in its projected
+CRS (EPSG 32617). Because these points were typed as coordinates, the numbers are just the
+planar length and area between them, give or take a pixel; they agree with the
+coordinates' own geometry and say nothing about how accurate the reconstruction is. When
+you instead pick points on features you can see in the orthomosaic, where those features
+sit on the ground depends on the georeferencing, so such measurements are only as good as
+the camera-position RMSE from step 3.
 
 ## 5. Write the report
 

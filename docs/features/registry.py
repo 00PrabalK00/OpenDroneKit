@@ -1924,7 +1924,8 @@ PLATFORM = [
       "verified", ["tests/test_tutorials.py"],
       "The test runs each tutorial's code on the reference copies, checked against the "
       "pinned hashes. Tutorial 1 checks a 0.0004 deg distance measured on the orthomosaic "
-      "against its ellipsoidal length (3%) and the area (5%). It skips when COLMAP or the "
+      "against its ellipsoidal length (3%) and the area (5%); this checks the lon/lat to "
+      "raster-pixel to projected-CRS round trip, not the reconstruction's accuracy. It skips when COLMAP or the "
       "reference data is absent, which leaves the row at implemented there."),
     F("data.sample_fetch", "Sample-dataset fetch script with pinned hashes", "infra", "Docs",
       "tools/fetch_sample_data.py fetches the open datasets from their publishers only, "
