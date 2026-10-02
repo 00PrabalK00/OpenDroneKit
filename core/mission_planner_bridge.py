@@ -451,6 +451,11 @@ class MissionPlannerDroneClient:
     def _px4(self) -> bool:
         return self._autopilot == MAV_AUTOPILOT_PX4
 
+    @property
+    def autopilot(self) -> str:
+        """The flight stack on the other end, as the mission builder names it."""
+        return "px4" if self._px4() else "ardupilot"
+
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
     def connect(self, connection_uri: str = "udpin:0.0.0.0:14550") -> None:
@@ -974,7 +979,8 @@ class MissionPlannerDroneClient:
 
         report: dict[str, Any] = {"mission": None, "fence": None, "rally": None}
 
-        items = [item.to_dict() for item in build_mission_items(mission_plan)]
+        items = [item.to_dict() for item in build_mission_items(mission_plan,
+                                                                autopilot=self.autopilot)]
         mission_result = self.upload_mission(items)
         report["mission"] = {
             "success": mission_result.success,

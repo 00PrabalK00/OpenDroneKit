@@ -220,12 +220,17 @@ def _capture_spacing(plan: dict[str, Any]) -> float:
     return float(capture.get("capture_spacing_m", 0.0) or 0.0)
 
 
-def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[MissionItem]:
+def build_mission_items(mission: Any, *, include_rth: bool = True,
+                        autopilot: str = "ardupilot") -> list[MissionItem]:
     """Expand a mission plan into a full MAVLink item sequence.
 
     Emits gimbal, yaw, dwell, and camera commands around each waypoint so the vehicle
     reproduces the planned capture, not merely the planned path.
+
+    ``autopilot`` is the flight stack the items are for ("ardupilot" or "px4"); see
+    the heading notes below for where they differ.
     """
+    px4 = str(autopilot or "").lower() == "px4"
     plan = _plan_dict(mission)
     viewpoints = _viewpoints(plan)
     if not viewpoints:
@@ -302,7 +307,11 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
             label=f"gimbal {gimbal:.1f} deg",
         )
 
-        if pose["yaw_locked"]:
+        # PX4 has no CONDITION_YAW in a mission: v1.15.4 refused a whole orbit upload
+        # at its first one ("IGN MISSION_ITEM: Invalid item", MAV_MISSION_UNSUPPORTED).
+        # PX4 flies a waypoint's param4 as the heading to hold there, which the
+        # waypoint below already carries, so for PX4 that is the heading.
+        if pose["yaw_locked"] and not px4:
             add(
                 MAV_CMD_CONDITION_YAW,
                 frame=MAV_FRAME_MISSION,
@@ -318,7 +327,19 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
             )
 
         dwell = pose["dwell_s"]
-        if dwell > 0.0:
+        if dwell > 0.0 and px4:
+            # On PX4 a hold is a waypoint's param1 (time_inside), so the heading in its
+            # param4 is kept; LOITER_TIME's param4 is not a heading there.
+            add(
+                MAV_CMD_NAV_WAYPOINT,
+                param1=float(dwell),
+                param4=pose["yaw_deg"] if pose["yaw_locked"] else float("nan"),
+                latitude=pose["lat"],
+                longitude=pose["lon"],
+                altitude=pose["alt"],
+                label=f"waypoint {index + 1}, hold {dwell:g} s",
+            )
+        elif dwell > 0.0:
             # ArduPilot keeps a loiter time as whole seconds (a uint16 in AP_Mission) and
             # truncates: the planner's 1.5 s stop-and-shoot hold was stored -- and read
             # back from a real ArduCopter -- as 1 s, a third shorter than planned. Rounded

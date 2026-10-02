@@ -5631,7 +5631,11 @@ class Api:
             return fail(f"The {self._session.vehicle.driver!r} driver does not support mission upload.")
 
         plan = self._session.mission_plan_dict
-        items = [item.to_dict() for item in exporters.build_mission_items(plan)]
+        # The items are written for the flight stack on the other end: PX4 refuses
+        # commands ArduPilot needs (CONDITION_YAW) and carries a heading where ArduPilot
+        # ignores one.
+        autopilot = str(getattr(client, "autopilot", "ardupilot") or "ardupilot")
+        items = [item.to_dict() for item in exporters.build_mission_items(plan, autopilot=autopilot)]
         fence = [item.to_dict() for item in exporters.build_fence_items(plan)]
         rally_plan = plan
         if self._session.rally_points:
