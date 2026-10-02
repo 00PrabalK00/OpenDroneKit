@@ -505,6 +505,12 @@ export function mountMapFurniture(map, host, {
   layersButton.addEventListener("click", () => {
     if (pop.node.hidden) return;
     buildLayers();
+    placeLayers();
+  });
+  // A window resized with the popover open would leave it where the stack used to be.
+  const onResize = () => { if (!pop.node.hidden) placeLayers(); };
+  window.addEventListener("resize", onResize);
+  function placeLayers() {
     // Open beside the stack, not over it.
     const r = layersButton.getBoundingClientRect();
     const width = pop.node.offsetWidth || 340;
@@ -513,7 +519,7 @@ export function mountMapFurniture(map, host, {
     pop.node.style.top = `${top}px`;
     // It scrolls inside the window rather than running off its bottom edge.
     pop.node.style.maxHeight = `${Math.max(160, window.innerHeight - top - 8)}px`;
-  });
+  }
 
   const group = (label, children) => el("div", { class: "odk-mapf-group", role: "group", "aria-label": label }, [
     el("span", { class: "odk-label", text: label }), ...children,
@@ -746,6 +752,7 @@ export function mountMapFurniture(map, host, {
       map.off("mousemove", onMouse);
       map.off("idle", onStyle);
       host.removeEventListener("odk:project", onProject);
+      window.removeEventListener("resize", onResize);
       unbindTheme();
       stopDrawingWatch();
       if (modeObserver) modeObserver.disconnect();
