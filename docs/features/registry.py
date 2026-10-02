@@ -1485,6 +1485,20 @@ INSPECTION = [
                       "tests/test_cockpit_thermal_range.py"],
       "Bridge orthomosaic B1_Aug22.tif (band unit metadata 'metre') is refused until "
       "confirmed; confirmed as Celsius it reads 15.05-57.29 C, matching its provenance."),
+    F("pack.solar.thermal_frame", "Per-module PV temperatures in one thermal frame",
+      "vision", "India pack: Solar",
+      "Median/mean/min/max and hot-cell, module and string deltas per module, read from a "
+      "decoded radiometric frame inside operator-drawn module outlines in its pixel grid; "
+      "nothing is placed on a map, and severities are review candidates under a named "
+      "threshold convention.",
+      "implemented", ["tests/test_thermal_real_data.py::TestDownstreamOnRealFrames"],
+      "Real THED-PV frames (FLIR Duo Pro R TLinear) where the frame rail between two "
+      "modules is visible in IR and RGB; outlines in tests/fixtures/thedpv_module_regions"
+      ".json, rail edges re-measured from the IR profile in the test. Measured 2026-10-02: "
+      "frame 120204_881 upper/lower module medians 38.85/40.05 C; frame 120227_869 "
+      "48.85/44.05 C; every statistic equals numpy over the same pixels. Reflections "
+      "dominate these close-ups and there is no reference thermometer or plant module ID, "
+      "so this demonstrates the computation on real geometry, not a fault finding."),
     F("th.map_2d", "2D thermal map", "workers", "Thermal",
       "Temperature field written as a georeferenced raster in Celsius, so its units "
       "are unambiguous in GIS.",

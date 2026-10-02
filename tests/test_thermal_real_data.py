@@ -347,30 +347,78 @@ class TestDownstreamOnRealFrames:
             assert result["ok"], result
             assert result["provenance"]["unit"] == "celsius"
 
-    def test_image_space_module_temperatures_on_a_thedpv_frame(self, tmp_path):
-        """THED-PV frames are close-ups within one module and are not georeferenced, so
-        the regions here are frame halves: test geometry, not module outlines."""
+    @pytest.mark.parametrize("frame_name", sorted(json.loads(
+        (Path(__file__).parent / "fixtures" / "thedpv_module_regions.json").read_text(
+            encoding="utf-8"))["frames"]))
+    def test_per_module_temperatures_on_real_module_outlines(self, tmp_path, frame_name):
+        """Two THED-PV frames show the frame rail between two modules (IR and RGB). The
+        module outlines in tests/fixtures/thedpv_module_regions.json stop short of that
+        rail; this checks the rail edges are really where the annotation says, then
+        runs the per-module analysis and checks every number against the decoded field."""
+        from scipy.ndimage import uniform_filter1d
+
         from core.india_thermal import module_temperatures_in_image
 
-        frame = next(_need(THEDPV_SESSION, "THED-PV").glob("*_IR.TIFF"))
+        annotation = json.loads((Path(__file__).parent / "fixtures"
+                                 / "thedpv_module_regions.json").read_text(encoding="utf-8"))
+        entry = annotation["frames"][frame_name]
+        frame = _need(THEDPV_SESSION / frame_name, "THED-PV frame")
         image = load_radiometric_file(frame)
-        regions = [
-            {"module_id": "left_half", "string_id": "frame",
-             "polygon_px": [[0, 0], [319, 0], [319, 511], [0, 511]]},
-            {"module_id": "right_half", "string_id": "frame",
-             "polygon_px": [[320, 0], [639, 0], [639, 511], [320, 511]]},
-        ]
+        field = image.celsius
+
+        # The rail's two lips are the coolest rows of the column-median profile.
+        profile = uniform_filter1d(np.median(field[:, 120:], axis=1), 9)
+        minima = [r for r in range(5, profile.size - 5)
+                  if profile[r] == profile[r - 5:r + 6].min()
+                  and profile[r] < np.median(profile) - 1.5]
+        for edge in entry["rail_edge_rows"]:
+            assert any(abs(r - edge) <= 3 for r in minima), (edge, minima)
+        upper, lower = entry["regions"]
+        upper_bottom = upper["polygon_px"][2][1]
+        lower_top = lower["polygon_px"][0][1]
+        assert upper_bottom <= min(entry["rail_edge_rows"]) - 15
+        assert lower_top >= max(entry["rail_edge_rows"]) + 15
+
         result = module_temperatures_in_image(
-            frame, regions, tmp_path, region_source="test fixture: frame halves",
+            frame, entry["regions"], tmp_path, region_source=annotation["region_source"],
             warning_delta_c=5, critical_delta_c=10, hot_cell_delta_c=10,
-            threshold_basis="test thresholds, no standard")
-        rows = json.loads(Path(result.artifact_paths[0]).read_text(encoding="utf-8"))["modules"]
-        left = image.celsius[:, :320]
-        assert rows[0]["median_c"] == pytest.approx(float(np.median(left)), abs=1e-3)
-        assert rows[0]["max_c"] == pytest.approx(float(left.max()), abs=1e-3)
+            threshold_basis="test thresholds for computation only, no standard")
+        rows = {row["module_id"]: row for row in json.loads(
+            Path(result.artifact_paths[0]).read_text(encoding="utf-8"))["modules"]}
+        # The polygon fill includes its boundary row (OpenCV rasterisation).
+        for row, cells in ((rows["upper_module"], field[:upper_bottom + 1, :]),
+                           (rows["lower_module"], field[lower_top:, :])):
+            assert row["pixels"] == cells.size
+            assert row["median_c"] == pytest.approx(float(np.median(cells)), abs=1e-3)
+            assert row["mean_c"] == pytest.approx(float(cells.mean()), abs=1e-3)
+            assert row["max_c"] == pytest.approx(float(cells.max()), abs=1e-3)
+            assert row["min_c"] == pytest.approx(float(cells.min()), abs=1e-3)
+        reference = float(np.median([rows["upper_module"]["median_c"],
+                                     rows["lower_module"]["median_c"]]))
+        for row in rows.values():
+            assert row["string_reference_c"] == pytest.approx(reference, abs=1e-3)
+            assert row["module_delta_c"] == pytest.approx(
+                max(0.0, row["median_c"] - reference), abs=2e-3)
         summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+        assert summary["region_source"].startswith("operator annotation")
         assert summary["provenance"]["decoder"] == "flir_tlinear_tiff"
         assert summary["temperature_source"].startswith("flir_tlinear_tiff")
+        # Plausibility only (no reference thermometer): sunlit modules near 24.3 C air.
+        assert all(30 < row["median_c"] < 70 for row in rows.values())
+
+    def test_the_api_runs_the_single_frame_module_analysis(self, tmp_path):
+        from cockpit_harness import make_api
+
+        annotation = Path(__file__).parent / "fixtures" / "thedpv_module_regions.json"
+        name = "20241221_120204_881_IR.TIFF"
+        regions = tmp_path / "regions.json"
+        regions.write_text(json.dumps({"regions": json.loads(annotation.read_text(
+            encoding="utf-8"))["frames"][name]["regions"]}), encoding="utf-8")
+        api = make_api(tmp_path)
+        result = api.india_module_temperatures_in_image(
+            str(_need(THEDPV_SESSION / name, "THED-PV frame")), str(regions),
+            "operator annotation (test)", 5, 10, 10, "test thresholds, no standard")
+        assert result["ok"], result
 
     def test_map_placed_association_refuses_a_bare_frame_with_the_reason(self):
         from core.india_geospatial import IndiaPackRefused
@@ -379,6 +427,32 @@ class TestDownstreamOnRealFrames:
         frame = next(_need(THEDPV_SESSION, "THED-PV").glob("*_IR.TIFF"))
         with pytest.raises(IndiaPackRefused, match="no map georeferencing"):
             _radiometric_georeferencing(frame)
+
+    def test_map_placed_association_asks_for_the_unit_of_an_untagged_ortho(self):
+        """The bridge thermal orthomosaic is float32 C but declares its unit as 'metre':
+        the map path must ask, then use the user's answer with the raster's own CRS."""
+        from core.india_thermal import _radiometric_georeferencing
+        from core.thermal import UnitConfirmationNeeded
+
+        ortho = _need(BRIDGE / "orthophoto" / "B1_Aug22.tif", "Bridge thermal orthomosaic")
+        with pytest.raises(UnitConfirmationNeeded, match="metre"):
+            _radiometric_georeferencing(ortho)
+        image, epsg, transform = _radiometric_georeferencing(ortho, "celsius")
+        assert epsg == 32636
+        assert image.provenance["unit_source"] == "confirmed_by_user"
+        finite = image.celsius[np.isfinite(image.celsius)]
+        assert float(finite.min()) == pytest.approx(15.05, abs=0.01)
+        assert float(finite.max()) == pytest.approx(57.29, abs=0.01)
+
+    def test_the_api_returns_needs_unit_confirmation_for_module_association(self, tmp_path):
+        from cockpit_harness import make_api
+
+        ortho = _need(BRIDGE / "orthophoto" / "B1_Aug22.tif", "Bridge thermal orthomosaic")
+        api = make_api(tmp_path)
+        result = api.india_module_temperatures_in_image(
+            str(ortho), str(tmp_path / "unused.json"), "test", 5, 10, 10, "test")
+        assert not result["ok"]
+        assert result.get("needs_unit_confirmation") is True
 
     def test_a_thermal_map_records_how_its_temperatures_were_decoded(self, tmp_path):
         _need_sdk()

@@ -65,6 +65,21 @@ async function number(ctx, label, fallback = "") {
   return value;
 }
 
+// Run a thermal call; when the raster does not say its values are temperatures, ask
+// the user for the unit and retry with their answer. Never assume a unit.
+async function callAskingUnit(ctx, run) {
+  try {
+    return await run("");
+  } catch (error) {
+    if (!(error.result && error.result.needs_unit_confirmation)) throw error;
+    const units = { "Degrees Celsius": "celsius", Kelvin: "kelvin" };
+    const unit = await ctx.choose(`${error.message} What unit are its values in?`,
+      [...Object.keys(units), "Not temperatures / not sure"]);
+    if (!unit || !units[unit]) return { skipped: "The raster's unit was not confirmed; nothing was read." };
+    return run(units[unit]);
+  }
+}
+
 const SURVEY_PACKS = {
   "Land GIS / encroachment": async (ctx) => {
     const [raster, schema] = await semanticSource(ctx);
@@ -152,7 +167,8 @@ const SURVEY_PACKS = {
     const critical = await number(ctx, "Critical above module median (°C)");
     const hot = await number(ctx, "Hot cell above module median (°C)");
     const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
-    return call("india_module_temperatures", thermal, rgb, points, modules, by, warning, critical, hot, basis);
+    return callAskingUnit(ctx, (unit) => call("india_module_temperatures", thermal, rgb, points,
+      modules, by, warning, critical, hot, basis, unit));
   },
   "Module temperatures (single frame)": async (ctx) => {
     // One radiometric frame (FLIR JPEG, DJI R-JPEG via the DJI Thermal SDK, FLIR
@@ -164,7 +180,8 @@ const SURVEY_PACKS = {
     const critical = await number(ctx, "Critical above module median (°C)");
     const hot = await number(ctx, "Hot cell above module median (°C)");
     const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
-    return call("india_module_temperatures_in_image", thermal, regions, by, warning, critical, hot, basis);
+    return callAskingUnit(ctx, (unit) => call("india_module_temperatures_in_image", thermal,
+      regions, by, warning, critical, hot, basis, unit));
   },
   "Anomaly baseline": async (ctx) => {
     // A baseline is fitted to at least two independently captured normal rasters; one

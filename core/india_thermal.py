@@ -26,6 +26,7 @@ from .india_geospatial import (
 from .thermal import (
     NotRadiometric,
     ThermalImage,
+    UnitConfirmationNeeded,
     load_radiometric_file,
     load_temperature_geotiff,
     write_thermal_geotiff,
@@ -91,6 +92,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _load_temperature_field(path: Path, confirmed_unit: str | None = None) -> ThermalImage:
+    """Any supported thermal file as a Celsius field, chosen by its content.
+
+    A TIFF carrying a FLIR TLinear gain is a radiometric camera frame; any other TIFF
+    is a temperature raster, which must say it holds temperatures or have its unit
+    confirmed by the user (``confirmed_unit``). ``UnitConfirmationNeeded`` is raised,
+    never swallowed, so the caller can ask.
+    """
+    if path.suffix.lower() in {".tif", ".tiff"}:
+        from .thermal_tlinear import is_tlinear_tiff
+
+        if not is_tlinear_tiff(path):
+            return load_temperature_geotiff(path, confirmed_unit or None)
+    return load_radiometric_file(path)
+
+
 def _control_points(value: Sequence[Mapping[str, Any]] | str | Path) -> list[dict[str, Any]]:
     if isinstance(value, (str, Path)):
         path = Path(value)
@@ -132,6 +149,7 @@ def score_rgb_thermal_registration(
     ransac_reproj_threshold_px: float = 3.0,
     minimum_inlier_fraction: float = 0.75,
     minimum_coverage_fraction: float = 0.08,
+    confirmed_unit: str | None = None,
 ) -> ThermalRegistration:
     """Fit and check an operator-supplied RGB/thermal correspondence set.
 
@@ -157,7 +175,9 @@ def score_rgb_thermal_registration(
     if not rgb_file.is_file():
         raise IndiaPackRefused(f"RGB image does not exist: {rgb_file}")
     try:
-        thermal_image = load_radiometric_file(thermal_file)
+        thermal_image = _load_temperature_field(thermal_file, confirmed_unit)
+    except UnitConfirmationNeeded:
+        raise
     except (NotRadiometric, KeyError, ValueError, json.JSONDecodeError) as exc:
         raise IndiaPackRefused(
             "RGB/thermal registration requires radiometric counts from a thermal file (sidecar, "
@@ -354,12 +374,19 @@ def write_radiometric_thermal_map(
     )
 
 
-def _geotiff_georeferencing(path: Path) -> tuple[ThermalImage, int, tuple[float, ...]]:
-    """A temperature GeoTIFF supplies its own CRS and affine transform."""
+def _geotiff_georeferencing(path: Path, confirmed_unit: str | None = None,
+                            ) -> tuple[ThermalImage, int, tuple[float, ...]]:
+    """A temperature GeoTIFF supplies its own CRS and affine transform.
+
+    A raster that does not declare a temperature unit raises UnitConfirmationNeeded
+    unless the user confirmed the unit.
+    """
     import rasterio
 
     try:
-        image = load_temperature_geotiff(path)
+        image = load_temperature_geotiff(path, confirmed_unit or None)
+    except UnitConfirmationNeeded:
+        raise
     except (NotRadiometric, ValueError) as exc:
         raise IndiaPackRefused(str(exc)) from exc
     with rasterio.open(path) as raster:
@@ -374,12 +401,13 @@ def _geotiff_georeferencing(path: Path) -> tuple[ThermalImage, int, tuple[float,
                          transform.d, transform.e, transform.f)
 
 
-def _radiometric_georeferencing(path: Path) -> tuple[ThermalImage, int, tuple[float, ...]]:
+def _radiometric_georeferencing(path: Path, confirmed_unit: str | None = None,
+                                ) -> tuple[ThermalImage, int, tuple[float, ...]]:
     if path.suffix.lower() in {".tif", ".tiff"}:
         from .thermal_tlinear import is_tlinear_tiff
 
         if not is_tlinear_tiff(path):
-            return _geotiff_georeferencing(path)
+            return _geotiff_georeferencing(path, confirmed_unit)
     if path.suffix.lower() != ".json":
         try:
             load_radiometric_file(path)
@@ -443,8 +471,13 @@ def associate_module_temperatures(
     threshold_basis: str,
     minimum_valid_fraction: float = 0.8,
     minimum_polygon_iou: float = 0.5,
+    confirmed_unit: str | None = None,
 ) -> IndiaPackResult:
     """Associate measured temperatures with geolocated module polygons.
+
+    ``confirmed_unit`` ("celsius"/"kelvin") is the user's answer for a temperature
+    GeoTIFF that does not declare its unit; without it such a raster is refused with
+    UnitConfirmationNeeded.
 
     Every module must carry an observed RGB pixel polygon as
     ``properties.rgb_polygon_px``.  That polygon is transformed through the
@@ -480,7 +513,8 @@ def associate_module_temperatures(
         )
 
     thermal_file = Path(thermal_path)
-    image, thermal_epsg, transform_values = _radiometric_georeferencing(thermal_file)
+    image, thermal_epsg, transform_values = _radiometric_georeferencing(
+        thermal_file, confirmed_unit)
     if image.celsius.ndim != 2 or not image.celsius.size:
         raise IndiaPackRefused("Module association requires a non-empty 2D thermal grid.")
     height, width = image.celsius.shape
@@ -704,6 +738,7 @@ def module_temperatures_in_image(
     hot_cell_delta_c: float,
     threshold_basis: str,
     minimum_valid_fraction: float = 0.8,
+    confirmed_unit: str | None = None,
 ) -> IndiaPackResult:
     """Per-module temperatures in one radiometric frame, in its own pixel grid.
 
@@ -725,7 +760,9 @@ def module_temperatures_in_image(
 
     thermal_file = Path(thermal_path)
     try:
-        image = load_radiometric_file(thermal_file)
+        image = _load_temperature_field(thermal_file, confirmed_unit)
+    except UnitConfirmationNeeded:
+        raise
     except (NotRadiometric, KeyError, ValueError, json.JSONDecodeError) as exc:
         raise IndiaPackRefused(str(exc)) from exc
     field = np.asarray(image.celsius, dtype=np.float64)

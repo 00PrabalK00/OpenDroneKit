@@ -4646,9 +4646,13 @@ class Api:
 
     def _pack(self, pack: str, run: Callable[[Path], Any]) -> dict[str, Any]:
         from core.india_geospatial import IndiaPackRefused
+        from core.thermal import UnitConfirmationNeeded
 
         try:
             result = run(self._pack_dir(pack))
+        except UnitConfirmationNeeded as exc:
+            # A raster that does not say its values are temperatures: ask, never assume.
+            return fail(str(exc), needs_unit_confirmation=True)
         except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
             return fail(str(exc))
         return self._finish_pack(pack, result)
@@ -4857,8 +4861,11 @@ class Api:
                                   control_points_path: str, modules_path: str,
                                   validated_by: str, warning_delta_c: float,
                                   critical_delta_c: float, hot_cell_delta_c: float,
-                                  threshold_basis: str) -> dict[str, Any]:
+                                  threshold_basis: str, confirmed_unit: str = "") -> dict[str, Any]:
         """Measured module temperatures, after the RGB/thermal tie points are checked.
+
+        ``confirmed_unit`` is the user's answer when the thermal raster is a GeoTIFF
+        that does not say its values are temperatures (``needs_unit_confirmation``).
 
         Positional on purpose: the bridge calls with positional arguments only, and
         keyword-only parameters made the cockpit's call a TypeError every time.
@@ -4867,11 +4874,13 @@ class Api:
 
         def run(out: Path):
             registration = score_rgb_thermal_registration(
-                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by))
+                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by),
+                confirmed_unit=confirmed_unit or None)
             return associate_module_temperatures(
                 thermal_path, registration, modules_path, out,
                 warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
-                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis))
+                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis),
+                confirmed_unit=confirmed_unit or None)
 
         return self._pack("module_temperatures", run)
 
@@ -4879,7 +4888,8 @@ class Api:
     def india_module_temperatures_in_image(self, thermal_path: str, regions_path: str,
                                            region_source: str, warning_delta_c: float,
                                            critical_delta_c: float, hot_cell_delta_c: float,
-                                           threshold_basis: str) -> dict[str, Any]:
+                                           threshold_basis: str,
+                                           confirmed_unit: str = "") -> dict[str, Any]:
         """Per-module temperatures inside one radiometric frame, in its pixel grid.
 
         For frames with no map georeferencing (mast or hand-held captures, single drone
@@ -4890,7 +4900,8 @@ class Api:
         return self._pack("module_temperatures_image", lambda out: module_temperatures_in_image(
             thermal_path, regions_path, out, region_source=str(region_source),
             warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
-            hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis)))
+            hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis),
+            confirmed_unit=confirmed_unit or None))
 
     @guard
     def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,
