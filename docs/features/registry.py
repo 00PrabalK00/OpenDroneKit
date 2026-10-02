@@ -1356,7 +1356,16 @@ INDIA_FIRST = [
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
       "India pack: Agriculture",
       "Crop, soil, unwanted vegetation and water masks with canopy cover and bare/missing regions.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster",
+                      "tests/test_india_agriculture_pack.py::test_index_cover_classes_feed_canopy_cover_and_need_a_scope",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_canopy_from_a_calibrated_index_then_plant_separability",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "Also from a calibrated NDVI (classify_index_cover, Api.india_index_cover, cockpit Canopy cover): "
+      "canopy / sparse / bare cut points measured per survey by 3-class multi-Otsu, scope UNVALIDATED. "
+      "Real data: Buergewald RedEdge-P DLS NDVI cuts 0.430 / 0.708, canopy cover 35.8% of 793.3 m2 "
+      "(canopy 284.0 m2, sparse 209.5 m2, bare 299.8 m2). Consistency only, no ground truth: a visible-band "
+      "excess-green split (no NIR) agrees on 89.9% of 149,460 canopy/bare px; 99.9% of bare px are not green, "
+      "79.3% of canopy px are green."),
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
@@ -1373,7 +1382,13 @@ INDIA_FIRST = [
     F("pack.agriculture.count", "Plant and tree counting", "vision",
       "India pack: Agriculture",
       "Geolocated plant/tree counts with missing and health categories only where validated.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health",
+                      "tests/test_india_agriculture_pack.py::test_plant_count_from_canopy_refuses_merged_rows_and_counts_separate_plants",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "count_plants_from_canopy (Api.india_plant_count_from_canopy, cockpit Plant count) measures separability "
+      "before counting. Real data: Buergewald RedEdge-P at 6.25 cm, max plant footprint 0.25 m2: 80.4% of "
+      "284.0 m2 canopy lies in 28 merged patches (largest 167.0 m2), so the result is not_applicable "
+      "with no count. No plant count is claimed for that survey."),
 
     # Roads, power and rail
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",

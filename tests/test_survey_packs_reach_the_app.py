@@ -120,6 +120,22 @@ class TestEachPackThroughTheApi:
         result = api.india_canopy_cover(raster, schema)
         assert result["ok"], result
 
+    def test_canopy_from_a_calibrated_index_then_plant_separability(self, api, tmp_path):
+        index = np.full((20, 20), 0.1, dtype=np.float32)
+        index[2:4, :] = 0.9  # one closed row
+        index[10:12, 3:5] = 0.9  # one separate plant
+        raster = write_raster(tmp_path / "ndvi.tif", index, nodata=float("nan"), tags={
+            "ODK_CALIBRATED_REFLECTANCE": "true", "ODK_INDEX": "NDVI"})
+        cover = api.india_index_cover(str(raster), "UNVALIDATED app test", 0.3, 0.7)
+        assert cover["ok"], cover
+        assert cover["summary"]["index_cover"]["threshold_method"] == "operator_thresholds"
+        classes = next(p for p in cover["artifacts"] if p.endswith("index_cover_classes.tif"))
+        schema = next(p for p in cover["artifacts"] if p.endswith("index_cover_schema.json"))
+        plants = api.india_plant_count_from_canopy(classes, schema, "UNVALIDATED app test", 9.0, 1.0)
+        assert plants["ok"], plants
+        assert plants["summary"]["status"] == "not_applicable"  # the row holds 40/44 canopy px
+        assert api.india_index_cover(str(raster), "scope", 0.3, None)["ok"] is False
+
     def test_vegetation_indices_need_calibration(self, api, tmp_path):
         bands = np.stack([np.full((4, 4), v, dtype=np.uint16) for v in (2000, 3000, 4000, 6000)])
         raster = write_raster(tmp_path / "ms.tif", bands)

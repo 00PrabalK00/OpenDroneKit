@@ -1061,3 +1061,47 @@ def reflectance_band_calibrations(bands: Sequence[str], source: str) -> dict:
         key: ReflectanceBandCalibration(band=i + 1, scale=1.0, offset=0.0, source=source)
         for i, key in enumerate(bands)
     }
+
+
+def visible_band_cover_check(band_orthomosaic: str | Path, cover_class_raster: str | Path) -> dict:
+    """Check index cover classes against a visible-only greenness index.
+
+    The cover classes come from NDVI (NIR and red). Chromatic excess green
+    (2g - r - b) / (r + g + b) uses no NIR, so it is a second, independent spectral
+    reading of the same surface. Its Otsu split is compared with the canopy and bare
+    classes. Agreement here is consistency between two spectral rules on the same
+    pixels, not accuracy against ground truth.
+    """
+
+    import rasterio
+    from skimage.filters import threshold_otsu
+
+    with rasterio.open(band_orthomosaic) as dataset:
+        names = [str(d or "").casefold() for d in dataset.descriptions]
+        try:
+            blue, green, red = (dataset.read(names.index(n) + 1).astype(np.float32)
+                                for n in ("blue", "green", "red"))
+        except ValueError as exc:
+            raise ValueError("The band orthomosaic needs named blue, green and red bands.") from exc
+    with rasterio.open(cover_class_raster) as dataset:
+        classes = dataset.read(1)
+        nodata = dataset.nodata
+    if classes.shape != blue.shape:
+        raise ValueError("Cover classes and band orthomosaic are not on the same grid.")
+    total = blue + green + red
+    with np.errstate(invalid="ignore", divide="ignore"):
+        exg = np.where(total > 0, (2 * green - red - blue) / total, np.nan)
+    valid = np.isfinite(exg) & (classes != nodata)
+    threshold = float(threshold_otsu(exg[valid]))
+    green_px = exg > threshold
+    canopy = valid & (classes == 1)
+    bare = valid & (classes == 3)
+    both = canopy | bare
+    return {
+        "method": "chromatic excess green (no NIR), Otsu split; consistency, not ground truth",
+        "exg_threshold": round(threshold, 6),
+        "canopy_pixels_green_in_visible": round(float(green_px[canopy].mean()), 6),
+        "bare_pixels_not_green_in_visible": round(float((~green_px[bare]).mean()), 6),
+        "canopy_vs_bare_agreement": round(float((green_px == canopy)[both].mean()), 6),
+        "pixels_compared": int(both.sum()),
+    }

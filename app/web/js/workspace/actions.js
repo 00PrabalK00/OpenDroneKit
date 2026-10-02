@@ -79,6 +79,18 @@ const SURVEY_PACKS = {
     return call("india_design_progress", design, raster, schema);
   },
   "Canopy cover": async (ctx) => {
+    const from = await ctx.choose("Canopy from", [
+      "A semantic class map", "A calibrated vegetation index (NDVI)"]);
+    if (!from) return { skipped: "Nothing chosen." };
+    if (from.startsWith("A calibrated")) {
+      const index = await pickPath(["tif", "tiff"], "NDVI raster from Vegetation indices");
+      const scope = await required(ctx, "How far these cover classes were checked",
+        "UNVALIDATED: cut points measured from this survey's NDVI histogram");
+      // Blank cut points: measured from this survey's own histogram (multi-Otsu).
+      const bare = await ctx.prompt("Bare soil below (blank = measure from the data)", "");
+      const canopy = bare ? await number(ctx, "Canopy from (index value)") : null;
+      return call("india_index_cover", index, scope, bare ? Number(bare) : null, canopy);
+    }
     const [raster, schema] = await semanticSource(ctx);
     return call("india_canopy_cover", raster, schema);
   },
@@ -107,6 +119,16 @@ const SURVEY_PACKS = {
     return call("india_stress_zones", raster, severe, moderate, scope, mask);
   },
   "Plant count": async (ctx) => {
+    const from = await ctx.choose("Count from", [
+      "A validated instance mask", "Canopy classes (checks plants are separable first)"]);
+    if (!from) return { skipped: "Nothing chosen." };
+    if (from.startsWith("Canopy")) {
+      const classes = await pickPath(["tif", "tiff"], "canopy class raster");
+      const schema = await call("pick_file", ["json"]);
+      const scope = await required(ctx, "Validation scope of the canopy classes");
+      const maxArea = await number(ctx, "Largest footprint of one plant for this crop and stage (m2)");
+      return call("india_plant_count_from_canopy", classes, (schema && schema.path) || "", scope, maxArea);
+    }
     const raster = await pickPath(["tif", "tiff"], "instance mask");
     const scope = await required(ctx, "Validation scope of the instance model");
     // A label-id mask keeps touching crowns apart; read as binary they merge into one.

@@ -4713,6 +4713,35 @@ class Api:
         return self._pack("canopy", lambda out: analyse_canopy_cover(raster, classes, out))
 
     @guard
+    def india_index_cover(self, index_raster: str, validation_scope: str,
+                          bare_below: float | None = None,
+                          canopy_from: float | None = None) -> dict[str, Any]:
+        """Canopy / sparse / bare cover classes from a calibrated NDVI, then canopy cover.
+
+        With no cut points they are measured from this survey's index histogram
+        (three-class multi-Otsu); the scope says how far the classes were checked.
+        """
+        from core.india_agriculture import analyse_canopy_cover, classify_index_cover
+
+        thresholds = None
+        if bare_below is not None or canopy_from is not None:
+            if bare_below is None or canopy_from is None:
+                return fail("Give both cut points (bare below, canopy from) or neither.")
+            thresholds = (float(bare_below), float(canopy_from))
+
+        def run(out: Path):
+            cover = classify_index_cover(index_raster, out, validation_scope=str(validation_scope),
+                                         thresholds=thresholds)
+            classes, schema = cover.artifact_paths
+            canopy = analyse_canopy_cover(classes, schema, out)
+            summary = json.loads(Path(canopy.summary_path).read_text(encoding="utf-8"))
+            summary["index_cover"] = json.loads(Path(cover.summary_path).read_text(encoding="utf-8"))
+            Path(canopy.summary_path).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            return type(canopy)(canopy.summary_path, (*cover.artifact_paths, *canopy.artifact_paths))
+
+        return self._pack("index_cover", run)
+
+    @guard
     def india_vegetation_indices(self, multispectral_raster: str,
                                  calibrations: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """NDVI/NDRE/GNDVI from explicitly calibrated reflectance bands only.
@@ -4751,6 +4780,25 @@ class Api:
         return self._pack("plant_count", lambda out: count_plant_instances(
             instance_raster, out, validation_scope=str(validation_scope),
             instance_encoding=str(instance_encoding)))
+
+    @guard
+    def india_plant_count_from_canopy(self, class_raster: str, schema: str, validation_scope: str,
+                                      max_plant_area_m2: float,
+                                      min_plant_area_m2: float = 0.01) -> dict[str, Any]:
+        """Count canopy patches as plants only when the canopy separates into plants.
+
+        The share of canopy in patches larger than one plant is measured first; when
+        most of it is merged (closed rows), the answer is not_applicable with no count.
+        """
+        from core.india_agriculture import count_plants_from_canopy
+
+        try:
+            raster, classes = self._semantic_inputs(class_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("plant_count", lambda out: count_plants_from_canopy(
+            raster, classes, out, validation_scope=str(validation_scope),
+            max_plant_area_m2=float(max_plant_area_m2), min_plant_area_m2=float(min_plant_area_m2)))
 
     @guard
     def india_road_condition(self, road_centerline_geojson: str, defect_findings_geojson: str,

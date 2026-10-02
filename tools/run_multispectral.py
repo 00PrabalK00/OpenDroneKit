@@ -3,6 +3,7 @@
     python tools/run_multispectral.py --images <band tiff folder> --out <dir>
         [--panel <panel capture folder>] [--calibration dls|panel] [--no-reconstruct]
         [--stress-scope "..." --severe-below 0.3 --moderate-below 0.5]
+        [--cover-scope "..." --max-plant-area 0.25]
 
 Steps: group band TIFFs into captures, calibrate radiance to reflectance (DLS2 sun
 sensor, or a panel capture from the same camera and flight), align the bands, solve
@@ -37,6 +38,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stress-scope", default="", help="crop/sensor validation scope for stress thresholds")
     parser.add_argument("--severe-below", type=float, default=None)
     parser.add_argument("--moderate-below", type=float, default=None)
+    parser.add_argument("--cover-scope", default="",
+                        help="validation scope for NDVI cover classes; enables canopy cover and plant count")
+    parser.add_argument("--max-plant-area", type=float, default=None,
+                        help="largest footprint (m2) of one plant for the crop and stage; enables plant count")
+    parser.add_argument("--analyse-only", action="store_true",
+                        help="reuse the band orthomosaic of a previous run in --out; only run the agriculture pack")
     args = parser.parse_args(argv)
 
     out = Path(args.out)
@@ -55,7 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[{percent:3d}%] {message}", flush=True)
 
     summary_path = out / "multispectral_summary.json"
-    if args.reuse and summary_path.exists():
+    if args.analyse_only:
+        survey = json.loads(summary_path.read_text(encoding="utf-8"))
+    elif args.reuse and summary_path.exists():
         survey = json.loads(summary_path.read_text(encoding="utf-8"))
         sources = {Path(c["sfm_image"]).name: c["stack"] for c in survey["captures"]}
         survey["orthomosaic"] = ms.reconstruct_band_orthomosaic(out, survey["bands"], sources, progress=progress)
@@ -86,6 +95,22 @@ def main(argv: list[str] | None = None) -> int:
                 moderate_below=args.moderate_below, validation_scope=args.stress_scope,
             )
             report["stress_zones"] = json.loads(Path(stress.summary_path).read_text(encoding="utf-8"))
+        if args.cover_scope:
+            from core.india_agriculture import (
+                analyse_canopy_cover, classify_index_cover, count_plants_from_canopy)
+
+            ndvi = report["vegetation_indices"]["indices"]["NDVI"]["path"]
+            cover = classify_index_cover(ndvi, out / "agriculture" / "cover", validation_scope=args.cover_scope)
+            classes, schema = cover.artifact_paths
+            report["index_cover"] = json.loads(Path(cover.summary_path).read_text(encoding="utf-8"))
+            report["index_cover"]["visible_band_check"] = ms.visible_band_cover_check(ortho, classes)
+            canopy = analyse_canopy_cover(classes, schema, out / "agriculture" / "cover")
+            report["canopy_cover"] = json.loads(Path(canopy.summary_path).read_text(encoding="utf-8"))
+            if args.max_plant_area is not None:
+                plants = count_plants_from_canopy(
+                    classes, schema, out / "agriculture" / "plants",
+                    validation_scope=args.cover_scope, max_plant_area_m2=args.max_plant_area)
+                report["plant_count"] = json.loads(Path(plants.summary_path).read_text(encoding="utf-8"))
     report["elapsed_s"] = round(time.time() - started, 1)
     path = out / "multispectral_report.json"
     path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")

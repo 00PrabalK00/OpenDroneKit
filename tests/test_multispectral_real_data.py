@@ -237,3 +237,38 @@ class TestBandOrthomosaic:
         assert zones["validation_scope"].startswith("UNVALIDATED")
         total = sum(z["area_m2"] for z in zones["zones"].values())
         assert total > 0 and math.isfinite(total)
+
+    def test_canopy_cover_and_plant_separability_on_the_orthomosaic(self, tmp_path):
+        """NDVI cover classes, canopy cover and the plant-count separability check.
+
+        The canopy cut points come from this survey's NDVI histogram and are checked
+        only against a visible-band (no NIR) excess-green split. Plant count on this
+        crop at 6.25 cm is measured to be not applicable: most canopy sits in closed rows.
+        """
+        from core.india_agriculture import (
+            analyse_canopy_cover, classify_index_cover, compute_vegetation_indices,
+            count_plants_from_canopy)
+
+        path = _ortho_path()
+        calibrations = ms.reflectance_band_calibrations(
+            ["blue", "green", "red", "nir", "red_edge"], "MicaSense radiance + DLS2 irradiance")
+        indices = json.loads(Path(compute_vegetation_indices(
+            path, calibrations, tmp_path).summary_path).read_text(encoding="utf-8"))
+        scope = "UNVALIDATED test: NDVI multi-Otsu cover classes, Buergewald RedEdge-P DLS"
+        cover = classify_index_cover(indices["indices"]["NDVI"]["path"], tmp_path / "cover",
+                                     validation_scope=scope)
+        summary = json.loads(Path(cover.summary_path).read_text(encoding="utf-8"))
+        low, high = summary["thresholds"]["bare_soil_below"], summary["thresholds"]["crop_canopy_from"]
+        assert 0.3 < low < high < 0.85  # bimodal soil / canopy histogram of this field
+        classes, schema = cover.artifact_paths
+        check = ms.visible_band_cover_check(path, classes)
+        assert check["bare_pixels_not_green_in_visible"] > 0.95
+        assert check["canopy_vs_bare_agreement"] > 0.8
+        canopy = json.loads(Path(analyse_canopy_cover(classes, schema, tmp_path / "cover")
+                                 .summary_path).read_text(encoding="utf-8"))
+        assert 20 < canopy["canopy_cover_percent"] < 60
+        plants = count_plants_from_canopy(classes, schema, tmp_path / "plants",
+                                          validation_scope=scope, max_plant_area_m2=0.25)
+        result = json.loads(Path(plants.summary_path).read_text(encoding="utf-8"))
+        assert plants.status == "not_applicable" and result["count"] is None
+        assert result["separability"]["canopy_fraction_in_merged_patches"] > 0.5
