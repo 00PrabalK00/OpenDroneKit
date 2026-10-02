@@ -51,7 +51,7 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO))
 
 from tools.installer.manifest import (  # noqa: E402
-    build_manifest, forbidden_files, sha256_file, write_manifest,
+    build_manifest, forbidden_files, payload_paths, sha256_file, write_manifest,
 )
 from tools.installer.sign import plan_signing  # noqa: E402
 
@@ -374,8 +374,14 @@ def main(argv: list[str] | None = None) -> int:
         "embed_sha256": cfg["python"]["embed_sha256"], "lock_sha256": sha256_file(LOCK),
         "packages": packages, **git_meta,
     }
+    allow = [a["path"] for a in cfg.get("forbidden_payload_allow", [])]
+    # Checked on the file list first: hashing ~30k files is slow, a refusal should not be.
+    bad = forbidden_files(payload_paths(stage), cfg["forbidden_payload_globs"], allow)
+    if bad:
+        raise SystemExit(f"[build] REFUSED: forbidden files in the payload (weights/secrets/SDKs): {bad[:20]}")
+    log("hashing the payload for install_manifest.json")
     manifest = build_manifest(stage, meta)
-    bad = forbidden_files(manifest, cfg["forbidden_payload_globs"])
+    bad = forbidden_files(manifest, cfg["forbidden_payload_globs"], allow)
     if bad:
         raise SystemExit(f"[build] REFUSED: forbidden files in the payload (weights/secrets/SDKs): {bad[:20]}")
     write_manifest(stage, manifest)

@@ -79,15 +79,28 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"bad sha256 for {rel!r}")
 
 
-def forbidden_files(manifest: dict[str, Any], patterns: Iterable[str]) -> list[str]:
-    """Payload files whose name matches a forbidden pattern (weights, secrets, SDKs)."""
+def forbidden_files(manifest: dict[str, Any] | Iterable[str], patterns: Iterable[str],
+                    allow: Iterable[str] = ()) -> list[str]:
+    """Payload files whose name matches a forbidden pattern (weights, secrets, SDKs).
+
+    ``manifest`` is a manifest or the relative paths themselves (so the check can run
+    before anything is hashed). ``allow`` holds full relative-path patterns for named
+    third-party files that match a pattern but are none of those things -- each one is
+    listed with its reason in config.json, never a blanket exemption."""
+    rels = manifest["files"] if isinstance(manifest, dict) else manifest
     pats = [p.lower() for p in patterns]
+    allowed = [a.lower() for a in allow]
     hits = []
-    for rel in manifest["files"]:
+    for rel in rels:
         name = PurePosixPath(rel).name.lower()
-        if any(fnmatch.fnmatch(name, p) for p in pats):
+        if any(fnmatch.fnmatch(name, p) for p in pats) and not any(
+                fnmatch.fnmatchcase(rel.lower(), a) for a in allowed):
             hits.append(rel)
     return hits
+
+
+def payload_paths(root: Path) -> list[str]:
+    return [path.relative_to(root).as_posix() for path in iter_payload(Path(root))]
 
 
 def write_manifest(root: Path, manifest: dict[str, Any]) -> Path:

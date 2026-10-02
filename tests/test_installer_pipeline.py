@@ -92,6 +92,21 @@ class TestManifest:
         hits = manifest.forbidden_files(data, cfg["forbidden_payload_globs"])
         assert "ok.py" not in hits and len(hits) == 7
 
+    def test_allowlist_exempts_only_the_named_third_party_files(self):
+        cfg = json.loads((INSTALLER / "config.json").read_text(encoding="utf-8"))
+        allow = [a["path"] for a in cfg["forbidden_payload_allow"]]
+        assert all(a.get("reason") for a in cfg["forbidden_payload_allow"])
+        sp = "runtime/Lib/site-packages/"
+        paths = [sp + "certifi/cacert.pem", sp + "botocore/cacert.pem",
+                 sp + "onnxruntime/datasets/mul_1.onnx",
+                 sp + "somepkg/cacert.pem",              # not named: refused
+                 sp + "onnxruntime/capi/model.onnx",     # outside datasets/: refused
+                 "odk/models/onnx/crack.onnx",           # app weights: refused
+                 "odk/server.pem", "odk/main.py"]
+        hits = manifest.forbidden_files(paths, cfg["forbidden_payload_globs"], allow)
+        assert hits == [sp + "somepkg/cacert.pem", sp + "onnxruntime/capi/model.onnx",
+                        "odk/models/onnx/crack.onnx", "odk/server.pem"]
+
 
 class TestSigningPlan:
     def test_no_certificate_means_unsigned_and_says_so(self):

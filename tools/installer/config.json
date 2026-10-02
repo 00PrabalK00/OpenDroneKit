@@ -14,5 +14,13 @@
     "*.onnx", "*.onnx.data", "*.pt", "*.pth", "*.ckpt", "*.safetensors",
     ".env", "*.key", "*.pem", "*.pfx", "kaggle.json", "access_token", "secrets.json",
     "google*.html", "dji_thermal_sdk*", "libdirp*", "libv_*"
+  ],
+  "forbidden_payload_allow": [
+    {"path": "runtime/lib/site-packages/certifi/cacert.pem",
+     "reason": "Mozilla's public CA root bundle shipped by certifi; public certificates, no private key."},
+    {"path": "runtime/lib/site-packages/botocore/cacert.pem",
+     "reason": "botocore's copy of the public CA root bundle; no private key."},
+    {"path": "runtime/lib/site-packages/onnxruntime/datasets/*.onnx",
+     "reason": "onnxruntime's own few-KB example graphs (logreg_iris, mul_1, sigmoid) inside its wheel; not OpenDroneKit model weights."}
   ]
 }
