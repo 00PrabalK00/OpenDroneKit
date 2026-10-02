@@ -71,6 +71,8 @@ MAV_RESULT_NAMES = {
     6: "cancelled",
 }
 
+_NUL = chr(0)  # STATUSTEXT pads its fixed-length text with NULs
+
 # SYS_STATUS sentinels for "this vehicle has no such sensor".
 _BATTERY_REMAINING_UNKNOWN = -1
 _VOLTAGE_UNKNOWN = 0xFFFF
@@ -117,11 +119,19 @@ _NON_POSITIONAL_COMMANDS = frozenset(
         178,  # DO_CHANGE_SPEED
         181,  # DO_SET_RELAY
         183,  # DO_SET_SERVO
-        201,  # DO_SET_ROI
         203,  # DO_DIGICAM_CONTROL
         205,  # DO_MOUNT_CONTROL
         206,  # DO_SET_CAM_TRIGG_DIST
+        530,  # SET_CAMERA_MODE
+        531,  # SET_CAMERA_ZOOM
+        532,  # SET_CAMERA_FOCUS
+        1000,  # DO_GIMBAL_MANAGER_PITCHYAW: x is the flags bitmask
+        2000,  # IMAGE_START_CAPTURE
+        2001,  # IMAGE_STOP_CAPTURE
         2500,  # DO_GIMBAL_MANAGER_CONFIGURE
+        # DO_SET_ROI (201) is deliberately absent: its x/y ARE the ROI's latitude and
+        # longitude. Listed here, they were truncated to whole degrees: a real
+        # ArduCopter stored a -35.3631 ROI as -35.0, a point of interest ~40 km away.
     }
 )
 
@@ -362,6 +372,10 @@ class MissionPlannerDroneClient:
         # forwarded here instead and consumed by whichever transfer is in flight.
         self._protocol_queue: queue.Queue = queue.Queue()
         self._transfer_lock = threading.Lock()
+        # What the autopilot says while a transfer is in flight. A MISSION_ACK carries
+        # only a result code; ArduPilot puts the reason ("Only 650 items are supported")
+        # in a STATUSTEXT, and a rejection that drops it leaves the pilot guessing.
+        self._transfer_texts: list[str] | None = None
         self._telemetry_subscribers: list[Any] = []
         # COMMAND_ACKs, forwarded by the listener to whichever command is waiting.
         # Commands are serialised so an ack cannot be claimed by the wrong one.
@@ -475,6 +489,9 @@ class MissionPlannerDroneClient:
         if t == "COMMAND_ACK":
             self._ack_queue.put(msg)
         if t == "STATUSTEXT":
+            texts = self._transfer_texts
+            if texts is not None and int(getattr(msg, "severity", 6)) <= 4:
+                texts.append(str(getattr(msg, "text", "")).strip(_NUL).strip())
             self._publish({"type": "statustext", "severity": int(getattr(msg, "severity", 6)),
                            "text": str(getattr(msg, "text", "")).strip("\x00")})
         with self._lock:
@@ -536,7 +553,11 @@ class MissionPlannerDroneClient:
                 # is an operator watching progress against the plan they drew.
                 tel.waypoint_index = max(0, int(getattr(msg, "seq", tel.waypoint_index + 1)) - 1)
             elif t == "MISSION_COUNT":
-                tel.waypoint_total = int(getattr(msg, "count", tel.waypoint_total))
+                # Only the flight plan's count is progress, and it includes the home slot
+                # the plan never had. A fence or rally download also answers MISSION_COUNT
+                # and used to overwrite the waypoint total with its vertex count.
+                if int(getattr(msg, "mission_type", MAV_MISSION_TYPE_MISSION) or 0) == MAV_MISSION_TYPE_MISSION:
+                    tel.waypoint_total = max(0, int(getattr(msg, "count", 1)) - 1)
             elif t == "HOME_POSITION":
                 tel.home_lat = float(msg.latitude) / 1e7
                 tel.home_lon = float(msg.longitude) / 1e7
@@ -712,6 +733,7 @@ class MissionPlannerDroneClient:
 
         if not self._transfer_lock.acquire(timeout=timeout_s):
             return CommandResult(False, name, "Another mission transfer is already in progress.")
+        self._transfer_texts = []
         try:
             self._drain_protocol_queue()
             conn.mav.mission_count_send(
@@ -737,8 +759,18 @@ class MissionPlannerDroneClient:
                             True, name, f"Vehicle accepted {len(items)} items."
                         )
                     reason = _MISSION_RESULT_TEXT.get(result, f"result {result}")
+                    time.sleep(0.2)  # the STATUSTEXT may trail the ACK on the link
+                    said = "; ".join(dict.fromkeys(t for t in (self._transfer_texts or []) if t))
+                    detail = f" The vehicle said: {said}." if said else ""
+                    where = (f" at item {max(sent)} of {len(items)}"
+                             if sent and result != 4 else "")
                     return CommandResult(
-                        False, name, f"Vehicle rejected the upload: {reason}."
+                        False, name,
+                        f"Vehicle rejected the upload{where}: {reason}.{detail}"
+                        + (f" The upload was {len(items)} items, more than the autopilot's "
+                           "mission storage holds: split the mission, or give the vehicle "
+                           "more storage (ArduPilot: BRD_SD_MISSION)."
+                           if result == 4 else ""),
                     )
 
                 seq = int(getattr(msg, "seq", 0))
@@ -760,6 +792,7 @@ class MissionPlannerDroneClient:
         except Exception as exc:
             return CommandResult(False, name, str(exc))
         finally:
+            self._transfer_texts = None
             self._transfer_lock.release()
 
     def upload_mission(self, mission_items: list[dict[str, Any]]) -> CommandResult:
@@ -844,11 +877,13 @@ class MissionPlannerDroneClient:
 
         return report
 
-    def download_mission(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
-        """Read the mission currently stored on the vehicle.
+    def _download_list(self, mission_type: int, timeout_s: float) -> list[dict[str, Any]]:
+        """Read one of the vehicle's item lists (mission, fence or rally) back.
 
-        Used to verify an upload round-trips: what the vehicle reports back is the
-        only trustworthy evidence that it stored what was sent.
+        What the vehicle reports is the only trustworthy evidence that it stored what
+        was sent. A vehicle that refuses the request (MISSION_ACK with an error, e.g. a
+        mission type it does not support) is reported as that refusal rather than as a
+        silent timeout.
         """
         conn = self._ensure()
         if not self._transfer_lock.acquire(timeout=timeout_s):
@@ -856,19 +891,36 @@ class MissionPlannerDroneClient:
         try:
             self._drain_protocol_queue()
             conn.mav.mission_request_list_send(
-                conn.target_system, conn.target_component, MAV_MISSION_TYPE_MISSION
+                conn.target_system, conn.target_component, mission_type
             )
-            count_msg = self._await_protocol({"MISSION_COUNT"}, timeout=timeout_s)
+            count_msg = self._await_protocol({"MISSION_COUNT", "MISSION_ACK"}, timeout=timeout_s)
             if count_msg is None:
                 raise AppError(ERR_DRONE_NOT_CONNECTED, "Vehicle did not report a mission count.")
+            if count_msg.get_type() == "MISSION_ACK":
+                result = int(getattr(count_msg, "type", 1))
+                raise AppError(
+                    ERR_DRONE_NOT_CONNECTED,
+                    "Vehicle refused the download: "
+                    f"{_MISSION_RESULT_TEXT.get(result, f'result {result}')}.")
 
             total = int(getattr(count_msg, "count", 0))
             items: list[dict[str, Any]] = []
             for seq in range(total):
-                conn.mav.mission_request_int_send(
-                    conn.target_system, conn.target_component, seq, MAV_MISSION_TYPE_MISSION
-                )
-                item = self._await_protocol({"MISSION_ITEM_INT"}, timeout=timeout_s)
+                item = None
+                # A lost request or reply is retried, as the protocol expects of a GCS.
+                for _attempt in range(3):
+                    conn.mav.mission_request_int_send(
+                        conn.target_system, conn.target_component, seq, mission_type
+                    )
+                    deadline = time.monotonic() + min(timeout_s, 3.0)
+                    while time.monotonic() < deadline:
+                        candidate = self._await_protocol(
+                            {"MISSION_ITEM_INT"}, timeout=max(0.05, deadline - time.monotonic()))
+                        if candidate is not None and int(candidate.seq) == seq:
+                            item = candidate
+                            break
+                    if item is not None:
+                        break
                 if item is None:
                     raise AppError(
                         ERR_DRONE_NOT_CONNECTED, f"Vehicle stopped responding at item {seq}."
@@ -893,11 +945,23 @@ class MissionPlannerDroneClient:
                 conn.target_system,
                 conn.target_component,
                 MAV_MISSION_ACCEPTED,
-                MAV_MISSION_TYPE_MISSION,
+                mission_type,
             )
-            return _without_home_slot(items)
+            return items
         finally:
             self._transfer_lock.release()
+
+    def download_mission(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
+        """Read the flight plan stored on the vehicle, without its home slot."""
+        return _without_home_slot(self._download_list(MAV_MISSION_TYPE_MISSION, timeout_s))
+
+    def download_geofence(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
+        """Read the fence polygons stored on the vehicle (MAV_MISSION_TYPE_FENCE)."""
+        return self._download_list(MAV_MISSION_TYPE_FENCE, timeout_s)
+
+    def download_rally_points(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
+        """Read the rally points stored on the vehicle (MAV_MISSION_TYPE_RALLY)."""
+        return self._download_list(MAV_MISSION_TYPE_RALLY, timeout_s)
 
     def _command_long(self, command: int, *params: float, name: str = "command") -> CommandResult:
         """Send a COMMAND_LONG and report what the vehicle answered.

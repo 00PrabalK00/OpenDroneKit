@@ -300,3 +300,12 @@ def test_empty_upload_is_refused(linked_vehicle):
     result = client.upload_mission([])
     assert not result.success
     assert "empty" in result.message.lower()
+
+
+def test_do_set_roi_keeps_its_coordinates_and_gimbal_flags_are_not_scaled():
+    """DO_SET_ROI's x/y are a location; DO_GIMBAL_MANAGER_PITCHYAW's x is a bitmask."""
+    from core.mission_planner_bridge import _NON_POSITIONAL_COMMANDS
+
+    assert 201 not in _NON_POSITIONAL_COMMANDS
+    for command in (1000, 2000, 2001, 530, 531, 532):
+        assert command in _NON_POSITIONAL_COMMANDS
