@@ -194,6 +194,35 @@ def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> li
     return added
 
 
+
+def _run_observations(run: Path) -> dict[str, Any] | None:
+    """The tie points of a COLMAP run's model, so singly marked control can be placed.
+
+    None when the run kept no COLMAP model or pycolmap is unavailable; the report then
+    places only points marked in two or more images.
+    """
+    sparse = run / "colmap" / "sparse"
+    if not sparse.is_dir():
+        return None
+    try:
+        import pycolmap  # type: ignore
+
+        from core.reconstruction_colmap import image_observations
+    except ImportError:
+        return None
+    best = None
+    for folder in sparse.iterdir():
+        if not (folder / "images.bin").is_file() and not (folder / "images.txt").is_file():
+            continue
+        try:
+            model = pycolmap.Reconstruction(str(folder))
+        except Exception:  # noqa: BLE001 - an unreadable model is skipped
+            continue
+        # The engine maps from the largest model; the same rule finds it again.
+        if best is None or model.num_reg_images() > best.num_reg_images():
+            best = model
+    return image_observations(best) if best is not None else None
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -931,7 +960,7 @@ class Api:
         Written into the project folder with every mark made on them. They used to live
         only in memory, so an afternoon of marking targets was lost on restart.
         """
-        from core.gcp import GcpError, read_gcp_file, save_control
+        from core.gcp import GcpError, add_mark, read_gcp_file, save_control
 
         try:
             points = read_gcp_file(path, default_epsg=epsg)
@@ -939,14 +968,22 @@ class Api:
             return fail(str(exc))
 
         # Re-importing the same file keeps the marks already made on points it still has.
+        # A file that carries marks of its own (ODM's gcp_list.txt) adds them; where both
+        # mark the same image, the file's pixel wins. Overwriting the file's marks with
+        # the project's -- or with none -- threw the observations away on import.
         previous = {p.name: p for p in self._control_points()}
         for point in points:
             if point.name in previous:
-                point.marks = previous[point.name].marks
+                from_file = list(point.marks)
+                point.marks = list(previous[point.name].marks)
+                for mark in from_file:
+                    add_mark(point, mark.image, mark.pixel_x, mark.pixel_y,
+                             mark.image_width, mark.image_height)
         self._session.ground_control = points
         saved = save_control(self._session.project_root(), points)
         self._session.audit("gcps_imported", {"path": str(path), "count": len(points)})
-        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved))
+        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved),
+                  marks=sum(len(p.marks) for p in points))
 
     @guard
     def list_gcps(self) -> dict[str, Any]:
@@ -1024,7 +1061,8 @@ class Api:
             fitted = anchor.method == "ground_control"
             try:
                 report = check_against_anchor(points, poses, anchor,
-                                              role="fit" if fitted else "check")
+                                              role="fit" if fitted else "check",
+                                              observations=_run_observations(run))
             except GcpError as exc:
                 return fail(str(exc))
             report["georeferenced_by"] = anchor.method

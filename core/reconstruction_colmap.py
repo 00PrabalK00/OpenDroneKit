@@ -88,8 +88,19 @@ COLMAP_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 # Beyond this many images an exhaustive O(n^2) match becomes the dominant cost, so the
-# auto matcher switches to sequential + loop detection.
+# auto matcher switches to a cheaper pairing: spatial (GPS neighbours) when the frames
+# are geotagged, sequential + loop detection when they are not.
 EXHAUSTIVE_MATCH_LIMIT = 60
+
+# Share of frames that must carry a geotag before pairs are chosen by position.
+SPATIAL_MATCH_MIN_GPS_FRACTION = 0.8
+# Neighbours each image is matched against when pairing by position, and how far away
+# (metres, 3D) a neighbour may be. Capture order is the wrong proxy for overlap on a
+# lawnmower grid (the next strip is 15-20 frames away) and on an oblique orbit; position
+# is the right one. Measured on ODM's bellus survey (122 frames, grid): sequential
+# pairing registered 40/122 in two disconnected models.
+SPATIAL_MATCH_NEIGHBOURS = 30
+SPATIAL_MATCH_MAX_DISTANCE_M = 250.0
 
 
 def colmap_available() -> bool:
@@ -813,9 +824,7 @@ class ColmapReconstructor:
             except TypeError:
                 pycolmap.extract_features(str(database_path), str(image_dir))  # type: ignore[union-attr]
 
-        matcher = str(self.settings.get("matcher", "auto"))
-        if matcher == "auto":
-            matcher = "exhaustive" if image_count <= EXHAUSTIVE_MATCH_LIMIT else "sequential"
+        matcher = self._choose_matcher(image_dir, image_count)
 
         progress(24, f"Matching features ({matcher})")
         self._run_matcher(matcher, database_path, device)
@@ -940,9 +949,7 @@ class ColmapReconstructor:
         if "num_threads" in extract_help:
             extract += [flag("num_threads"), str(self._worker_threads())]
 
-        matcher = str(self.settings.get("matcher", "auto"))
-        if matcher == "auto":
-            matcher = "exhaustive" if image_count <= EXHAUSTIVE_MATCH_LIMIT else "sequential"
+        matcher = self._choose_matcher(image_dir, image_count)
         match_help = options_of(f"{matcher}_matcher")
         if not match_help:
             return False
@@ -953,6 +960,20 @@ class ColmapReconstructor:
             "--database_path", str(database_path),
             match_gpu, "1",
         ]
+        # The pairing the CPU path configures in _pairing_options(), so the two paths
+        # pair the same images. The native call passed none of it, and a sequential
+        # match ran with the binary's default window instead of the profile's.
+        if matcher == "sequential" and "SequentialMatching.overlap" in match_help:
+            match += ["--SequentialMatching.overlap",
+                      str(int(self.settings.get("sequential_overlap", 12)))]
+        if matcher == "spatial":
+            for option, value in (
+                ("SpatialMatching.max_num_neighbors", SPATIAL_MATCH_NEIGHBOURS),
+                ("SpatialMatching.max_distance", SPATIAL_MATCH_MAX_DISTANCE_M),
+                ("SpatialMatching.ignore_z", 0),
+            ):
+                if option in match_help:
+                    match += [f"--{option}", str(value)]
 
         for step, command, percent, label in (
             (1, extract, 8, "Extracting SIFT features on the GPU"),
@@ -1047,8 +1068,41 @@ class ColmapReconstructor:
         except Exception:  # noqa: BLE001
             return None
 
+    def _choose_matcher(self, image_dir: Path, image_count: int) -> str:
+        """The profile's matcher, or for "auto" the pairing that suits this imagery.
+
+        Exhaustive up to EXHAUSTIVE_MATCH_LIMIT images. Above it, geotagged frames are
+        paired by position (spatial) and untagged ones by capture order (sequential).
+        """
+        matcher = str(self.settings.get("matcher", "auto"))
+        if matcher != "auto":
+            return matcher
+        if image_count <= EXHAUSTIVE_MATCH_LIMIT:
+            return "exhaustive"
+        paths: list[Path] = []
+        try:
+            paths = self._image_paths(image_dir)
+            tagged = len(geo.collect_gps_fixes(paths))
+        except Exception:  # noqa: BLE001 - unreadable EXIF just means no positions
+            tagged = 0
+        if paths and tagged >= SPATIAL_MATCH_MIN_GPS_FRACTION * len(paths):
+            return "spatial"
+        return "sequential"
+
     def _pairing_options(self, matcher: str) -> Any:
         """Pairing options; sequential matching needs an explicit overlap window."""
+        if matcher == "spatial":
+            factory = getattr(pycolmap, "SpatialPairingOptions", None)
+            if factory is None:
+                return None
+            try:
+                options = factory()
+                options.max_num_neighbors = SPATIAL_MATCH_NEIGHBOURS
+                options.max_distance = SPATIAL_MATCH_MAX_DISTANCE_M
+                options.ignore_z = False
+                return options
+            except Exception:  # noqa: BLE001
+                return None
         if matcher != "sequential":
             return None
         factory = getattr(pycolmap, "SequentialPairingOptions", None)
@@ -1076,7 +1130,8 @@ class ColmapReconstructor:
 
     def _run_matcher(self, matcher: str, database_path: Path, device: Any) -> None:
         """Run the chosen matcher, degrading keyword-by-keyword across API versions."""
-        name = "match_exhaustive" if matcher == "exhaustive" else "match_sequential"
+        name = {"exhaustive": "match_exhaustive", "spatial": "match_spatial"}.get(
+            matcher, "match_sequential")
         fn = getattr(pycolmap, name, None) or getattr(pycolmap, "match_exhaustive")  # type: ignore[union-attr]
 
         attempts: list[dict[str, Any]] = []
@@ -1895,7 +1950,8 @@ class ColmapReconstructor:
         epsg = (camera_anchor.epsg if camera_anchor is not None
                 else int(self.target_epsg or self.ground_control[0].epsg))
         try:
-            solution = gcp.solve_with_control(self.ground_control, poses, int(epsg), camera_anchor)
+            solution = gcp.solve_with_control(self.ground_control, poses, int(epsg), camera_anchor,
+                                              observations=image_observations(sparse, registered))
         except (gcp.GcpError, ValueError, np.linalg.LinAlgError) as exc:
             self._warn(f"Ground control was not used: {exc}")
             return camera_anchor
@@ -2133,6 +2189,39 @@ def _project_to_image(camera: Any, cam_points: np.ndarray, k_matrix: np.ndarray)
             pass
     projected = cam_points @ k_matrix.T
     return projected[:, :2] / projected[:, 2:3]
+
+
+def image_observations(reconstruction: Any, registered: Sequence[Any] | None = None
+                       ) -> dict[str, Any]:
+    """Each registered image's triangulated keypoints and their model positions.
+
+    Used to place a control point marked in a single photograph on the model surface
+    (core.gcp.locate_in_model). Images whose observations cannot be read are left out.
+    """
+    from core.gcp import ImageObservations
+
+    points3d = getattr(reconstruction, "points3D", None)
+    out: dict[str, Any] = {}
+    for image in (registered if registered is not None else _registered_images(reconstruction)):
+        pixels: list[tuple[float, float]] = []
+        xyz: list[np.ndarray] = []
+        try:
+            for observation in image.points2D:
+                has = getattr(observation, "has_point3D", None)
+                if callable(has) and not has():
+                    continue
+                pid = int(getattr(observation, "point3D_id", -1))
+                if pid < 0 or pid >= 2 ** 63 - 1 or pid not in points3d:
+                    continue
+                xy = np.asarray(observation.xy, dtype=float).reshape(2)
+                pixels.append((float(xy[0]), float(xy[1])))
+                xyz.append(np.asarray(points3d[pid].xyz, dtype=float).reshape(3))
+        except Exception:  # noqa: BLE001 - a binding without these attributes skips the image
+            continue
+        if pixels:
+            out[_image_name(image)] = ImageObservations(pixels=np.asarray(pixels),
+                                                        points=np.asarray(xyz))
+    return out
 
 
 def _camera_record(image: Any, camera: Any) -> dict[str, Any]:
