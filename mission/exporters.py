@@ -556,12 +556,70 @@ def export_qgc_wpl(path: str | Path, mission: Any) -> str:
     return str(target)
 
 
-def export_qgc_plan(path: str | Path, mission: Any, *, vehicle_type: int = 2, firmware_type: int = 12) -> str:
+# MAV_AUTOPILOT (mavlink.io/en/messages/minimal.html#MAV_AUTOPILOT). The .plan
+# firmwareType is one of these. 12 is PX4; ArduPilot (every vehicle) is 3.
+MAV_AUTOPILOT_ARDUPILOTMEGA = 3
+MAV_AUTOPILOT_PX4 = 12
+_AUTOPILOTS = {
+    "ardupilot": MAV_AUTOPILOT_ARDUPILOTMEGA, "ardupilotmega": MAV_AUTOPILOT_ARDUPILOTMEGA,
+    "apm": MAV_AUTOPILOT_ARDUPILOTMEGA, "arducopter": MAV_AUTOPILOT_ARDUPILOTMEGA,
+    "arduplane": MAV_AUTOPILOT_ARDUPILOTMEGA, "ardurover": MAV_AUTOPILOT_ARDUPILOTMEGA,
+    "px4": MAV_AUTOPILOT_PX4,
+}
+# MAV_TYPE (mavlink.io/en/messages/minimal.html#MAV_TYPE). The .plan vehicleType.
+MAV_TYPE_FIXED_WING = 1
+MAV_TYPE_QUADROTOR = 2
+_AIRFRAMES = {
+    "multirotor": MAV_TYPE_QUADROTOR, "quadrotor": MAV_TYPE_QUADROTOR, "quad": MAV_TYPE_QUADROTOR,
+    "quadcopter": MAV_TYPE_QUADROTOR, "copter": MAV_TYPE_QUADROTOR,
+    "coaxial": 3, "helicopter": 4, "hexarotor": 13, "hexacopter": 13,
+    "octorotor": 14, "octocopter": 14, "tricopter": 15,
+    "fixed_wing": MAV_TYPE_FIXED_WING, "fixedwing": MAV_TYPE_FIXED_WING,
+    "plane": MAV_TYPE_FIXED_WING, "vtol": 20, "vtol_quadrotor": 20,
+}
+
+
+def _mav_enum(plan: dict[str, Any], keys: Sequence[str], table: dict[str, int], default: int, what: str) -> int:
+    """The plan's declared autopilot or airframe as its MAVLink enum value.
+
+    An unrecognised name is refused rather than mapped to a guess: a .plan that names
+    the wrong firmware makes QGroundControl offer the wrong command set.
+    """
+    for key in keys:
+        value = plan.get(key)
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            break
+        if isinstance(value, (int, float)):
+            return int(value)
+        name = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+        if name.isdigit():
+            return int(name)
+        if name in table:
+            return table[name]
+        raise ValueError(f"Unknown {what} {value!r} in the mission; expected one of: "
+                         f"{', '.join(sorted(table))}.")
+    return default
+
+
+def export_qgc_plan(
+    path: str | Path, mission: Any, *, vehicle_type: int | None = None, firmware_type: int | None = None
+) -> str:
     """QGroundControl `.plan` JSON, including geofence and rally points.
 
-    Defaults describe an ArduPilot multirotor (firmware 12, vehicle 2).
+    firmwareType is the mission's target autopilot as a MAV_AUTOPILOT value, read from
+    the plan's `autopilot` (or `firmware`) and defaulting to ArduPilot (3), which is what
+    OpenDroneKit flies. vehicleType is the MAV_TYPE of its `airframe` (or
+    `vehicle_type`), defaulting to a quadrotor (2). Explicit arguments win.
     """
     plan = _plan_dict(mission)
+    if firmware_type is None:
+        firmware_type = _mav_enum(plan, ("autopilot", "firmware", "firmware_type"), _AUTOPILOTS,
+                                  MAV_AUTOPILOT_ARDUPILOTMEGA, "autopilot")
+    if vehicle_type is None:
+        vehicle_type = _mav_enum(plan, ("airframe", "vehicle_type", "vehicle"), _AIRFRAMES,
+                                 MAV_TYPE_QUADROTOR, "airframe")
     items = build_mission_items(mission)
     rally_items = build_rally_items(mission)
     constraints = plan.get("safety_constraints") or {}
@@ -636,6 +694,10 @@ LITCHI_ACTION_NONE = -1
 LITCHI_ACTION_STAY_MS = 0
 LITCHI_ACTION_TAKE_PHOTO = 1
 LITCHI_ACTION_TILT_CAMERA_DEG = 5
+# Litchi's "Stay for" holds at most 32 s (flylitchi.com/help, Waypoint actions); a
+# longer planned dwell is written as consecutive stays.
+LITCHI_MAX_STAY_MS = 32_000
+LITCHI_MAX_ACTIONS = 15
 
 
 def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
@@ -673,13 +735,22 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
         # write 1 for the hover and 5 for the photo, so every structure mission tilted
         # the camera to 0 deg at each point and took no photograph, and a dwell was a
         # photo instead of a hover. The hover comes first so the shot is taken steady.
-        if pose["dwell_s"] > 0.0:
-            actions.extend([str(LITCHI_ACTION_STAY_MS), str(int(round(pose["dwell_s"] * 1000)))])
-        if spacing <= 0.0 and pose["trigger"]:
+        remaining_ms = int(round(pose["dwell_s"] * 1000)) if pose["dwell_s"] > 0.0 else 0
+        photo = spacing <= 0.0 and pose["trigger"]
+        stay_slots = LITCHI_MAX_ACTIONS - (1 if photo else 0)
+        while remaining_ms > 0:
+            if len(actions) // 2 >= stay_slots:
+                raise ValueError(
+                    f"A {pose['dwell_s']:.0f} s hold needs more than {stay_slots} Litchi "
+                    f"'Stay for' actions of {LITCHI_MAX_STAY_MS // 1000} s; Litchi cannot "
+                    "carry it on one waypoint.")
+            stay = min(remaining_ms, LITCHI_MAX_STAY_MS)
+            actions.extend([str(LITCHI_ACTION_STAY_MS), str(stay)])
+            remaining_ms -= stay
+        if photo:
             actions.extend([str(LITCHI_ACTION_TAKE_PHOTO), "0"])
-        while len(actions) < 30:
-            actions.extend(["-1", "0"])
-        actions = actions[:30]
+        while len(actions) < 2 * LITCHI_MAX_ACTIONS:
+            actions.extend([str(LITCHI_ACTION_NONE), "0"])
 
         row = [
             f"{pose['lat']:.8f}", f"{pose['lon']:.8f}", f"{pose['alt']:.2f}",
@@ -791,6 +862,47 @@ def export_kml(path: str | Path, mission: Any, name: str = "OpenDroneKit Mission
     return str(target)
 
 
+_GEOID_TRANSFORMER: Any = None
+
+
+def _geoid_undulation(lon: float, lat: float) -> float | None:
+    """EGM96 geoid undulation N (ellipsoid height minus orthometric height), in metres.
+
+    None when PROJ's EGM96 grid (us_nga_egm96_15.tif) is not installed. pyproj does not
+    fail in that case -- it silently returns the input height -- so availability is
+    checked explicitly and a missing grid is reported as "unknown", never as N = 0.
+    """
+    global _GEOID_TRANSFORMER
+    if _GEOID_TRANSFORMER is None:
+        try:
+            import warnings
+
+            from pyproj.transformer import TransformerGroup
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                group = TransformerGroup("EPSG:4326+5773", "EPSG:4979", always_xy=True)
+            usable = group.best_available and group.transformers
+            _GEOID_TRANSFORMER = group.transformers[0] if usable else False
+        except Exception:  # noqa: BLE001 - no pyproj or no PROJ database
+            _GEOID_TRANSFORMER = False
+    if not _GEOID_TRANSFORMER:
+        return None
+    try:
+        _, _, ellipsoidal = _GEOID_TRANSFORMER.transform(float(lon), float(lat), 0.0)
+    except Exception:  # noqa: BLE001
+        return None
+    if not math.isfinite(ellipsoidal):
+        return None
+    return float(ellipsoidal)
+
+
+def _dji_heading(yaw_deg: float) -> float:
+    """A compass heading in DJI's waypointHeadingAngle range, [-180, 180]."""
+    heading = (float(yaw_deg) + 180.0) % 360.0 - 180.0
+    return 180.0 if heading == -180.0 else heading
+
+
 def export_dji_wpml(
     path: str | Path,
     mission: Any,
@@ -798,14 +910,28 @@ def export_dji_wpml(
     drone_enum: int = 77,
     drone_sub_enum: int = 0,
     payload_enum: int = 66,
+    payload_lens: str = "wide",
 ) -> str:
     """DJI WPML `.kmz` for Pilot 2 / DJI Fly waypoint missions.
 
     A WPML archive is a zip holding `wpmz/template.kml` (the human-editable plan) and
-    `wpmz/waylines.wpml` (the executable route). Both carry the DJI wpml namespace.
+    `wpmz/waylines.wpml` (the executable route). Both carry the DJI wpml namespace and
+    follow DJI's WPML reference (developer.dji.com/doc/cloud-api-tutorial/en/
+    api-reference/dji-wpml/), whose two files have different element sets: the template
+    states heights as wpml:height / wpml:ellipsoidHeight under a waylineCoordinateSysParam
+    heightMode, the wayline as wpml:executeHeight under a Folder executeHeightMode.
+
     Default enums describe a Mavic 3 Enterprise (drone 77 / sub 0, camera payload 66,
     per DJI's WPML droneEnumValue and payloadEnumValue tables). The previous default of
     68 is not an assigned drone enum.
+
+    Heights: a plan's altitudes are relative to the home ground, so both files say
+    relativeToStartPoint. An AMSL plan (home ground elevation known) is written absolute
+    only when the EGM96 geoid undulation is available offline, because the wayline's
+    absolute mode is WGS84 *ellipsoid* height and the template needs both the EGM96 and
+    the ellipsoid figure. Without the geoid grid it stays relative to the take-off point
+    -- the frame the plan was made in -- rather than writing an orthometric height where
+    an ellipsoidal one belongs.
     """
     plan = _plan_dict(mission)
     viewpoints = _viewpoints(plan)
@@ -815,11 +941,25 @@ def export_dji_wpml(
     constraints = plan.get("safety_constraints") or {}
     speed = max(1.0, min(15.0, _cruise_speed(plan, 8.0)))
     altitude_frame, home_elevation = _altitude_frame(plan)
-    # EGM96 is DJI's absolute-height mode. It is only used when the plan's terrain model
-    # gives the home ground elevation; the DEM's vertical datum is assumed orthometric.
-    height_mode = "EGM96" if altitude_frame == "amsl" else "relativeToStartPoint"
-    height_offset = home_elevation if altitude_frame == "amsl" else 0.0
+    undulation = None
+    if altitude_frame == "amsl":
+        undulation = _geoid_undulation(viewpoints[0]["lon"], viewpoints[0]["lat"])
+    absolute = undulation is not None
+    template_height_mode = "EGM96" if absolute else "relativeToStartPoint"
+    execute_height_mode = "WGS84" if absolute else "relativeToStartPoint"
+
+    def heights(pose: dict[str, Any]) -> tuple[float, float]:
+        """(template wpml:height, WGS84 ellipsoid height) for one waypoint."""
+        if absolute:
+            orthometric = pose["alt"] + home_elevation
+            return orthometric, orthometric + float(undulation)
+        # relativeToStartPoint: the same height on both reference planes, as DJI Pilot 2
+        # writes it for a relative template.
+        return pose["alt"], pose["alt"]
+
     rth_alt = float(constraints.get("rth_altitude_m", 80.0) or 80.0)
+    finish = ("goHome" if str(constraints.get("rth_action", "return_home")).lower()
+              not in {"land", "land_in_place"} else "autoLand")
 
     kml_ns = "http://www.opengis.net/kml/2.2"
     wpml_ns = "http://www.dji.com/wpmz/1.0.2"
@@ -829,79 +969,115 @@ def export_dji_wpml(
     def wpml(tag: str) -> str:
         return f"{{{wpml_ns}}}{tag}"
 
+    def sub(parent: ET.Element, tag: str, value: Any) -> ET.Element:
+        node = ET.SubElement(parent, wpml(tag))
+        node.text = str(value)
+        return node
+
+    def turn_mode(pose: dict[str, Any]) -> str:
+        return ("toPointAndStopWithDiscontinuityCurvature" if pose["dwell_s"] > 0
+                else "toPointAndPassWithContinuityCurvature")
+
     def build(is_template: bool) -> ET.Element:
         root = ET.Element(f"{{{kml_ns}}}kml")
         document = ET.SubElement(root, f"{{{kml_ns}}}Document")
 
         if is_template:
-            ET.SubElement(document, wpml("author")).text = "OpenDroneKit"
-            ET.SubElement(document, wpml("createTime")).text = "0"
-            ET.SubElement(document, wpml("updateTime")).text = "0"
+            sub(document, "author", "OpenDroneKit")
+            sub(document, "createTime", "0")
+            sub(document, "updateTime", "0")
 
         config = ET.SubElement(document, wpml("missionConfig"))
-        ET.SubElement(config, wpml("flyToWaylineMode")).text = "safely"
-        ET.SubElement(config, wpml("finishAction")).text = (
-            "goHome" if str(constraints.get("rth_action", "return_home")).lower() not in {"land", "land_in_place"} else "autoLand"
-        )
-        ET.SubElement(config, wpml("exitOnRCLost")).text = "executeLostAction"
-        ET.SubElement(config, wpml("executeRCLostAction")).text = "goBack"
-        ET.SubElement(config, wpml("takeOffSecurityHeight")).text = f"{min(rth_alt, 100.0):.1f}"
-        ET.SubElement(config, wpml("globalTransitionalSpeed")).text = f"{speed:.1f}"
+        sub(config, "flyToWaylineMode", "safely")
+        sub(config, "finishAction", finish)
+        sub(config, "exitOnRCLost", "executeLostAction")
+        sub(config, "executeRCLostAction", "goBack")
+        sub(config, "takeOffSecurityHeight", f"{min(rth_alt, 100.0):.1f}")
+        sub(config, "globalTransitionalSpeed", f"{speed:.1f}")
+        if not is_template:
+            # Required in waylines.wpml: the height the aircraft climbs to before RTH.
+            sub(config, "globalRTHHeight", f"{rth_alt:.1f}")
         drone_info = ET.SubElement(config, wpml("droneInfo"))
-        ET.SubElement(drone_info, wpml("droneEnumValue")).text = str(int(drone_enum))
-        ET.SubElement(drone_info, wpml("droneSubEnumValue")).text = str(int(drone_sub_enum))
+        sub(drone_info, "droneEnumValue", int(drone_enum))
+        sub(drone_info, "droneSubEnumValue", int(drone_sub_enum))
         payload_info = ET.SubElement(config, wpml("payloadInfo"))
-        ET.SubElement(payload_info, wpml("payloadEnumValue")).text = str(int(payload_enum))
-        ET.SubElement(payload_info, wpml("payloadPositionIndex")).text = "0"
+        sub(payload_info, "payloadEnumValue", int(payload_enum))
+        sub(payload_info, "payloadPositionIndex", "0")
 
         folder = ET.SubElement(document, f"{{{kml_ns}}}Folder")
-        ET.SubElement(folder, wpml("templateType")).text = "waypoint"
-        ET.SubElement(folder, wpml("templateId")).text = "0"
-        if not is_template:
-            ET.SubElement(folder, wpml("waylineId")).text = "0"
-        coordinate = ET.SubElement(folder, wpml("waylineCoordinateSysParam"))
-        ET.SubElement(coordinate, wpml("coordinateMode")).text = "WGS84"
-        ET.SubElement(coordinate, wpml("heightMode")).text = height_mode
-        ET.SubElement(folder, wpml("autoFlightSpeed")).text = f"{speed:.1f}"
+        if is_template:
+            sub(folder, "templateType", "waypoint")
+            sub(folder, "templateId", "0")
+            coordinate = ET.SubElement(folder, wpml("waylineCoordinateSysParam"))
+            sub(coordinate, "coordinateMode", "WGS84")
+            sub(coordinate, "heightMode", template_height_mode)
+            sub(folder, "autoFlightSpeed", f"{speed:.1f}")
+            # Every waypoint overrides these (useGlobal* = 0); they are required anyway.
+            sub(folder, "globalHeight", f"{viewpoints[0]['alt']:.2f}")
+            sub(folder, "gimbalPitchMode", "usePointSetting")
+            global_heading = ET.SubElement(folder, wpml("globalWaypointHeadingParam"))
+            sub(global_heading, "waypointHeadingMode", "followWayline")
+            sub(global_heading, "waypointHeadingAngle", "0")
+            sub(global_heading, "waypointPoiPoint", "0.000000,0.000000,0.000000")
+            sub(global_heading, "waypointHeadingPathMode", "followBadArc")
+            sub(folder, "globalWaypointTurnMode", "toPointAndPassWithContinuityCurvature")
+            sub(folder, "globalUseStraightLine", "1")
+        else:
+            sub(folder, "templateId", "0")
+            sub(folder, "executeHeightMode", execute_height_mode)
+            sub(folder, "waylineId", "0")
+            sub(folder, "autoFlightSpeed", f"{speed:.1f}")
 
         for index, pose in enumerate(viewpoints):
             placemark = ET.SubElement(folder, f"{{{kml_ns}}}Placemark")
             point = ET.SubElement(placemark, f"{{{kml_ns}}}Point")
             ET.SubElement(point, f"{{{kml_ns}}}coordinates").text = f"{pose['lon']:.8f},{pose['lat']:.8f}"
-            ET.SubElement(placemark, wpml("index")).text = str(index)
-            ET.SubElement(placemark, wpml("executeHeight")).text = f"{pose['alt'] + height_offset:.2f}"
-            ET.SubElement(placemark, wpml("waypointSpeed")).text = f"{min(15.0, pose['speed_mps'] or speed):.1f}"
+            sub(placemark, "index", index)
+            height, ellipsoid = heights(pose)
+            waypoint_speed = f"{min(15.0, pose['speed_mps'] or speed):.1f}"
+            if is_template:
+                sub(placemark, "ellipsoidHeight", f"{ellipsoid:.2f}")
+                sub(placemark, "height", f"{height:.2f}")
+                sub(placemark, "useGlobalHeight", "0")
+                sub(placemark, "useGlobalSpeed", "0")
+                sub(placemark, "waypointSpeed", waypoint_speed)
+                sub(placemark, "useGlobalHeadingParam", "0")
+            else:
+                sub(placemark, "executeHeight", f"{ellipsoid if absolute else height:.2f}")
+                sub(placemark, "waypointSpeed", waypoint_speed)
 
             heading = ET.SubElement(placemark, wpml("waypointHeadingParam"))
-            ET.SubElement(heading, wpml("waypointHeadingMode")).text = (
-                "smoothTransition" if pose["yaw_locked"] else "followWayline"
-            )
-            ET.SubElement(heading, wpml("waypointHeadingAngle")).text = f"{pose['yaw_deg'] % 360.0:.1f}"
-            ET.SubElement(heading, wpml("waypointPoiPoint")).text = "0.000000,0.000000,0.000000"
-            ET.SubElement(heading, wpml("waypointHeadingPathMode")).text = "followBadArc"
+            sub(heading, "waypointHeadingMode", "smoothTransition" if pose["yaw_locked"] else "followWayline")
+            sub(heading, "waypointHeadingAngle", f"{_dji_heading(pose['yaw_deg']):.1f}")
+            sub(heading, "waypointPoiPoint", "0.000000,0.000000,0.000000")
+            sub(heading, "waypointHeadingPathMode", "followBadArc")
 
+            if is_template:
+                sub(placemark, "useGlobalTurnParam", "0")
             turn = ET.SubElement(placemark, wpml("waypointTurnParam"))
-            ET.SubElement(turn, wpml("waypointTurnMode")).text = (
-                "toPointAndStopWithDiscontinuityCurvature" if pose["dwell_s"] > 0 else "toPointAndPassWithContinuityCurvature"
-            )
-            ET.SubElement(turn, wpml("waypointTurnDampingDist")).text = "0.2"
-            ET.SubElement(placemark, wpml("useStraightLine")).text = "1"
+            sub(turn, "waypointTurnMode", turn_mode(pose))
+            sub(turn, "waypointTurnDampingDist", "0.2")
+            sub(placemark, "useStraightLine", "1")
+            if is_template:
+                sub(placemark, "gimbalPitchAngle", f"{pose['gimbal_pitch_deg']:.1f}")
 
             # Every waypoint gets an action group because the gimbal angle is always
             # commanded; dwell and capture actions are added on top when planned.
             group = ET.SubElement(placemark, wpml("actionGroup"))
-            ET.SubElement(group, wpml("actionGroupId")).text = str(index)
-            ET.SubElement(group, wpml("actionGroupStartIndex")).text = str(index)
-            ET.SubElement(group, wpml("actionGroupEndIndex")).text = str(index)
-            ET.SubElement(group, wpml("actionGroupMode")).text = "sequence"
+            sub(group, "actionGroupId", index)
+            sub(group, "actionGroupStartIndex", index)
+            sub(group, "actionGroupEndIndex", index)
+            sub(group, "actionGroupMode", "sequence")
             trigger = ET.SubElement(group, wpml("actionTrigger"))
-            ET.SubElement(trigger, wpml("actionTriggerType")).text = "reachPoint"
+            sub(trigger, "actionTriggerType", "reachPoint")
 
             actions: list[tuple[str, dict[str, str]]] = [
                 (
                     "gimbalRotate",
                     {
-                        "gimbalHeadingYawBase": "aircraft",
+                        # "north" is the only base the spec defines; the yaw axis is
+                        # disabled, so only the pitch is commanded.
+                        "gimbalHeadingYawBase": "north",
                         "gimbalRotateMode": "absoluteAngle",
                         "gimbalPitchRotateEnable": "1",
                         "gimbalPitchRotateAngle": f"{pose['gimbal_pitch_deg']:.1f}",
@@ -918,23 +1094,28 @@ def export_dji_wpml(
             if pose["dwell_s"] > 0.0:
                 actions.append(("hover", {"hoverTime": f"{pose['dwell_s']:.1f}"}))
             if spacing <= 0.0 and pose["trigger"]:
-                actions.append(("takePhoto", {"payloadPositionIndex": "0", "fileSuffix": f"wp{index + 1}"}))
+                actions.append(("takePhoto", {
+                    "payloadPositionIndex": "0",
+                    "fileSuffix": f"wp{index + 1}",
+                    "payloadLensIndex": payload_lens,
+                    "useGlobalPayloadLensIndex": "0",
+                }))
 
             for action_id, (func, params) in enumerate(actions):
                 action = ET.SubElement(group, wpml("action"))
-                ET.SubElement(action, wpml("actionId")).text = str(action_id)
-                ET.SubElement(action, wpml("actionActuatorFunc")).text = func
+                sub(action, "actionId", action_id)
+                sub(action, "actionActuatorFunc", func)
                 param_node = ET.SubElement(action, wpml("actionActuatorFuncParam"))
                 for key, value in params.items():
-                    ET.SubElement(param_node, wpml(key)).text = value
+                    sub(param_node, key, value)
 
         if spacing > 0.0:
             interval = ET.SubElement(folder, wpml("waylineActionGroup"))
-            ET.SubElement(interval, wpml("actionGroupId")).text = "9000"
-            ET.SubElement(interval, wpml("actionGroupMode")).text = "sequence"
+            sub(interval, "actionGroupId", "9000")
+            sub(interval, "actionGroupMode", "sequence")
             trigger = ET.SubElement(interval, wpml("actionTrigger"))
-            ET.SubElement(trigger, wpml("actionTriggerType")).text = "multipleDistance"
-            ET.SubElement(trigger, wpml("actionTriggerParam")).text = f"{spacing:.2f}"
+            sub(trigger, "actionTriggerType", "multipleDistance")
+            sub(trigger, "actionTriggerParam", f"{spacing:.2f}")
 
         return root
 
