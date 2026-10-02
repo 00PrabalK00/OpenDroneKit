@@ -430,6 +430,8 @@ export class Shell {
 
   /** Ask the application what is open. Re-settles every live panel (REFRESH_EVENT). */
   async refreshState() {
+    // A layer may have been added or removed: ask for the DSM again on the next move.
+    this.elevNoDsm = false;
     const state = await tryCall("get_state");
     this.stateUnread = !state && this.connection === "connected";
     if (this.stateUnread) this.retryStateRead();
@@ -509,11 +511,12 @@ export class Shell {
     const demo = this.connection === "demo";
     const project = this.project;
 
-    // Project label.
+    // Project label. "· OFFLINE" exactly while the network state is "local · no network".
+    const offline = this.networkState().text === "local · no network";
     if (demo) frame.setProject(DEMO.SITES[0] || "Example project");
     else if (!live) frame.setProject("Not connected", { none: true });
-    else if (project) frame.setProject(String(project.name || `Project ${project.id}`));
-    else frame.setProject("No project open", { none: true });
+    else if (project) frame.setProject(String(project.name || `Project ${project.id}`), { offline });
+    else frame.setProject("No project open", { none: true, offline });
 
     // Field header second line: the screen, then what the screen says about itself.
     frame.setFieldSubtitle([this.screenLabel(this.workspaceId), this.fieldSubtitle].filter(Boolean).join(" · "));
@@ -549,6 +552,7 @@ export class Shell {
     // Cursor and scale: only with a map on screen; otherwise said.
     if (!this.cursorBound) {
       frame.setFooter("cursor", "cursor · no map on this screen", { tone: "dim" });
+      frame.setFooter("elev", null);
       frame.setFooter("scale", null);
     }
 
@@ -597,14 +601,22 @@ export class Shell {
     if (this.connection === "demo") return { text: "example data · no network", tone: "sim" };
     if (this.connection !== "connected") return { text: "not connected to the application", tone: "warn" };
     const uses = [...this.networkUses];
-    if (uses.length) return { text: `local · network: ${uses.join(", ")}`, tone: "warn" };
-    return { text: "local · no network", tone: "ok" };
+    // A fixed-length label: the count, never the list, which could run off the footer.
+    // The hosts are named in the tooltip, the session log and the Layers popover.
+    if (uses.length) {
+      return { text: `local · network in use (${uses.length})`, fieldText: `Network in use · ${uses.length}`,
+               tone: "warn", title: `Network used this session: ${uses.join(", ")}` };
+    }
+    return { text: "local · no network", tone: "ok", title: "Nothing this window asked for has left the machine." };
   }
 
-  /** Something this window asked for went off the machine; the footer says so. */
+  /** Something this window asked for went off the machine; the footer and the log say so. */
   noteNetworkUse(what) {
     if (!what || this.networkUses.has(what)) return;
     this.networkUses.add(what);
+    // One log entry per host, so the session log names every one.
+    this.log.push({ at: new Date(), text: `Network in use: ${what} (${this.networkUses.size} this session)`, tone: "warn" });
+    if (this.log.length > 200) this.log.shift();
     this.updateChrome();
   }
 
@@ -654,11 +666,51 @@ export class Shell {
       }
       this.frame.setFooter("cursor", parts.join("   "), { tone: "live" });
     };
-    map.on("mousemove", (e) => { if (this.boundMap === map) cursor(e.lngLat.lng, e.lngLat.lat); });
+    map.on("mousemove", (e) => {
+      if (this.boundMap !== map) return;
+      cursor(e.lngLat.lng, e.lngLat.lat);
+      this.sampleElevation(e.lngLat.lng, e.lngLat.lat);
+    });
     map.on("move", () => { if (this.boundMap === map) scale(); });
     const c = map.getCenter();
     cursor(c.lng, c.lat);
+    this.sampleElevation(c.lng, c.lat);
     scale();
+  }
+
+  /**
+   * The footer's ELEV: the project DSM's own value under the cursor (Api.sample_elevation,
+   * read from the GeoTIFF). "ELEV —" with the reason in the tooltip when there is no DSM,
+   * no data there, or no answer; never a number the DSM did not hold. One request in
+   * flight at a time, always for the latest position.
+   */
+  sampleElevation(lon, lat) {
+    const say = (text, title, tone = "") => this.frame.setFooter("elev", text, { title, tone });
+    if (this.connection !== "connected") { say("ELEV —", "Not connected to the application."); return; }
+    if (!this.frame.footer.elev) return; // Field has no footer
+    if (this.elevNoDsm) { say("ELEV —", "No DSM is loaded in this project."); return; }
+    this.elevNext = [lon, lat];
+    if (this.elevBusy) return;
+    this.elevBusy = true;
+    (async () => {
+      try {
+        while (this.elevNext && !this.elevNoDsm) {
+          const [x, y] = this.elevNext;
+          this.elevNext = null;
+          const answer = await tryCall("sample_elevation", x, y);
+          if (!this.cursorBound) break;
+          if (!answer) say("ELEV —", "The elevation could not be read here.");
+          else if (!answer.dsm) { this.elevNoDsm = true; say("ELEV —", answer.reason || "No DSM is loaded in this project."); }
+          else if (!Number.isFinite(answer.z)) say("ELEV —", `${answer.dsm}: ${answer.reason || "no data under the cursor"}.`);
+          else {
+            say(`ELEV ${answer.z.toFixed(2)} m`, `${answer.dsm} under the cursor`
+              + `${answer.epsg ? ` (EPSG:${answer.epsg})` : ""}, read from the GeoTIFF`, "live");
+          }
+        }
+      } finally {
+        this.elevBusy = false;
+      }
+    })();
   }
 
   /** Fit the map on screen to coordinates, or say there is none. */

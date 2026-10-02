@@ -67,6 +67,8 @@
   font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: 0.04em; text-transform: uppercase;
 }
 .odk-header-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-header-project-net { flex-shrink: 0; white-space: nowrap; }
+.odk-header-project-net[hidden] { display: none; }
 .odk-header-project svg { flex-shrink: 0; color: var(--muted); }
 .odk-header-project.is-empty { color: var(--muted); }
 .odk-header-project:hover, .odk-header-project[aria-expanded="true"] { color: var(--text); }
@@ -157,7 +159,9 @@
 .odk-footer-message[data-tone="warn"] { color: var(--warn); }
 .odk-footer-message:hover { color: var(--text); }
 .odk-footer-message:focus-visible { outline-offset: -2px; }
-.odk-footer-net { color: var(--muted); flex-shrink: 1; max-width: 40%; }
+/* A fixed-length label ("local · network in use (N)"): it keeps its width; the message
+   segment is the one that gives way. */
+.odk-footer-net { color: var(--muted); flex-shrink: 0; }
 .odk-footer-net .odk-net-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .odk-footer-net .odk-dot { width: 6px; height: 6px; }
 .odk-footer-net[data-tone="ok"] { color: var(--ok); }
@@ -202,7 +206,7 @@
   width: 100%; min-height: var(--row-h); display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4);
   background: transparent; border: 0; text-align: left; color: var(--text); font-size: var(--fs-body);
 }
-.odk-palette-row[aria-selected="true"] { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--selection); }
+.odk-palette-row[aria-selected="true"] { background: var(--surface-3); color: var(--text); }
 .odk-palette-row:focus-visible { outline-offset: -2px; }
 .odk-palette-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .odk-palette-hint {
@@ -233,7 +237,7 @@
 .odk-popover-note { padding: var(--sp-2) var(--sp-3); color: var(--muted); font-size: var(--fs-small); }
 .odk-menu-item-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .odk-menu-item-hint { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); }
-.odk-menu-item[aria-current="true"] { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--selection); }
+.odk-menu-item[aria-current="true"] { background: var(--surface-3); color: var(--text); }
 .odk-menu-item--rule { border-top: 1px solid var(--line); margin-top: var(--sp-1); }
 .odk-project-list { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
 .odk-popover--log { width: 460px; max-width: calc(100vw - 32px); }

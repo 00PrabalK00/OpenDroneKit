@@ -5,7 +5,7 @@
  * Desk (SysHome / SysPlan ... artboards): 48 px header with mark, wordmark, eight
  * workspace tabs, a 240 px search field with a "/" hint, the project label, the Field
  * mode toggle and the Settings gear; 264 px left panel; 312 px inspector; 28 px footer
- * (cursor, CRS, scale, vehicle / job, message, network). Both panels collapse.
+ * (cursor, elevation, CRS, scale, vehicle / job, message, network). Both panels collapse.
  *
  * Field (SysFieldPlan / SysFieldFly): 72 px black header with the mark, the project
  * name over the screen line, the network status box and "Desk mode"; the map and the
@@ -99,6 +99,7 @@ export class Frame {
       type: "button", class: "odk-header-project", "data-control": "project-menu",
       "aria-haspopup": "dialog", title: "Projects on this machine",
     }, [this.projectText = el("span", { class: "odk-header-project-name", text: "" }),
+      this.projectNet = el("span", { class: "odk-header-project-net", hidden: "" }),
       SVG(GLYPH.chevronDown, { size: 12 })]);
     this.projectButton.addEventListener("click", () => hooks.onProjectMenu(this.projectButton));
 
@@ -138,6 +139,7 @@ export class Frame {
 
     const footer = el("footer", { class: "odk-frame-footer", "data-region": "footer" }, [
       this.footer.cursor = el("span", { class: "odk-footer-seg", "data-footer": "cursor" }),
+      this.footer.elev = el("span", { class: "odk-footer-seg", "data-footer": "elev", hidden: "" }),
       this.footer.crs = el("span", { class: "odk-footer-seg", "data-footer": "crs" }),
       this.footer.scale = el("span", { class: "odk-footer-seg", "data-footer": "scale" }),
       this.footer.vehicle = el("span", { class: "odk-footer-seg", "data-footer": "vehicle" }),
@@ -240,11 +242,16 @@ export class Frame {
     if (this.node) this.node.setAttribute("data-screen", id);
   }
 
-  /** Project label (desk header, field title). `name` null = none open / not connected. */
-  setProject(text, { none = false } = {}) {
+  /**
+   * Project label (desk header, field title). `none`: no project open / not connected.
+   * `offline`: the desk label adds "· OFFLINE" -- only while nothing has left the machine.
+   */
+  setProject(text, { none = false, offline = false } = {}) {
     if (this.projectText) {
       this.projectText.textContent = text;
       this.projectButton.classList.toggle("is-empty", none);
+      this.projectNet.hidden = !offline;
+      this.projectNet.textContent = offline ? "· OFFLINE" : "";
     }
     if (this.fieldTitle) this.fieldTitle.textContent = text;
   }
@@ -280,14 +287,18 @@ export class Frame {
     if (title) node.title = title; else if (name !== "message") node.removeAttribute("title");
   }
 
-  /** The network status: footer segment (desk) or header box (field). */
-  setNetwork({ text, tone }) {
+  /**
+   * The network status: footer segment (desk) or header box (field). A fixed-length
+   * label (`text`, or `fieldText` in Field); the hosts themselves go in `title`.
+   */
+  setNetwork({ text, fieldText = "", tone, title = "" }) {
     const node = this.footer.net;
     if (!node) return;
     node.dataset.tone = tone;
-    const words = this.mode === "field" ? text.charAt(0).toUpperCase() + text.slice(1) : text;
-    // Long when several hosts were reached; it shortens with an ellipsis, never off the edge.
-    node.title = words;
+    const words = this.mode === "field"
+      ? fieldText || text.charAt(0).toUpperCase() + text.slice(1)
+      : text;
+    node.title = title || words;
     node.replaceChildren(el("span", { class: `odk-dot odk-dot--${tone}`, "aria-hidden": "true" }),
       el("span", { class: "odk-net-text", text: words }));
   }

@@ -87,7 +87,9 @@
 [data-mode="field"] .odk-layer-row { border-bottom: 2px solid var(--line); font-size: var(--fs-body); }
 [data-mode="field"] .odk-check-row input,
 [data-mode="field"] .odk-layer-row input { width: 28px; height: 28px; accent-color: var(--selection); }
-[data-mode="field"] .odk-layer-row--selected { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+[data-mode="field"] .odk-layer-row--selected { background: var(--selection); color: var(--on-selection); }
+[data-mode="field"] .odk-layer-row--selected .odk-layer-note { color: var(--on-selection); }
+[data-mode="field"] .odk-layer-row--selected input { outline: 2px solid var(--on-selection); outline-offset: 0; }
 [data-mode="field"] .odk-layer-note { font-size: var(--fs-small); color: var(--text); font-weight: 700; }
 [data-mode="field"] .odk-swatch--polygon { width: 16px; height: 16px; border: 4px solid var(--selection); }
 [data-mode="field"] .odk-swatch--point { width: 14px; height: 14px; background: var(--text); }
@@ -127,7 +129,8 @@
 [data-mode="field"] .odk-table td.num { font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700; }
 [data-mode="field"] .odk-table td.dim { color: var(--text); }
 [data-mode="field"] .odk-table tbody tr:is(:hover, .is-hover) { background: var(--surface-2); }
-[data-mode="field"] .odk-table tbody tr.selected { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+[data-mode="field"] .odk-table tbody tr.selected { background: var(--selection); color: var(--on-selection); }
+[data-mode="field"] .odk-table tbody tr.selected td.dim { color: var(--on-selection); }
 
 [data-mode="field"] .odk-stat-label { font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); }
 [data-mode="field"] .odk-stat-value { font-weight: 700; line-height: 1; }
@@ -146,7 +149,7 @@
 [data-mode="field"] .odk-scalebar-bar > span:last-child { border: 3px solid var(--text); border-top: 0; border-left: 0; }
 [data-mode="field"] .odk-scalebar-ratio { color: var(--text); font-weight: 400; }
 [data-mode="field"] .odk-north { width: 64px; height: 64px; border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: 14px; font-weight: 700; }
-[data-mode="field"] .odk-north path.odk-north-outline { stroke: none; }
+[data-mode="field"] .odk-north path.odk-north-outline { fill: currentColor; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; }
 [data-mode="field"] .odk-legend { border: var(--rule) solid var(--line); }
 [data-mode="field"] .odk-legend-ramp { width: 20px; outline: 2px solid var(--line); }
 [data-mode="field"] .odk-legend-ticks { font-family: var(--font-ui); font-size: 16px; font-weight: 700; line-height: 18px; }
@@ -207,7 +210,7 @@
 
 /* popovers */
 [data-mode="field"] .odk-popover-note { font-size: 16px; color: var(--text); padding: var(--sp-3) var(--sp-4); }
-[data-mode="field"] .odk-menu-item[aria-current="true"] { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+[data-mode="field"] .odk-menu-item[aria-current="true"] { background: var(--selection); color: var(--on-selection); }
 [data-mode="field"] .odk-menu-item-hint { font-family: var(--font-ui); font-size: 16px; color: var(--text); }
 
 /* dialogs (modal.js) */

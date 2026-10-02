@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("websocket")
@@ -173,6 +175,9 @@ class TestTheFooterTellsTheTruth:
         assert f["cursor"] == "cursor · no map on this screen"
         name = api.get_state()["project"]["name"]
         assert browser.js("document.querySelector('.odk-header-project-name').textContent") == name
+        # "· OFFLINE" beside the project exactly while the network state says no network.
+        assert browser.js("""(() => { const n = document.querySelector('.odk-header-project-net');
+          return n.hidden ? null : n.textContent; })()""") == "· OFFLINE"
 
         assert api.set_project_crs(32617)["ok"]
         browser.js("odkShell.refreshState().then(() => true)")
@@ -208,7 +213,81 @@ class TestTheFooterTellsTheTruth:
         _, browser, base = stack
         boot(browser, base)
         browser.js("odkShell.noteNetworkUse('test probe'); true")
-        assert footer(browser)["net"] == "local · network: test probe"
+        assert footer(browser)["net"] == "local · network in use (1)"
+        # Many hosts: the label keeps its length; the hosts go in the tooltip and the log.
+        hosts = [f"tiles{i}.example-provider-with-a-long-name.test" for i in range(6)]
+        browser.js(f"{json.dumps(hosts)}.forEach((h) => odkShell.noteNetworkUse(h)); true")
+        seen = browser.js("""(() => { const n = document.querySelector('[data-footer=net]');
+          const t = n.querySelector('.odk-net-text');
+          return { text: n.textContent.trim(), title: n.title, tone: n.dataset.tone,
+                   dot: Boolean(n.querySelector('.odk-dot--warn')), clipped: t.scrollWidth > t.clientWidth + 1,
+                   log: odkShell.log.map((e) => e.text),
+                   offline: document.querySelector('.odk-header-project-net').hidden }; })()""")
+        assert seen["text"] == "local · network in use (7)" and seen["tone"] == "warn" and seen["dot"], seen
+        assert not seen["clipped"], seen
+        assert all(h in seen["title"] for h in ["test probe", *hosts]), seen["title"]
+        assert any(hosts[-1] in line and "7 this session" in line for line in seen["log"]), seen["log"]
+        # No longer offline, so the project label stops saying so.
+        assert seen["offline"] is True
+        browser.js("odkShell.setMode('field')")
+        assert browser.js("document.querySelector('.odk-field-net').textContent.trim()") == "Network in use · 7"
+        browser.js("odkShell.setMode('desk')")
+
+    def test_elev_reads_the_dsm_under_the_cursor_or_says_there_is_none(self, stack, tmp_path) -> None:
+        rasterio = pytest.importorskip("rasterio")
+        from rasterio.transform import from_origin
+
+        from core import geo
+
+        api, browser, base = stack
+        boot(browser, base)
+        lon, lat = -81.7500, 41.3045
+        browser.js("odkShell.open('analyse')")
+        browser.js(f"""(async () => {{
+          const f = await import('./js/odk/map/furniture.js');
+          const m = await f.mountProjectMap(document.querySelector('[data-region=main]'), {{ centre: [{lon}, {lat}], zoom: 17 }});
+          window.__m = m;
+          return true;
+        }})()""", timeout_s=60)
+        browser.wait_for("odkShell.boundMap === window.__m.map", 15)
+        move = f"window.__m.map.fire('mousemove', {{ lngLat: {{ lng: {lon}, lat: {lat} }} }}); true"
+        elev = "(() => { const n = document.querySelector('[data-footer=elev]'); return n.hidden ? null : [n.textContent, n.title]; })()"
+
+        # No DSM in this project: a dash and the reason, never a number.
+        browser.js(move)
+        browser.wait_for(f"({elev}) && ({elev})[1].includes('No DSM')", 15)
+        assert browser.js(elev)[0] == "ELEV —"
+        order = browser.js("[...document.querySelectorAll('[data-footer]')].map((n) => n.dataset.footer)")
+        assert order.index("cursor") + 1 == order.index("elev") and order.index("elev") + 1 == order.index("crs"), order
+
+        # A DSM: its own pixel under the cursor.
+        east, north = geo.wgs84_to_projected([lon], [lat], 32617)
+        z = (230.0 + np.arange(40 * 40, dtype="float32").reshape(40, 40) * 0.013).astype("float32")
+        z[:10, :10] = -9999.0
+        path = tmp_path / "dsm.tif"
+        transform = from_origin(float(east[0]) - 20.0, float(north[0]) + 20.0, 1.0, 1.0)
+        with rasterio.open(path, "w", driver="GTiff", width=40, height=40, count=1, dtype="float32",
+                           crs="EPSG:32617", transform=transform, nodata=-9999.0) as dst:
+            dst.write(z, 1)
+        layer = api.add_layer_from_file(str(path))["layer"]["id"]
+        try:
+            with rasterio.open(path) as src:
+                row, col = src.index(float(east[0]), float(north[0]))
+                expected = float(src.read(1)[row, col])
+            browser.js("odkShell.refreshState().then(() => true)")
+            browser.js(move)
+            browser.wait_for(f"({elev}) && ({elev})[0] !== 'ELEV —'", 15)
+            text, title = browser.js(elev)
+            assert text == f"ELEV {expected:.2f} m", (text, expected)
+            assert "EPSG:32617" in title and "GeoTIFF" in title, title
+            # A nodata pixel: a dash, not the nodata value.
+            nx, ny = rasterio.transform.xy(transform, 2, 2)
+            nlon, nlat = geo.projected_to_wgs84([nx], [ny], 32617)
+            browser.js(f"window.__m.map.fire('mousemove', {{ lngLat: {{ lng: {float(nlon[0])}, lat: {float(nlat[0])} }} }}); true")
+            browser.wait_for(f"({elev}) && ({elev})[0] === 'ELEV —'", 15)
+            assert "no data" in browser.js(elev)[1]
+        finally:
+            api.remove_layer(layer)
 
 
 class TestThePalette:
@@ -322,6 +401,36 @@ class TestPanels:
         browser.js("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'b', ctrlKey: true})); true")
         assert browser.js("[document.querySelector('.odk-frame').dataset.left || null, "
                           "document.querySelector('.odk-frame').dataset.inspector || null]") == [None, None]
+
+
+class TestSelectionIsATone:
+    """Selected rows are a fill, not a coloured stripe down one side (craft floor)."""
+
+    CSS = Path(__file__).resolve().parents[1] / "app" / "web" / "css" / "odk"
+
+    def test_no_stylesheet_draws_a_side_stripe(self) -> None:
+        stripe = re.compile(r"box-shadow:\s*inset\s+-?[1-9]\d*px\s+0\s+0|border-(left|right):\s*[2-9]\d*px")
+        found = [(css.name, n, line.strip()) for css in self.CSS.glob("*.css")
+                 for n, line in enumerate(css.read_text(encoding="utf-8").splitlines(), 1) if stripe.search(line)]
+        assert found == [], found
+
+    def test_a_selected_row_is_a_fill_in_both_modes(self, stack) -> None:
+        _, browser, base = stack
+        boot(browser, base)
+        row = """(async () => {
+          await odkShell.openPalette();
+          const r = document.querySelector('.odk-palette-row[aria-selected=true]');
+          const cs = getComputedStyle(r);
+          const out = { shadow: cs.boxShadow, bg: cs.backgroundColor, color: cs.color };
+          odkShell.palette.close();
+          return out;
+        })()"""
+        desk = browser.js(row)
+        assert desk == {"shadow": "none", "bg": "rgb(24, 32, 43)", "color": "rgb(230, 234, 240)"}, desk
+        browser.js("odkShell.setMode('field')")
+        field = browser.js(row)
+        assert field == {"shadow": "none", "bg": "rgb(0, 71, 179)", "color": "rgb(255, 255, 255)"}, field
+        browser.js("odkShell.setMode('desk')")
 
 
 class TestTheDemoBanner:
