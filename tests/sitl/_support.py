@@ -159,10 +159,12 @@ class MavlinkTrace:
         "HEARTBEAT", "COMMAND_ACK", "STATUSTEXT", "MISSION_ITEM_REACHED", "MISSION_CURRENT",
         "MISSION_ACK", "MISSION_COUNT", "CAMERA_FEEDBACK", "CAMERA_TRIGGER", "MOUNT_STATUS",
         "GIMBAL_DEVICE_ATTITUDE_STATUS", "FENCE_STATUS", "HOME_POSITION", "SYS_STATUS",
-        "GLOBAL_POSITION_INT", "VFR_HUD", "ATTITUDE",
+        "GLOBAL_POSITION_INT", "VFR_HUD", "ATTITUDE", "PARAM_VALUE", "BATTERY_STATUS",
+        "GPS_RAW_INT", "EKF_STATUS_REPORT",
     }
     # Kept in memory for assertions but thinned in the written trace.
-    HIGH_RATE = {"GLOBAL_POSITION_INT", "VFR_HUD", "ATTITUDE", "SYS_STATUS", "HEARTBEAT"}
+    HIGH_RATE = {"GLOBAL_POSITION_INT", "VFR_HUD", "ATTITUDE", "SYS_STATUS", "HEARTBEAT",
+                 "BATTERY_STATUS", "GPS_RAW_INT", "EKF_STATUS_REPORT"}
 
     def __init__(self, connection) -> None:
         self._conn = connection
@@ -190,6 +192,10 @@ class MavlinkTrace:
             data.pop("mavpackettype", None)
             if kind == "STATUSTEXT":
                 data["text"] = str(data.get("text", "")).strip("\x00")
+            elif kind == "PARAM_VALUE":
+                data["param_id"] = str(data.get("param_id", "")).strip("\x00")
+            elif kind == "HEARTBEAT" and int(data.get("type", 0)) == 6:
+                continue  # a ground station's heartbeat, not the vehicle's
             with self._lock:
                 self._entries.append(TraceEntry(time.monotonic(), kind, data))
 
@@ -494,3 +500,116 @@ def plan_template(api, template: str) -> dict[str, Any]:
     if template in ROUTE_TEMPLATES:
         options["path_lonlat"] = ROUTE_LINE
     return api.plan_mission(options)
+
+
+# ── Fault injection (environment, never the app under test) ────────────────
+
+def set_vehicle_param(observer, trace: MavlinkTrace, name: str, value: float,
+                      timeout_s: float = 5.0) -> dict:
+    """PARAM_SET over the independent observer link, confirmed by the vehicle's echo."""
+    for _ in range(3):
+        mark = trace.mark()
+        observer.mav.param_set_send(observer.target_system, observer.target_component,
+                                    name.encode(), float(value), 9)  # MAV_PARAM_TYPE_REAL32
+        echo = trace.wait_for("PARAM_VALUE", lambda d: d["param_id"] == name
+                              and abs(float(d["param_value"]) - float(value)) < 1e-3,
+                              mark, timeout_s)
+        if echo is not None:
+            return echo.data
+    pytest.fail(f"ArduPilot did not confirm {name}={value}")
+
+
+def read_vehicle_param(observer, trace: MavlinkTrace, name: str, timeout_s: float = 5.0) -> float:
+    for _ in range(3):
+        mark = trace.mark()
+        observer.mav.param_request_read_send(observer.target_system, observer.target_component,
+                                             name.encode(), -1)
+        echo = trace.wait_for("PARAM_VALUE", lambda d: d["param_id"] == name, mark, timeout_s)
+        if echo is not None:
+            return float(echo.data["param_value"])
+    pytest.fail(f"ArduPilot did not report {name}")
+
+
+class LinkCutter:
+    """A UDP relay between MAVProxy's app output and the app, that can be cut.
+
+    The app's own MAVLink link runs through it, so cutting it is a lost telemetry radio:
+    the app hears nothing, and the vehicle stops hearing the app's GCS heartbeat. The
+    observer stream is a separate MAVProxy output and is not affected.
+    """
+
+    def __init__(self, vehicle_side_uri: str) -> None:
+        import socket
+
+        port = int(vehicle_side_uri.rsplit(":", 1)[1])
+        self._vehicle = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._vehicle.bind(("127.0.0.1", port))
+        self._app = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._app.bind(("127.0.0.1", 0))
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        self._app_port = probe.getsockname()[1]
+        probe.close()
+        self.app_uri = f"udpin:127.0.0.1:{self._app_port}"
+        self._mavproxy_addr = None
+        self.cut = False
+        self.dropped = {"to_app": 0, "to_vehicle": 0}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="link-cutter", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        import select
+
+        while not self._stop.is_set():
+            ready, _, _ = select.select([self._vehicle, self._app], [], [], 0.2)
+            for sock in ready:
+                try:
+                    data, addr = sock.recvfrom(65535)
+                except OSError:
+                    continue
+                if sock is self._vehicle:
+                    self._mavproxy_addr = addr
+                    if self.cut:
+                        self.dropped["to_app"] += 1
+                    else:
+                        self._app.sendto(data, ("127.0.0.1", self._app_port))
+                elif self.cut or self._mavproxy_addr is None:
+                    self.dropped["to_vehicle"] += 1
+                else:
+                    self._vehicle.sendto(data, self._mavproxy_addr)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+        self._vehicle.close()
+        self._app.close()
+
+
+def start_mission_from_ground(api, timeout_s: float = 90.0) -> dict:
+    """Plan the field grid, upload it, confirm the checklist, start, and wait for AUTO."""
+    planned = plan_template(api, "grid")
+    assert planned["ok"], planned
+    upload = api.upload_mission()
+    assert upload["ok"], upload
+    preflight = api.run_preflight()
+    confirmed = api.run_preflight(acknowledged=preflight["pending_confirmation"])
+    assert confirmed["can_start"], [(c["id"], c["message"]) for c in confirmed["checks"] if not c["ok"]]
+    started = api.vehicle_command("start")
+    assert started["ok"], started
+    return wait_telemetry(api, "AUTO, airborne",
+                          lambda t: t["flight_mode"] == "AUTO" and t["altitude_rel_m"] > 5.0,
+                          timeout_s)
+
+
+def wait_armable(api, timeout_s: float = 120.0) -> None:
+    """Until the vehicle accepts an arm (EKF and GPS settled again), then disarm."""
+    deadline = time.monotonic() + timeout_s
+    api.vehicle_command("loiter")
+    armed = api.vehicle_command("arm")
+    while not armed["ok"] and time.monotonic() < deadline:
+        time.sleep(3.0)
+        api.vehicle_command("loiter")
+        armed = api.vehicle_command("arm")
+    assert armed["ok"], f"the vehicle would not arm again: {armed}"
+    assert api.vehicle_command("disarm")["ok"]
