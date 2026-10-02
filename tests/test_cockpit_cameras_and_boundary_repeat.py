@@ -13,6 +13,8 @@ Driven through workspace.html in headless Chromium against the real Api.
 
 from __future__ import annotations
 
+import json
+
 from cockpit_harness import Cockpit, make_api
 from mission.cameras import describe, resolve
 from mission.repeat import REPEAT_MODIFIED_BOUNDARY, repeat_mission
@@ -46,7 +48,7 @@ def test_a_modified_boundary_repeat_is_planned_over_the_new_area():
 def test_cameras_and_boundary_repeat_in_the_cockpit(tmp_path):
     api = make_api(tmp_path)
     assert api.set_aoi(AOI)["ok"]
-    assert api.plan_mission({"template": "grid", "altitude_m": 60})["ok"]
+    assert api.plan_mission({"template": "grid", "altitude_m": 60, "speed_m_s": 5})["ok"]
     assert api.save_mission("Quarry")["ok"]
     truth = describe("mavic2pro", altitude_m=60.0)["gsd_cm"]
     placeholder = describe("not-a-camera", altitude_m=60.0)["gsd_cm"]
@@ -95,7 +97,31 @@ def test_cameras_and_boundary_repeat_in_the_cockpit(tmp_path):
     assert " 0 capture point(s)" not in seen["same"], seen
     assert "comparable." in seen["same"] and "partial_overlap" not in seen["same"], seen
     assert "same area as the original" in seen["same"], seen
+    # Re-planned at the speed the original was planned for, not the planner default.
+    assert "speed (5 m/s)" in seen["same"], seen
 
     assert moved and "partial_overlap" in moved, moved
     assert " 0 capture point(s)" not in moved, moved
     assert "inside the original boundary" in moved, moved
+
+
+def test_a_saved_version_keeps_the_speed_it_was_planned_at(tmp_path):
+    """A version recorded no speed, so a re-plan flew the planner default and Compare
+    Versions could not say that the speed had changed."""
+    api = make_api(tmp_path)
+    assert api.set_aoi(AOI)["ok"]
+    assert api.plan_mission({"template": "grid", "altitude_m": 60, "speed_m_s": 5})["ok"]
+    first = api.save_mission("Pit")["version"]
+    assert api.plan_mission({"template": "grid", "altitude_m": 60, "speed_m_s": 9})["ok"]
+    api.save_mission("Pit")
+    versions = api.list_mission_versions("Pit")["versions"]
+    speeds = []
+    for v in versions:
+        raw = v.get("plan_summary") or v.get("plan_summary_json")
+        summary = json.loads(raw) if isinstance(raw, str) else raw
+        speeds.append(summary["speed_m_s"])
+    assert sorted(speeds) == [5.0, 9.0], versions
+    history = api.mission_version_history("Pit")
+    assert history["ok"], history
+    assert "Speed" in json.dumps(history), history
+    assert first

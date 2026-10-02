@@ -30,6 +30,7 @@ SIGNIFICANT_FIELDS: dict[str, tuple[str, str]] = {
     "estimated_time_min": ("Flight time", "min"),
     "path_distance_m": ("Path distance", "m"),
     "camera": ("Camera", ""),
+    "speed_m_s": ("Speed", "m/s"),
     "template": ("Template", ""),
     "flight_direction_deg": ("Flight direction", "deg"),
     "line_spacing_m": ("Line spacing", "m"),

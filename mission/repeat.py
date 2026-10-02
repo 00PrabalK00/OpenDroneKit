@@ -210,7 +210,9 @@ def repeat_mission(plan: dict[str, Any] | Any,
         shared = _shared_fraction(original_polygon, boundary) if len(original_polygon) >= 3 else None
         repeat.changes.append(
             f"Re-planned over the boundary drawn now ({len(boundary)} vertices), holding the "
-            "original template, overlap, camera and ground resolution: "
+            "original template, overlap, camera, ground resolution"
+            + (f" and speed ({float(summary['speed_m_s']):g} m/s)" if summary.get("speed_m_s") else "")
+            + ": "
             f"{len(repeat.waypoints)} capture point(s)."
         )
         if shared is not None and shared["same"]:
@@ -267,7 +269,9 @@ def _replan_over(boundary: list[list[float]], summary: dict[str, Any],
     for key in ("front_overlap_pct", "side_overlap_pct"):
         if summary.get(key) is not None:
             kwargs[key] = float(summary[key])
-    speed = summary.get("cruise_speed_m_s") or summary.get("speed_m_s")
+    # The speed asked for, not the cruise speed it became: re-planning from the cruise
+    # speed would apply the wind or facade cap a second time.
+    speed = summary.get("speed_m_s") or summary.get("cruise_speed_m_s")
     if speed:
         kwargs["speed_m_s"] = float(speed)
     if terrain_source:

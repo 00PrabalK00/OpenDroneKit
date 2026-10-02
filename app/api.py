@@ -5319,6 +5319,10 @@ class Api:
         plan = MissionPlanner().generate(**kwargs)
         adopted = self._adopt_plan(plan, kwargs["mode"], warnings, options=opts)
         adopted["summary"]["template"] = kwargs["mode"]
+        # The speed the operator asked for. The plan keeps only the cruise speed after
+        # any wind or facade cap, and a saved version needs the request to be re-planned
+        # (a repeat over a redrawn boundary) at the speed the original was planned for.
+        self._session.mission_plan_dict["speed_m_s"] = kwargs["speed_m_s"]
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
         # from the recipe root silently yielded None, so no terrain warning ever fired.
@@ -5513,6 +5517,8 @@ class Api:
                 "capture_spacing_m": plan.get("capture_spacing_m"),
                 "terrain_follow_enabled": plan.get("terrain_follow_enabled"),
                 "altitude_m": plan.get("altitude_m"),
+                "speed_m_s": plan.get("speed_m_s"),
+                "cruise_speed_m_s": plan.get("cruise_speed_m_s"),
                 "path_distance_m": plan.get("path_distance_m"),
                 "estimated_time_min": plan.get("estimated_time_min"),
                 "estimated_gsd_cm": plan.get("estimated_gsd_cm"),
