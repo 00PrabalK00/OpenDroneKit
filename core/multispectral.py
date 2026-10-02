@@ -1130,6 +1130,69 @@ def reflectance_above_one(band_orthomosaic: str | Path) -> dict[str, float]:
     return shares
 
 
+def _survey_validation_statement(report: Mapping[str, Any], calibration: str) -> dict[str, Any]:
+    """What, if anything, validates this survey's reflectance."""
+    check = report.get("panel_validation")
+    if calibration == "panel":
+        return {"status": "panel_calibrated",
+                "note": "Calibrated on the panel capture of the same camera; the panel itself is the "
+                        "reference, so it is not an independent check."}
+    if check and check.get("scope", {}).get("applies_to_survey"):
+        return {"status": "checked_against_panel",
+                "mean_absolute_relative_error": check.get("mean_absolute_relative_error"),
+                "note": check["scope"]["reason"]}
+    note = "No panel of this survey's camera and flight was given: the DLS reflectance is unvalidated."
+    if check:
+        note += " " + check["scope"]["reason"]
+    return {"status": "unvalidated", "note": note}
+
+
+def panel_check_scope(panel_capture: "Capture", survey_captures: Sequence["Capture"]) -> dict[str, Any]:
+    """Whether a panel capture can stand as a check of this survey's reflectance.
+
+    A panel reading checks the DLS model only for the camera and flight it was
+    taken with: another camera has its own radiometric calibration and DLS, and
+    another flight another sky. So the check applies to the survey only when the
+    camera serials match and, where both record one, the FlightId matches too.
+    Otherwise the panel result is still a measurement, but of the panel's own
+    camera and flight, and the survey's reflectance stays unvalidated.
+    """
+    def first(capture: "Capture") -> "BandImage":
+        return next(iter(capture.bands.values()))
+
+    panel_band = first(panel_capture)
+    survey_serials = sorted({first(c).camera_serial for c in survey_captures if first(c).camera_serial})
+    survey_flights = sorted({first(c).flight_id for c in survey_captures if first(c).flight_id})
+    same_camera = bool(panel_band.camera_serial) and survey_serials == [panel_band.camera_serial]
+    if panel_band.flight_id and survey_flights:
+        same_flight: bool | None = survey_flights == [panel_band.flight_id]
+    else:
+        same_flight = None
+    applies = same_camera and same_flight is not False
+    if not same_camera:
+        reason = (f"The panel was captured by camera {panel_band.camera_serial or 'unknown'}, the survey by "
+                  f"{', '.join(survey_serials) or 'unknown'}: this checks the DLS model on the panel's own "
+                  "camera and flight, not this survey's reflectance.")
+    elif same_flight is False:
+        reason = (f"Same camera, but the panel is from flight {panel_band.flight_id} and the survey from "
+                  f"{', '.join(survey_flights)}: a different sky, so it is not a check of this survey.")
+    elif same_flight is None:
+        reason = ("Same camera; the FlightId is not recorded on both, so the panel is assumed to be "
+                  "from this survey's flight.")
+    else:
+        reason = "Same camera and flight as the survey: the panel checks this survey's calibration."
+    return {
+        "applies_to_survey": applies,
+        "same_camera": same_camera,
+        "same_flight": same_flight,
+        "panel_camera_serial": panel_band.camera_serial or None,
+        "survey_camera_serials": survey_serials,
+        "panel_flight_id": panel_band.flight_id,
+        "survey_flight_ids": survey_flights,
+        "reason": reason,
+    }
+
+
 def run_survey_report(
     images: str | Path,
     output_dir: str | Path,
@@ -1154,6 +1217,16 @@ def run_survey_report(
     out.mkdir(parents=True, exist_ok=True)
     started = time.time()
     report: dict[str, Any] = {"images": str(images), "calibration": calibration}
+    survey_captures = group_captures(images)
+    if not survey_captures:
+        raise MultispectralError("No MicaSense band TIFFs were found.")
+    if reconstruct and len(survey_captures) < 3:
+        # Structure from motion needs at least 3 views; the per-capture reflectance
+        # stacks are still produced, and the report says why there is no orthomosaic.
+        reconstruct = False
+        report["reconstruction_skipped"] = (
+            f"Only {len(survey_captures)} capture(s): an orthomosaic needs at least 3. "
+            "Per-capture reflectance stacks were produced instead.")
 
     panel_capture = None
     if panel:
@@ -1164,11 +1237,14 @@ def run_survey_report(
                 "it cannot calibrate or validate.")
         panel_capture = panel_captures[0]
         report["panel_validation"] = validate_panel_against_albedo(panel_capture)
+        scope = panel_check_scope(panel_capture, survey_captures)
+        report["panel_validation"]["scope"] = scope
     elif calibration == "panel":
         raise MultispectralError("Panel calibration needs a folder holding the panel capture.")
 
     survey = process_survey(images, out, calibration=calibration, panel_capture=panel_capture,
                             reconstruct=reconstruct, progress=progress)
+    report["survey_reflectance_validation"] = _survey_validation_statement(report, calibration)
     report["survey"] = {k: v for k, v in survey.items() if k != "captures"}
     report["survey"]["capture_count"] = len(survey["captures"])
 

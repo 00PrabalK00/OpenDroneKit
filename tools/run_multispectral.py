@@ -74,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
         if panel_captures:
             panel_capture = panel_captures[0]
             report["panel_validation"] = ms.validate_panel_against_albedo(panel_capture)
+            report["panel_validation"]["scope"] = ms.panel_check_scope(
+                panel_capture, ms.group_captures(args.images))
 
     summary_path = out / "multispectral_summary.json"
     if not summary_path.exists():
@@ -86,6 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         survey["orthomosaic"] = ms.reconstruct_band_orthomosaic(out, survey["bands"], sources, progress=progress)
         summary_path.write_text(json.dumps(survey, indent=2, default=str), encoding="utf-8")
     report["survey"] = {k: v for k, v in survey.items() if k != "captures"}
+    report["survey_reflectance_validation"] = ms._survey_validation_statement(report, args.calibration)
     report["survey"]["capture_count"] = len(survey["captures"])
 
     ortho = (survey.get("orthomosaic") or {}).get("reflectance_bands")

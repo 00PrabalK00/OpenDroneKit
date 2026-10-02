@@ -320,3 +320,40 @@ class TestApplicationPath:
         nir = report["panel_validation"]["bands"]["nir"]
         assert nir["status"] == "measured"
         assert abs(nir["relative_error"]) < 0.02
+        assert report["panel_validation"]["scope"]["applies_to_survey"] is True
+        assert report["survey_reflectance_validation"]["status"] == "checked_against_panel"
+
+
+class TestPanelCheckScope:
+    """A panel only checks the camera and flight it was captured with."""
+
+    def test_other_camera_panel_is_not_a_check_of_buergewald(self, rededge_p_panel, buergewald):
+        panel = next(c for c in rededge_p_panel if any(b.panel_albedo for b in c.bands.values()))
+        scope = ms.panel_check_scope(panel, buergewald)
+        assert scope["same_camera"] is False
+        assert scope["applies_to_survey"] is False
+        assert scope["panel_camera_serial"] != scope["survey_camera_serials"][0]
+        assert "not this survey" in scope["reason"]
+        statement = ms._survey_validation_statement({"panel_validation": {"scope": scope}}, "dls")
+        assert statement["status"] == "unvalidated"
+
+    def test_same_camera_panel_applies(self, rededge_p_panel):
+        panel = next(c for c in rededge_p_panel if any(b.panel_albedo for b in c.bands.values()))
+        scope = ms.panel_check_scope(panel, rededge_p_panel)
+        assert scope["same_camera"] is True
+        assert scope["applies_to_survey"] is True
+
+    def test_report_flags_cross_camera_check_and_skips_ortho_under_three(self, tmp_path):
+        survey = tmp_path / "survey"
+        survey.mkdir()
+        source = _dataset("multispectral_buergewald_rededgep") / "images"
+        first = sorted(source.glob("IMG_*_1.tif"))[0].name.rsplit("_", 1)[0]
+        for band in source.glob(f"{first}_*.tif"):
+            (survey / band.name).write_bytes(band.read_bytes())
+        report = ms.run_survey_report(survey, tmp_path / "out",
+                                      panel=_dataset("multispectral_micasense_panels") / "REDEDGE-P",
+                                      calibration="dls", reconstruct=True)
+        assert report["panel_validation"]["scope"]["applies_to_survey"] is False
+        assert report["survey_reflectance_validation"]["status"] == "unvalidated"
+        assert "at least 3" in report["reconstruction_skipped"]
+        assert report["survey"]["capture_count"] == 1
