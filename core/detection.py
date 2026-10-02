@@ -164,9 +164,13 @@ class StructuralDefectResult:
     model_available: bool = False
     model_key: str = ""
     model_sha256: str = ""
+    #: Boxes the model drew for a class that is not a defect (CODEBRIM's "Background"
+    #: patches of sound concrete). Kept for the record, never counted as defects.
+    non_defect_detections: list[DefectHit] = field(default_factory=list)
 
     def to_summary(self) -> dict[str, Any]:
         return {
+            "non_defect_detections": [d.to_dict() for d in self.non_defect_detections],
             "defect_pixels": int(self.defect_pixels),
             "total_pixels": int(self.total_pixels),
             "defect_ratio": float(self.defect_ratio),
@@ -337,19 +341,48 @@ def _run_onnx_yolo(
     score_threshold: float,
     iou_threshold: float,
     input_size: int,
+    *,
+    letterbox: bool = True,
+    class_agnostic_nms: bool = False,
 ) -> list[DefectHit]:
+    """Run a YOLO-layout ONNX detector and return boxes in source-image pixels.
+
+    ``letterbox`` matches how Ultralytics trains and validates these models: the image
+    is scaled to fit the square input with its aspect ratio kept and the rest padded
+    with grey (114). Stretching a 4:3 drone frame to a square instead squashes every
+    object by a quarter along one axis, which the model never saw in training. On a
+    square image the two are identical. ``letterbox=False`` keeps the old stretch for
+    comparison (tools/eval_external_detectors.py measures both).
+    """
     net = _load_onnx_net(model_path)
     if net is None:
         return []
 
     size = int(max(64, input_size))
-    blob = cv2.dnn.blobFromImage(
-        image_bgr,
-        scalefactor=1.0 / 255.0,
-        size=(size, size),
-        swapRB=True,
-        crop=False,
-    )
+    h, w = image_bgr.shape[:2]
+    if letterbox:
+        gain = min(size / float(h), size / float(w))
+        new_w, new_h = max(1, int(round(w * gain))), max(1, int(round(h * gain)))
+        pad_x, pad_y = (size - new_w) / 2.0, (size - new_h) / 2.0
+        resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+        top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
+        canvas[top:top + new_h, left:left + new_w] = resized
+        blob = cv2.dnn.blobFromImage(canvas, scalefactor=1.0 / 255.0, size=(size, size),
+                                     swapRB=True, crop=False)
+        sx = sy = 1.0 / gain
+        off_x, off_y = float(left), float(top)
+    else:
+        blob = cv2.dnn.blobFromImage(
+            image_bgr,
+            scalefactor=1.0 / 255.0,
+            size=(size, size),
+            swapRB=True,
+            crop=False,
+        )
+        sx = float(w) / float(size)
+        sy = float(h) / float(size)
+        off_x = off_y = 0.0
     net.setInput(blob)
     out = net.forward()
     arr = np.asarray(out)
@@ -362,49 +395,46 @@ def _run_onnx_yolo(
     if arr.shape[1] < 6:
         return []
 
-    h, w = image_bgr.shape[:2]
-    sx = float(w) / float(size)
-    sy = float(h) / float(size)
     label_count = max(1, len(labels))
+    columns = int(arr.shape[1])
+    if columns == 4 + label_count:
+        # YOLOv8/11 layout: cx, cy, w, h, then one score per class (no objectness).
+        cls_scores = arr[:, 4:].astype(np.float32)
+        class_ids_all = np.argmax(cls_scores, axis=1)
+        conf_all = cls_scores[np.arange(arr.shape[0]), class_ids_all]
+    elif columns == 5 + label_count:
+        # YOLOv5 layout: objectness, then class scores.
+        cls_scores = arr[:, 5:].astype(np.float32)
+        class_ids_all = np.argmax(cls_scores, axis=1)
+        conf_all = arr[:, 4].astype(np.float32) * cls_scores[np.arange(arr.shape[0]),
+                                                             class_ids_all]
+    else:
+        # The graph's class count does not match the registry's labels. Guessing which
+        # column is which would attach the wrong names to real boxes, so refuse.
+        raise ValueError(
+            f"{model_path.name} emits {columns} values per box, which fits neither the "
+            f"YOLOv8 ({4 + label_count}) nor the YOLOv5 ({5 + label_count}) layout for "
+            f"the {label_count} registered labels.")
 
-    boxes_xywh: list[list[float]] = []
-    confidences: list[float] = []
-    class_ids: list[int] = []
-
-    for row in arr:
-        row = np.asarray(row, dtype=np.float32).reshape(-1)
-        if row.size < 6:
-            continue
-
-        if row.size >= 5 + label_count:
-            cx, cy, bw, bh = row[0], row[1], row[2], row[3]
-            obj = float(row[4])
-            cls_scores = row[5 : 5 + label_count]
-            cls_id = int(np.argmax(cls_scores))
-            cls_conf = float(cls_scores[cls_id])
-            conf = obj * cls_conf
-        else:
-            cx, cy, bw, bh = row[0], row[1], row[2], row[3]
-            cls_scores = row[4:]
-            cls_id = int(np.argmax(cls_scores))
-            cls_conf = float(cls_scores[cls_id])
-            conf = cls_conf
-
-        if conf < score_threshold:
-            continue
-
-        x1 = float((cx - bw * 0.5) * sx)
-        y1 = float((cy - bh * 0.5) * sy)
-        ww = float(bw * sx)
-        hh = float(bh * sy)
-        boxes_xywh.append([x1, y1, ww, hh])
-        confidences.append(float(conf))
-        class_ids.append(int(cls_id))
-
-    if not boxes_xywh:
+    keep = conf_all >= float(score_threshold)
+    if not np.any(keep):
         return []
+    rows = arr[keep].astype(np.float32)
+    confidences = [float(c) for c in conf_all[keep]]
+    class_ids = [int(c) for c in class_ids_all[keep]]
+    cx, cy, bw, bh = rows[:, 0], rows[:, 1], rows[:, 2], rows[:, 3]
+    x1s = (cx - bw * 0.5 - off_x) * sx
+    y1s = (cy - bh * 0.5 - off_y) * sy
+    boxes_xywh = [[float(a), float(b), float(c), float(d)]
+                  for a, b, c, d in zip(x1s, y1s, bw * sx, bh * sy)]
 
-    idxs = cv2.dnn.NMSBoxes(boxes_xywh, confidences, score_threshold, iou_threshold)
+    if class_agnostic_nms:
+        idxs = cv2.dnn.NMSBoxes(boxes_xywh, confidences, score_threshold, iou_threshold)
+    else:
+        # Per-class NMS, as Ultralytics validates: a crack box must not suppress a
+        # spalling box over the same patch of concrete.
+        idxs = cv2.dnn.NMSBoxesBatched(boxes_xywh, confidences, class_ids,
+                                       score_threshold, iou_threshold)
     if idxs is None or len(idxs) == 0:
         return []
 
@@ -981,6 +1011,20 @@ def _structural_fallback(image_bgr: np.ndarray, min_area_px: int) -> tuple[dict[
     return mask_by_class, detections
 
 
+def non_defect_labels(model_key: str) -> frozenset[str]:
+    """Labels a registry model predicts that name sound surface, not a defect.
+
+    The structural detector was trained on CODEBRIM, which annotates "Background"
+    boxes over undamaged concrete as negative examples, so the model draws them too.
+    Counting them as defects reported sound concrete as damage. The registry row says
+    which labels these are (``non_defect_labels``) rather than this code guessing.
+    """
+    from .models import load_registry
+
+    row = (load_registry().get("models") or {}).get(model_key) or {}
+    return frozenset(str(v) for v in (row.get("non_defect_labels") or []))
+
+
 def detect_structural_defects(
     image_bgr: np.ndarray,
     min_area_px: int = 40,
@@ -999,6 +1043,7 @@ def detect_structural_defects(
 
     mask_by_class: dict[str, np.ndarray] = {}
     hits: list[DefectHit] = []
+    non_defect_hits: list[DefectHit] = []
     model_used = "heuristic"
     model_available = bool(model_info.get("exists", False))
 
@@ -1029,6 +1074,9 @@ def detect_structural_defects(
                 model_error = f"{type(exc).__name__}: {exc}"
                 LOGGER.warning("ONNX structural inference failed (%s); using heuristic.",
                                model_error)
+            not_defects = non_defect_labels(model_key)
+            non_defect_hits = [h for h in model_hits if h.label in not_defects]
+            model_hits = [h for h in model_hits if h.label not in not_defects]
             if model_hits:
                 hits = model_hits
                 mask_by_class = _hits_to_masks((h, w), hits)
@@ -1066,6 +1114,7 @@ def detect_structural_defects(
         model_available=model_available,
         model_key=identity["model_key"],
         model_sha256=identity["model_sha256"],
+        non_defect_detections=non_defect_hits,
     )
 
 

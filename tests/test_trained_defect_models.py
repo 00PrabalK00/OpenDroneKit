@@ -25,19 +25,6 @@ MODELS_DIR = REPO_ROOT / "models"
 REGISTRY_PATH = MODELS_DIR / "model_registry.json"
 
 
-def weights_file(relative: str) -> Path:
-    """Where a registered weights file really is: beside the registry, or under
-    ODK_MODEL_WEIGHTS_DIR -- the same two places the application looks
-    (core.models.resolve_model_path). Checking only the checkout's models/ folder
-    skipped these tests on a machine whose weights live on another drive."""
-    from core.models import extra_weights_root
-
-    local = MODELS_DIR / relative
-    extra = extra_weights_root()
-    if not local.is_file() and extra is not None and (extra / relative).is_file():
-        return extra / relative
-    return local
-
 # Rows in docs/features/registry.py that assert a trained model exists, mapped to the
 # registry keys that make them true.
 SOLAR_MODELS = ("solar_cell_defect_detector", "solar_thermal_anomaly_classifier")
@@ -68,9 +55,22 @@ def weights_present(registry: dict, key: str) -> bool:
 
     Skipping is right here and lying would not be: the digest check below is the whole
     guarantee, and where the file exists it still runs.
+
+    "This machine" includes ODK_MODEL_WEIGHTS_DIR, which is where the application itself
+    finds weights kept outside the checkout (core.models.resolve_model_path). Looking only
+    beside the registry skipped the digest check on exactly the machines that run the
+    models, so a swapped file there would never have been caught.
     """
     entry = registry.get(key) or {}
-    return bool(entry.get("path")) and weights_file(entry["path"]).is_file()
+    return bool(entry.get("path")) and weights_file(registry, key).is_file()
+
+
+def weights_file(registry: dict, key: str) -> Path:
+    """The file the application would load for this key."""
+    from core.models import resolve_model_path
+
+    resolved = resolve_model_path(key)
+    return resolved if resolved is not None else MODELS_DIR / registry[key]["path"]
 
 
 def requires_weights(registry: dict, key: str) -> None:
@@ -89,7 +89,7 @@ class TestTheWeightsAreReallyThere:
     @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_weights_file_exists(self, registry, key) -> None:
         requires_weights(registry, key)
-        weights = weights_file(registry[key]["path"])
+        weights = weights_file(registry, key)
         assert weights.is_file()
         assert weights.stat().st_size > 0
 
@@ -105,7 +105,7 @@ class TestTheWeightsAreReallyThere:
         recorded = entry.get("sha256")
         assert recorded, f"{key} has no sha256, so its metrics belong to no particular file"
         requires_weights(registry, key)
-        actual = hashlib.sha256(weights_file(entry["path"]).read_bytes()).hexdigest()
+        actual = hashlib.sha256(weights_file(registry, key).read_bytes()).hexdigest()
         assert actual == recorded, (
             f"{key} on disk does not match its recorded digest; the published metrics "
             "describe a file that is no longer installed"

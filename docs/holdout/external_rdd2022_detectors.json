@@ -1,0 +1,348 @@
+{
+  "evaluation": "road damage (RDD2022 subset) through the shipped crack models",
+  "measured_utc": "2026-10-02T15:29:45Z",
+  "dataset": {
+    "folder": "road_damage_rdd2022_subset",
+    "source": "https://doi.org/10.6084/m9.figshare.21431547 (RDD2022, CC BY 4.0)",
+    "subset": "120 China_Drone UAV images (512 px, all damaged) + 80 India vehicle images (720 px, 35 damaged), random sample seed 2022",
+    "images": 200,
+    "images_by_subset": {
+      "China_Drone": {
+        "any_crack": 94,
+        "no_crack": 26
+      },
+      "India": {
+        "any_crack": 26,
+        "no_crack": 54
+      }
+    },
+    "core_boxes": {
+      "D00": 86,
+      "D10": 63,
+      "D20": 41,
+      "D40": 35
+    },
+    "converted_to_yolo": {
+      "folder": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\road_rdd2022\\prepared\\rdd2022_subset\\test",
+      "images": 200,
+      "boxes_written": {
+        "D00": 86,
+        "D10": 63,
+        "D20": 41,
+        "D40": 35
+      },
+      "labels_dropped_non_core": {
+        "Repair": 35,
+        "Block crack": 1,
+        "D44": 9,
+        "D01": 1
+      }
+    },
+    "contamination_check": "RDD2022 fed only training/data/prepared/roads_det, whose run never produced weights; crack_cls (SDNET2018 + surface_crack), crack_seg (crack_segmentation_kaggle, DeepCrack, CrackForest) and structural_det did not use it."
+  },
+  "no_road_model": "The registry has no road-damage detector. A roads YOLO11l Kaggle kernel (odk-train-roads-yolo11l) was pushed, but its run folder (training/runs/kaggle_v5/odk-train-roads-yolo11l) holds no weights and nothing was registered. Potholes (D40) and the RDD crack types therefore have no road model in this build; the numbers below are the closest shipped models (trained on concrete structures and crack tiles) on asphalt. Training a road-damage detector on RDD2022 is roadmap item 5.",
+  "models": {
+    "structural_multiclass_detector": {
+      "model_key": "structural_multiclass_detector",
+      "file": "structural_multiclass_detector.onnx",
+      "sha256_measured": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+      "sha256_registered": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+      "sha256_matches_registry": true
+    },
+    "crack_presence_classifier": {
+      "model_key": "crack_presence_classifier",
+      "file": "crack_presence_classifier.onnx",
+      "sha256_measured": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "sha256_registered": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "sha256_matches_registry": true
+    },
+    "crack_segmentation": {
+      "model_key": "crack_segmentation",
+      "file": "crack_segmentation.onnx",
+      "sha256_measured": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "sha256_registered": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "sha256_matches_registry": true
+    }
+  },
+  "structural_detector_crack_class": {
+    "how": "Crack boxes from structural_multiclass_detector via core.detection._run_onnx_yolo (letterbox, per-class NMS), scored at IoU 0.5 against RDD crack boxes. Each RDD crack type is scored with the other types as ignore regions, because the model has one undifferentiated Crack class. 'at_operating_threshold' uses the registry's score 0.25.",
+    "per_class": {
+      "D00": {
+        "name": "longitudinal crack",
+        "ap50_full_curve": 0.0796,
+        "at_operating_threshold": {
+          "ap": 0.0228,
+          "truth_boxes": 86,
+          "predictions_scored": 33,
+          "true_positives": 7,
+          "false_positives": 26,
+          "precision": 0.2121,
+          "recall": 0.0814
+        }
+      },
+      "D10": {
+        "name": "transverse crack",
+        "ap50_full_curve": 0.059,
+        "at_operating_threshold": {
+          "ap": 0.0102,
+          "truth_boxes": 63,
+          "predictions_scored": 29,
+          "true_positives": 3,
+          "false_positives": 26,
+          "precision": 0.1034,
+          "recall": 0.0476
+        }
+      },
+      "D20": {
+        "name": "alligator crack",
+        "ap50_full_curve": 0.0116,
+        "at_operating_threshold": {
+          "ap": 0.0079,
+          "truth_boxes": 41,
+          "predictions_scored": 28,
+          "true_positives": 2,
+          "false_positives": 26,
+          "precision": 0.0714,
+          "recall": 0.0488
+        }
+      }
+    },
+    "all_cracks_merged": {
+      "ap50_full_curve": 0.1053,
+      "ap30_full_curve": 0.2676,
+      "at_operating_threshold": {
+        "ap": 0.024,
+        "truth_boxes": 190,
+        "predictions_scored": 38,
+        "true_positives": 12,
+        "false_positives": 26,
+        "precision": 0.3158,
+        "recall": 0.0632
+      }
+    },
+    "map50_over_crack_classes": 0.0501,
+    "pothole_D40_vs_Spallation": {
+      "ap50_full_curve": 0.0227,
+      "at_operating_threshold": {
+        "ap": 0.0214,
+        "truth_boxes": 35,
+        "predictions_scored": 38,
+        "true_positives": 2,
+        "false_positives": 36,
+        "precision": 0.0526,
+        "recall": 0.0571
+      },
+      "note": "EXPLORATORY ONLY. Spallation is concrete surface loss on structures; it was never trained on asphalt potholes and is not a pothole detector."
+    },
+    "predicted_labels_at_operating_threshold": {
+      "Crack": 43,
+      "Spallation": 39,
+      "Efflorescence": 14,
+      "CorrosionStain": 20,
+      "Background": 0,
+      "ExposedBars": 18
+    }
+  },
+  "crack_presence_classifier": {
+    "how": "core.model_runner.crack_presence (the app's tiling, threshold 0.5). A tile is a crack tile when crack boxes cover >= 0.0625 of it and a clean tile when it touches no damage box; tiles in between are counted as ambiguous and not scored. Image level: any flagged tile vs any D00/D10/D20 box.",
+    "tiles": {
+      "all": {
+        "tp": 66,
+        "fp": 142,
+        "fn": 306,
+        "tn": 1115,
+        "precision": 0.3173,
+        "recall": 0.1774,
+        "specificity": 0.887,
+        "balanced_accuracy": 0.5322,
+        "ambiguous_not_scored": 171
+      },
+      "China_Drone": {
+        "tp": 61,
+        "fp": 26,
+        "fn": 253,
+        "tn": 595,
+        "precision": 0.7011,
+        "recall": 0.1943,
+        "specificity": 0.9581,
+        "balanced_accuracy": 0.5762,
+        "ambiguous_not_scored": 145
+      },
+      "India": {
+        "tp": 5,
+        "fp": 116,
+        "fn": 53,
+        "tn": 520,
+        "precision": 0.0413,
+        "recall": 0.0862,
+        "specificity": 0.8176,
+        "balanced_accuracy": 0.4519,
+        "ambiguous_not_scored": 26
+      }
+    },
+    "images": {
+      "all": {
+        "tp": 72,
+        "fp": 52,
+        "fn": 48,
+        "tn": 28,
+        "precision": 0.5806,
+        "recall": 0.6,
+        "specificity": 0.35,
+        "balanced_accuracy": 0.475
+      },
+      "China_Drone": {
+        "tp": 54,
+        "fp": 14,
+        "fn": 40,
+        "tn": 12,
+        "precision": 0.7941,
+        "recall": 0.5745,
+        "specificity": 0.4615,
+        "balanced_accuracy": 0.518
+      },
+      "India": {
+        "tp": 18,
+        "fp": 38,
+        "fn": 8,
+        "tn": 16,
+        "precision": 0.3214,
+        "recall": 0.6923,
+        "specificity": 0.2963,
+        "balanced_accuracy": 0.4943
+      }
+    }
+  },
+  "crack_segmentation": {
+    "how": "core.detection.detect_cracks with the model (registry threshold 0.85) and with use_model=False (the classical fallback). RDD has boxes, not masks, so this is box-level: a crack box is found when >= 0.5% (min 10 px) of it is painted; a mask component is on a crack when >= half of it lies inside a crack box (an upper bound on precision, since a box also holds sound pavement).",
+    "model": {
+      "all": {
+        "image_level": {
+          "tp": 70,
+          "fp": 20,
+          "fn": 50,
+          "tn": 60,
+          "precision": 0.7778,
+          "recall": 0.5833,
+          "specificity": 0.75,
+          "balanced_accuracy": 0.6667
+        },
+        "components": 369,
+        "component_precision_on_crack_boxes": 0.3957,
+        "mask_pixels_inside_crack_boxes": 0.3612
+      },
+      "China_Drone": {
+        "image_level": {
+          "tp": 62,
+          "fp": 10,
+          "fn": 32,
+          "tn": 16,
+          "precision": 0.8611,
+          "recall": 0.6596,
+          "specificity": 0.6154,
+          "balanced_accuracy": 0.6375
+        },
+        "components": 322,
+        "component_precision_on_crack_boxes": 0.4534,
+        "mask_pixels_inside_crack_boxes": 0.4116
+      },
+      "India": {
+        "image_level": {
+          "tp": 8,
+          "fp": 10,
+          "fn": 18,
+          "tn": 44,
+          "precision": 0.4444,
+          "recall": 0.3077,
+          "specificity": 0.8148,
+          "balanced_accuracy": 0.5613
+        },
+        "components": 47,
+        "component_precision_on_crack_boxes": 0.0,
+        "mask_pixels_inside_crack_boxes": 0.0
+      },
+      "crack_box_recall": {
+        "D00": {
+          "found": 50,
+          "truth": 86,
+          "recall": 0.5814
+        },
+        "D10": {
+          "found": 33,
+          "truth": 63,
+          "recall": 0.5238
+        },
+        "D20": {
+          "found": 9,
+          "truth": 41,
+          "recall": 0.2195
+        }
+      }
+    },
+    "classical_baseline": {
+      "all": {
+        "image_level": {
+          "tp": 120,
+          "fp": 80,
+          "fn": 0,
+          "tn": 0,
+          "precision": 0.6,
+          "recall": 1.0,
+          "specificity": 0.0,
+          "balanced_accuracy": 0.5
+        },
+        "components": 6593,
+        "component_precision_on_crack_boxes": 0.0297,
+        "mask_pixels_inside_crack_boxes": 0.0388
+      },
+      "China_Drone": {
+        "image_level": {
+          "tp": 94,
+          "fp": 26,
+          "fn": 0,
+          "tn": 0,
+          "precision": 0.7833,
+          "recall": 1.0,
+          "specificity": 0.0,
+          "balanced_accuracy": 0.5
+        },
+        "components": 2389,
+        "component_precision_on_crack_boxes": 0.0473,
+        "mask_pixels_inside_crack_boxes": 0.051
+      },
+      "India": {
+        "image_level": {
+          "tp": 26,
+          "fp": 54,
+          "fn": 0,
+          "tn": 0,
+          "precision": 0.325,
+          "recall": 1.0,
+          "specificity": 0.0,
+          "balanced_accuracy": 0.5
+        },
+        "components": 4204,
+        "component_precision_on_crack_boxes": 0.0197,
+        "mask_pixels_inside_crack_boxes": 0.0306
+      },
+      "crack_box_recall": {
+        "D00": {
+          "found": 86,
+          "truth": 86,
+          "recall": 1.0
+        },
+        "D10": {
+          "found": 63,
+          "truth": 63,
+          "recall": 1.0
+        },
+        "D20": {
+          "found": 41,
+          "truth": 41,
+          "recall": 1.0
+        }
+      }
+    }
+  },
+  "artifacts": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\road_rdd2022"
+}
