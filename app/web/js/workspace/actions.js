@@ -113,6 +113,21 @@ async function number(ctx, label, fallback = "") {
   return value;
 }
 
+// Run a thermal call; when the raster does not say its values are temperatures, ask
+// the user for the unit and retry with their answer. Never assume a unit.
+async function callAskingUnit(ctx, run) {
+  try {
+    return await run("");
+  } catch (error) {
+    if (!(error.result && error.result.needs_unit_confirmation)) throw error;
+    const units = { "Degrees Celsius": "celsius", Kelvin: "kelvin" };
+    const unit = await ctx.choose(`${error.message} What unit are its values in?`,
+      [...Object.keys(units), "Not temperatures / not sure"]);
+    if (!unit || !units[unit]) return { skipped: "The raster's unit was not confirmed; nothing was read." };
+    return run(units[unit]);
+  }
+}
+
 const SURVEY_PACKS = {
   "Land GIS / encroachment": async (ctx) => {
     const [raster, schema] = await semanticSource(ctx);
@@ -186,10 +201,12 @@ const SURVEY_PACKS = {
     return call("india_solar_inventory", raster, scope, layout, findings);
   },
   "Module temperatures": async (ctx) => {
-    // The pack reads a radiometric sidecar (raw counts + calibration + georeferencing,
-    // core/india_thermal.py); a rendered .tif is refused there as "not measurements",
-    // and the chooser offering only .tif made the one accepted file unselectable.
-    const thermal = await pickPath(["json"], "radiometric thermal sidecar (.json)");
+    // Map-placed module temperatures need a georeferenced thermal source: a radiometric
+    // sidecar with georeferencing, or a temperature orthomosaic GeoTIFF
+    // (core/india_thermal.py). A single camera frame is refused there with the reason;
+    // "Module temperatures (single frame)" below is the path for those.
+    const thermal = await pickPath(["json", "tif", "tiff"],
+      "georeferenced thermal source (sidecar .json or temperature GeoTIFF)");
     const rgb = await pickPath(["tif", "tiff", "jpg", "png"], "RGB image");
     const points = await pickPath(["json", "csv"], "RGB/thermal tie points");
     const modules = await pickPath(["geojson", "json"], "module polygons");
@@ -198,7 +215,21 @@ const SURVEY_PACKS = {
     const critical = await number(ctx, "Critical above module median (°C)");
     const hot = await number(ctx, "Hot cell above module median (°C)");
     const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
-    return call("india_module_temperatures", thermal, rgb, points, modules, by, warning, critical, hot, basis);
+    return callAskingUnit(ctx, (unit) => call("india_module_temperatures", thermal, rgb, points,
+      modules, by, warning, critical, hot, basis, unit));
+  },
+  "Module temperatures (single frame)": async (ctx) => {
+    // One radiometric frame (FLIR JPEG, DJI R-JPEG via the DJI Thermal SDK, FLIR
+    // TLinear TIFF or sidecar) with operator-drawn module polygons in its pixel grid.
+    const thermal = await pickPath(["jpg", "jpeg", "tif", "tiff", "json"], "radiometric thermal frame");
+    const regions = await pickPath(["json"], "module regions in thermal pixels (.json)");
+    const by = await required(ctx, "Module regions drawn by");
+    const warning = await number(ctx, "Warning above module median (°C)");
+    const critical = await number(ctx, "Critical above module median (°C)");
+    const hot = await number(ctx, "Hot cell above module median (°C)");
+    const basis = await required(ctx, "Where these thresholds come from (standard, contract)");
+    return callAskingUnit(ctx, (unit) => call("india_module_temperatures_in_image", thermal,
+      regions, by, warning, critical, hot, basis, unit));
   },
   "Anomaly baseline": async (ctx) => {
     // A baseline is fitted to at least two independently captured normal rasters; one
@@ -1854,8 +1885,9 @@ export const ACTIONS = {
   "Temperature Range": {
     describe: "Choose the temperature range a radiometric frame is drawn in.",
     async run(ctx) {
-      // A radiometric sidecar, or the temperature GeoTIFF a thermal map run wrote.
-      const picked = await call("pick_file", ["json", "tif", "tiff"]);
+      // A radiometric sidecar, a FLIR radiometric JPEG, a DJI R-JPEG (needs the DJI
+      // Thermal SDK), a FLIR TLinear TIFF, or a temperature GeoTIFF.
+      const picked = await call("pick_file", ["json", "jpg", "jpeg", "tif", "tiff"]);
       if (!picked.path) return { skipped: "No radiometric frame chosen." };
       const modes = {
         "Automatic (1st to 99th percentile)": "auto",
@@ -1874,7 +1906,19 @@ export const ACTIONS = {
           return { skipped: "A manual range needs a number for both ends; nothing was changed." };
         }
       }
-      const result = await call("scale_thermal", picked.path, mode, low, high);
+      let result;
+      try {
+        result = await call("scale_thermal", picked.path, mode, low, high);
+      } catch (error) {
+        // A GeoTIFF that does not say what its values are: ask, never assume.
+        if (!(error.result && error.result.needs_unit_confirmation)) throw error;
+        const units = { "Degrees Celsius": "celsius", Kelvin: "kelvin" };
+        const unit = await ctx.choose(`${error.message} What unit are its values in?`,
+          [...Object.keys(units), "Not temperatures / not sure"]);
+        if (!unit || !units[unit]) return { skipped: "The raster's unit was not confirmed; nothing was read." };
+        result = await call("scale_thermal", picked.path, mode, low, high,
+          1.0, 99.0, 2.0, "ironbow", units[unit]);
+      }
       const s = result.scale;
       const text = `${s.min_c.toFixed(1)} to ${s.max_c.toFixed(1)} °C (${s.method}, ${s.palette}); `
         + `the frame spans ${s.data_min_c.toFixed(1)} to ${s.data_max_c.toFixed(1)} °C`;
@@ -1903,6 +1947,31 @@ export const ACTIONS = {
       if (!file || !file.path) return { skipped: "No file chosen." };
       await call("add_layer_from_file", file.path);
       return { message: "Layer added.", refresh: true };
+    },
+  },
+
+  /* The DJI Thermal SDK decodes DJI R-JPEGs. DJI's licence keeps it out of this build,
+     so the user downloads it and points the app at the folder; this shows the state and
+     saves the folder (the ODK_DJI_TSDK_DIR environment variable overrides it). */
+  "Thermal SDK": {
+    describe: "Show which thermal formats decode, and set the DJI Thermal SDK folder.",
+    async run(ctx) {
+      const status = (await call("thermal_decoder_status")).dji_thermal_sdk;
+      const state = status.available
+        ? `DJI Thermal SDK loaded from ${status.library}.`
+        : `DJI Thermal SDK not available. ${status.reason}`;
+      const choice = await ctx.choose(state, ["Choose the DJI Thermal SDK folder",
+        "Where do I get it?", "Close"]);
+      if (!choice || choice === "Close") return { message: state };
+      if (choice.startsWith("Where")) {
+        return { message: `Download the DJI Thermal SDK from ${status.download_url} (DJI's licence applies), extract it, then choose its folder with Thermal SDK.` };
+      }
+      const folder = await call("pick_folder");
+      if (!folder || !folder.path) return { skipped: "No folder chosen." };
+      const saved = (await call("set_dji_thermal_sdk_dir", folder.path)).dji_thermal_sdk;
+      return saved.available
+        ? { message: `DJI Thermal SDK loaded from ${saved.library}. DJI R-JPEGs now decode to °C.` }
+        : { message: saved.reason, level: "warn" };
     },
   },
 

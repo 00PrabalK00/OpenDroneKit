@@ -121,6 +121,7 @@ produces a refusal with a reason, never a quietly worse answer.
 | `onnxruntime` / `opencv-python` | Model inference | Detection capabilities refuse rather than returning empty results. |
 | `pymavlink` | Flight control, telemetry | Planning and processing are unaffected. |
 | `torch`, `ultralytics` | Training only | Nothing at runtime; the shipped models are ONNX. |
+| DJI Thermal SDK (proprietary, not shipped) | Temperatures from DJI R-JPEGs (H20T, H20N, H30T, M2EA, M30T, M3T, M3TD, M4T, XT S) | The file is refused with the download address. Get it from https://www.dji.com/downloads/softwares/dji-thermal-sdk under DJI's licence, extract it, and set the folder with **Thermal SDK** (Thermal or Settings toolbar) or the `ODK_DJI_TSDK_DIR` environment variable, which wins. FLIR radiometric JPEGs and FLIR TLinear TIFFs need nothing extra. |
 | PostgreSQL + PostGIS | Multi-user deployment | SQLite, with geometry stored as GeoJSON text. See the note in `docs/DEPLOYMENT.md` — this is also true *with* PostGIS today. |
 
 ## GPU
@@ -234,3 +235,9 @@ To see what is installed on this machine:
 ```bash
 python -m training.register --list
 ```
+
+## Real-data tests
+
+Some tests run against the openly licensed odk-testdata collection and skip, with the
+reason, when it is absent. `ODK_TESTDATA_DIR` points at its root (thermal decoding,
+`tests/test_thermal_real_data.py`); the DJI R-JPEG tests also need `ODK_DJI_TSDK_DIR`.

@@ -1,0 +1,30 @@
+{
+  "type": "odk-image-module-regions",
+  "dataset": "THED-PV (Zenodo 10.5281/zenodo.17404247, CC BY 4.0), session Raw Dataset/2024-12-21/12/20241221_120152",
+  "region_source": "operator annotation (Claude, 2026-10-02): upper and lower module separated by the aluminium module frame rail visible in both the IR frame and its paired *_8b.JPG RGB frame",
+  "method": "The rail shows in the IR frame as two dark horizontal edges (its two frame lips) with the mounting clip at the left. Edge rows were read from the column-median temperature profile (cols 120-639, 9-row smoothing, local minima more than 1.5 C below the frame median). Each module region stops 15 px short of the nearer edge so rail pixels are excluded. The paired RGB frame shows PV cells on both sides of the rail, so each side is a different physical module. Module and string identity in the plant are unknown: the IDs are positional.",
+  "limits": [
+    "Close-up mast captures: the bright trapezoids in these frames are reflections of the sky and the operator, so module-to-module differences here include reflection, not only module heat.",
+    "Two modules per frame is too few for a peer baseline; the deltas show the computation, not a fault finding."
+  ],
+  "frames": {
+    "20241221_120204_881_IR.TIFF": {
+      "rail_edge_rows": [150, 255],
+      "regions": [
+        {"module_id": "upper_module", "string_id": "unknown_string",
+         "polygon_px": [[0, 0], [640, 0], [640, 135], [0, 135]]},
+        {"module_id": "lower_module", "string_id": "unknown_string",
+         "polygon_px": [[0, 270], [640, 270], [640, 512], [0, 512]]}
+      ]
+    },
+    "20241221_120227_869_IR.TIFF": {
+      "rail_edge_rows": [267, 383],
+      "regions": [
+        {"module_id": "upper_module", "string_id": "unknown_string",
+         "polygon_px": [[0, 0], [640, 0], [640, 252], [0, 252]]},
+        {"module_id": "lower_module", "string_id": "unknown_string",
+         "polygon_px": [[0, 398], [640, 398], [640, 512], [0, 512]]}
+      ]
+    }
+  }
+}

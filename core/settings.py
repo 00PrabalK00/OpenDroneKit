@@ -31,6 +31,9 @@ class AppSettings:
     device: str = "cpu"                  # "cpu" | "cuda" | "mps"
     max_workers: int = 4
     model_registry_path: str = ""
+    # Folder of the DJI Thermal SDK the user downloaded under DJI's licence (not shipped).
+    # The ODK_DJI_TSDK_DIR environment variable overrides it. See core/thermal_dji.py.
+    dji_thermal_sdk_dir: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

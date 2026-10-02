@@ -3365,7 +3365,8 @@ class Api:
     def scale_thermal(self, path: str, mode: str = "auto",
                       min_c: float | None = None, max_c: float | None = None,
                       low_percentile: float = 1.0, high_percentile: float = 99.0,
-                      sigma: float = 2.0, palette: str = "ironbow") -> dict[str, Any]:
+                      sigma: float = 2.0, palette: str = "ironbow",
+                      confirmed_unit: str | None = None) -> dict[str, Any]:
         """Choose the temperature range a radiometric frame is drawn in.
 
         This decision changes what an inspector sees more than any other step in the
@@ -3377,20 +3378,23 @@ class Api:
         The second is the one that gets missed, because the image looks fine. So the
         result always carries what the range excluded, and a warning when the hottest
         pixels in the frame are saturated.
+
+        The frame can be a radiometric sidecar, a FLIR radiometric JPEG, a DJI R-JPEG
+        (decoded by the user's DJI Thermal SDK), a FLIR TLinear TIFF, or a temperature
+        GeoTIFF. A GeoTIFF that does not say what its values are is refused with
+        ``needs_unit_confirmation``; the caller asks the user and passes
+        ``confirmed_unit`` ("celsius" or "kelvin").
         """
-        from core.thermal import NotRadiometric, load_radiometric_file, load_temperature_geotiff
+        from core.thermal import UnitConfirmationNeeded
         from core.thermal_scaling import (
             ScalingRefused, anomaly_scale, auto_scale, legend, manual_scale,
         )
 
         try:
-            # A temperature map the thermal run wrote is as much a measurement as the
-            # sidecar it came from; Temperature Range refused the toolkit's own product.
-            if Path(path).suffix.lower() in {".tif", ".tiff"}:
-                frame = load_temperature_geotiff(path)
-            else:
-                frame = load_radiometric_file(path)
-        except (NotRadiometric, FileNotFoundError, OSError) as exc:
+            frame = self._thermal_frame(path, confirmed_unit)
+        except UnitConfirmationNeeded as exc:
+            return fail(str(exc), needs_unit_confirmation=True)
+        except (ValueError, FileNotFoundError, OSError) as exc:
             return fail(str(exc))
 
         chosen = str(mode).strip().lower()
@@ -3413,11 +3417,67 @@ class Api:
             scale=scale.to_dict(),
             legend=legend(scale),
             stats=frame.stats,
+            provenance=frame.provenance,
         )
         warning = scale.warning()
         if warning:
             result["warning"] = warning
         return result
+
+    @staticmethod
+    def _thermal_frame(path: str, confirmed_unit: str | None = None):
+        """Any supported thermal file as a temperature field, by its content.
+
+        A TIFF is radiometric (FLIR TLinear) when it carries a TLinear gain; any other
+        TIFF is read as a temperature GeoTIFF, which needs a declared or confirmed unit.
+        """
+        from core.thermal import load_radiometric_file, load_temperature_geotiff
+        from core.thermal_tlinear import is_tlinear_tiff
+
+        target = Path(path)
+        if target.suffix.lower() in {".tif", ".tiff"} and not is_tlinear_tiff(target):
+            return load_temperature_geotiff(target, confirmed_unit or None)
+        return load_radiometric_file(target)
+
+    @guard
+    def thermal_decoder_status(self) -> dict[str, Any]:
+        """Which thermal formats this install can decode, and the DJI SDK's state."""
+        from core.thermal_dji import sdk_status
+
+        return ok(
+            dji_thermal_sdk=sdk_status(),
+            formats=[
+                {"format": "Radiometric sidecar JSON (raw counts + Planck constants)",
+                 "available": True},
+                {"format": "FLIR radiometric JPEG (FLIR cameras, DJI XT2 / XT R)",
+                 "available": True, "decoder": "built-in clean-room FFF reader"},
+                {"format": "DJI R-JPEG (H20T/H20N/H30T/M2EA/M30T/M3T/M3TD/M4T/XT S)",
+                 "available": sdk_status()["available"],
+                 "decoder": "DJI Thermal SDK (user-supplied)"},
+                {"format": "FLIR TLinear TIFF (Duo Pro R)", "available": True},
+                {"format": "Temperature GeoTIFF (declared or user-confirmed unit)",
+                 "available": True},
+            ],
+        )
+
+    @guard
+    def set_dji_thermal_sdk_dir(self, path: str) -> dict[str, Any]:
+        """Save where the user extracted the DJI Thermal SDK, after checking it loads."""
+        from core.settings import load_app_settings, save_app_settings
+        from core.thermal_dji import ENV_VAR, find_library, sdk_status
+
+        folder = str(path or "").strip()
+        if folder and find_library(folder) is None:
+            return fail(f"No DJI Thermal SDK library (libdirp) was found in {folder}. "
+                        "Choose the folder you extracted the SDK into.")
+        settings = load_app_settings()
+        settings.dji_thermal_sdk_dir = folder
+        save_app_settings(settings)
+        status = sdk_status()
+        if os.environ.get(ENV_VAR, "").strip():
+            status["note"] = (f"The {ENV_VAR} environment variable is set and takes "
+                              "precedence over this setting.")
+        return ok(dji_thermal_sdk=status)
 
     @guard
     def marker_kinds(self) -> dict[str, Any]:
@@ -4818,9 +4878,13 @@ class Api:
 
     def _pack(self, pack: str, run: Callable[[Path], Any]) -> dict[str, Any]:
         from core.india_geospatial import IndiaPackRefused
+        from core.thermal import UnitConfirmationNeeded
 
         try:
             result = run(self._pack_dir(pack))
+        except UnitConfirmationNeeded as exc:
+            # A raster that does not say its values are temperatures: ask, never assume.
+            return fail(str(exc), needs_unit_confirmation=True)
         except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
             return fail(str(exc))
         return self._finish_pack(pack, result)
@@ -5042,8 +5106,11 @@ class Api:
                                   control_points_path: str, modules_path: str,
                                   validated_by: str, warning_delta_c: float,
                                   critical_delta_c: float, hot_cell_delta_c: float,
-                                  threshold_basis: str) -> dict[str, Any]:
+                                  threshold_basis: str, confirmed_unit: str = "") -> dict[str, Any]:
         """Measured module temperatures, after the RGB/thermal tie points are checked.
+
+        ``confirmed_unit`` is the user's answer when the thermal raster is a GeoTIFF
+        that does not say its values are temperatures (``needs_unit_confirmation``).
 
         Positional on purpose: the bridge calls with positional arguments only, and
         keyword-only parameters made the cockpit's call a TypeError every time.
@@ -5052,13 +5119,34 @@ class Api:
 
         def run(out: Path):
             registration = score_rgb_thermal_registration(
-                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by))
+                rgb_path, thermal_path, control_points_path, validated_by=str(validated_by),
+                confirmed_unit=confirmed_unit or None)
             return associate_module_temperatures(
                 thermal_path, registration, modules_path, out,
                 warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
-                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis))
+                hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis),
+                confirmed_unit=confirmed_unit or None)
 
         return self._pack("module_temperatures", run)
+
+    @guard
+    def india_module_temperatures_in_image(self, thermal_path: str, regions_path: str,
+                                           region_source: str, warning_delta_c: float,
+                                           critical_delta_c: float, hot_cell_delta_c: float,
+                                           threshold_basis: str,
+                                           confirmed_unit: str = "") -> dict[str, Any]:
+        """Per-module temperatures inside one radiometric frame, in its pixel grid.
+
+        For frames with no map georeferencing (mast or hand-held captures, single drone
+        frames). Module regions are operator-drawn pixel polygons; nothing is mapped.
+        """
+        from core.india_thermal import module_temperatures_in_image
+
+        return self._pack("module_temperatures_image", lambda out: module_temperatures_in_image(
+            thermal_path, regions_path, out, region_source=str(region_source),
+            warning_delta_c=float(warning_delta_c), critical_delta_c=float(critical_delta_c),
+            hot_cell_delta_c=float(hot_cell_delta_c), threshold_basis=str(threshold_basis),
+            confirmed_unit=confirmed_unit or None))
 
     @guard
     def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,

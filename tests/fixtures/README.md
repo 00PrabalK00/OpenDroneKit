@@ -28,3 +28,15 @@ from both server.arcgisonline.com and services.arcgisonline.com, and for World_T
 - Purpose: the bytes `core/tile_cache.py` and `app/web/js/basemap-depth.js` recognise, so
   the placeholder is never cached, served or drawn in place of imagery.
 - SHA-256: `9eafd300d61393184a4abc1d458564cfd1cd9b6f9c4e9c74687045c0a0e5b858` (2521 bytes)
+
+`thedpv_module_regions.json` holds module outlines drawn on two THED-PV frames
+(`20241221_120204_881_IR.TIFF`, `20241221_120227_869_IR.TIFF`; Zenodo
+10.5281/zenodo.17404247, CC BY 4.0). It contains geometry only, no temperatures; the
+frames themselves stay in the odk-testdata collection (`ODK_TESTDATA_DIR`).
+
+- Purpose: real module geometry for image-space per-module temperature analysis
+  (`module_temperatures_in_image`). Each frame shows the aluminium frame rail between two
+  modules, in IR and in the paired RGB frame. Upper and lower regions stop 15 px short
+  of the rail edges measured from the IR temperature profile.
+- Annotated 2026-10-02 by Claude acting as the operator. The method is recorded in the
+  file. Module IDs are positional; plant module and string IDs are not in the dataset.

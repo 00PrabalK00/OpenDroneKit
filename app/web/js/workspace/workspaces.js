@@ -1851,7 +1851,7 @@ const thermal = {
   id: "thermal",
   title: "Thermal",
   toolbar: ["RGB", "Thermal", "Fused", "3D Thermal", "|",
-            "Radiometric", "Temperature Range", "Compare", "Export"],
+            "Radiometric", "Temperature Range", "Thermal SDK", "Compare", "Export"],
   left: [
     /* Two blocks and two strings with module counts, for a solar site nobody surveyed.
        An array inventory is built by build_asset_inventory() from detected instances,
@@ -2534,7 +2534,7 @@ const settings = {
      screen; Import and Export are the dataset and mission verbs for the same reason.
      Nothing in this build persists preferences, so a Save button here could only ever
      have done something else's job. */
-  toolbar: ["Verify Models"],
+  toolbar: ["Verify Models", "Thermal SDK"],
   left: [
     /* selectKind was "setting", the kind the mission form publishes its field edits
        under -- so clicking "General" stored settings[undefined] = undefined and toasted
