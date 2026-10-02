@@ -613,7 +613,9 @@ def vehicle_alerts(telemetry: dict[str, Any]) -> list[dict[str, str]]:
 
     def quote(*words: str) -> str:
         hits = [t for t in said if any(w in t.lower() for w in words)]
-        return f" The vehicle said: {hits[-1]}." if hits else ""
+        # The last two, so a bare "Battery Failsafe" keeps the line that says why.
+        recent = list(dict.fromkeys(hits))[-2:]
+        return f" The vehicle said: {'; '.join(recent)}." if recent else ""
 
     alerts: list[dict[str, str]] = []
     if telemetry.get("battery_failsafe"):

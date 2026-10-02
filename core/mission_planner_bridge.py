@@ -1100,14 +1100,40 @@ class MissionPlannerDroneClient:
             finally:
                 self._command_texts = None
 
-    def _await_command_ack(self, conn, command: int, params: tuple, name: str) -> CommandResult:
-        """Send one COMMAND_LONG and wait for its ack. Runs under _command_lock."""
+    def _command_int(self, command: int, frame: int, params: tuple[float, float, float, float],
+                     x: int, y: int, z: float, name: str = "command") -> CommandResult:
+        """Send a COMMAND_INT and report the vehicle's COMMAND_ACK, as _command_long does."""
         try:
-            p = list(params) + [0.0] * (7 - len(params))
-            conn.mav.command_long_send(
-                conn.target_system, conn.target_component, command, 0,
-                *p[:7],
-            )
+            conn = self._ensure()
+        except AppError as exc:
+            return CommandResult(False, name, exc.user_message)
+        with self._command_lock:
+            while True:
+                try:
+                    self._ack_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._command_texts = []
+            try:
+                def send() -> None:
+                    conn.mav.command_int_send(conn.target_system, conn.target_component, frame,
+                                              command, 0, 0, *params, int(x), int(y), float(z))
+                return self._await_command_ack(conn, command, (), name, send=send)
+            finally:
+                self._command_texts = None
+
+    def _await_command_ack(self, conn, command: int, params: tuple, name: str,
+                           send=None) -> CommandResult:
+        """Send one COMMAND_LONG (or `send`) and wait for its ack. Runs under _command_lock."""
+        try:
+            if send is not None:
+                send()
+            else:
+                p = list(params) + [0.0] * (7 - len(params))
+                conn.mav.command_long_send(
+                    conn.target_system, conn.target_component, command, 0,
+                    *p[:7],
+                )
         except Exception as exc:
             return CommandResult(False, name, str(exc))
 
@@ -1179,33 +1205,25 @@ class MissionPlannerDroneClient:
         return self._command_long(21, name="land")
 
     def goto(self, latitude: float, longitude: float, altitude_m: float) -> CommandResult:
-        """Fly to a position in GUIDED mode.
+        """Fly to a position in GUIDED mode, as the vehicle confirms it.
 
-        Sent as SET_POSITION_TARGET_GLOBAL_INT rather than a mission item, so it does
-        not disturb the uploaded flight plan.
+        Sent as MAV_CMD_DO_REPOSITION (a COMMAND_INT, so it is acknowledged) rather than
+        a mission item, so it does not disturb the uploaded flight plan. It was a
+        SET_POSITION_TARGET_GLOBAL_INT, which has no acknowledgement: ArduCopter silently
+        ignores a target outside its enabled fence, and goto still answered "Flying to
+        ..." while the aircraft hovered where it was (SITL, fence enabled).
         """
-        try:
-            conn = self._ensure()
-            from pymavlink import mavutil
-        except (AppError, ImportError) as exc:
-            return CommandResult(False, "goto", str(exc))
-
         mode = self.set_flight_mode("GUIDED")
         if not mode.success:
             return CommandResult(False, "goto", f"Could not enter GUIDED: {mode.message}")
-
-        try:
-            conn.mav.set_position_target_global_int_send(
-                0, conn.target_system, conn.target_component,
-                mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                # Type mask: use position only, ignore velocity, acceleration and yaw.
-                0b0000111111111000,
-                int(latitude * 1e7), int(longitude * 1e7), float(altitude_m),
-                0, 0, 0, 0, 0, 0, 0, 0,
-            )
-            return CommandResult(True, "goto", f"Flying to {latitude:.6f}, {longitude:.6f}.")
-        except Exception as exc:  # noqa: BLE001
-            return CommandResult(False, "goto", str(exc))
+        # MAV_CMD_DO_REPOSITION = 192; param1 -1 keeps the current speed, param4 NaN the
+        # current yaw. Frame 6 = MAV_FRAME_GLOBAL_RELATIVE_ALT_INT.
+        result = self._command_int(192, 6, (-1.0, 0.0, 0.0, float("nan")),
+                                   int(round(latitude * 1e7)), int(round(longitude * 1e7)),
+                                   float(altitude_m), name="goto")
+        if result.success:
+            result.message = f"The vehicle accepted the target {latitude:.6f}, {longitude:.6f}."
+        return result
 
     def set_altitude(self, altitude_m: float) -> CommandResult:
         """Change altitude while holding position. MAV_CMD_CONDITION_CHANGE_ALT = 113."""
