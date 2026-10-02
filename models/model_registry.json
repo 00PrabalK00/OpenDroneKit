@@ -16,6 +16,9 @@
       "iou_threshold": 0.45,
       "input_size": 640,
       "description": "Primary multi-class structural defect detector.",
+      "non_defect_labels": [
+        "Background"
+      ],
       "sha256": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
       "status": "installed"
     },

@@ -1,0 +1,198 @@
+{
+  "evaluation": "structural_det test split through the app's YOLO decoder",
+  "measured_utc": "2026-10-02T06:40:23Z",
+  "dataset": {
+    "folder": "prepared/structural_det/test",
+    "images": 106,
+    "note": "The split the registry's validation figures come from is val; this is the held-out test split of the same corpus."
+  },
+  "model": {
+    "model_key": "structural_multiclass_detector",
+    "file": "structural_multiclass_detector.onnx",
+    "sha256_measured": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+    "sha256_registered": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+    "sha256_matches_registry": true
+  },
+  "published_validation_map50": 0.417,
+  "square_640_letterbox": {
+    "map50": 0.282,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.283,
+        "truth_boxes": 90
+      },
+      "CorrosionStain": {
+        "ap50": 0.3254,
+        "truth_boxes": 133
+      },
+      "Crack": {
+        "ap50": 0.116,
+        "truth_boxes": 194
+      },
+      "Spallation": {
+        "ap50": 0.374,
+        "truth_boxes": 178
+      },
+      "ExposedBars": {
+        "ap50": 0.4236,
+        "truth_boxes": 148
+      },
+      "Background": {
+        "ap50": 0.1698,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.3044
+  },
+  "square_640_stretch": {
+    "map50": 0.282,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.283,
+        "truth_boxes": 90
+      },
+      "CorrosionStain": {
+        "ap50": 0.3254,
+        "truth_boxes": 133
+      },
+      "Crack": {
+        "ap50": 0.116,
+        "truth_boxes": 194
+      },
+      "Spallation": {
+        "ap50": 0.374,
+        "truth_boxes": 178
+      },
+      "ExposedBars": {
+        "ap50": 0.4236,
+        "truth_boxes": 148
+      },
+      "Background": {
+        "ap50": 0.1698,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.3044
+  },
+  "crop_4x3_letterbox": {
+    "map50": 0.3375,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.2856,
+        "truth_boxes": 86
+      },
+      "CorrosionStain": {
+        "ap50": 0.3858,
+        "truth_boxes": 121
+      },
+      "Crack": {
+        "ap50": 0.1355,
+        "truth_boxes": 161
+      },
+      "Spallation": {
+        "ap50": 0.4112,
+        "truth_boxes": 154
+      },
+      "ExposedBars": {
+        "ap50": 0.4695,
+        "truth_boxes": 132
+      },
+      "Background": {
+        "ap50": 0.3376,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.3375
+  },
+  "crop_4x3_stretch": {
+    "map50": 0.2438,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.2503,
+        "truth_boxes": 86
+      },
+      "CorrosionStain": {
+        "ap50": 0.2629,
+        "truth_boxes": 121
+      },
+      "Crack": {
+        "ap50": 0.1112,
+        "truth_boxes": 161
+      },
+      "Spallation": {
+        "ap50": 0.3745,
+        "truth_boxes": 154
+      },
+      "ExposedBars": {
+        "ap50": 0.4576,
+        "truth_boxes": 132
+      },
+      "Background": {
+        "ap50": 0.0063,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.2913
+  },
+  "previous_app_decoder_square": {
+    "map50": 0.2085,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.2392,
+        "truth_boxes": 90
+      },
+      "CorrosionStain": {
+        "ap50": 0.178,
+        "truth_boxes": 133
+      },
+      "Crack": {
+        "ap50": 0.1089,
+        "truth_boxes": 194
+      },
+      "Spallation": {
+        "ap50": 0.239,
+        "truth_boxes": 178
+      },
+      "ExposedBars": {
+        "ap50": 0.1464,
+        "truth_boxes": 148
+      },
+      "Background": {
+        "ap50": 0.3395,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.1823
+  },
+  "previous_app_decoder_4x3": {
+    "map50": 0.1472,
+    "per_class": {
+      "Efflorescence": {
+        "ap50": 0.2655,
+        "truth_boxes": 86
+      },
+      "CorrosionStain": {
+        "ap50": 0.085,
+        "truth_boxes": 121
+      },
+      "Crack": {
+        "ap50": 0.1104,
+        "truth_boxes": 161
+      },
+      "Spallation": {
+        "ap50": 0.1873,
+        "truth_boxes": 154
+      },
+      "ExposedBars": {
+        "ap50": 0.2328,
+        "truth_boxes": 132
+      },
+      "Background": {
+        "ap50": 0.0025,
+        "truth_boxes": 3
+      }
+    },
+    "map50_defect_classes": 0.1762
+  },
+  "how": "AP50 (VOC all-point) from predictions down to score 0.001 through core.detection._run_onnx_yolo with per-class NMS; the 4:3 rows crop the centre 640x480 of each image to measure aspect handling on labelled data. 'previous_app_decoder_*' is the decoder as it was before this change (stretch resize and class-agnostic NMS)."
+}

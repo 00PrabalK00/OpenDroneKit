@@ -856,7 +856,10 @@ VISION = [
       "sweep on the validation split. Held-out test split: IoU 0.637, precision 0.811, "
       "recall 0.748, against IoU 0.607 and precision 0.664 at the previous 0.25 "
       "threshold. B2 reached test-split IoU 0.515; the heuristic reaches 0.045. The "
-      "threshold gained +0.030 IoU and +0.147 precision for no retraining."),
+      "threshold gained +0.030 IoU and +0.147 precision for no retraining. "
+      "OUT OF DOMAIN (ai.external_measurement): on RDD2022 asphalt it finds 0.58 of "
+      "longitudinal and 0.22 of alligator crack boxes; on H20T bridge frames at 50 m it "
+      "only resolves cracks when tiled at native resolution."),
     F("ai.spalling", "Spalling detection", "vision", "AI",
       "Trained detector for spallation with published validation metrics, used in "
       "preference to the heuristic, and reporting an empty result as an empty result "
@@ -864,7 +867,9 @@ VISION = [
       "implemented", ["tests/test_honesty.py::TestFindingNothingIsAnAnswer"],
       "YOLO11x on CODEBRIM, installed as structural_multiclass_detector: "
       "mAP50 0.417, mAP50-95 0.201; Spallation 0.306, ExposedBars 0.330, "
-      "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124."),
+      "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124. Through the app's decoder "
+      "on the held-out test split: defect mAP50 0.304 (Spallation 0.374), up from 0.182 "
+      "before the letterbox/per-class-NMS fix (docs/holdout/structural_det_app_decoder.json)."),
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
       "Trained model for corrosion with published validation metrics, reporting a "
       "severity grade it measured or refusing to report one at all.",
@@ -933,6 +938,44 @@ VISION = [
       "row, the report and the finished-job message). Run AI runs it on steel / tower / "
       "pipeline assets or when Metal detection is on. The old texture-discontinuity rule "
       "survives only as metal_texture_heuristic for the classical modes, which label it."),
+    F("ai.external_measurement", "Detectors measured on external open data", "vision", "AI",
+      "The shipped detectors are run through the app's own code on openly licensed external "
+      "datasets the models never saw, and the measured figures are published with the model "
+      "digests and dataset provenance -- including where nothing can be measured and why.",
+      "implemented",
+      ["tests/test_external_detector_eval.py::TestAveragePrecisionArithmetic",
+       "tests/test_external_detector_eval.py::TestRddConversion",
+       "tests/test_external_detector_eval.py::TestYoloDecoder",
+       "tests/test_external_detector_eval.py::TestPublishedEvidence",
+       "tests/test_external_detector_eval.py::TestTheRoadRowsReproduce",
+       "tests/test_external_detector_eval.py::TestSoundConcreteIsNotADefect"],
+      "tools/eval_external_detectors.py; results in docs/holdout/external_*.json. Data from "
+      "ODK_TESTDATA_DIR (odk-testdata, each set with PROVENANCE.md); the tests skip without it. "
+      "ROAD (RDD2022 subset, CC BY 4.0, 200 images: 120 China_Drone UAV + 80 India; 86 D00, "
+      "63 D10, 41 D20, 35 D40 boxes): THERE IS NO ROAD-DAMAGE MODEL. The closest shipped "
+      "models, measured: structural detector Crack class AP50 D00 0.080, D10 0.059, D20 "
+      "0.012 (mAP50 over the crack types 0.050; all cracks merged AP50 0.105, AP30 0.268); at "
+      "the 0.25 operating point precision 0.316 / recall 0.063 on 190 crack boxes. Potholes "
+      "have no model (Spallation as a proxy: AP50 0.023, exploratory). crack_presence_classifier "
+      "tiles: precision 0.317, recall 0.177 (China_Drone 0.701 / 0.194, India 0.041 / 0.086). "
+      "crack_segmentation image level precision 0.778, recall 0.583, specificity 0.750; it "
+      "touches 0.581 of D00, 0.524 of D10, 0.220 of D20 boxes. These are not road detectors and "
+      "should not be presented as one; a road model is roadmap item 5. "
+      "SOLAR (Mavic 3T thermal PV, CC BY 4.0, 353 frames, 26,666 labelled panel boxes, no "
+      "defect labels, radiometry stripped): panel detection CANNOT be measured -- no shipped "
+      "model localises panels, and the app refuses all 353 whole frames. "
+      "solar_thermal_anomaly_classifier on the panel crops reads 48% Vegetation and 32% "
+      "Shadowing, with 55% agreement under a 90-degree rotation: a domain gap, not a usable "
+      "answer, and no accuracy is claimed. The file measured did not carry the registered "
+      "digest; the evidence says so. "
+      "BRIDGE (Boga Cayi H20T wide, CC BY 4.0, 81 frames, no defect labels): qualitative "
+      "only -- the structural detector fires on 38 frames letterboxed (52 stretched), "
+      "crack_presence flags 581 of 3,888 tiles, crack_segmentation paints 7 frames at "
+      "whole-frame 1024 px but thousands of pixels when tiled at native resolution. "
+      "INTEGRATION FIXES MEASURED on the CODEBRIM test split: the YOLO decoder now "
+      "letterboxes and uses per-class NMS as Ultralytics validates; defect-class mAP50 "
+      "rose from 0.182 to 0.304 (square) and from 0.176 to 0.338 (4:3 crops). CODEBRIM "
+      "'Background' boxes (sound concrete) are no longer counted as defects."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "
       "with the survey's vertical accuracy carried through. Refuses without an accuracy "
@@ -1347,7 +1390,10 @@ INDIA_FIRST = [
       "counts, severity and surveyed distance.",
       "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance",
                       "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_road_condition"],
-      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
+      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. "
+      "NO ROAD-DAMAGE MODEL SHIPS: measured on RDD2022 (ai.external_measurement) the closest "
+      "models reach crack mAP50 0.050 and have no pothole class. A road detector trained on "
+      "RDD2022 is roadmap item 5."),
     F("pack.power.inspection", "Power-line asset inspection", "vision",
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "

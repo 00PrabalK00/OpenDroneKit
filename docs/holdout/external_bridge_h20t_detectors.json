@@ -1,0 +1,83 @@
+{
+  "evaluation": "bridge H20T wide frames through the shipped structural/crack models",
+  "measured_utc": "2026-10-02T07:32:57Z",
+  "dataset": {
+    "folder": "bridge_inspection_h20t_boga_cayi/B1_Wide",
+    "source": "https://doi.org/10.5281/zenodo.22298893 (CC BY 4.0)",
+    "frames": 81,
+    "frame_size": "4056x3040, nadir ~50 m AGL",
+    "labels": "NONE. The dataset carries no defect annotations, so no precision, recall or mAP can be computed; the counts below are what the models said, reviewed by eye on the overlays."
+  },
+  "models": {
+    "structural_multiclass_detector": {
+      "model_key": "structural_multiclass_detector",
+      "file": "structural_multiclass_detector.onnx",
+      "sha256_measured": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+      "sha256_registered": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+      "sha256_matches_registry": true
+    },
+    "crack_presence_classifier": {
+      "model_key": "crack_presence_classifier",
+      "file": "crack_presence_classifier.onnx",
+      "sha256_measured": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "sha256_registered": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
+      "sha256_matches_registry": true
+    },
+    "crack_segmentation": {
+      "model_key": "crack_segmentation",
+      "file": "crack_segmentation.onnx",
+      "sha256_measured": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "sha256_registered": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+      "sha256_matches_registry": true
+    }
+  },
+  "structural_detector": {
+    "frames_with_any_detection": {
+      "letterbox": 38,
+      "stretch": 52
+    },
+    "detections_by_label": {
+      "letterbox": {
+        "Crack": 37,
+        "Spallation": 12,
+        "CorrosionStain": 10,
+        "Efflorescence": 7
+      },
+      "stretch": {
+        "Crack": 66,
+        "CorrosionStain": 15,
+        "Efflorescence": 8,
+        "Spallation": 9
+      }
+    }
+  },
+  "crack_presence_classifier": {
+    "frames_with_a_flagged_tile": 77,
+    "flagged_tiles": 581,
+    "tiles_scored": 3888
+  },
+  "crack_segmentation": {
+    "frames_with_crack_pixels": 7,
+    "median_crack_ratio": 0.0,
+    "max_crack_ratio": 0.010181,
+    "native_resolution_tiles": [
+      {
+        "frame": "DJI_20220826113024_0100_W.JPG",
+        "whole_frame_crack_pixels": 0,
+        "tiled_1024_crack_pixels": 25221
+      },
+      {
+        "frame": "DJI_20220826113026_0101_W.JPG",
+        "whole_frame_crack_pixels": 0,
+        "tiled_1024_crack_pixels": 14280
+      },
+      {
+        "frame": "DJI_20220826113027_0102_W.JPG",
+        "whole_frame_crack_pixels": 0,
+        "tiled_1024_crack_pixels": 60663
+      }
+    ],
+    "native_resolution_note": "The app segments the whole frame resized to 1024 px. These rows re-run the same model on 1024 px tiles at full resolution for the first frames; compare the *_tiled_segmentation.jpg overlays by eye."
+  },
+  "artifacts": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\bridge_h20t"
+}
