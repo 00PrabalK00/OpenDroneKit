@@ -94,6 +94,24 @@ const SURVEY_PACKS = {
     const [raster, schema] = await semanticSource(ctx);
     return call("india_canopy_cover", raster, schema);
   },
+  "Multispectral to reflectance (MicaSense)": async (ctx) => {
+    const images = await call("pick_folder");
+    if (!images || !images.path) throw new Error("No folder of MicaSense band TIFFs chosen.");
+    const mode = await ctx.choose("Reflectance calibration", [
+      "DLS2 sun sensor (per capture)", "Calibration panel capture (same camera and flight)"]);
+    if (!mode) return { skipped: "No calibration chosen." };
+    const calibration = mode.startsWith("Calibration panel") ? "panel" : "dls";
+    // With DLS the panel is optional and only checks the result against its albedo.
+    const usePanel = calibration === "panel" || (await ctx.choose("Check against a panel capture?", [
+      "No panel check", "Choose the panel capture folder"]) || "").startsWith("Choose");
+    let panel = "";
+    if (usePanel) {
+      const picked = await call("pick_folder");
+      if (!picked || !picked.path) throw new Error("No panel capture folder chosen.");
+      panel = picked.path;
+    }
+    return call("process_multispectral", images.path, panel, calibration, true);
+  },
   "Vegetation indices": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "multispectral raster");
     const source = await required(ctx, "Reflectance calibration source (panel / sensor record)");
@@ -1412,6 +1430,10 @@ export const ACTIONS = {
       if (!pack) return { skipped: "No pack chosen." };
       const result = await SURVEY_PACKS[pack](ctx);
       if (!result || result.skipped) return result || { skipped: "Cancelled." };
+      if (result.job_id) {
+        return { message: `${pack}: started on ${result.capture_count} capture(s).`,
+                 job: result.job_id, refresh: true };
+      }
       return { message: `${pack}: ${summarisePack(result)}`, refresh: true };
     },
   },

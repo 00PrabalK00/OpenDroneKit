@@ -48,6 +48,23 @@ def main(argv: list[str] | None = None) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+
+    def progress(percent: int, message: str) -> None:
+        print(f"[{percent:3d}%] {message}", flush=True)
+
+    if not (args.reuse or args.analyse_only):
+        # The same chain the application's "Multispectral to reflectance" job runs.
+        stress = ({"severe_below": args.severe_below, "moderate_below": args.moderate_below,
+                   "validation_scope": args.stress_scope}
+                  if args.stress_scope and args.severe_below is not None and args.moderate_below is not None
+                  else None)
+        cover = ({"validation_scope": args.cover_scope, "max_plant_area_m2": args.max_plant_area}
+                 if args.cover_scope else None)
+        report = ms.run_survey_report(args.images, out, panel=args.panel, calibration=args.calibration,
+                                      reconstruct=not args.no_reconstruct, stress=stress, cover=cover,
+                                      progress=progress)
+        print(report["report_path"])
+        return 0
     report: dict = {"images": args.images, "calibration": args.calibration}
     started = time.time()
 
@@ -58,22 +75,16 @@ def main(argv: list[str] | None = None) -> int:
             panel_capture = panel_captures[0]
             report["panel_validation"] = ms.validate_panel_against_albedo(panel_capture)
 
-    def progress(percent: int, message: str) -> None:
-        print(f"[{percent:3d}%] {message}", flush=True)
-
     summary_path = out / "multispectral_summary.json"
+    if not summary_path.exists():
+        parser.error(f"--reuse/--analyse-only need a previous run in {out}")
     if args.analyse_only:
         survey = json.loads(summary_path.read_text(encoding="utf-8"))
-    elif args.reuse and summary_path.exists():
+    else:  # --reuse
         survey = json.loads(summary_path.read_text(encoding="utf-8"))
         sources = {Path(c["sfm_image"]).name: c["stack"] for c in survey["captures"]}
         survey["orthomosaic"] = ms.reconstruct_band_orthomosaic(out, survey["bands"], sources, progress=progress)
         summary_path.write_text(json.dumps(survey, indent=2, default=str), encoding="utf-8")
-    else:
-        survey = ms.process_survey(
-            args.images, out, calibration=args.calibration, panel_capture=panel_capture,
-            reconstruct=not args.no_reconstruct, progress=progress,
-        )
     report["survey"] = {k: v for k, v in survey.items() if k != "captures"}
     report["survey"]["capture_count"] = len(survey["captures"])
 

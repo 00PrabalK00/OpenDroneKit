@@ -4761,6 +4761,56 @@ class Api:
             multispectral_raster, parsed, out))
 
     @guard
+    def process_multispectral(self, images_folder: str, panel_folder: str = "",
+                              calibration: str = "dls", reconstruct: bool = True) -> dict[str, Any]:
+        """MicaSense band TIFFs -> reflectance -> band orthomosaic -> NDVI/NDRE/GNDVI (background job).
+
+        Captures are grouped by CaptureId, calibrated with the DLS2 sun sensor
+        (``dls``) or the panel capture in ``panel_folder`` (``panel``; albedo from
+        the panel's QR record), aligned band to band, orthorectified per band on
+        poses solved by the COLMAP engine, and the vegetation indices are computed
+        on the result. A panel folder given with DLS calibration is used as an
+        independent check: the DLS reflectance of the panel against its albedo.
+        """
+        from datetime import datetime, timezone
+
+        from core import multispectral as ms
+
+        if not images_folder or not Path(images_folder).is_dir():
+            return fail("Choose the folder holding the MicaSense band TIFFs (IMG_xxxx_N.tif).")
+        if calibration not in ("dls", "panel"):
+            return fail("Calibration must be 'dls' (sun sensor) or 'panel' (calibration panel capture).")
+        if panel_folder and not Path(panel_folder).is_dir():
+            return fail(f"Panel folder not found: {panel_folder}")
+        if calibration == "panel" and not panel_folder:
+            return fail("Panel calibration needs the folder holding the calibration-panel capture.")
+        captures = ms.group_captures(images_folder)
+        if not captures:
+            return fail(f"No MicaSense band TIFFs with a CaptureId were found in {images_folder}.")
+        output = (self._session.project_root() / "multispectral"
+                  / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], **_: Any) -> dict[str, Any]:
+            report = ms.run_survey_report(images_folder, output, panel=panel_folder,
+                                          calibration=calibration, reconstruct=bool(reconstruct),
+                                          progress=progress)
+            layers = []
+            ortho = (report.get("survey", {}).get("orthomosaic") or {})
+            if ortho.get("reflectance_bands"):
+                layers.append(session.register_raster_layer(
+                    ortho["reflectance_bands"], name="Reflectance bands")["id"])
+            for name, entry in ((report.get("vegetation_indices") or {}).get("indices") or {}).items():
+                if isinstance(entry, dict) and entry.get("path") and Path(entry["path"]).is_file():
+                    layers.append(session.register_raster_layer(entry["path"], name=name)["id"])
+            session.audit("multispectral_processed", {"report": report["report_path"]})
+            report["layer_ids"] = layers
+            return report
+
+        return ok(job_id=self._jobs.submit("multispectral", work), capture_count=len(captures),
+                  output_dir=str(output))
+
+    @guard
     def india_stress_zones(self, index_raster: str, severe_below: float, moderate_below: float,
                            validation_scope: str, canopy_mask_raster: str = "") -> dict[str, Any]:
         """Stress zones from a calibrated index, with thresholds the operator states."""

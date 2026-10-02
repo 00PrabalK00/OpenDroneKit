@@ -847,6 +847,18 @@ PROCESSING = [
       "float32, NaN nodata, band names + ODK_QUANTITY tags). Buergewald: 24/24 registered, "
       "0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632, 0.0625 m/px, 5 bands. Sparse surface "
       "only (no dense MVS in this run). Tools: tools/run_multispectral.py."),
+    F("pr.multispectral.app", "Multispectral processing from the app", "workers", "Processing",
+      "MicaSense captures turned into reflectance, a band orthomosaic and vegetation indices from "
+      "the application (Api job and cockpit action), not only from a CLI, with the result on the map.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestApplicationPath"],
+      "Api.process_multispectral (background job) and Survey Packs > 'Multispectral to reflectance "
+      "(MicaSense)' run core.multispectral.run_survey_report, the same chain as "
+      "tools/run_multispectral.py. Measured 2026-10-02 through the Api on Buergewald (24 captures, "
+      "DLS, REDEDGE-P panel as check): 24/24 registered, 0.41 px reprojection, 0.75 m geotag RMSE, "
+      "EPSG:32632; NDVI mean 0.568, NDRE 0.234, GNDVI 0.538; panel mean |error| 9.0 %; layers "
+      "Reflectance bands/NDVI/NDRE/GNDVI registered. The report also gives the share of pixels with "
+      "reflectance above 1 (NIR 1.4 %, other bands 0 %): uneven DLS calibration or glints, masked "
+      "by the index pack's valid_max=1.0."),
 ]
 
 # ---------------------------------------------------------------------------

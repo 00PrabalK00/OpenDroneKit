@@ -272,3 +272,51 @@ class TestBandOrthomosaic:
         result = json.loads(Path(plants.summary_path).read_text(encoding="utf-8"))
         assert plants.status == "not_applicable" and result["count"] is None
         assert result["separability"]["canopy_fraction_in_merged_patches"] > 0.5
+
+
+def _wait(api, job_id: str, timeout_s: float = 600.0) -> dict:
+    import time
+
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        job = api.job_status(job_id)["job"]
+        if job["status"] not in ("pending", "running"):
+            return job
+        time.sleep(0.5)
+    raise AssertionError(f"job {job_id} did not finish in {timeout_s} s")
+
+
+class TestApplicationPath:
+    """The chain reached from the application (Api.process_multispectral), not only the CLI."""
+
+    @pytest.fixture
+    def api(self, tmp_path):
+        from app.api import Api
+
+        api = Api()
+        created = api.create_project("multispectral", str(tmp_path / "project"))
+        assert created["ok"], created
+        return api
+
+    def test_refuses_without_captures_or_panel(self, api, tmp_path):
+        assert not api.process_multispectral(str(tmp_path / "nowhere"))["ok"]
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert "No MicaSense" in api.process_multispectral(str(empty))["error"]
+        panels = _dataset("multispectral_micasense_panels") / "REDEDGE-P"
+        assert "panel" in api.process_multispectral(str(panels), "", "panel")["error"].lower()
+
+    def test_job_calibrates_captures_and_validates_the_panel(self, api):
+        panels = _dataset("multispectral_micasense_panels") / "REDEDGE-P"
+        started = api.process_multispectral(str(panels), str(panels), "dls", False)
+        assert started["ok"], started
+        assert started["capture_count"] == 2
+        job = _wait(api, started["job_id"])
+        assert job["status"] == "done", job
+        report = job["result"]
+        assert Path(report["report_path"]).is_file()
+        assert report["survey"]["capture_count"] == 2
+        assert report["survey"]["quantity"] == "surface_reflectance"
+        nir = report["panel_validation"]["bands"]["nir"]
+        assert nir["status"] == "measured"
+        assert abs(nir["relative_error"]) < 0.02

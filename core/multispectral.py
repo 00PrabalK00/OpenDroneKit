@@ -1105,3 +1105,110 @@ def visible_band_cover_check(band_orthomosaic: str | Path, cover_class_raster: s
         "canopy_vs_bare_agreement": round(float((green_px == canopy)[both].mean()), 6),
         "pixels_compared": int(both.sum()),
     }
+
+
+def reflectance_above_one(band_orthomosaic: str | Path) -> dict[str, float]:
+    """Share of valid pixels per band whose reflectance exceeds 1.0.
+
+    Surface reflectance above 1 is physically implausible for a Lambertian surface;
+    it marks specular glints or an irradiance reading lower than the light the scene
+    actually received (uneven sun-sensor calibration between captures). The index
+    pack masks these pixels (valid_max=1.0); this reports how many there are.
+    """
+    import rasterio
+
+    shares: dict[str, float] = {}
+    with rasterio.open(band_orthomosaic) as dataset:
+        names = [str(d or f"band_{i + 1}") for i, d in enumerate(dataset.descriptions)]
+        for index, name in enumerate(names, start=1):
+            data = dataset.read(index).astype(np.float32)
+            valid = np.isfinite(data)
+            if dataset.nodata is not None and np.isfinite(dataset.nodata):
+                valid &= data != dataset.nodata
+            count = int(valid.sum())
+            shares[name] = round(float((data[valid] > 1.0).sum()) / count, 6) if count else 0.0
+    return shares
+
+
+def run_survey_report(
+    images: str | Path,
+    output_dir: str | Path,
+    *,
+    panel: str | Path = "",
+    calibration: str = "dls",
+    reconstruct: bool = True,
+    stress: Mapping[str, Any] | None = None,
+    cover: Mapping[str, Any] | None = None,
+    progress: Any = None,
+) -> dict[str, Any]:
+    """Raw MicaSense captures -> reflectance -> band orthomosaic -> agriculture pack.
+
+    The one chain the CLI and the application both run. ``stress`` is
+    {severe_below, moderate_below, validation_scope} and ``cover`` is
+    {validation_scope, max_plant_area_m2 (optional)}; each runs only when given,
+    because their thresholds and scopes are the operator's to state.
+    """
+    import time
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    report: dict[str, Any] = {"images": str(images), "calibration": calibration}
+
+    panel_capture = None
+    if panel:
+        panel_captures = [c for c in group_captures(panel) if any(b.panel_albedo for b in c.bands.values())]
+        if not panel_captures:
+            raise MultispectralError(
+                f"No capture in {panel} carries a calibration-panel albedo (Camera:Albedo); "
+                "it cannot calibrate or validate.")
+        panel_capture = panel_captures[0]
+        report["panel_validation"] = validate_panel_against_albedo(panel_capture)
+    elif calibration == "panel":
+        raise MultispectralError("Panel calibration needs a folder holding the panel capture.")
+
+    survey = process_survey(images, out, calibration=calibration, panel_capture=panel_capture,
+                            reconstruct=reconstruct, progress=progress)
+    report["survey"] = {k: v for k, v in survey.items() if k != "captures"}
+    report["survey"]["capture_count"] = len(survey["captures"])
+
+    ortho = (survey.get("orthomosaic") or {}).get("reflectance_bands")
+    if ortho:
+        from .india_agriculture import compute_vegetation_indices, create_stress_zones
+
+        report["reflectance_above_one_fraction"] = reflectance_above_one(ortho)
+        source = (
+            "MicaSense radiance model + DLS2 horizontal irradiance per capture (pi*L/E)"
+            if calibration == "dls" else "MicaSense radiance model + panel QR albedo"
+        )
+        calibrations = reflectance_band_calibrations(survey["bands"], source)
+        indices = compute_vegetation_indices(ortho, calibrations, out / "agriculture")
+        report["vegetation_indices"] = json.loads(Path(indices.summary_path).read_text(encoding="utf-8"))
+        ndvi = (report["vegetation_indices"].get("indices") or {}).get("NDVI", {}).get("path")
+        if stress and ndvi:
+            zones = create_stress_zones(
+                ndvi, out / "agriculture", severe_below=float(stress["severe_below"]),
+                moderate_below=float(stress["moderate_below"]),
+                validation_scope=str(stress["validation_scope"]))
+            report["stress_zones"] = json.loads(Path(zones.summary_path).read_text(encoding="utf-8"))
+        if cover and ndvi:
+            from .india_agriculture import (
+                analyse_canopy_cover, classify_index_cover, count_plants_from_canopy)
+
+            scope = str(cover["validation_scope"])
+            classified = classify_index_cover(ndvi, out / "agriculture" / "cover", validation_scope=scope)
+            classes, schema = classified.artifact_paths
+            report["index_cover"] = json.loads(Path(classified.summary_path).read_text(encoding="utf-8"))
+            report["index_cover"]["visible_band_check"] = visible_band_cover_check(ortho, classes)
+            canopy = analyse_canopy_cover(classes, schema, out / "agriculture" / "cover")
+            report["canopy_cover"] = json.loads(Path(canopy.summary_path).read_text(encoding="utf-8"))
+            if cover.get("max_plant_area_m2") is not None:
+                plants = count_plants_from_canopy(
+                    classes, schema, out / "agriculture" / "plants", validation_scope=scope,
+                    max_plant_area_m2=float(cover["max_plant_area_m2"]))
+                report["plant_count"] = json.loads(Path(plants.summary_path).read_text(encoding="utf-8"))
+    report["elapsed_s"] = round(time.time() - started, 1)
+    path = out / "multispectral_report.json"
+    path.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    report["report_path"] = str(path)
+    return report
