@@ -5,6 +5,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
+
+
+def _num(item: dict[str, Any], key: str, digits: int, *, ran: bool = True,
+         fallback_key: str = "") -> str:
+    """A row's figure for the report table, or '-' when nothing measured it."""
+    value = item.get(key, item.get(fallback_key) if fallback_key else None)
+    if not ran or value is None:
+        return "-"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
 
 
 def refusal_reasons(rows: list, detector: str) -> list[dict]:
@@ -121,11 +134,18 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         lines.append(f"- Asset ID: `{health.get('asset_id', '[unknown]')}`")
         lines.append(f"- Structure type (as configured): `{health.get('structure_type', 'generic')}`")
         lines.append(f"- Material type (as configured): `{health.get('material_type', 'concrete')}`")
-        lines.append(
-            f"- Screening severity index "
-            f"({'uncalibrated' if trained else 'heuristic'}): "
-            f"`{float(health.get('severity_index', 0.0)):.2f}/100`"
-        )
+        if health.get("severity_index") is None:
+            lines.append(
+                "- Screening severity index: not assessed. "
+                + str(health.get("not_assessed_reason")
+                      or "No defect component was assessed in this run.")
+            )
+        else:
+            lines.append(
+                f"- Screening severity index "
+                f"({'uncalibrated' if trained else 'heuristic'}): "
+                f"`{float(health.get('severity_index', 0.0)):.2f}/100`"
+            )
         lines.append(
             "- Condition grade, integrity score and failure probabilities: not reported. "
             "They need defect measurements (a trained model's detections confirmed by an "
@@ -188,16 +208,21 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
     lines.append("| Image | Crack Ratio | Crack Length (px) | Mask Thickness (px) | Crack Model | Structural Hits | Structural Model | Metal Ratio | Metal | Solar Ratio | Solar | Corrosion Grade |")
     lines.append("|---|---:|---:|---:|---|---:|---|---:|---|---:|---|---|")
     for item in images:
+        crack_ran = not str(item.get("crack_model_used", "")).startswith("not_run:") or (
+            str(item.get("crack_model_used", "")) == "not_run:crack_presence_gate")
         corrosion = item.get("corrosion_severity") or {}
         grade = corrosion.get("worst_present_grade") or ("refused" if corrosion.get("refused") else "")
         lines.append(
-            "| {name} | {cr:.4f} | {cl:.1f} | {cw:.1f} | {cm} | {sh} | {sm} | {mr} | {mm} | {solr} | {som} | {grade} |".format(
+            "| {name} | {cr} | {cl} | {cw} | {cm} | {sh} | {sm} | {mr} | {mm} | {solr} | {som} | {grade} |".format(
                 name=item.get("image", ""),
-                cr=float(item.get("crack_ratio", 0.0)),
-                cl=float(item.get("crack_length_px", 0.0)),
-                cw=float(item.get("crack_mask_thickness_px", item.get("crack_max_width_px", 0.0))),
+                # '-' where the model did not run: a printed 0 reads as a measured zero.
+                cr=_num(item, "crack_ratio", 4, ran=crack_ran),
+                cl=_num(item, "crack_length_px", 1, ran=crack_ran),
+                cw=_num(item, "crack_mask_thickness_px", 1, ran=crack_ran,
+                        fallback_key="crack_max_width_px"),
                 cm=item.get("crack_model_used", ""),
-                sh=int(item.get("structural_detection_count", 0)),
+                sh=(str(int(item.get("structural_detection_count", 0) or 0))
+                    if item.get("structural_run", True) is not False else "-"),
                 sm=item.get("structural_model_used", ""),
                 mr=f"{float(item['metal_ratio']):.4f}" if "metal_ratio" in item else "-",
                 mm=item.get("metal_model_used", ""),

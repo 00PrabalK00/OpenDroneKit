@@ -17,6 +17,7 @@ from .detection import (
     detect_metal_defects,
     detect_solar_defects,
     detect_structural_defects,
+    el_cell_signature,
     load_image,
 )
 from .health_scoring import derive_asset_id, evaluate_asset_health, load_asset_health_history
@@ -166,12 +167,16 @@ class PipelineResult:
     multisensor_dir: str
     run_dir: str
     health_scoring_path: str = ""
-    asset_integrity_score: float = 0.0
-    structural_risk_score: float = 0.0
-    condition_level: int = 0
+    asset_integrity_score: float | None = 0.0
+    structural_risk_score: float | None = 0.0
+    condition_level: int | None = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _none_or(cast: Callable[[Any], Any], value: Any) -> Any:
+    return None if value is None else cast(value)
 
 
 SOLAR_STRUCTURES = {"solar", "solar_farm", "solar_plant", "pv"}
@@ -186,6 +191,13 @@ SURFACE_SKIP_REASONS = {
     "not_run:thermal_module_imagery": (
         "This image is an infrared module crop. The crack, structural and metal models are "
         "trained on photographs of concrete and steel surfaces and were not run on it."),
+    "not_run:el_cell_imagery_inferred": (
+        "This image looks like an electroluminescence cell image (grey, with the busbars, "
+        "black frame, dark field or chamfered corners of one). The crack, "
+        "structural and metal models are trained on photographs of concrete and steel "
+        "surfaces and were not run on it. To run the EL cell detector, set Structure to "
+        "solar and Solar imagery to el_cell; if it is a surface photograph, set Structural "
+        "detection to 'on' in Run AI Settings."),
     "not_run:solar_asset": (
         "The asset is declared solar, so the concrete crack and structural models were not "
         "run. Set Structural detection to 'on' in Run AI Settings to run them on its "
@@ -459,11 +471,23 @@ class StructuralFaultPipeline:
             declared_imagery = str(self.config.solar_imagery or "auto").strip().lower()
             image_kind = str(solar.imagery) if solar is not None else declared_imagery
             surface_skip = ""
+            el_signs: list[str] = []
             if image_kind in NON_SURFACE_IMAGERY:
                 surface_skip = f"not_run:{image_kind}_imagery"
-            elif not structural_enabled:
+            elif (declared_imagery == "auto"
+                  and self.config.run_structural_detection is not True):
+                # Nobody said what the image is (Structure generic, Solar imagery auto
+                # are the defaults). A grey picture with the busbars, black frame, dark
+                # field or chamfered corners of an EL cell is read as one, and the
+                # concrete models stay off it. Structural detection 'on' overrides.
+                signature = el_cell_signature(image)
+                if signature["el_cell"]:
+                    el_signs = list(signature["signs"])
+                    surface_skip = "not_run:el_cell_imagery_inferred"
+            if not surface_skip and not structural_enabled:
                 surface_skip = "not_run:solar_asset"
             surface_skip_reason = SURFACE_SKIP_REASONS.get(surface_skip, "")
+            imagery_off = image_kind in NON_SURFACE_IMAGERY or bool(el_signs)
 
             presence_row: dict[str, Any] = {}
             run_crack_model = not surface_skip
@@ -493,7 +517,7 @@ class StructuralFaultPipeline:
                 use_model=bool(self.config.run_structural_models),
             ) if not surface_skip else None)
             metal = (detect_metal_defects(image, min_area_px=self.config.metal_min_area_px)
-                     if metal_enabled and image_kind not in NON_SURFACE_IMAGERY else None)
+                     if metal_enabled and not imagery_off else None)
 
             corrosion_row: dict[str, Any] | None = None
             if (self.config.grade_corrosion
@@ -530,13 +554,19 @@ class StructuralFaultPipeline:
                 "image_size": [int(image.shape[1]), int(image.shape[0])],
                 "crack_presence": presence_row,
                 "crack_segmentation_run": crack is not None,
-                "crack_pixels": crack.crack_pixels if crack is not None else 0,
-                "crack_ratio": crack.crack_ratio if crack is not None else 0.0,
-                "crack_length_px": crack.estimated_length_px if crack is not None else 0.0,
+                # On an image no surface model reads, nothing was measured: None, not 0.
+                # (The presence gate's skip keeps 0 -- the classifier looked and saw none.)
+                "crack_pixels": (crack.crack_pixels if crack is not None
+                                 else (None if surface_skip else 0)),
+                "crack_ratio": (crack.crack_ratio if crack is not None
+                                else (None if surface_skip else 0.0)),
+                "crack_length_px": (crack.estimated_length_px if crack is not None
+                                    else (None if surface_skip else 0.0)),
                 # The thickness of the MASK, in pixels. Not a crack width: at survey GSD a
                 # crack is usually under a pixel wide, and the segmenter's registry entry
                 # says width is not something it measures.
-                "crack_mask_thickness_px": crack.estimated_max_width_px if crack is not None else 0.0,
+                "crack_mask_thickness_px": (crack.estimated_max_width_px if crack is not None
+                                            else (None if surface_skip else 0.0)),
                 "crack_width_measured": False,
                 "crack_model_used": (crack.model_used if crack is not None
                                      else (surface_skip or "not_run:crack_presence_gate")),
@@ -570,6 +600,8 @@ class StructuralFaultPipeline:
             if surface_skip:
                 row["surface_models_not_run"] = surface_skip
                 row["surface_models_not_run_reason"] = surface_skip_reason
+            if el_signs:
+                row["imagery_inferred"] = {"kind": "el_cell", "signs": el_signs}
             if metal is not None and metal.refused:
                 # Not looked at. No ratio is written, so nothing can read this image as
                 # "no metal defects"; the reason travels with the row.
@@ -1008,9 +1040,10 @@ class StructuralFaultPipeline:
             multisensor_dir=str(multisensor_dir),
             run_dir=str(run_dir),
             health_scoring_path=str(health_scoring_path),
-            asset_integrity_score=float(health_scoring.get("integrity_score", 0.0)),
-            structural_risk_score=float(health_scoring.get("structural_risk_score", 0.0)),
-            condition_level=int(health_scoring.get("condition_level", 0)),
+            # None when no defect component was assessed: no score was computed.
+            asset_integrity_score=_none_or(float, health_scoring.get("integrity_score")),
+            structural_risk_score=_none_or(float, health_scoring.get("structural_risk_score")),
+            condition_level=_none_or(int, health_scoring.get("condition_level")),
         )
 
 

@@ -48,6 +48,7 @@ function jobOutcome(result) {
   for (const r of result.surface_models_not_run || []) {
     if (r && r.images) parts.push(`crack/structural models not run on ${r.images} image(s): ${r.reason}`);
   }
+  if (result.health_not_assessed) parts.push("no health score: no defect model read these images");
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   /* The pipeline's markdown report was written and never mentioned. */
   if (result.report_markdown_path) parts.push("inspection report written (reopen it from Reports > Inspection Report)");

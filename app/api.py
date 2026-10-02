@@ -6155,6 +6155,12 @@ class Api:
                     not_run[reason] = not_run.get(reason, 0) + 1
             payload["surface_models_not_run"] = [
                 {"images": count, "reason": reason} for reason, count in not_run.items()]
+            # No defect component assessed: no severity index or condition grade exists
+            # for this run, and the message says so rather than leaving a blank score.
+            health = summary.get("health_scoring", {}) or {}
+            if health and health.get("severity_index") is None:
+                payload["health_not_assessed"] = str(
+                    health.get("not_assessed_reason") or "No defect component was assessed.")
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,
                 "report": Path(payload.get("report_markdown_path", "")).name,
