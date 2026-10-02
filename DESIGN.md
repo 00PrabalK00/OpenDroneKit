@@ -175,8 +175,9 @@ A near-black instrument palette with one saturated blue, four status hues, and a
 reserved for synthetic data; the Field palette is paper, ink and yellow.
 
 ### Primary
-- **Survey Blue** (#2F86FF): primary buttons, the active tab underline, selected rows'
-  2 px inset, focus rings, measured geometry on the map. Hover is **Survey Blue Light**
+- **Survey Blue** (#2F86FF): primary buttons, the active tab underline, focus rings,
+  measured geometry on the map. Not the survey area, which is context (a dashed Ink
+  Secondary rule). Hover is **Survey Blue Light**
   (#6BA8FF), also used for links.
 - **Safety Yellow** (#FFD400, Field): the single action on a Field screen and the active
   Field tab. Ink text, never white.
@@ -256,9 +257,10 @@ or a glass blur is outside this system.
 
 ## Shapes
 
-Square. Radius 0 everywhere except chips and the kbd hint (2 px). Selection is a 2 px
-inset bar (desk) or a 6 px inset bar / a full blue fill (field), never a coloured
-left-border card. Status is a dot plus words, never colour alone.
+Square. Radius 0 everywhere except chips and the kbd hint (2 px). Selection is a tone
+step, never a stripe: Selected Row fill with Ink text (desk), field blue fill with white
+text (field). No coloured inset or border on one side of a row, card or callout. Status
+is a dot plus words, never colour alone.
 
 ## Components
 
@@ -281,14 +283,41 @@ left-border card. Status is a dot plus words, never colour alone.
 
 ### Status bar (desk footer)
 - 28 px, mono 11 px, label grey; live values in Ink Secondary; segments: cursor (+UTM),
-  CRS, scale, vehicle (+ SIMULATED tag), jobs, screen segment, last message (opens the
-  session log), network ("● local · no network" in green only while true).
+  ELEV (the project DSM's own pixel under the cursor, Api.sample_elevation; "ELEV —"
+  with the reason in the tooltip when there is no DSM or no data there), CRS, scale,
+  vehicle (+ SIMULATED tag), jobs, screen segment, last message (opens the session log),
+  network.
+- Network is a fixed-length label: "● local · no network" in green only while true,
+  else "● local · network in use (N)" in amber (Field: "Network in use · N"). The hosts
+  are named in its tooltip, the session log and the Layers popover, never in the footer,
+  which a list would overrun. The desk project label adds "· OFFLINE" exactly while the
+  label reads "local · no network".
 
 ### Command palette
 - Panel fill, Hairline Strong outline, 48 px input at 15 px, groups in mono labels
   (Workspaces, Projects, Actions, Places, Shortcuts), 36 px rows, selected row = Selected
-  Row tone + 2 px blue inset. Field: white sheet, 4 px ink, 64 px rows, selected = blue
-  fill, white text.
+  Row tone, Ink text. Field: white sheet, 4 px ink, 64 px rows, selected = blue fill,
+  white text.
+
+### Map furniture
+- **What a screen opens with:** Analyse opens on the base raster plus the analysis and
+  measurement overlays; camera positions, the mission and the survey area start off and
+  are one click away in the Layers popover (a view choice, not saved). Plan and Fly keep
+  them on (`SCREEN_VISIBILITY` in js/odk/map/furniture.js).
+- **Neatline (desk):** a 1 px #A3A3A3 rule round the rasters' full extent, drawn as a map
+  line layer so it pans and zooms with them; colour sampled from SysAnalyse.
+- **Survey area:** desk draws it as a dashed Ink Secondary rule on a dark casing; Field as
+  a dashed white line on the 8 px ink casing.
+- **Layers popover:** bounded by the map's bottom edge, never over the footer; it scrolls
+  inside. Its footer button never wraps or shrinks.
+- **Elevation legend and resolution chip:** the range the DSM is coloured with is the
+  file's own min..max (an overview's range only for a raster too large to read whole,
+  and then labelled "overview range"); the resolution is the GeoTIFF's own pixel size.
+- **Field base switch:** Photo / Height / Ground / Shade, one per project raster. The
+  artboard shows three; Ground stays because the project carries a DTM and the owner's
+  rule is that no feature is removed. It is the bare-earth model the volume tools
+  measure against, so a field operator checking a stockpile base needs to see it.
+- **Field scale bar:** one row, the bar on the left and its length on its right.
 
 ### Toasts
 - Control fill, full 1 px outline and a status dot (never a left-border card); title and
