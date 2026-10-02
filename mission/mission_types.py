@@ -45,7 +45,9 @@ class MissionTypeRefused(ValueError):
 
 # Mission types planned here rather than by a single MissionPlanner template. Listed so
 # the application can offer them beside the planner's own templates.
-SPECIAL_MISSION_TYPES = ("pylon_inspection", "thermal", "multispectral")
+# facade_from_model is planned by core/facade_survey.py on a wall measured from the
+# project's own georeferenced reconstruction.
+SPECIAL_MISSION_TYPES = ("pylon_inspection", "thermal", "multispectral", "facade_from_model")
 
 
 def combine_plans(plans: Sequence[MissionPlan], template: str) -> MissionPlan:

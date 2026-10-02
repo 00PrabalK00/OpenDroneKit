@@ -135,6 +135,32 @@ MISSION_PLANNING = [
                       "tests/test_standoff.py::TestAgainstARealPlan::test_facade_inspection_is_not_silently_a_nadir_grid",
                       "tests/test_mission_exports_carry_the_plan.py::TestFacadeGeometry"],
       "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
+    F("mp.type.facade_from_model", "Facade measured from its reconstruction",
+      "core", "Mission types",
+      "A facade's ground line, height band, flatness, sparse coverage and the stand-off "
+      "it was flown at are measured from a georeferenced reconstruction, and a facade "
+      "mission is planned on that wall: every waypoint on the camera side at the "
+      "measured stand-off, the GSD taken across the stand-off with the real camera.",
+      "implemented", ["tests/test_facade_survey.py",
+                      "tests/test_real_recon_datasets.py::test_the_hagenberg_facade_is_measured_and_a_mission_planned_on_it"],
+      "core/facade_survey.py, reached from the Mission form's 'Facade from model' type "
+      "(plan_mission template facade_from_model -> Api.plan_facade_from_reconstruction); "
+      "the camera is identified from the frames' EXIF (Model M30T, 4.4 mm, 4000 px -> "
+      "m30t_wide) and an unidentified one is refused, not defaulted. Through the Api on "
+      "the saved full-run model: 12 waypoints, all 33.60 m off the wall, 1.22 cm GSD, "
+      "exported to QGC/WPL/DJI WPML/Litchi/KML/GeoJSON and saved as a version. NVS Hagenberg (Praschl & Schedl 2025, CC BY 4.0), 60 DJI "
+      "M30T wide frames, full resolution: wall 62.0 m long, 2.9-12.5 m above take-off "
+      "(from DJI RelativeAltitude), normal (0.05, -1.00) towards the camera track, "
+      "4,216 of 36,503 tie points on it, flatness 0.14 m RMS, 52 per cent of 0.5 m "
+      "cells holding a sparse point; cameras 31.2-35.9 m off the wall (median 33.6). "
+      "Planned with the M30T wide profile: 12 waypoints in two rows at 6.25 and 12.51 "
+      "m, all 33.6 m off the wall, 1.22 cm GSD. That GSD used to be taken from the mean "
+      "waypoint altitude (0.34 cm), and storage sized from a fallback camera; both "
+      "fixed. These 60 frames hold no roof passes, so roof reconstruction is not "
+      "measured here. Dense MVS (a CUDA 12.8 COLMAP build) is a separate item; this "
+      "is the sparse model. The test (CPU SIFT, 1600 px) measured 60/60 at 1.31 px, wall "
+      "59.4 m, 3.3-12.7 m, 4,049 of 32,357 points, 0.14 m flat, stand-off median "
+      "32.9 m, 12 waypoints at 1.20 cm."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
       "capture points sit outside the footprint with the camera facing the wall, and "
@@ -662,7 +688,12 @@ PROCESSING = [
       "a dependency-free incremental SfM (SIFT, PnP registration, SciPy bundle "
       "adjustment, EXIF intrinsics, no distortion model) that registered 15/15 "
       "Aukerman frames at 0.59 px and 1.96 m geo RMSE; it refuses imagery it cannot "
-      "register instead of laying frames out at an assumed overlap."),
+      "register instead of laying frames out at an assumed overlap. Oblique and facade "
+      "imagery (ODK_TESTDATA_DIR, GPU SIFT, 2000 px): ODM sheffield_cross 172/172 "
+      "oblique frames at 1.19 px; NVS Hagenberg M30T facade 60/60 at 1.32 px, geotag "
+      "fit 0.084 m RMSE. Spatial matching above 60 geotagged frames: bellus 106/122 "
+      "against 40/122 with sequential pairing. A fragment model holding only frames the "
+      "main model already has is no longer reported as a split survey."),
     F("pr.georeference", "Georeferencing", "workers", "Processing",
       "RANSAC Helmert similarity between camera centres and geotags, into an auto-selected UTM zone.",
       "verified", ["tests/test_geo.py::TestUmeyamaSimilarity", "tests/test_geo.py::TestUtmZoneSelection"]),
@@ -734,7 +765,12 @@ PROCESSING = [
                       "tests/test_gcp.py::TestResiduals",
                       "tests/test_gcp.py::TestAccuracyReport",
                       "tests/test_gcp.py::TestReportOutput",
-                      "tests/test_gcp_georeferencing.py"],
+                      "tests/test_gcp_georeferencing.py",
+                      "tests/test_odm_gcp_format.py",
+                      "tests/test_real_recon_datasets.py::test_bellus_control_file_is_read_with_its_marks",
+                      "tests/test_real_recon_datasets.py::test_sheffield_control_file_with_a_proj_header_is_read_with_its_marks",
+                      "tests/test_real_recon_datasets.py::test_sheffield_oblique_survey_is_fitted_to_its_control",
+                      "tests/test_real_recon_datasets.py::test_bellus_single_marks_are_placed_on_the_model_and_check_the_gps_fit"],
       "core/gcp.py; Api.import_gcps, list_gcps, mark_gcp, gcp_accuracy_report; cockpit "
       "Add GCPs, Mark GCP (a click on the photograph, then on a close-up), GCP Report. "
       "Points and marks are kept in the project's gcps.json. Each point is located in the "
@@ -745,7 +781,24 @@ PROCESSING = [
       "geotag fit. The real-imagery test (COLMAP on eight Aukerman frames, marks taken "
       "from COLMAP's own tie-point observations, survey coordinates offset from the GPS "
       "fit by a known amount) skips without the gitignored imagery; the custom engine "
-      "ignores control and says so."),
+      "ignores control and says so. "
+      "ODM control files (gcp_list.txt / gcp_file.txt: 'WGS84 UTM 17N', EPSG: or PROJ-"
+      "string header, one row per observation) are read with their marks. Measured on "
+      "the open ODM datasets via ODK_TESTDATA_DIR (tools/run_gcp_reconstruction.py, "
+      "outputs on E:): sheffield_cross (172 oblique Phantom 3 frames, 5 GCPs x 5 marks) "
+      "registered 172/172 at 1.19 px with 111,701 tie points; fitted to the control, "
+      "fit RMSE 0.469 m (h 0.465, v 0.059), leave-one-out 0.714 m, every mark "
+      "reprojecting within 3.7 px; GCP05 (0.83 m) is flagged. bellus (122 Canon S110 "
+      "frames, 4 GCPs marked once each) registered 106/122 at 1.32 px; single marks are "
+      "placed on the tie-point surface. Against the geotags alone they sit 31.6 m low "
+      "(RMSE 31.90 m, h 4.20 m), which the report names as a vertical-datum offset; the "
+      "geotag fit is then corrected onto the control keeping its orientation (scale "
+      "x1.0418, shift +1.41/+0.09/+31.60 m), leave-one-out RMSE 1.57 m (h 0.55, v 1.47) "
+      "against 5.47 m for a translation alone and 4.51 m for a free similarity. Not "
+      "survey grade, and reported as such. The tests run CPU SIFT at 1600 px on "
+      "subsets: sheffield DJI_0060-0090 31/31 at 0.98 px, fit 0.467 m, leave-one-out "
+      "0.708 m, marks within 2.24 px RMS; bellus IMG_1334-1386 38/53 at 1.22 px, geotag "
+      "check 31.61 m (v 31.20), corrected scale x1.0530, leave-one-out 2.31 m (h 0.44)."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
       "RTK/PPK metadata and RINEX base station data with timestamp alignment: camera "
       "events read from the aircraft's own event file with corrections in the units "

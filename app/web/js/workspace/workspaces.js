@@ -626,7 +626,7 @@ const missionTypes = [
   "Tower mapping", "Orbit", "Waypoints", "Panorama", "Solar inspection",
   "Wind turbine", "Magnetic mapping", "Complex facade", "L-shaped", "Utility pylon",
   "Thermal", "Multispectral", "Dome inspection", "Box inspection", "360 bubble",
-  "Lateral capture", "Smart adaptive", "Linked mission",
+  "Lateral capture", "Smart adaptive", "Linked mission", "Facade from model",
 ];
 
 /* The Mission Properties form, as one spec the panel draws and Plan reads.
@@ -678,6 +678,13 @@ export const MISSION_FORM = [
         { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
         { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
         { key: "linked_version_ids", label: "Linked version ids", value: "" },
+        /* Facade from model: blank folder = this project's reconstruction, blank images =
+           the active dataset, blank stand-off = the one the survey was flown at, blank
+           camera = the one the frames' EXIF names. */
+        { key: "reconstruction_dir", label: "Reconstruction folder", value: "" },
+        { key: "model_image_dir", label: "Survey image folder", value: "" },
+        { key: "model_standoff_m", label: "Model stand-off", value: "", unit: "m" },
+        { key: "model_camera", label: "Camera (blank = from EXIF)", value: "" },
 ];
 
 export const AIRCRAFT_FORM = [
