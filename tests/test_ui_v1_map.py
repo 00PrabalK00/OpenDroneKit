@@ -44,8 +44,10 @@ from ui_v1_map_harness import MapBrowser, MapServer, chromium_path, decode_png, 
 pytest.importorskip("rasterio")
 
 REPO = Path(__file__).resolve().parents[1]
-AUKERMAN = Path(os.environ.get("ODK_AUKERMAN_FULLRES",
-                               REPO / "demo_project" / "aukerman_fullres")) / "reconstruction"
+# The variable may name the survey folder or its reconstruction/ itself.
+AUKERMAN = Path(os.environ.get("ODK_AUKERMAN_FULLRES", REPO / "demo_project" / "aukerman_fullres"))
+if (AUKERMAN / "reconstruction").is_dir():
+    AUKERMAN = AUKERMAN / "reconstruction"
 EPSG = 32617
 IMAGERY = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
 
@@ -367,8 +369,10 @@ class TestDeepZoom:
         # The resolution chip reports the product on top, from the Api.
         info = browser.js("document.querySelector('.odk-mapf-info').textContent")
         assert info.startswith("ORTHOMOSAIC · ") and info.endswith(" m/px"), info
-        assert float(info.split(" · ")[1].split()[0]) == pytest.approx(
-            stage["ortho_tiles"]["native_resolution_m"], abs=0.001)
+        # The GeoTIFF's own pixel size, not the Mercator estimate.
+        import rasterio
+        with rasterio.open(AUKERMAN / "orthomosaic.tif") as src:
+            assert float(info.split(" · ")[1].split()[0]) == pytest.approx(src.res[0], abs=0.0005)
 
     def test_no_esri_placeholder_reaches_the_screen_at_z21(self, stage) -> None:
         """Past the ortho's west edge, where the basemap shows: imagery or the enlarged
@@ -413,7 +417,9 @@ class TestLegendAndThemes:
             assert legend["max"] == pytest.approx(float(band.max()), abs=0.05)
         assert legend["ticks"][0] == f"{legend['min']:.1f} m" and legend["ticks"][-1] == f"{legend['max']:.1f} m"
         assert "DSM" in legend["head"] and not legend["hidden"]
-        assert "survey area" in legend["key"] and "Camera positions" in legend["key"], legend["key"]
+        assert "Survey area" in legend["key"] and "Camera positions" in legend["key"], legend["key"]
+        # One casing for the whole key: sentence case, as the layer names are.
+        assert all(item[:1].isupper() for item in legend["key"]), legend["key"]
 
     def test_desk_map_view(self, stage) -> None:
         browser = stage["browser"]
@@ -468,7 +474,8 @@ class TestLegendAndThemes:
                    dash: map.getPaintProperty('odk-p-aoi-line', 'line-dasharray') ?? null };
         })()""")
         browser.viewport(1440, 900)
-        assert back == {"width": 4, "dash": None}, back
+        # Desk draws the survey area as a dashed rule, not in the accent.
+        assert back == {"width": 3.5, "dash": [4, 3]}, back
 
 
 class TestRemove:
@@ -490,3 +497,176 @@ class TestRemove:
         assert any("Removed DTM from the layer list" in t for t in result["toasts"]), result["toasts"]
         # The file itself is untouched.
         assert (AUKERMAN / "dtm.tif").is_file()
+
+
+# ------------------------------------------------------- the finish review (U3)
+
+MOUNT = """(async () => {
+  const f = await import('./js/odk/map/furniture.js');
+  document.querySelectorAll('.u3-extra').forEach((n) => n.remove());
+  const wrap = document.createElement('div');
+  wrap.className = 'u3-extra';
+  wrap.style.cssText = 'position:fixed;left:0;top:0;width:1100px;height:640px;z-index:5;display:flex;';
+  __SCREEN_ATTR__
+  const box = document.createElement('div');
+  box.style.cssText = 'flex:1 1 auto;position:relative;';
+  wrap.appendChild(box);
+  document.body.appendChild(wrap);
+  const m = await f.mountProjectMap(box, __OPTIONS__);
+  window.__extra = m;
+  for (let i = 0; i < 600 && !(m.map._odkProjectLayers || []).length; i++) await new Promise((r) => setTimeout(r, 50));
+  await new Promise((r) => { m.map.once('idle', () => setTimeout(r, 80)); m.map.triggerRepaint(); });
+  return true;
+})()"""
+
+VISIBILITY = """(() => {
+  const m = window.__extra.map;
+  const vis = (id) => m.getLayer(id) ? (m.getLayoutProperty(id, 'visibility') || 'visible') : null;
+  const cams = (m._odkProjectLayers || []).find((d) => d.layer.name === 'Camera positions');
+  const rasters = (m._odkProjectLayers || []).filter((d) => d.layer.kind !== 'vector');
+  const legend = window.__extra.furniture.node.querySelector('.odk-mapf-legend');
+  return { aoi: vis('odk-p-aoi-line'), aoiCasing: vis('odk-p-aoi-line-casing'),
+           mission: vis('odk-p-mission-line'), cameras: cams ? vis(cams.mapLayers[2]) : null,
+           raster: rasters.length ? vis(rasters[0].mapLayers[0]) : null,
+           hidden: window.__extra.furniture.state().viewHidden.sort(),
+           key: [...legend.querySelectorAll('.odk-geom-item')].map((i) => i.textContent) };
+})()"""
+
+
+def _mount_extra(browser, *, screen_attr: str = "", options: str = "{}") -> None:
+    browser.js(MOUNT.replace("__SCREEN_ATTR__", screen_attr).replace("__OPTIONS__", options), timeout_s=240)
+
+
+class TestFinishReview:
+    def test_analyse_opens_on_the_raster_with_the_capture_geometry_off(self, stage) -> None:
+        browser, api, layers = stage["browser"], stage["api"], stage["layers"]
+        assert api.plan_mission({"template": "grid", "altitude_m": 60})["ok"]
+        lon, lat = stage["centre"]
+        # The screen is read from the frame's [data-screen], as the shell marks it.
+        _mount_extra(browser, screen_attr="wrap.setAttribute('data-screen', 'analyse');",
+                     options=json.dumps({"centre": [lon, lat], "zoom": 17}))
+        seen = browser.js(VISIBILITY)
+        assert seen["hidden"] == ["aoi", "cameras", "mission"], seen
+        assert (seen["aoi"], seen["aoiCasing"], seen["mission"], seen["cameras"]) == ("none",) * 4, seen
+        assert seen["raster"] == "visible", seen
+        assert not {"Survey area", "Flight line", "Camera positions"} & set(seen["key"]), seen
+
+        # Off in the view, not in the project; one click in the Layers popover brings each back.
+        cams = layers["Camera positions"]
+        assert {l["id"]: l for l in api.list_layers()["layers"]}[cams]["visible"] is True
+        back = browser.js(f"""(async () => {{
+          const f = window.__extra.furniture;
+          const pop = f.openLayers();
+          for (let i = 0; i < 80 && !pop.querySelector('[data-layer="{cams}"]'); i++) await new Promise((r) => setTimeout(r, 25));
+          const row = pop.querySelector('[data-layer="{cams}"] input[type=checkbox]');
+          const before = row.checked;
+          const overlays = Object.fromEntries([...pop.querySelectorAll('[data-overlay]')].map((r) =>
+            [r.dataset.overlay, r.querySelector('input').checked]));
+          row.click();
+          pop.querySelector('[data-overlay=aoi] input').click();
+          pop.querySelector('[data-overlay=mission] input').click();
+          await new Promise((r) => setTimeout(r, 200));
+          f.closeLayers();
+          return {{ before, overlays }};
+        }})()""")
+        assert back["before"] is False and back["overlays"]["aoi"] is False and back["overlays"]["mission"] is False, back
+        seen = browser.js(VISIBILITY)
+        assert (seen["aoi"], seen["mission"], seen["cameras"]) == ("visible",) * 3, seen
+        assert seen["hidden"] == [], seen
+        # Turning a view-hidden layer on asked the Api nothing.
+        assert {l["id"]: l for l in api.list_layers()["layers"]}[cams]["visible"] is True
+
+    def test_plan_and_fly_keep_the_capture_geometry_on(self, stage) -> None:
+        browser = stage["browser"]
+        lon, lat = stage["centre"]
+        for screen in ("plan", "fly"):
+            _mount_extra(browser, options=json.dumps({"centre": [lon, lat], "zoom": 17, "screen": screen}))
+            seen = browser.js(VISIBILITY)
+            assert seen["hidden"] == [], (screen, seen)
+            assert (seen["aoi"], seen["mission"], seen["cameras"]) == ("visible",) * 3, (screen, seen)
+        browser.js("document.querySelectorAll('.u3-extra').forEach((n) => n.remove()); true")
+
+    def test_the_layers_popover_stops_at_the_bottom_of_the_map(self, stage) -> None:
+        browser = stage["browser"]
+        geo = browser.js("""(async () => {
+          // A strip below the map, as the desk frame's footer is.
+          const stageNode = document.getElementById('stage');
+          stageNode.style.bottom = '160px';
+          window.__u3.map.resize();
+          await new Promise((r) => setTimeout(r, 100));
+          const f = window.__u3.furniture;
+          f.closeLayers();
+          const pop = f.openLayers();
+          for (let i = 0; i < 80 && !pop.querySelector('[data-layer]'); i++) await new Promise((r) => setTimeout(r, 25));
+          await new Promise((r) => setTimeout(r, 100));
+          const p = pop.getBoundingClientRect();
+          const m = window.__u3.map.getContainer().getBoundingClientRect();
+          const button = pop.querySelector('.odk-mapf-foot [data-action="Cache Basemap View"]');
+          const b = button.getBoundingClientRect();
+          const out = { popBottom: p.bottom, mapBottom: m.bottom, scrolls: pop.scrollHeight > pop.clientHeight,
+                        button: { scrollW: button.scrollWidth, clientW: button.clientWidth, right: b.right,
+                                  popRight: p.left + pop.clientWidth, wrap: getComputedStyle(button).whiteSpace,
+                                  shrink: getComputedStyle(button).flexShrink } };
+          f.closeLayers();
+          stageNode.style.bottom = '';
+          window.__u3.map.resize();
+          return out;
+        })()""")
+        assert geo["popBottom"] <= geo["mapBottom"] - 7.5, geo
+        assert geo["scrolls"], geo
+        # The label fits inside its border, and the button clears the scrollbar.
+        button = geo["button"]
+        assert button["scrollW"] <= button["clientW"] and button["wrap"] == "nowrap" and button["shrink"] == "0", button
+        assert button["right"] <= button["popRight"], button
+
+    def test_the_neatline_rules_the_rasters_full_extent_on_desk_only(self, stage) -> None:
+        browser = stage["browser"]
+        seen = browser.js("""(() => {
+          const m = window.__u3.map;
+          const order = m.getStyle().layers.map((l) => l.id);
+          const shown = (m._odkProjectLayers || []).filter((d) => d.layer.kind !== 'vector'
+            && m.getLayoutProperty(d.mapLayers[0], 'visibility') !== 'none');
+          const box = [Infinity, Infinity, -Infinity, -Infinity];
+          shown.forEach((d) => { const b = d.tiles.bounds; box[0] = Math.min(box[0], b[0]); box[1] = Math.min(box[1], b[1]);
+            box[2] = Math.max(box[2], b[2]); box[3] = Math.max(box[3], b[3]); });
+          const data = m.getSource('odk-neatline').serialize().data;
+          const lastRaster = order.reduce((at, id, i) => (/^odk-p-raster-/.test(id) ? i : at), -1);
+          const firstVector = order.findIndex((id) => /^odk-p-(vector|aoi|mission|nofly|markers)/.test(id));
+          return { layer: m.getLayer('odk-neatline').type, color: m.getPaintProperty('odk-neatline', 'line-color'),
+                   width: m.getPaintProperty('odk-neatline', 'line-width'), at: order.indexOf('odk-neatline'),
+                   lastRaster, firstVector, box, coords: data.features[0].geometry.coordinates };
+        })()""")
+        assert seen["layer"] == "line" and seen["color"] == "#A3A3A3" and seen["width"] == 1, seen
+        assert seen["at"] == seen["lastRaster"] + 1, seen
+        assert seen["firstVector"] < 0 or seen["at"] < seen["firstVector"], seen
+        w, s, e, n = seen["box"]
+        assert np.allclose(seen["coords"], [[w, n], [e, n], [e, s], [w, s], [w, n]]), seen
+        field = browser.js("""(async () => {
+          document.documentElement.setAttribute('data-mode', 'field');
+          await new Promise((r) => setTimeout(r, 300));
+          const n = window.__u3.map.getSource('odk-neatline').serialize().data.features.length;
+          document.documentElement.setAttribute('data-mode', 'desk');
+          await new Promise((r) => setTimeout(r, 300));
+          return [n, window.__u3.map.getSource('odk-neatline').serialize().data.features.length];
+        })()""")
+        assert field == [0, 1], field
+
+    def test_sample_elevation_reads_the_dsms_own_pixel(self, stage) -> None:
+        import rasterio
+        from core import geo
+
+        api = stage["api"]
+        with rasterio.open(AUKERMAN / "dsm.tif") as src:
+            band = src.read(1, masked=True)
+            rows, cols = np.nonzero(~np.ma.getmaskarray(band))
+            for k in (0, len(rows) // 3, len(rows) // 2, len(rows) - 1):
+                r, c = int(rows[k]), int(cols[k])
+                x, y = src.xy(r, c)
+                lon, lat = geo.projected_to_wgs84([x], [y], EPSG)
+                answer = api.sample_elevation(float(lon[0]), float(lat[0]))
+                assert answer["ok"] and answer["dsm"] == "DSM" and answer["epsg"] == EPSG, answer
+                assert answer["z"] == pytest.approx(float(band[r, c]), abs=1e-4), (answer, r, c)
+            west, south, east, north = src.bounds
+            off_lon, off_lat = geo.projected_to_wgs84([west - 500.0], [north + 500.0], EPSG)
+        outside = api.sample_elevation(float(off_lon[0]), float(off_lat[0]))
+        assert outside["ok"] and outside["z"] is None and outside["reason"] == "outside the DSM", outside

@@ -149,10 +149,41 @@ function baseLabel(layer) {
   return hit ? hit[1] : name;
 }
 
+// Sentence case, like the project layers they sit beside in the key ("Camera positions").
 const GEOMETRY_LABELS = {
-  measure: "measurement", aoi: "survey area", nofly: "no-fly zone", flight: "flight line",
-  waypoint: "capture point", marker: "site marker", cad: "CAD overlay", vector: "vector layer",
+  measure: "Measurement", aoi: "Survey area", nofly: "No-fly zone", flight: "Flight line",
+  waypoint: "Capture point", marker: "Site marker", cad: "CAD overlay", vector: "Vector layer",
 };
+
+/*
+ * What each screen opens with on the map. Analyse is about the product: the base raster
+ * and the analysis and measurement overlays, with the capture geometry (camera
+ * positions, the mission, the survey area) off but a click away in the Layers popover.
+ * Plan and Fly are about that geometry and keep it on; so does any screen not listed.
+ * A view choice only: nothing here is saved to the project.
+ */
+export const SCREEN_VISIBILITY = {
+  analyse: { cameras: false, mission: false, aoi: false },
+};
+
+/* Map layers behind each view group. Camera positions are project vector layers, found
+   by name; the rest is the project geometry mapview.showProject draws. */
+const VIEW_GROUPS = {
+  aoi: ["odk-p-aoi-fill", "odk-p-aoi-line"],
+  mission: ["odk-p-mission-line", "odk-p-mission-pt"],
+  nofly: ["odk-p-nofly-fill", "odk-p-nofly-line"],
+};
+const CAMERA_LAYER = /camera|capture position/i;
+
+/** The screen a map host sits on: the frame marks it ([data-screen]). */
+function screenOf(host) {
+  const frame = host && host.closest ? host.closest("[data-screen]") : null;
+  return (frame && frame.getAttribute("data-screen")) || null;
+}
+
+/* The neatline: a 1 px rule round the rasters' full extent, drawn on the map so it pans
+   and zooms with them. Desk only; the colour is sampled from the SysAnalyse artboard. */
+export const NEATLINE = { id: "odk-neatline", color: "#A3A3A3", width: 1 };
 
 /**
  * Put the furniture on `map`, inside `host` (the map's positioned container).
@@ -164,6 +195,12 @@ const GEOMETRY_LABELS = {
  *   onCursor   ({lng, lat}) on every pointer move (the desk footer readout).
  *   notify     (text, kind) for a toast; kind in ok | warn | danger.
  *   fitOnLoad  fit the view to the project once it has been drawn (default true).
+ *   screen     the screen the map is on ("analyse", "plan", ...); default: the frame's
+ *              [data-screen]. Picks what the map opens with on (SCREEN_VISIBILITY).
+ *   visibility { cameras, mission, aoi, nofly: false } to open further groups off, or
+ *              true to keep one on that the screen would hide.
+ *   network    () => the hosts this session has reached (default: the shell's record),
+ *              listed in the Layers popover.
  *
  * Returns { node, refresh(), update(), state(), openLayers(), destroy() }.
  */
@@ -174,6 +211,9 @@ export function mountMapFurniture(map, host, {
   onCursor = null,
   notify = null,
   fitOnLoad = true,
+  screen = null,
+  visibility = null,
+  network = null,
 } = {}) {
   const say = (text, kind = "ok") => { if (notify) notify(text, kind); };
   const runAction = run || (async (key, payload) => {
@@ -190,6 +230,25 @@ export function mountMapFurniture(map, host, {
     crs: null, layers: [], drawn: [], bounds: null, notice: null, fitted: false,
     cursor: null, mpp: null, scale: null,
   };
+
+  // The view groups this screen opens with off (SCREEN_VISIBILITY, or `visibility`).
+  const opening = { ...(SCREEN_VISIBILITY[screen || screenOf(host)] || {}), ...(visibility || {}) };
+  const viewHidden = new Set(Object.entries(opening).filter(([, on]) => on === false).map(([key]) => key));
+  // Camera layers turned back on from the popover while the screen keeps "cameras" off.
+  const camerasShown = new Set();
+  const isCameraLayer = (layer) => Boolean(layer) && layer.kind === "vector" && CAMERA_LAYER.test(layer.name || "");
+  const viewOff = (layer) => viewHidden.has("cameras") && isCameraLayer(layer) && !camerasShown.has(layer.id);
+
+  /* Hide what the screen opens without. Run straight after every project draw, before the
+     map paints a frame, so Analyse never flashes the flight lines over the raster. */
+  function applyViewHidden() {
+    for (const [key, ids] of Object.entries(VIEW_GROUPS)) {
+      if (viewHidden.has(key)) setLayersVisible(map, ids.filter((id) => map.getLayer(id)), false);
+    }
+    for (const entry of map._odkProjectLayers || []) {
+      if (viewOff(entry.layer)) setLayersVisible(map, entry.mapLayers, false);
+    }
+  }
 
   const node = el("div", { class: "odk-mapf", "data-furniture": "" });
   const tl = el("div", { class: "odk-mapf-tl" });
@@ -279,7 +338,8 @@ export function mountMapFurniture(map, host, {
     state.mpp = mpp;
     state.scale = { metres, px };
     const width = `${px.toFixed(1)}px`;
-    scaleLabels.style.width = width;
+    // Desk: 0 · mid · end over the bar. Field: one row, the bar then its length.
+    scaleLabels.style.width = modeFor(host) === "field" ? "" : width;
     scaleBar.style.width = width;
     // The midpoint, in the end label's unit: 0 · 500 · 1 km.
     scaleLabels.children[1].textContent = trim(metres / 2 / inUnit(metres).factor);
@@ -350,7 +410,9 @@ export function mountMapFurniture(map, host, {
     const top = topRaster();
     if (!top) { infoChip.hidden = true; return; }
     const name = String(top.layer.name || top.layer.id).toUpperCase();
-    const res = top.tiles ? formatResolution(Number(top.tiles.native_resolution_m)) : null;
+    // The GeoTIFF's own pixel size where its CRS is in metres, else the ground size of a
+    // pixel at its centre: raster_tiles reports both.
+    const res = top.tiles ? formatResolution(Number(top.tiles.pixel_size_m ?? top.tiles.native_resolution_m)) : null;
     infoChip.textContent = top.source === "preview" ? `${name} · preview` : [name, res].filter(Boolean).join(" · ");
     infoChip.hidden = false;
   }
@@ -411,7 +473,9 @@ export function mountMapFurniture(map, host, {
       const mid = (low + high) / 2;
       parts.push(
         el("div", { class: "odk-mapf-legend-head" }, [
-          el("span", { text: "Elevation" }),
+          // A raster too large to read whole is coloured from an overview's range; the
+          // legend says so rather than pass it off as the data's own.
+          el("span", { text: elevation.tiles.value_range_source === "overview" ? "Elevation · overview range" : "Elevation" }),
           el("span", { text: `${elevation.layer.name || elevation.layer.id} · m` }),
         ]),
         el("div", { class: "odk-mapf-ramp", role: "img",
@@ -463,12 +527,51 @@ export function mountMapFurniture(map, host, {
     await redraw();
   }
 
+  /* The rasters' full extent, as a 1 px rule on the map itself (desk only). */
+  function renderNeatline() {
+    let style;
+    try { style = map.getStyle(); } catch { return; }
+    if (!style || !style.layers) return;
+    const box = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const entry of state.drawn.filter((d) => d.layer.kind !== "vector" && isShown(d))) {
+      const b = entry.tiles && Array.isArray(entry.tiles.bounds) ? entry.tiles.bounds : null;
+      const corners = b ? [[b[0], b[1]], [b[2], b[3]]] : (map.getSource(entry.mapLayers[0]) || {}).coordinates;
+      for (const [x, y] of corners || []) {
+        box[0] = Math.min(box[0], x); box[1] = Math.min(box[1], y);
+        box[2] = Math.max(box[2], x); box[3] = Math.max(box[3], y);
+      }
+    }
+    const show = modeFor(host) !== "field" && Number.isFinite(box[0]);
+    const [w, s, e, n] = box;
+    const data = { type: "FeatureCollection", features: show ? [{ type: "Feature", properties: {},
+      geometry: { type: "LineString", coordinates: [[w, n], [e, n], [e, s], [w, s], [w, n]] } }] : [] };
+    const key = JSON.stringify(data);
+    const source = map.getSource(NEATLINE.id);
+    if (!source) map.addSource(NEATLINE.id, { type: "geojson", data });
+    else if (node.dataset.neatline !== key) source.setData(data);
+    node.dataset.neatline = key;
+    if (!map.getLayer(NEATLINE.id)) {
+      map.addLayer({ id: NEATLINE.id, type: "line", source: NEATLINE.id,
+        layout: { "line-join": "miter", "line-cap": "butt" },
+        paint: { "line-color": NEATLINE.color, "line-width": NEATLINE.width } });
+    }
+    // Over the rasters and under every vector: directly above the top raster.
+    const ids = map.getStyle().layers.map((l) => l.id);
+    const others = ids.filter((id) => id !== NEATLINE.id);
+    const lastRaster = others.reduce((at, id, i) => (/^odk-p-raster-/.test(id) ? i : at), -1);
+    const before = lastRaster >= 0 ? others[lastRaster + 1] : undefined;
+    if (before !== ids[ids.indexOf(NEATLINE.id) + 1]) map.moveLayer(NEATLINE.id, before);
+    if (show) node.dataset.neatlineBounds = JSON.stringify(box);
+    else delete node.dataset.neatlineBounds;
+  }
+
   function renderAll() {
     renderCrs();
     renderInfo();
     renderNotice();
     renderLegend();
     renderBaseSwitch();
+    try { renderNeatline(); } catch { /* the style is mid-swap; the next idle redraws it */ }
     layersButton.hidden = modeFor(host) === "field";
     update();
   }
@@ -491,6 +594,7 @@ export function mountMapFurniture(map, host, {
   }
 
   const onProject = () => {
+    applyViewHidden();
     readProject().then(() => {
       if (fitOnLoad && !state.fitted && state.bounds) { state.fitted = true; fitTo(map, state.bounds); }
     });
@@ -517,8 +621,9 @@ export function mountMapFurniture(map, host, {
     const top = Math.max(8, r.top);
     pop.node.style.left = `${Math.max(8, r.left - width - 8)}px`;
     pop.node.style.top = `${top}px`;
-    // It scrolls inside the window rather than running off its bottom edge.
-    pop.node.style.maxHeight = `${Math.max(160, window.innerHeight - top - 8)}px`;
+    // It scrolls inside the map rather than running over the footer or off the window.
+    const floor = Math.min(window.innerHeight, host.getBoundingClientRect().bottom) - 8;
+    pop.node.style.maxHeight = `${Math.max(160, floor - top)}px`;
   }
 
   const group = (label, children) => el("div", { class: "odk-mapf-group", role: "group", "aria-label": label }, [
@@ -528,7 +633,7 @@ export function mountMapFurniture(map, host, {
   async function buildLayers() {
     const [cache, listed] = await Promise.all([ask("basemap_cache_status"), ask("list_layers")]);
     state.layers = (listed && listed.layers) || state.layers;
-    popBody.replaceChildren(basemapGroup(cache), projectGroup(), overlayGroup(), cacheFoot(cache));
+    popBody.replaceChildren(basemapGroup(cache), projectGroup(), overlayGroup(), networkGroup(), cacheFoot(cache));
   }
 
   function cacheNote(cache) {
@@ -585,7 +690,7 @@ export function mountMapFurniture(map, host, {
   }
 
   function layerRow(layer) {
-    const visible = layer.visible !== false;
+    const visible = layer.visible !== false && !viewOff(layer);
     const box = el("input", { type: "checkbox", "aria-label": `Show ${layer.name || layer.id}` });
     box.checked = visible;
     const drawn = drawnFor(layer.id);
@@ -626,6 +731,18 @@ export function mountMapFurniture(map, host, {
     range.disabled = !visible;
 
     box.addEventListener("change", async () => {
+      if (box.checked && viewOff(layer)) {
+        // Off only in this screen's view, not in the project: showing it asks the Api nothing.
+        camerasShown.add(layer.id);
+        const cameraLayers = state.drawn.filter((d) => isCameraLayer(d.layer));
+        if (cameraLayers.every((d) => camerasShown.has(d.layer.id))) viewHidden.delete("cameras");
+        range.disabled = false;
+        const entry = drawnFor(layer.id);
+        if (entry) setLayersVisible(map, entry.mapLayers, true);
+        renderAll();
+        return;
+      }
+      camerasShown.delete(layer.id);
       const result = await ask("set_layer_visible", layer.id, box.checked);
       if (!result) { box.checked = !box.checked; say(`${layer.name || layer.id}: the change was refused.`, "warn"); return; }
       layer.visible = box.checked;
@@ -670,7 +787,12 @@ export function mountMapFurniture(map, host, {
       if (!ids.length) return;
       const box = el("input", { type: "checkbox", "aria-label": `Show ${label}` });
       box.checked = ids.some((id) => map.getLayoutProperty(id, "visibility") !== "none");
-      box.addEventListener("change", () => { setLayersVisible(map, ids, box.checked); renderLegend(); });
+      box.addEventListener("change", () => {
+        setLayersVisible(map, ids, box.checked);
+        // Kept for this map, so the redraw after a layer change keeps the choice.
+        if (VIEW_GROUPS[key]) { if (box.checked) viewHidden.delete(key); else viewHidden.add(key); }
+        renderLegend();
+      });
       rows.push(el("label", { class: "odk-mapf-row", "data-overlay": key }, [
         box, el("span", { class: "odk-mapf-row-name", text: label }),
       ]));
@@ -686,6 +808,23 @@ export function mountMapFurniture(map, host, {
     toggle("Measurements", present(["odk-draw-fill", "odk-draw-line", "odk-draw-vertex"]), "measure");
     if (!rows.length) rows.push(el("p", { class: "odk-mapf-empty", text: "No overlays on this map." }));
     return group("Overlays", rows);
+  }
+
+  /* What has left this machine this session (the shell's record), named in full: the
+     footer only counts it. */
+  function networkGroup() {
+    let uses = [];
+    try {
+      const listed = network ? network() : (window.odkShell && window.odkShell.networkUses);
+      uses = [...(listed || [])];
+    } catch { uses = []; }
+    const rows = uses.length
+      ? uses.map((what) => el("div", { class: "odk-mapf-row odk-mapf-row--static", "data-network": what }, [
+        el("span", { class: "odk-dot odk-dot--warn", "aria-hidden": "true" }),
+        el("span", { class: "odk-mapf-row-name", text: what, title: what }),
+      ]))
+      : [el("p", { class: "odk-mapf-empty", text: "Nothing has left this machine this session." })];
+    return group(uses.length ? `Network in use · ${uses.length}` : "Network", rows);
   }
 
   function cacheFoot(cache) {
@@ -712,11 +851,18 @@ export function mountMapFurniture(map, host, {
     updateCursor();
     if (onCursor) onCursor(event.lngLat);
   };
-  const onStyle = () => { renderInfo(); renderLegend(); };
+  const onStyle = () => {
+    renderInfo();
+    renderLegend();
+    // A basemap switch rebuilds the style and drops the neatline with it.
+    if (!map.getLayer(NEATLINE.id)) { try { renderNeatline(); } catch { /* mid-swap */ } }
+  };
   map.on("move", onMove);
   map.on("rotate", updateNorth);
   map.on("mousemove", onMouse);
   map.on("idle", onStyle);
+  // The container can change size without the window (a panel collapsing, the frame).
+  map.on("resize", onResize);
   const unbindTheme = bindTheme(map);
   const stopDrawingWatch = onDrawingChange(() => renderLegend());
 
@@ -745,12 +891,13 @@ export function mountMapFurniture(map, host, {
     notice(value) { state.notice = value; renderNotice(); },
     openLayers() { if (pop.node.hidden) layersButton.click(); return pop.node; },
     closeLayers() { if (!pop.node.hidden) pop.close(); },
-    state: () => ({ ...state, crs: state.crs && { ...state.crs } }),
+    state: () => ({ ...state, crs: state.crs && { ...state.crs }, viewHidden: [...viewHidden] }),
     destroy() {
       map.off("move", onMove);
       map.off("rotate", updateNorth);
       map.off("mousemove", onMouse);
       map.off("idle", onStyle);
+      map.off("resize", onResize);
       host.removeEventListener("odk:project", onProject);
       window.removeEventListener("resize", onResize);
       unbindTheme();
@@ -775,7 +922,9 @@ export function mountMapFurniture(map, host, {
  */
 export async function mountProjectMap(container, options = {}) {
   container.classList.add("odk-map");
-  setBasemap(options.basemap || "offline");
+  // keepLayers: a map already on screen swaps only its basemap. Replacing its style
+  // would wipe the project it is showing (the Field remount, a second map).
+  setBasemap(options.basemap || "offline", { keepLayers: true });
   let furniture = null;
   const pendingNotices = [];
   let drawn = false;

@@ -4,7 +4,8 @@
  * colours. This module restyles every one of those layers for the mode the map sits in,
  * so the same project reads as the approved artboards in both:
  *
- *   desk   brand blue for the area and measurements, a light flight line, each line on
+ *   desk   brand blue for measurements only, the survey area as a dashed text-2 rule,
+ *          a light flight line, each line on
  *          a thin dark casing so it holds on bright imagery (SysPlan, SysAnalyse);
  *   field  every line drawn as an 8 px ink casing under a 4 px bright stroke, so it
  *          reads in sunlight on a tablet (SysFieldPlan, SysFieldAnalyse).
@@ -39,9 +40,11 @@ export const FIELD_STROKE_PX = 4;
 export const THEMES = {
   desk: {
     background: { color: DESK.well },
+    // The survey area is context, not a result: a dashed text-2 rule. Accent is kept for
+    // measurements and selection.
     aoi: {
-      fill: { color: DESK.accent, opacity: 0.1 },
-      line: { color: DESK.accent, width: 2, casing: { color: DESK.well, width: 4, opacity: 0.55 } },
+      fill: { color: DESK.text2, opacity: 0.04 },
+      line: { color: DESK.text2, width: 1.5, dash: [4, 3], casing: { color: DESK.well, width: 3.5, opacity: 0.55 } },
     },
     nofly: {
       fill: { color: DESK.danger, opacity: 0.16 },

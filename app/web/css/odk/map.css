@@ -44,7 +44,7 @@
 
 /* scale bar: labels over a two-part bar, ratio under (SysAnalyse) */
 .odk-mapf-scale {
-  flex-direction: column; gap: var(--sp-1);
+  display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-1);
   font-family: var(--font-mono); font-size: var(--fs-label); line-height: 14px; color: var(--text-2);
   /* On its own plate, like the chips: over bright imagery (grass, concrete at z20+)
      bare labels fell below 4.5:1. */
@@ -71,7 +71,7 @@
 .odk-mapf-legend .odk-geom-key { padding-top: var(--sp-2); border-top: 1px solid var(--line); }
 .odk-mapf-legend .odk-geom-key:first-child { padding-top: 0; border-top: 0; }
 .odk-mapf-legend .odk-geom-item { font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-2); }
-.odk-geom-swatch--aoi { height: 10px; background: rgba(47, 134, 255, 0.10); border: 2px solid var(--accent); }
+.odk-geom-swatch--aoi { height: 10px; background: transparent; border: 1.5px dashed var(--text-2); }
 .odk-geom-swatch--nofly { height: 10px; background: rgba(240, 106, 106, 0.16); border: 1.5px solid var(--danger); }
 .odk-geom-swatch--waypoint { width: 6px; height: 6px; margin: 0 9px; border-radius: 50%; background: var(--accent); }
 .odk-geom-swatch--marker { width: 10px; height: 10px; margin: 0 7px; border-radius: 50%; background: var(--warn); }
@@ -82,7 +82,10 @@
 .odk-geom-swatch--vertex { border: 2px solid var(--accent); background: var(--text); border-radius: 0; }
 
 /* -- Layers popover ---------------------------------------------------------- */
-.odk-popover.odk-mapf-pop { width: 340px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; }
+/* max-height is set from the map container's bottom (furniture.placeLayers): the
+   popover scrolls inside the map, never over the footer. The gutter keeps the
+   scrollbar off the rows and the footer button. */
+.odk-popover.odk-mapf-pop { width: 340px; max-width: calc(100vw - 32px); overflow: auto; scrollbar-gutter: stable; }
 .odk-mapf-pop .odk-popover-body { padding: 0; }
 .odk-mapf-group { display: flex; flex-direction: column; padding: var(--sp-2) 0; border-bottom: 1px solid var(--line); }
 .odk-mapf-group:last-child { border-bottom: 0; }
@@ -107,8 +110,11 @@
 .odk-mapf-opacity output { width: 36px; text-align: right; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .odk-mapf-remove.odk-icon-btn { width: 28px; height: 28px; background: transparent; color: var(--muted); }
 .odk-mapf-remove.odk-icon-btn:hover { color: var(--danger); background: var(--surface-2); box-shadow: none; }
-.odk-mapf-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
-.odk-mapf-foot .odk-mapf-row-note { white-space: normal; }
+.odk-mapf-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-3); }
+.odk-mapf-foot .odk-mapf-row-note { flex: 1 1 auto; min-width: 0; white-space: normal; }
+.odk-mapf-foot .odk-btn { flex: none; white-space: nowrap; }
+.odk-mapf-row--static { cursor: default; }
+.odk-mapf-row--static:hover { background: transparent; }
 .odk-mapf-empty { padding: var(--sp-1) var(--sp-3) var(--sp-2); font-size: var(--fs-small); color: var(--muted); }
 
 /* -- Field Daylight: white boxes, 3px ink rules, 64px targets ------------------ */
@@ -135,7 +141,7 @@
   font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700; line-height: 1; color: var(--text);
 }
 [data-mode="field"] .odk-mapf-scale-labels > :not(:last-child) { display: none; }
-[data-mode="field"] .odk-mapf-scale-labels { order: 2; }
+[data-mode="field"] .odk-mapf-scale-labels { order: 2; width: auto; white-space: nowrap; }
 [data-mode="field"] .odk-mapf-scale-bar { order: 1; height: 10px; border: var(--rule) solid var(--line); border-top: 0; box-shadow: none; }
 [data-mode="field"] .odk-mapf-scale-bar > span:first-child { background: transparent; }
 [data-mode="field"] .odk-mapf-scale-ratio { display: none; }
