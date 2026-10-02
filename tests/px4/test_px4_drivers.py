@@ -273,11 +273,21 @@ def test_mission_flight_pause_resume_rtl(px4, driver, observer, tmp_path, reques
         assert progressed is not None, f"PX4 never reached item 4: {observer.statustext(mark)}"
         reached = [int(e.data["seq"]) for e in observer.messages("MISSION_ITEM_REACHED", mark)]
         log["px4_items_reached_before_pause"] = reached
-        time.sleep(1.0)
-        px4_seq = _current_seq(observer)
-        app = telemetry(api)
+        # The two links are read by two processes on a busy host, so one can be a few
+        # hundred ms behind the other while an orbit ticks through three items per
+        # viewpoint. They must agree (within one item) at some moment in a 5 s window.
+        samples = []
+        deadline = time.monotonic() + 5.0
+        while True:
+            px4_seq = _current_seq(observer)
+            app = telemetry(api)
+            samples.append((px4_seq, app.get("waypoint_index")))
+            if (abs(int(app.get("waypoint_index") or 0) - px4_seq) <= 1
+                    or time.monotonic() > deadline):
+                break
+            time.sleep(0.2)
         log["progress_check"] = {"px4_seq": px4_seq, "app_index": app.get("waypoint_index"),
-                                 "app_total": app.get("waypoint_total")}
+                                 "app_total": app.get("waypoint_total"), "samples": samples}
         assert abs(int(app.get("waypoint_index") or 0) - px4_seq) <= 1, log["progress_check"]
         assert app.get("waypoint_total") == total, log["progress_check"]
         assert app.get("flight_mode") == "AUTO" and app.get("armed") is True, app
