@@ -161,6 +161,7 @@ def test_every_command_in_flight(api, sitl_trace):
     """arm, disarm, takeoff, start, pause, resume, photo, abort, manual hand-back,
     resume autonomy, loiter, RTL, land, set home, emergency stop."""
     matrix = Matrix("in_flight")
+    original_home = None
     try:
         planned = plan_template(api, "grid")
         assert planned["ok"], planned
@@ -263,7 +264,7 @@ def test_every_command_in_flight(api, sitl_trace):
 
         # Fly on until the aircraft is well away from the launch point, so landing, a
         # new home and RTL to it are distinguishable from simply staying at home.
-        original_home = api.telemetry()["telemetry"]
+        original_home = dict(api.telemetry()["telemetry"])
         home_lat, home_lon = original_home["home_lat"], original_home["home_lon"]
         wait_telemetry(api, "the grid's far side", lambda t: distance_m(
             t["latitude"], t["longitude"], home_lat, home_lon) > 25.0, 180.0)
@@ -331,3 +332,13 @@ def test_every_command_in_flight(api, sitl_trace):
                 "return_to_home"} <= logged, logged
     finally:
         matrix.write()
+        # The shared SITL vehicle outlives this test: put home back where it was, or every
+        # later RTL (lifecycle, the fence breach's rally-vs-home choice) flies somewhere else.
+        if original_home and original_home.get("home_lat") is not None:
+            restored = api._session._drone_client.set_home(
+                original_home["home_lat"], original_home["home_lon"],
+                original_home["home_alt_m"])
+            assert restored.success, restored.message
+            wait_telemetry(api, "home restored", lambda t: distance_m(
+                t["home_lat"], t["home_lon"], original_home["home_lat"],
+                original_home["home_lon"]) < 0.5, 15.0)
