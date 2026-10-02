@@ -270,6 +270,18 @@ class TestCommandsReportTheVehiclesAnswer:
         assert result["result"]["ack"] == "denied"
         assert "denied" in result["error"]
 
+    def test_a_refused_start_does_not_leave_the_motors_armed(self, api, vehicles):
+        """ArduCopter arms, then refuses MISSION_START with no usable mission. The start
+        reported the refusal and left the aircraft armed on the ground (found in SITL)."""
+        vehicle, uri = vehicles(refuse_commands={300})
+        connect(api, uri)
+        result = api.vehicle_command("start", override_preflight=True)
+        assert result["ok"] is False and result["result"]["ack"] == "denied"
+        assert "disarmed again" in result["error"]
+        assert [c[:2] for c in vehicle.commands if c[0] in (300, 400)] == [
+            (400, 1.0), (300, 0.0), (400, 0.0)]
+        assert vehicle.armed is False
+
     def test_silence_is_not_success(self, api, vehicles):
         """Every command used to answer 'Command sent.' whether or not anyone heard."""
         _, uri = vehicles(command_ack=None)

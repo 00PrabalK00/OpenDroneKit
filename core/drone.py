@@ -93,6 +93,13 @@ class DroneTelemetry:
             "link_quality_pct": rounded(self.link_quality_pct, 1),
             "timestamp": self.timestamp,
         }
+        if self.home_set:
+            # Where RTL will fly to. Reported only once the vehicle has said: a home of
+            # 0.0, 0.0 is Null Island, not "unknown". It was never exported at all, so
+            # neither UI could show it -- or that SET_HOME had moved it.
+            payload["home_lat"] = round(self.home_lat, 7)
+            payload["home_lon"] = round(self.home_lon, 7)
+            payload["home_alt_m"] = round(self.home_alt, 2)
         return {key: value for key, value in payload.items() if value is not None}
 
 

@@ -66,6 +66,7 @@ class FakeVehicle:
         stream_home: bool = True,
         lat: float = 41.3042,
         lon: float = -81.7505,
+        refuse_commands: frozenset[int] | set[int] = frozenset(),
     ):
         self.conn = mavutil.mavlink_connection(
             f"udpout:127.0.0.1:{gcs_port}", source_system=1, source_component=1)
@@ -74,6 +75,9 @@ class FakeVehicle:
         self.accept_modes = accept_modes
         self.reject_upload = reject_upload
         self.command_ack = command_ack
+        # Commands this vehicle answers MAV_RESULT_FAILED, as ArduCopter answers
+        # MISSION_START with no usable mission.
+        self.refuse_commands = set(refuse_commands)
         self.battery_remaining = battery_remaining
         self.send_camera_information = send_camera_information
         self.stream_home = stream_home
@@ -193,7 +197,7 @@ class FakeVehicle:
             elif kind == "COMMAND_LONG":
                 command = int(msg.command)
                 self.commands.append((command, float(msg.param1), float(msg.param2)))
-                accepted = self.command_ack == "accept"
+                accepted = self.command_ack == "accept" and command not in self.refuse_commands
                 if accepted:
                     if command == MAV_CMD_COMPONENT_ARM_DISARM:
                         self.armed = bool(msg.param1)

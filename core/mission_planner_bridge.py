@@ -126,9 +126,11 @@ _NON_POSITIONAL_COMMANDS = frozenset(
         531,  # SET_CAMERA_ZOOM
         532,  # SET_CAMERA_FOCUS
         1000,  # DO_GIMBAL_MANAGER_PITCHYAW: x is the flags bitmask
+        1001,  # DO_GIMBAL_MANAGER_CONFIGURE
         2000,  # IMAGE_START_CAPTURE
         2001,  # IMAGE_STOP_CAPTURE
-        2500,  # DO_GIMBAL_MANAGER_CONFIGURE
+        2500,  # VIDEO_START_CAPTURE (was labelled gimbal-manager configure, which is 1001)
+        2501,  # VIDEO_STOP_CAPTURE
         # DO_SET_ROI (201) is deliberately absent: its x/y ARE the ROI's latitude and
         # longitude. Listed here, they were truncated to whole degrees: a real
         # ArduCopter stored a -35.3631 ROI as -35.0, a point of interest ~40 km away.
@@ -1104,10 +1106,16 @@ class MissionPlannerDroneClient:
         """
         # MAV_CMD_DO_SET_HOME = 179. param1 = 1 means "use current position".
         if latitude is None or longitude is None:
-            return self._command_long(179, 1.0, name="set_home")
-        return self._command_long(179, 0.0, 0.0, 0.0, 0.0,
-                                  float(latitude), float(longitude), float(altitude_m),
-                                  name="set_home")
+            result = self._command_long(179, 1.0, name="set_home")
+        else:
+            result = self._command_long(179, 0.0, 0.0, 0.0, 0.0,
+                                        float(latitude), float(longitude), float(altitude_m),
+                                        name="set_home")
+        if result.success:
+            # Home was only ever asked for until the first answer, so after a SET_HOME
+            # the app kept showing -- and preflight kept checking -- the old one.
+            self._request_home_position()
+        return result
 
     def emergency_stop(self) -> CommandResult:
         """Cut the motors immediately.
@@ -1216,11 +1224,28 @@ class MissionPlannerDroneClient:
             return CommandResult(False, "set_flight_mode", str(exc))
 
     def start_mission(self) -> CommandResult:
-        # MAV_CMD_MISSION_START = 300
+        """Arm if needed, then MAV_CMD_MISSION_START (300).
+
+        A start the vehicle refuses must not leave behind the arming this command did.
+        ArduCopter arms, then refuses AUTO with no usable mission ("Mode change to AUTO
+        failed: init failed"); the start used to report the refusal and leave the motors
+        armed on the ground, spinning under a pilot who had just been told nothing
+        happened. Motors this command armed are disarmed again on refusal.
+        """
+        with self._lock:
+            was_armed = bool(self._latest_telemetry.armed)
         arm = self._command_long(400, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, name="arm")
         if not arm.success:
             return arm
-        return self._command_long(300, 0.0, 0.0, name="start_mission")
+        started = self._command_long(300, 0.0, 0.0, name="start_mission")
+        if started.success or was_armed:
+            return started
+        disarm = self._command_long(400, 0.0, 0.0, name="disarm")
+        started.message += (" The motors this command armed were disarmed again."
+                            if disarm.success else
+                            f" The motors this command armed are STILL ARMED: disarm "
+                            f"refused ({disarm.message}).")
+        return started
 
     def pause_mission(self) -> CommandResult:
         # MAV_CMD_DO_PAUSE_CONTINUE = 193, p1=0 to pause
