@@ -5871,7 +5871,18 @@ class Api:
             mission_summary["issues"] = (
                 ([] if mission_summary.get("waypoints") else ["error: the plan has no waypoints"])
                 + [f"warning: {w}" for w in getattr(self._session, "mission_plan_warnings", [])])
-            geofence, no_fly = plan_airspace(plan_dict, self._session.no_fly_polygons)
+            # Where the aircraft is (its home once set): it has to be inside the fence too.
+            launch = None
+            try:
+                tel = client.get_telemetry()
+                if getattr(tel, "home_set", False):
+                    launch = (float(tel.home_lon), float(tel.home_lat))
+                elif int(getattr(tel, "gps_fix", 0) or 0) >= 3:
+                    launch = (float(tel.longitude), float(tel.latitude))
+            except Exception:  # noqa: BLE001 - no vehicle is not a geofence failure
+                launch = None
+            geofence, no_fly = plan_airspace(plan_dict, self._session.no_fly_polygons,
+                                             launch_lonlat=launch)
 
         report = run_preflight(
             project_id=str(self._session.project_id()),

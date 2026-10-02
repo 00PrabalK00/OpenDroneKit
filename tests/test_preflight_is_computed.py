@@ -49,6 +49,24 @@ class TestTheGeometryIsComputed:
         assert verdict["mission_inside"] is False and verdict["points_outside"] == 1
         assert check_geofence(None, verdict).severity == SEVERITY_BLOCK
 
+    def test_a_launch_point_outside_the_uploaded_fence_blocks(self):
+        """ArduCopter refused to arm outside the enabled fence while preflight passed."""
+        from core.preflight import plan_airspace
+
+        plan = {"world_poses": [{"lon": -81.750, "lat": 41.304, "alt_m": 40.0},
+                                {"lon": -81.749, "lat": 41.305, "alt_m": 40.0}],
+                "safety_constraints": {"geofence": AOI}}
+        inside, _ = plan_airspace(plan, launch_lonlat=(-81.7500, 41.3045))
+        assert inside["launch_inside"] is True
+        assert check_geofence(None, inside).severity == SEVERITY_PASS
+        # Within the uploaded fence's 5 m margin still counts as inside: that is the fence.
+        edge, _ = plan_airspace(plan, launch_lonlat=(-81.75203, 41.3045))
+        assert edge["launch_inside"] is True
+        outside, _ = plan_airspace(plan, launch_lonlat=(-81.7600, 41.3045))
+        assert outside["launch_inside"] is False and outside["mission_inside"] is True
+        result = check_geofence(None, outside)
+        assert result.severity == SEVERITY_BLOCK and "outside the geofence" in result.message
+
     def test_a_leg_crossing_a_zone_conflicts_even_with_no_point_inside(self):
         zone = [[-81.7505, 41.3035], [-81.7495, 41.3035], [-81.7495, 41.3045], [-81.7505, 41.3045]]
         leg = [(-81.7515, 41.3040), (-81.7485, 41.3040)]

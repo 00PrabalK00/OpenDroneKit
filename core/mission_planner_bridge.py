@@ -381,6 +381,9 @@ class MissionPlannerDroneClient:
         # only a result code; ArduPilot puts the reason ("Only 650 items are supported")
         # in a STATUSTEXT, and a rejection that drops it leaves the pilot guessing.
         self._transfer_texts: list[str] | None = None
+        # The same for a command: ArduPilot answers a refused arm with MAV_RESULT_FAILED
+        # and says why ("Arm: GPS 1: Bad fix") only in a STATUSTEXT.
+        self._command_texts: list[str] | None = None
         self._telemetry_subscribers: list[Any] = []
         # COMMAND_ACKs, forwarded by the listener to whichever command is waiting.
         # Commands are serialised so an ack cannot be claimed by the wrong one.
@@ -494,9 +497,11 @@ class MissionPlannerDroneClient:
         if t == "COMMAND_ACK":
             self._ack_queue.put(msg)
         if t == "STATUSTEXT":
-            texts = self._transfer_texts
-            if texts is not None and int(getattr(msg, "severity", 6)) <= 4:
-                texts.append(str(getattr(msg, "text", "")).strip(_NUL).strip())
+            if int(getattr(msg, "severity", 6)) <= 4:
+                text = str(getattr(msg, "text", "")).strip(_NUL).strip()
+                for texts in (self._transfer_texts, self._command_texts):
+                    if texts is not None:
+                        texts.append(text)
             self._publish({"type": "statustext", "severity": int(getattr(msg, "severity", 6)),
                            "text": str(getattr(msg, "text", "")).strip("\x00")})
         with self._lock:
@@ -986,43 +991,54 @@ class MissionPlannerDroneClient:
                     self._ack_queue.get_nowait()
                 except queue.Empty:
                     break
+            self._command_texts = []
             try:
-                p = list(params) + [0.0] * (7 - len(params))
-                conn.mav.command_long_send(
-                    conn.target_system, conn.target_component, command, 0,
-                    *p[:7],
-                )
-            except Exception as exc:
-                return CommandResult(False, name, str(exc))
+                return self._await_command_ack(conn, command, params, name)
+            finally:
+                self._command_texts = None
 
-            timeout = max(0.1, float(self.command_ack_timeout_s))
-            deadline = time.monotonic() + timeout
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return CommandResult(
-                        False, name,
-                        f"Sent, but the vehicle did not acknowledge it within {timeout:.0f} s. "
-                        "It may not have been received -- check the aircraft before "
-                        "assuming it acted.",
-                        ack=ACK_NONE,
-                    )
-                try:
-                    ack = self._ack_queue.get(timeout=remaining)
-                except queue.Empty:
-                    continue
-                if int(getattr(ack, "command", -1)) != int(command):
-                    continue
-                code = int(getattr(ack, "result", -1))
-                label = MAV_RESULT_NAMES.get(code, f"result {code}")
-                if code == 0:
-                    return CommandResult(True, name, "Accepted by the vehicle.", ack=ACK_ACCEPTED)
-                if code == 5:
-                    return CommandResult(True, name,
-                                         "Accepted; the vehicle reports it in progress.",
-                                         ack=ACK_IN_PROGRESS)
-                return CommandResult(False, name, f"The vehicle answered: {label}.",
-                                     ack=ACK_DENIED)
+    def _await_command_ack(self, conn, command: int, params: tuple, name: str) -> CommandResult:
+        """Send one COMMAND_LONG and wait for its ack. Runs under _command_lock."""
+        try:
+            p = list(params) + [0.0] * (7 - len(params))
+            conn.mav.command_long_send(
+                conn.target_system, conn.target_component, command, 0,
+                *p[:7],
+            )
+        except Exception as exc:
+            return CommandResult(False, name, str(exc))
+
+        timeout = max(0.1, float(self.command_ack_timeout_s))
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return CommandResult(
+                    False, name,
+                    f"Sent, but the vehicle did not acknowledge it within {timeout:.0f} s. "
+                    "It may not have been received -- check the aircraft before "
+                    "assuming it acted.",
+                    ack=ACK_NONE,
+                )
+            try:
+                ack = self._ack_queue.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if int(getattr(ack, "command", -1)) != int(command):
+                continue
+            code = int(getattr(ack, "result", -1))
+            label = MAV_RESULT_NAMES.get(code, f"result {code}")
+            if code == 0:
+                return CommandResult(True, name, "Accepted by the vehicle.", ack=ACK_ACCEPTED)
+            if code == 5:
+                return CommandResult(True, name,
+                                     "Accepted; the vehicle reports it in progress.",
+                                     ack=ACK_IN_PROGRESS)
+            time.sleep(0.2)  # the reason may trail the ACK on the link
+            said = "; ".join(dict.fromkeys(t for t in (self._command_texts or []) if t))
+            return CommandResult(False, name, f"The vehicle answered: {label}."
+                                 + (f" It said: {said}." if said else ""),
+                                 ack=ACK_DENIED)
 
     # ── Flight commands (the set a ground station is expected to offer) ──────
 

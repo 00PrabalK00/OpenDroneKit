@@ -318,6 +318,17 @@ def check_geofence(mission_summary: dict[str, Any] | None, geofence: dict[str, A
                            "A geofence exists but the path was not checked against it.",
                            requires_manual=True,
                            fix_action="Confirm the path stays inside the fence.")
+    if geofence.get("launch_inside") is False:
+        # Found against ArduCopter: with the fence enabled it refuses to arm outside it
+        # ("vehicle outside Polygon fence"), and with it disabled the climb-out to the
+        # first waypoint is unfenced. A path entirely inside the fence used to pass.
+        return CheckResult("geofence", "Geofence", SEVERITY_BLOCK,
+                           "The aircraft is outside the geofence it will be given: the "
+                           "autopilot refuses to arm with the fence enabled, and the leg to "
+                           "the first waypoint is not fenced.",
+                           fix_action="Launch from inside the area, or draw the area to "
+                                      "include the launch point.",
+                           details={k: v for k, v in geofence.items() if k != "polygon"})
     if inside:
         return CheckResult("geofence", "Geofence", SEVERITY_PASS,
                            f"All {geofence.get('points_checked', 'planned')} path points "
@@ -665,15 +676,17 @@ def assess_no_fly_zones(points: list[tuple[float, float]],
     return results
 
 
-def plan_airspace(mission: Any, extra_no_fly: Iterable[Any] | None = None
+def plan_airspace(mission: Any, extra_no_fly: Iterable[Any] | None = None,
+                  launch_lonlat: Iterable[float] | None = None,
                   ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """The geofence and no-fly assessments for a plan, computed from its own geometry.
 
     Returns ``(geofence, no_fly_zones)`` in the shape run_preflight takes. The fence is
     the plan's inclusion polygon; the zones are the plan's exclusions plus any the
-    caller adds (the zones drawn in the app).
+    caller adds (the zones drawn in the app). ``launch_lonlat`` -- where the aircraft
+    is -- is checked against the inclusion fence exactly as it is uploaded.
     """
-    from mission.exporters import _plan_dict
+    from mission.exporters import _plan_dict, fence_rings
 
     plan = _plan_dict(mission)
     constraints = plan.get("safety_constraints") or {}
@@ -690,4 +703,11 @@ def plan_airspace(mission: Any, extra_no_fly: Iterable[Any] | None = None
         if key(polygon) not in seen:
             seen.add(key(polygon))
             zones.append(polygon)
-    return assess_geofence(points, fence), assess_no_fly_zones(points, zones)
+    geofence = assess_geofence(points, fence)
+    if geofence is not None and launch_lonlat is not None:
+        launch = tuple(float(v) for v in list(launch_lonlat)[:2])
+        uploaded = [ring for inclusion, ring in fence_rings(plan) if inclusion]
+        if uploaded and len(launch) == 2:
+            geofence["launch_inside"] = _inside(launch, _ring(uploaded[0]))
+            geofence["launch_lonlat"] = list(launch)
+    return geofence, assess_no_fly_zones(points, zones)
