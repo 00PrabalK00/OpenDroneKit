@@ -93,6 +93,11 @@ class DroneTelemetry:
             "link_quality_pct": rounded(self.link_quality_pct, 1),
             "timestamp": self.timestamp,
         }
+        present = int((self.raw or {}).get("sensors_present", 0) or 0)
+        if present & (1 << 20):  # MAV_SYS_STATUS_GEOFENCE: the vehicle has a fence
+            # Whether the uploaded fence is actually enforced, as the vehicle reports it.
+            payload["geofence_enabled"] = bool(
+                int((self.raw or {}).get("sensors_enabled", 0) or 0) & (1 << 20))
         if self.home_set:
             # Where RTL will fly to. Reported only once the vehicle has said: a home of
             # 0.0, 0.0 is Null Island, not "unknown". It was never exported at all, so

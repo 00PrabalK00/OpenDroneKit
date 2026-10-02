@@ -213,6 +213,19 @@ class TestMissionUpload:
         assert len(vehicle.stored[1]) == len(AOI)
         assert api.check_interrupted_flight()["recovered"] is True
 
+    def test_rally_points_the_operator_placed_are_uploaded(self, api, vehicles):
+        """Nothing could place a rally point, so every upload carried none."""
+        vehicle, uri = vehicles()
+        connect(api, uri)
+        plan(api)
+        lon, lat = AOI[0][0], AOI[0][1]
+        assert api.set_rally_points([[lon, lat, 30.0], {"lon": lon, "lat": lat}])["count"] == 2
+        assert api.set_rally_points([[200.0, 0.0]])["ok"] is False
+        result = api.upload_mission()
+        assert result["ok"] is True and result["upload"]["rally"]["success"] is True, result
+        assert [item.command for item in vehicle.stored[2]] == [5100, 5100]
+        assert vehicle.stored[2][0].z == pytest.approx(30.0)
+
     def test_a_rejected_upload_is_a_failure(self, api, vehicles):
         """ok:true over MISSION_ACK 'generic error' made both UIs say 'Mission uploaded'."""
         _, uri = vehicles(reject_upload=True)

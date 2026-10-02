@@ -139,6 +139,8 @@ class AppSession:
         # it: a plan the planner itself qualified is not simply "validated".
         self.mission_plan_warnings: list[str] = []
         self.no_fly_polygons: list[list[list[float]]] = []
+        # Rally / emergency landing points the operator placed: {lon, lat, alt_m}.
+        self.rally_points: list[dict[str, float]] = []
         # The last capture match (Api.match_captures), read by Request Reflight.
         self.capture_report: dict[str, Any] | None = None
         self.terrain_source_path: str = ""
@@ -200,6 +202,7 @@ class AppSession:
         # last one's site.
         self.aoi_polygon = []
         self.no_fly_polygons = []
+        self.rally_points = []
         self.capture_report = None
         # Clearing is right -- the old project's layers are not this one's -- but leaving
         # it there meant opening a project with a finished reconstruction showed an empty

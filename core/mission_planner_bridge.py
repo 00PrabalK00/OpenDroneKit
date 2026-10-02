@@ -71,6 +71,9 @@ MAV_RESULT_NAMES = {
     6: "cancelled",
 }
 
+# MAV_SYS_STATUS_SENSOR bit for the geofence in SYS_STATUS's present/enabled/health.
+MAV_SYS_STATUS_GEOFENCE = 1 << 20
+
 _NUL = chr(0)  # STATUSTEXT pads its fixed-length text with NULs
 
 # SYS_STATUS sentinels for "this vehicle has no such sensor".
@@ -1153,6 +1156,40 @@ class MissionPlannerDroneClient:
             return self._command_long(command, *params, name="camera")
 
         return CameraController(send, capabilities)
+
+    def _set_geofence(self, enabled: bool, timeout_s: float = 4.0) -> CommandResult:
+        """MAV_CMD_DO_FENCE_ENABLE (207), confirmed against SYS_STATUS.
+
+        Uploading a fence does not enforce it: ArduPilot ships with FENCE_ENABLE=0, so
+        the polygon the app uploaded sat on the vehicle doing nothing unless someone
+        enabled it from another ground station. The ack says the command was taken; the
+        geofence bit of SYS_STATUS's enabled sensors says the fence is actually on.
+        """
+        name = "fence_enable" if enabled else "fence_disable"
+        result = self._command_long(207, 1.0 if enabled else 0.0, name=name)
+        if not result.success:
+            return result
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            with self._lock:
+                raw = dict(self._latest_telemetry.raw or {})
+            if raw.get("sensors_present", 0) & MAV_SYS_STATUS_GEOFENCE:
+                if bool(raw.get("sensors_enabled", 0) & MAV_SYS_STATUS_GEOFENCE) == enabled:
+                    state = "enabled" if enabled else "disabled"
+                    return CommandResult(True, name, f"Geofence {state}; the vehicle reports it "
+                                         f"{state}.", ack=result.ack)
+            time.sleep(0.1)
+        return CommandResult(
+            False, name,
+            "The vehicle accepted the command but does not report the geofence as "
+            f"{'enabled' if enabled else 'disabled'}. Check FENCE_TYPE and the uploaded fence.",
+            ack=result.ack)
+
+    def enable_geofence(self) -> CommandResult:
+        return self._set_geofence(True)
+
+    def disable_geofence(self) -> CommandResult:
+        return self._set_geofence(False)
 
     def loiter(self) -> CommandResult:
         """Hold the current position."""

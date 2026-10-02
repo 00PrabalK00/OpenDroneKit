@@ -454,6 +454,40 @@ class Api:
         return ok(count=len(cleaned))
 
     @guard
+    def set_rally_points(self, points: list[Any] | None) -> dict[str, Any]:
+        """Rally (emergency landing) points, uploaded beside the mission.
+
+        Upload Mission always promised "the mission, geofence and rally points", and the
+        exporter could write rally items -- but nothing could ever place one: the planner's
+        constraints have no rally field, so every upload carried none. Points are
+        [lon, lat] or [lon, lat, alt_m] (altitude above home; the plan's RTH altitude
+        when omitted), or {lon, lat, alt_m}. An empty list clears them.
+        """
+        cleaned: list[dict[str, float]] = []
+        for point in points or []:
+            if isinstance(point, dict):
+                lon, lat, alt = point.get("lon"), point.get("lat"), point.get("alt_m")
+            elif isinstance(point, (list, tuple)) and len(point) >= 2:
+                lon, lat = point[0], point[1]
+                alt = point[2] if len(point) >= 3 else None
+            else:
+                return fail(f"A rally point is [lon, lat] or [lon, lat, alt_m], not {point!r}.")
+            try:
+                lon, lat = float(lon), float(lat)
+                alt = None if alt in (None, "") else float(alt)
+            except (TypeError, ValueError):
+                return fail(f"A rally point needs numeric lon/lat/alt_m: {point!r}.")
+            if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+                return fail(f"Rally point {lon}, {lat} is not a longitude, latitude pair.")
+            entry = {"lon": lon, "lat": lat}
+            if alt is not None:
+                entry["alt_m"] = alt
+            cleaned.append(entry)
+        self._session.rally_points = cleaned
+        self._session.audit("rally_points_set", {"count": len(cleaned)})
+        return ok(count=len(cleaned), rally_points=cleaned)
+
+    @guard
     def measure_geometry(self, coordinates_lonlat: list[list[float]],
                          kind: str = "distance") -> dict[str, Any]:
         """Length or area of a shape drawn on the map, in metres on the ground.
@@ -5599,7 +5633,13 @@ class Api:
         plan = self._session.mission_plan_dict
         items = [item.to_dict() for item in exporters.build_mission_items(plan)]
         fence = [item.to_dict() for item in exporters.build_fence_items(plan)]
-        rally = [item.to_dict() for item in exporters.build_rally_items(plan)]
+        rally_plan = plan
+        if self._session.rally_points:
+            # The operator's rally points, at the plan's RTH altitude unless given one.
+            constraints = dict(plan.get("safety_constraints") or {})
+            constraints["rally_points"] = list(self._session.rally_points)
+            rally_plan = {**plan, "safety_constraints": constraints}
+        rally = [item.to_dict() for item in exporters.build_rally_items(rally_plan)]
 
         manager = self._session.flight_manager
         logged = manager.active_session() is not None
@@ -5704,6 +5744,9 @@ class Api:
             "loiter": "loiter",
             "emergency_stop": "emergency_stop",
             "set_home": "set_home",
+            # The uploaded fence is only enforced once enabled on the vehicle.
+            "fence_enable": "enable_geofence",
+            "fence_disable": "disable_geofence",
         }
         method_name = mapping.get(str(command).lower())
         if method_name is None:
