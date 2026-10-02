@@ -497,6 +497,19 @@ class MAVSDKDroneClient:
     # the 10 s the whole connect used to get reported "no vehicle answered" about a PX4
     # that was streaming the whole time.
     SERVER_START_TIMEOUT_S = 60.0
+    # How long mavsdk_server waits for each MAVLink acknowledgement (its default is
+    # 0.5 s). On a loaded ground station a real PX4's COMMAND_ACKs arrived later than
+    # that: mavsdk_server logged "Received ack for not-existing command" and a resume
+    # PX4 had carried out was reported as failed. A telemetry radio is slower still.
+    MAVLINK_TIMEOUT_S = 2.0
+    # How long a mode command whose acknowledgement never came is checked against the
+    # mode the vehicle then reports.
+    MODE_CONFIRM_S = 5.0
+    # How long after an upload a refused Start is tried again. PX4 checks a mission
+    # (and checks it again when the fence or a parameter changes) before it will enter
+    # MISSION; a Start sent in that window was refused ("Mission start denied! No valid
+    # mission") on a loaded machine, a second after PX4 had accepted the upload.
+    PX4_MISSION_SETTLE_S = 10.0
     # The flight stack mission items are written for (mission.exporters).
     autopilot = "px4"
 
@@ -512,6 +525,8 @@ class MAVSDKDroneClient:
         self._mission_raw: Any = None
         # Items in the flight plan the vehicle holds, as this link uploaded or read it.
         self._mission_total: int | None = None
+        # monotonic time of the last upload the vehicle accepted (mission, fence, rally).
+        self._last_upload = float("-inf")
 
     # -- event loop ---------------------------------------------------------
 
@@ -606,6 +621,9 @@ class MAVSDKDroneClient:
             # been heard. Without this a link with nothing on the other end would be
             # reported as connected.
             self._run(self._await_vehicle(), timeout=self.CONNECT_TIMEOUT_S)
+            set_timeout = getattr(getattr(self._drone, "core", None), "set_mavlink_timeout", None)
+            if set_timeout is not None:
+                self._run(set_timeout(self.MAVLINK_TIMEOUT_S))
         except Exception as exc:  # noqa: BLE001
             self._stop_loop()
             reason = str(exc) or ("no vehicle answered within "
@@ -797,6 +815,7 @@ class MAVSDKDroneClient:
         except Exception as exc:  # noqa: BLE001 - MissionRawError carries the reason
             return CommandResult(False, name, f"Vehicle rejected the upload: {exc}", ack=ACK_DENIED)
         # mission_raw.upload_* resolves only on the vehicle's MISSION_ACK.
+        self._last_upload = time.monotonic()
         if mission_type == 0:
             # Progress is shown against the plan from the moment the vehicle holds it;
             # MAVSDK's mission_progress only speaks once the mission is running.
@@ -878,7 +897,13 @@ class MAVSDKDroneClient:
         try:
             self._run(target(*args))
         except Exception as exc:  # noqa: BLE001 - ActionError / MissionError carry the reason
-            return CommandResult(False, name, str(exc) or type(exc).__name__, ack=ACK_DENIED)
+            text = str(exc) or type(exc).__name__
+            if text.upper().startswith("TIMEOUT") or isinstance(exc, TimeoutError):
+                # Silence is not a refusal: the vehicle may well have acted.
+                return CommandResult(
+                    False, name, "Sent, but the vehicle did not acknowledge it in time. It "
+                    f"may still have acted -- check the aircraft. ({text})", ack=ACK_NONE)
+            return CommandResult(False, name, text, ack=ACK_DENIED)
         # MAVSDK's action and mission calls resolve on the vehicle's COMMAND_ACK, so a
         # call that returned is an acknowledged one, not merely a transmitted one.
         return CommandResult(True, name, done, ack=ACK_ACCEPTED)
@@ -898,7 +923,24 @@ class MAVSDKDroneClient:
         return self._call("takeoff", "action", "takeoff", done=f"Taking off to {altitude_m:g} m.")
 
     def land(self) -> CommandResult:
-        return self._call("land", "action", "land", done="Landing.")
+        return self._mode_command("land", "action", "land", "LAND", "Landing.")
+
+    def set_return_altitude(self, altitude_m: float) -> CommandResult:
+        """PX4's RTL_RETURN_ALT, set and read back, so RTL climbs to what the plan says."""
+        name = "set_return_altitude"
+        result = self._call(name, "action", "set_return_to_launch_altitude",
+                            float(altitude_m))
+        if not result.success:
+            return result
+        try:
+            held = float(self._run(self._drone.action.get_return_to_launch_altitude()))
+        except Exception as exc:  # noqa: BLE001 - ActionError carries the reason
+            return CommandResult(False, name, f"Set, but it could not be read back: {exc}")
+        if abs(held - float(altitude_m)) > 0.01:
+            return CommandResult(False, name, f"Asked for {altitude_m:g} m; the vehicle "
+                                 f"holds {held:g} m.", ack=ACK_DENIED)
+        return CommandResult(True, name, f"Return altitude {held:g} m on the vehicle.",
+                             ack=ACK_ACCEPTED)
 
     def emergency_stop(self) -> CommandResult:
         return self._call("emergency_stop", "action", "kill", done="Motors killed.")
@@ -914,8 +956,17 @@ class MAVSDKDroneClient:
         """
         with self._lock:
             was_armed = bool(self._telemetry.armed)
-        started = self._call("start_mission", "mission", "start_mission",
-                             done="Mission started.")
+        started = self._mode_command("start_mission", "mission", "start_mission", "AUTO",
+                                     "Mission started.")
+        # PX4 refuses MISSION while it is still checking a just-uploaded plan; MAVSDK
+        # gives no reason with the denial, so a refusal inside the settle window is
+        # tried again until the window closes.
+        settle_until = self._last_upload + self.PX4_MISSION_SETTLE_S
+        while (not started.success and started.ack == ACK_DENIED
+               and time.monotonic() < settle_until):
+            time.sleep(1.0)
+            started = self._mode_command("start_mission", "mission", "start_mission",
+                                         "AUTO", "Mission started.")
         if not started.success or was_armed:
             return started
         armed = self._call("start_mission", "action", "arm",
@@ -925,17 +976,42 @@ class MAVSDKDroneClient:
                              f"still on the ground: {armed.message}")
         return armed
 
+    def _mode_command(self, name: str, plugin: str, method: str, expected: str,
+                      done: str) -> CommandResult:
+        """A command that puts the vehicle in a mode; an unacknowledged one is checked.
+
+        When no acknowledgement arrives, the vehicle's own reported mode decides: against
+        a real PX4 a resume whose ack came late was reported as failed while PX4 flew on
+        with the mission.
+        """
+        result = self._call(name, plugin, method, done=done)
+        if result.success or result.ack != ACK_NONE:
+            return result
+        deadline = time.monotonic() + self.MODE_CONFIRM_S
+        while time.monotonic() < deadline:
+            with self._lock:
+                current = (self._telemetry.flight_mode or "").upper()
+            if current == expected:
+                return CommandResult(True, name, f"{done} No acknowledgement arrived; the "
+                                     f"vehicle reports {expected}.", ack=ACK_NONE)
+            time.sleep(0.1)
+        return result
+
     def pause_mission(self) -> CommandResult:
-        return self._call("pause_mission", "mission", "pause_mission", done="Mission paused.")
+        return self._mode_command("pause_mission", "mission", "pause_mission", "LOITER",
+                                  "Mission paused.")
 
     def resume_mission(self) -> CommandResult:
-        return self._call("resume_mission", "mission", "start_mission", done="Mission resumed.")
+        return self._mode_command("resume_mission", "mission", "start_mission", "AUTO",
+                                  "Mission resumed.")
 
     def return_to_home(self) -> CommandResult:
-        return self._call("return_to_home", "action", "return_to_launch", done="RTH triggered.")
+        return self._mode_command("return_to_home", "action", "return_to_launch", "RTL",
+                                  "RTH triggered.")
 
     def abort_mission(self) -> CommandResult:
-        return self._call("abort_mission", "action", "hold", done="Mission aborted — hold mode.")
+        return self._mode_command("abort_mission", "action", "hold", "LOITER",
+                                  "Mission aborted — hold mode.")
 
     def loiter(self) -> CommandResult:
         return self.set_flight_mode("HOLD")

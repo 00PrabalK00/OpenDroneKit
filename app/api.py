@@ -5680,6 +5680,18 @@ class Api:
         # Fence and rally, when the plan has them and the driver can carry them. The
         # docstring always promised these; the call never made them.
         problems: list[str] = []
+
+        # The plan's return altitude, on the vehicle. A mission's RETURN_TO_LAUNCH item
+        # carries no altitude any autopilot reads: PX4 returns at its own RTL_RETURN_ALT,
+        # so a plan with RTH 25 m returned from a real PX4 (v1.15.4 SITL) at 30 m, and a
+        # plan that chose a higher RTH to clear obstacles would have come home lower.
+        rth = (plan.get("safety_constraints") or {}).get("rth_altitude_m")
+        setter = getattr(client, "set_return_altitude", None)
+        if autopilot == "px4" and rth is not None and setter is not None:
+            result = run("set_return_altitude", lambda: setter(float(rth)))
+            report["return_altitude"] = _command_payload(result, 0)
+            if not report["return_altitude"]["success"]:
+                problems.append("return altitude: " + report["return_altitude"]["message"])
         for key, entries, method, clear in (
                 ("fence", fence, "upload_geofence", "clear_geofence"),
                 ("rally", rally, "upload_rally_points", "clear_rally_points")):

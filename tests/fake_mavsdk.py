@@ -59,9 +59,14 @@ class FakePX4:
         self.stored: dict[int, list[MissionItem]] = {0: [], 1: [], 2: []}
         self.reject_upload = False
         self.deny_actions: set[str] = set()
+        # Carried out, but the acknowledgement never reaches the SDK (a late ACK).
+        self.unacked_actions: set[str] = set()
+        # Refused this many more times, then accepted (PX4 still checking a new plan).
+        self.deny_times: dict[str, int] = {}
         self.ignore_mode_for: set[str] = set()
         self.calls: list[str] = []
         self.battery_remaining = 64.0  # MAVSDK 2.x: percent
+        self.return_altitude_m = 60.0  # PX4's RTL_RETURN_ALT default
 
 
 def build_module(vehicle: FakePX4, version: str = "2.8.0") -> types.ModuleType:
@@ -109,13 +114,21 @@ def build_module(vehicle: FakePX4, version: str = "2.8.0") -> types.ModuleType:
         def connection_state(self):
             return stream(lambda: types.SimpleNamespace(is_connected=True))
 
+        async def set_mavlink_timeout(self, timeout_s):
+            vehicle.calls.append(f"mavlink_timeout:{timeout_s:g}")
+
     def action_call(name: str, effect=None):
         async def run(*args: Any) -> None:
             vehicle.calls.append(name)
             if name in vehicle.deny_actions:
                 raise ActionError(f"COMMAND_DENIED: {name}")
+            if vehicle.deny_times.get(name, 0) > 0:
+                vehicle.deny_times[name] -= 1
+                raise ActionError(f"COMMAND_DENIED: {name}")
             if effect is not None and name not in vehicle.ignore_mode_for:
                 effect(*args)
+            if name in vehicle.unacked_actions:
+                raise ActionError("TIMEOUT: 'Timeout'")
         return run
 
     def set_mode(mode: str):
@@ -130,6 +143,13 @@ def build_module(vehicle: FakePX4, version: str = "2.8.0") -> types.ModuleType:
         kill = staticmethod(action_call("kill", lambda: setattr(vehicle, "armed", False)))
         set_takeoff_altitude = staticmethod(action_call("set_takeoff_altitude"))
         takeoff = staticmethod(action_call("takeoff", set_mode("TAKEOFF")))
+        set_return_to_launch_altitude = staticmethod(action_call(
+            "set_return_to_launch_altitude",
+            lambda altitude: setattr(vehicle, "return_altitude_m", float(altitude))))
+
+        @staticmethod
+        async def get_return_to_launch_altitude():
+            return vehicle.return_altitude_m
 
     class Mission:
         start_mission = staticmethod(action_call("start_mission", set_mode("MISSION")))

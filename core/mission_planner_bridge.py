@@ -423,6 +423,8 @@ class MissionPlannerDroneClient:
         # itself without stealing messages from telemetry. Protocol traffic is
         # forwarded here instead and consumed by whichever transfer is in flight.
         self._protocol_queue: queue.Queue = queue.Queue()
+        # PARAM_VALUE, for a parameter write that waits for the vehicle's echo.
+        self._param_queue: queue.Queue = queue.Queue()
         self._transfer_lock = threading.Lock()
         # What the autopilot says while a transfer is in flight. A MISSION_ACK carries
         # only a result code; ArduPilot puts the reason ("Only 650 items are supported")
@@ -559,6 +561,8 @@ class MissionPlannerDroneClient:
             self._protocol_queue.put(msg)
         if t == "COMMAND_ACK":
             self._ack_queue.put(msg)
+        if t == "PARAM_VALUE":
+            self._param_queue.put(msg)
         if t == "STATUSTEXT":
             if int(getattr(msg, "severity", 6)) <= 4:
                 text = str(getattr(msg, "text", "")).strip(_NUL).strip()
@@ -1269,6 +1273,55 @@ class MissionPlannerDroneClient:
         """Land at the current position. MAV_CMD_NAV_LAND = 21."""
         return self._command_long(21, name="land")
 
+    def set_return_altitude(self, altitude_m: float, timeout_s: float = 2.0) -> CommandResult:
+        """PX4's RTL_RETURN_ALT, written with PARAM_SET and confirmed by its PARAM_VALUE.
+
+        PX4 only: ArduPilot's equivalent (RTL_ALT, centimetres) is not written here.
+        """
+        name = "set_return_altitude"
+        if not self._px4():
+            return CommandResult(False, name, "Setting the return altitude is implemented "
+                                 "for PX4 (RTL_RETURN_ALT) only.")
+        try:
+            conn = self._ensure()
+        except AppError as exc:
+            return CommandResult(False, name, exc.user_message)
+        from pymavlink import mavutil
+
+        wanted = float(altitude_m)
+        held = None
+        for _ in range(3):
+            while True:
+                try:
+                    self._param_queue.get_nowait()
+                except queue.Empty:
+                    break
+            conn.mav.param_set_send(conn.target_system, conn.target_component,
+                                    b"RTL_RETURN_ALT", wanted,
+                                    mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                try:
+                    msg = self._param_queue.get(timeout=max(0.05, deadline - time.monotonic()))
+                except queue.Empty:
+                    break
+                param_id = getattr(msg, "param_id", "")
+                if isinstance(param_id, bytes):
+                    param_id = param_id.decode("ascii", "replace")
+                if str(param_id).strip(_NUL) == "RTL_RETURN_ALT":
+                    held = float(msg.param_value)
+                    break
+            if held is not None:
+                break
+        if held is None:
+            return CommandResult(False, name, "The vehicle did not confirm RTL_RETURN_ALT.",
+                                 ack=ACK_NONE)
+        if abs(held - wanted) > 0.01:
+            return CommandResult(False, name, f"Asked for {wanted:g} m; the vehicle holds "
+                                 f"{held:g} m.", ack=ACK_DENIED)
+        return CommandResult(True, name, f"Return altitude {held:g} m on the vehicle.",
+                             ack=ACK_ACCEPTED)
+
     def goto(self, latitude: float, longitude: float, altitude_m: float) -> CommandResult:
         """Fly to a position in GUIDED mode, as the vehicle confirms it.
 
@@ -1488,7 +1541,9 @@ class MissionPlannerDroneClient:
         base_mode, main_mode, sub_mode = entry
         sent = self._command_long(176, float(base_mode), float(main_mode), float(sub_mode),
                                   name="set_flight_mode")
-        if not sent.success or not verify:
+        # An unacknowledged request is settled by the mode the vehicle then reports: the
+        # ACK can be lost or late while the mode change itself happened.
+        if (not sent.success and sent.ack != ACK_NONE) or not verify:
             return sent
         expected = _PX4_MODE_NAMES.get(px4_name, px4_name)
         deadline = time.monotonic() + max(0.1, float(timeout_s))
@@ -1496,16 +1551,36 @@ class MissionPlannerDroneClient:
             with self._lock:
                 current = (self._latest_telemetry.flight_mode or "").upper()
             if current == expected:
-                return CommandResult(True, "set_flight_mode", f"Mode is {expected}.",
-                                     ack=sent.ack)
+                return CommandResult(True, "set_flight_mode", f"Mode is {expected}." + (
+                    "" if sent.success else " No acknowledgement arrived; the vehicle "
+                    "reports the mode."), ack=sent.ack)
             time.sleep(0.1)
+        if not sent.success:
+            return sent
         with self._lock:
             current = (self._latest_telemetry.flight_mode or "unknown").upper()
         return CommandResult(False, "set_flight_mode",
                              f"The vehicle accepted {expected} but did not enter it within "
                              f"{timeout_s:.0f} s; it is still in {current}.", ack=sent.ack)
 
+    # How long a PX4 Start refused with "No valid mission" is tried again. PX4 checks a
+    # plan after it is uploaded, and again when the fence or a parameter changes; a Start
+    # sent while it was still checking was refused on a loaded machine, a second after
+    # PX4 had accepted the upload (v1.15.4 SITL).
+    PX4_MISSION_SETTLE_S = 10.0
+
     def start_mission(self) -> CommandResult:
+        result = self._start_mission_once()
+        if not self._px4():
+            return result
+        deadline = time.monotonic() + self.PX4_MISSION_SETTLE_S
+        while (not result.success and "No valid mission" in result.message
+               and "STILL ARMED" not in result.message and time.monotonic() < deadline):
+            time.sleep(1.0)
+            result = self._start_mission_once()
+        return result
+
+    def _start_mission_once(self) -> CommandResult:
         """Arm if needed, then MAV_CMD_MISSION_START (300).
 
         A start the vehicle refuses must not leave behind the arming this command did.

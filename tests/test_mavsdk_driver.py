@@ -117,6 +117,27 @@ def test_the_mission_reads_back_in_the_frames_it_was_planned_in(api, px4):
     assert 47.39 < waypoint["lat"] < 47.40 and 8.54 < waypoint["lon"] < 8.55
 
 
+def test_the_upload_puts_the_plans_return_altitude_on_px4(api, px4):
+    """A mission's RTL item carries no altitude PX4 reads; PX4 returned at its own 30 m
+    from a plan that said 25 m (v1.15.4 SITL). RTL_RETURN_ALT is set and read back."""
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 50, "rth_altitude_m": 70,
+                             "max_altitude_m": 100})["ok"]
+    result = api.upload_mission()
+    assert result["ok"] is True, result
+    assert px4.return_altitude_m == pytest.approx(70.0)
+    assert result["upload"]["return_altitude"]["success"] is True
+
+
+def test_a_return_altitude_the_vehicle_refuses_fails_the_upload(api, px4):
+    px4.deny_actions.add("set_return_to_launch_altitude")
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 50})["ok"]
+    result = api.upload_mission()
+    assert result["ok"] is False and result.get("mission_uploaded") is True, result
+    assert "return altitude" in result["error"]
+
+
 def test_a_rejected_upload_is_a_failure(api, px4):
     px4.reject_upload = True
     api.set_aoi(AOI)
@@ -183,6 +204,48 @@ def test_disconnect_releases_the_sdk_on_its_own_event_loop(api, px4):
     api.disconnect_vehicle()
     stops = [c for c in px4.calls if c.startswith("stop_server:")]
     assert stops == ["stop_server:mavsdk-loop:True"], px4.calls
+
+
+def test_the_sdk_waits_long_enough_for_an_acknowledgement(api, px4):
+    """mavsdk_server's 0.5 s default lost a real PX4's late ACKs on a loaded machine."""
+    assert "mavlink_timeout:2" in px4.calls
+
+
+def test_a_resume_whose_ack_is_lost_is_confirmed_by_the_vehicles_mode(api, px4):
+    """PX4 resumed the mission; the ACK arrived after MAVSDK's timeout, and the app said
+    the resume had failed. The mode PX4 then reports settles it."""
+    px4.unacked_actions.add("start_mission")
+    result = api.vehicle_command("resume")
+    assert result["ok"] is True, result
+    assert result["result"]["ack"] == "none"
+    assert "No acknowledgement arrived" in result["result"]["message"]
+
+
+def test_an_unacknowledged_command_the_vehicle_did_not_carry_out_is_not_success(api, px4):
+    px4.unacked_actions.add("return_to_launch")
+    px4.ignore_mode_for.add("return_to_launch")
+    from core.drone import MAVSDKDroneClient
+
+    MAVSDKDroneClient.MODE_CONFIRM_S = 0.5
+    try:
+        result = api.vehicle_command("rtl")
+    finally:
+        MAVSDKDroneClient.MODE_CONFIRM_S = 5.0
+    assert result["ok"] is False, result
+    assert result["result"]["ack"] == "none"
+    assert "did not acknowledge" in result["result"]["message"]
+
+
+def test_a_start_refused_while_px4_checks_the_new_plan_is_tried_again(api, px4):
+    """A real PX4 refused MISSION a second after accepting the upload ("Mission start
+    denied! No valid mission"): it was still checking the plan. Start tries again."""
+    api.set_aoi(AOI)
+    assert api.plan_mission({"template": "grid", "altitude_m": 50})["ok"]
+    assert api.upload_mission()["ok"] is True
+    px4.deny_times["start_mission"] = 2
+    result = api.vehicle_command("start", {"override_preflight": True})
+    assert result["ok"] is True, result
+    assert px4.calls.count("start_mission") == 3 and px4.armed is True
 
 
 def test_start_enters_mission_then_arms(api, px4):
