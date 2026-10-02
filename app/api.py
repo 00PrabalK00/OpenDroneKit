@@ -266,7 +266,79 @@ class Api:
             caps["pymavlink"] = False
         caps["geo"] = geo.geo_capabilities()
         caps["platform"] = f"{platform.system()} {platform.release()}"
+        # Hardware present and inference providers usable, reported separately: an RTX
+        # card under the CPU build of onnxruntime accelerates nothing, and says so.
+        from core.gpu import detect_gpus
+
+        detection = detect_gpus()
+        caps["gpu_detection"] = detection
+        if not caps["gpu"]:
+            physical = [a for a in detection["adapters"] if a.get("vendor") != "Microsoft"]
+            caps["gpu"] = physical[0]["name"] if physical else ""
+        caps["gpu_summary"] = detection["summary"]
+        caps["installed_build"] = os.environ.get("ODK_INSTALLED") == "1"
         return ok(capabilities=caps)
+
+    # -- installed build: model weights and updates ------------------------
+
+    @guard
+    def model_downloads(self) -> dict[str, Any]:
+        """Which models are installed, which can be fetched, and why the rest cannot."""
+        from core.model_download import first_run_report
+
+        return ok(**first_run_report())
+
+    @guard
+    def download_model_weights(self, key: str) -> dict[str, Any]:
+        """Download one model and verify it against the registry's sha256 (a job)."""
+        from core.model_download import availability, download_model
+
+        info = availability(str(key))
+        if not info.get("downloadable"):
+            return fail(f"{key}: {info.get('reason')}")
+
+        def work(progress: Callable[[int, str], None], **_: Any) -> dict[str, Any]:
+            def report(url: str, done: int, total: int) -> None:
+                if total:
+                    progress(min(99, done * 100 // total), f"Downloading {key}")
+
+            result = download_model(str(key), progress=report)
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error"))
+            return result
+
+        return ok(job_id=self._jobs.submit("model_download", work), key=key)
+
+    @guard
+    def update_settings(self, opt_in: bool | None = None) -> dict[str, Any]:
+        """Read, or set, whether OpenDroneKit may check GitHub for a newer release."""
+        from core.settings import load_app_settings, save_app_settings
+        from core.updates import REPO, current_version
+
+        settings = load_app_settings()
+        if opt_in is not None:
+            settings.update_check_opt_in = bool(opt_in)
+            save_app_settings(settings)
+        return ok(opt_in=bool(settings.update_check_opt_in), repo=REPO,
+                  current=current_version())
+
+    @guard
+    def check_for_update(self, explicit: bool = False) -> dict[str, Any]:
+        """Opt-in (or explicitly requested) release check; contacts nothing otherwise."""
+        from core.updates import check_for_update
+
+        return ok(**check_for_update(explicit=bool(explicit)))
+
+    @guard
+    def download_update(self) -> dict[str, Any]:
+        """Fetch and sha256-verify the offered installer. It is never run automatically."""
+        from core.updates import check_for_update, download_update
+
+        offer = check_for_update(explicit=True)
+        if not offer.get("update_available"):
+            return fail(offer.get("reason", "No update available."), **offer)
+        result = download_update(offer)
+        return ok(**result) if result.get("ok") else fail(result["error"])
 
     @guard
     def rest_endpoints(self) -> dict[str, Any]:

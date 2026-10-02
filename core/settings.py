@@ -34,6 +34,9 @@ class AppSettings:
     # Folder of the DJI Thermal SDK the user downloaded under DJI's licence (not shipped).
     # The ODK_DJI_TSDK_DIR environment variable overrides it. See core/thermal_dji.py.
     dji_thermal_sdk_dir: str = ""
+    # Offline-first: OpenDroneKit asks GitHub for a newer release only when this is on.
+    # See core/updates.py. Updates are downloaded and verified, never installed silently.
+    update_check_opt_in: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -8,6 +8,7 @@ OS menu bar and a MapLibre GL map canvas.
     python main.py --ui cockpit    # the fourteen-workspace cockpit
     python main.py --debug         # with developer tools
     python main.py --check-deps    # verify requirements.txt is installed, then exit
+    python main.py --self-test     # headless start-up check (no window), JSON report
 """
 
 from __future__ import annotations
@@ -92,6 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         code, text = report()
         print(text)
         return code
+
+    if "--self-test" in args:
+        from app.selftest import main as self_test
+
+        return self_test()
 
     try:
         from app.shell import UsageError, main as shell_main
