@@ -19,6 +19,20 @@ from typing import Any, Callable, Protocol, runtime_checkable
 # display, the flight session's warning and the preflight checks all use this one value.
 TELEMETRY_STALE_AFTER_S = 3.0
 
+# MAV_STATE, from HEARTBEAT.system_status. ArduPilot reports CRITICAL while a failsafe
+# is active and EMERGENCY when it has lost control.
+MAV_STATE_CRITICAL = 5
+MAV_STATE_EMERGENCY = 6
+MAV_STATE_NAMES = {0: "uninit", 1: "boot", 2: "calibrating", 3: "standby", 4: "active",
+                   5: "critical", 6: "emergency", 7: "poweroff", 8: "flight_termination"}
+# MAV_BATTERY_CHARGE_STATE, from BATTERY_STATUS.charge_state.
+BATTERY_CHARGE_STATE_NAMES = {1: "ok", 2: "low", 3: "critical", 4: "emergency",
+                              5: "failed", 6: "unhealthy", 7: "charging"}
+BATTERY_FAILSAFE_STATES = {2, 3, 4, 5}
+# FENCE_BREACH, from FENCE_STATUS.breach_type.
+FENCE_BREACH_NAMES = {0: "none", 1: "minimum altitude", 2: "maximum altitude",
+                      3: "boundary"}
+
 @dataclass
 class DroneTelemetry:
     connected: bool = False
@@ -62,6 +76,45 @@ class DroneTelemetry:
         """Seconds since the vehicle last said anything."""
         return max(0.0, (time.time() if now is None else now) - float(self.timestamp or 0.0))
 
+    def _vehicle_state(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """What the vehicle says about its own failsafes, fence and GPS, when it said it.
+
+        Each field is the autopilot's own report (HEARTBEAT system_status, BATTERY_STATUS
+        charge_state, FENCE_STATUS, STATUSTEXT), never an inference from the numbers: a
+        battery failsafe fires on voltage while the percentage still reads 70 %.
+        """
+        out: dict[str, Any] = {}
+        if "system_status" in raw:
+            status = int(raw["system_status"])
+            out["system_status"] = MAV_STATE_NAMES.get(status, str(status))
+            out["failsafe"] = status in (MAV_STATE_CRITICAL, MAV_STATE_EMERGENCY)
+        if "battery_charge_state" in raw:
+            state = int(raw["battery_charge_state"])
+            if state:  # 0 is MAV_BATTERY_CHARGE_STATE_UNDEFINED: not reported
+                out["battery_state"] = BATTERY_CHARGE_STATE_NAMES.get(state, str(state))
+                out["battery_failsafe"] = state in BATTERY_FAILSAFE_STATES
+        fence = raw.get("fence_status")
+        if fence:
+            out["fence_breached"] = bool(fence.get("breach_status"))
+            out["fence_breach_count"] = int(fence.get("breach_count", 0))
+            if fence.get("breach_status"):
+                out["fence_breach_type"] = FENCE_BREACH_NAMES.get(
+                    int(fence.get("breach_type", 0)), str(fence.get("breach_type")))
+        gps_at = raw.get("gps_received_at")
+        if gps_at is not None and float(self.timestamp or 0.0) - float(gps_at) > TELEMETRY_STALE_AFTER_S:
+            # The rest of the link is alive but the GPS report has stopped. The last
+            # fix is not a fix now: a stale "3D" over a dead receiver is the one value
+            # that must not stay on screen.
+            out["gps_fix"] = 0
+            out["gps_stale"] = True
+        messages = raw.get("vehicle_messages") or []
+        if messages:
+            out["vehicle_messages"] = [
+                {"severity": m["severity"], "text": m["text"],
+                 "age_s": round(max(0.0, time.time() - float(m["time"])), 1)}
+                for m in messages[-10:]]
+        return out
+
     def to_dict(self) -> dict[str, Any]:
         """The telemetry, omitting anything the vehicle never reported.
 
@@ -98,6 +151,7 @@ class DroneTelemetry:
             # Whether the uploaded fence is actually enforced, as the vehicle reports it.
             payload["geofence_enabled"] = bool(
                 int((self.raw or {}).get("sensors_enabled", 0) or 0) & (1 << 20))
+        payload.update(self._vehicle_state(raw=self.raw or {}))
         if self.home_set:
             # Where RTL will fly to. Reported only once the vehicle has said: a home of
             # 0.0, 0.0 is Null Island, not "unknown". It was never exported at all, so

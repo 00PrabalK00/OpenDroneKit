@@ -7,7 +7,13 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from .drone import TELEMETRY_STALE_AFTER_S, DroneClient, DroneTelemetry
+from .drone import (
+    BATTERY_CHARGE_STATE_NAMES,
+    BATTERY_FAILSAFE_STATES,
+    TELEMETRY_STALE_AFTER_S,
+    DroneClient,
+    DroneTelemetry,
+)
 from .errors import AppError, ERR_PREFLIGHT_FAILED
 from .settings import DroneProfile, validate_safety_settings
 
@@ -189,6 +195,16 @@ def check_battery_status(
                            fix_action="Check the pack voltage by hand before flight.",
                            requires_manual=True)
     pct = float(telemetry.battery_pct)
+    charge_state = int((getattr(telemetry, "raw", None) or {}).get("battery_charge_state", 0) or 0)
+    if charge_state in BATTERY_FAILSAFE_STATES:
+        # The autopilot's own battery failsafe has fired (voltage or mAh), whatever the
+        # percentage says. Taking off into an active battery failsafe is an RTL on lift.
+        volts = f", {telemetry.battery_v:.2f} V" if telemetry.battery_v is not None else ""
+        return CheckResult("battery", "Battery", SEVERITY_BLOCK,
+                           f"The vehicle reports its battery "
+                           f"{BATTERY_CHARGE_STATE_NAMES.get(charge_state, charge_state)} "
+                           f"(battery failsafe) at {pct:.0f}%{volts}.",
+                           fix_action="Replace or charge the battery before flight.")
     if pct < critical_pct:
         return CheckResult("battery", "Battery", SEVERITY_BLOCK,
                            f"Battery critically low: {pct:.0f}%.",

@@ -37,6 +37,7 @@ from .drone import (
     ACK_DENIED,
     ACK_IN_PROGRESS,
     ACK_NONE,
+    TELEMETRY_STALE_AFTER_S,
     CommandResult,
     DroneTelemetry,
 )
@@ -88,6 +89,22 @@ MAVLINK_MSG_ID_HOME_POSITION = 242
 MAV_CMD_GET_HOME_POSITION = 410     # deprecated, still answered by older firmware
 MAV_CMD_REQUEST_MESSAGE = 512
 HOME_REQUEST_INTERVAL_S = 2.0
+
+# This client is the vehicle's ground station, so it says so once a second. ArduPilot's
+# GCS failsafe (FS_GCS_ENABLE) watches for HEARTBEATs from SYSID_MYGCS; a GCS that never
+# sends one is never "seen", so losing its link triggers nothing and the aircraft flies
+# on with nobody watching. Mission Planner and QGroundControl both send one at 1 Hz.
+GCS_HEARTBEAT_INTERVAL_S = 1.0
+MAV_TYPE_GCS = 6
+MAV_AUTOPILOT_INVALID = 8
+MAV_STATE_ACTIVE = 4
+
+# ArduCopter modes the vehicle refuses to arm in from a MAVLink arm command.
+_NOT_ARMABLE_ON_GROUND = {"RTL", "LAND", "SMART_RTL", "AUTO", "BRAKE", "AUTO_RTL",
+                          "FLIP", "AUTOTUNE", "THROW"}
+
+# How many of the vehicle's STATUSTEXT messages are kept for the operator to read.
+VEHICLE_MESSAGES_KEPT = 30
 
 _MISSION_RESULT_TEXT = {
     0: "accepted",
@@ -396,6 +413,7 @@ class MissionPlannerDroneClient:
         self._link_window: tuple[float, int, int] | None = None
         # monotonic time of the last HOME_POSITION request; asked again until it arrives.
         self._last_home_request = 0.0
+        self._last_gcs_heartbeat = 0.0
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -429,6 +447,7 @@ class MissionPlannerDroneClient:
                 )
             self._connected = True
             self._uri = connection_uri
+            self._send_gcs_heartbeat()
             self._request_home_position()
             self._start_listener()
         except AppError:
@@ -475,6 +494,8 @@ class MissionPlannerDroneClient:
                 msg = self._conn.recv_match(blocking=True, timeout=1.0)
                 if msg is not None:
                     self._absorb_message(msg)
+                if time.monotonic() - self._last_gcs_heartbeat >= GCS_HEARTBEAT_INTERVAL_S:
+                    self._send_gcs_heartbeat()
                 if (not self._latest_telemetry.home_set
                         and time.monotonic() - self._last_home_request >= HOME_REQUEST_INTERVAL_S):
                     self._request_home_position()
@@ -502,18 +523,41 @@ class MissionPlannerDroneClient:
                 for texts in (self._transfer_texts, self._command_texts):
                     if texts is not None:
                         texts.append(text)
-            self._publish({"type": "statustext", "severity": int(getattr(msg, "severity", 6)),
-                           "text": str(getattr(msg, "text", "")).strip("\x00")})
+            entry = {"time": time.time(), "severity": int(getattr(msg, "severity", 6)),
+                     "text": str(getattr(msg, "text", "")).strip(_NUL).strip()}
+            with self._lock:
+                # What the autopilot said, kept so the operator can read why it did what
+                # it did ("Battery 1 is low", "GCS Failsafe", "EKF variance"). These
+                # were published to subscribers and then lost: the API had no way to say
+                # why the aircraft had just switched itself to RTL.
+                kept = list(self._latest_telemetry.raw.get("vehicle_messages", ()))
+                kept.append(entry)
+                self._latest_telemetry.raw["vehicle_messages"] = kept[-VEHICLE_MESSAGES_KEPT:]
+            self._publish({"type": "statustext", "severity": entry["severity"],
+                           "text": entry["text"]})
         with self._lock:
             tel = self._latest_telemetry
             tel.connected = True
-            tel.timestamp = time.time()
+            now = time.time()
+            if now - float(tel.timestamp or 0.0) > TELEMETRY_STALE_AFTER_S:
+                # The link is back after a gap. What the vehicle said before the gap is
+                # not current: any message refreshes the timestamp, so without this the
+                # first GPS or attitude packet after a GCS failsafe relabelled the old
+                # "AUTO" as live while the aircraft was flying RTL (SITL). Each field
+                # comes back when the vehicle next reports it.
+                tel.flight_mode = "UNKNOWN"
+                for key in ("system_status", "fence_status", "battery_charge_state"):
+                    tel.raw.pop(key, None)
+            tel.timestamp = now
             if t == "HEARTBEAT":
                 # custom_mode is a number. Reporting it as the flight mode gives the
                 # operator "3" where they need "AUTO", and makes it impossible to say
                 # who is flying the aircraft, so it is resolved to its name here.
                 tel.flight_mode = self._mode_name(getattr(msg, "custom_mode", None)) or tel.flight_mode
                 tel.armed = bool(getattr(msg, "base_mode", 0) & 0x80)
+                # MAV_STATE. ArduPilot reports CRITICAL while any failsafe is active
+                # (radio, GCS, battery, EKF, ...) and EMERGENCY when it has given up.
+                tel.raw["system_status"] = int(getattr(msg, "system_status", 0) or 0)
             elif t == "GLOBAL_POSITION_INT":
                 tel.latitude = float(msg.lat) / 1e7
                 tel.longitude = float(msg.lon) / 1e7
@@ -547,7 +591,22 @@ class MissionPlannerDroneClient:
                     getattr(msg, "onboard_control_sensors_enabled", 0) or 0)
                 tel.raw["sensors_health"] = int(
                     getattr(msg, "onboard_control_sensors_health", 0) or 0)
+            elif t == "FENCE_STATUS":
+                # The vehicle's own word on the fence: breached or not, how often, and
+                # which limit. Without it a breach was visible only as an unexplained RTL.
+                tel.raw["fence_status"] = {
+                    "breach_status": int(getattr(msg, "breach_status", 0) or 0),
+                    "breach_count": int(getattr(msg, "breach_count", 0) or 0),
+                    "breach_type": int(getattr(msg, "breach_type", 0) or 0),
+                }
+            elif t == "BATTERY_STATUS":
+                if int(getattr(msg, "id", 0) or 0) == 0:
+                    # MAV_BATTERY_CHARGE_STATE. ArduPilot sets LOW / CRITICAL when its
+                    # battery failsafe triggers -- on voltage or mAh, either of which
+                    # can fire long before the percentage looks alarming.
+                    tel.raw["battery_charge_state"] = int(getattr(msg, "charge_state", 0) or 0)
             elif t == "GPS_RAW_INT":
+                tel.raw["gps_received_at"] = time.time()
                 tel.gps_fix = int(msg.fix_type)
                 tel.satellites = int(getattr(msg, "satellites_visible", 0))
                 # eph is HDOP x 100, and UINT16_MAX when the receiver does not know.
@@ -583,6 +642,19 @@ class MissionPlannerDroneClient:
                     "remnoise": int(getattr(msg, "remnoise", 0) or 0),
                 }
             self._update_link_quality(tel)
+
+    def _send_gcs_heartbeat(self) -> None:
+        """Tell the vehicle its ground station is here (fire and forget)."""
+        self._last_gcs_heartbeat = time.monotonic()
+        conn = self._conn
+        if conn is None:
+            return
+        try:
+            conn.mav.heartbeat_send(MAV_TYPE_GCS, MAV_AUTOPILOT_INVALID, 0, 0, MAV_STATE_ACTIVE)
+        except Exception:
+            # Retried next second; a send that keeps failing is a lost link, which the
+            # telemetry age already reports.
+            pass
 
     def _request_home_position(self) -> None:
         """Ask the vehicle for HOME_POSITION (fire and forget; the listener parses it).
@@ -1318,6 +1390,17 @@ class MissionPlannerDroneClient:
         """
         with self._lock:
             was_armed = bool(self._latest_telemetry.armed)
+            mode = (self._latest_telemetry.flight_mode or "").upper()
+        if not was_armed and mode in _NOT_ARMABLE_ON_GROUND:
+            # An aircraft that landed itself (an RTL or LAND failsafe, a finished
+            # mission) sits in that mode, and ArduCopter will not arm in it: Start
+            # answered "Arm: RTL mode not armable" after every failsafe landing (SITL).
+            # A position-holding mode is armable and MISSION_START takes it to AUTO.
+            held = self.set_flight_mode("LOITER")
+            if not held.success:
+                return CommandResult(False, "start_mission",
+                                     f"The vehicle is in {mode}, which it will not arm in, "
+                                     f"and refused LOITER: {held.message}")
         arm = self._command_long(400, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, name="arm")
         if not arm.success:
             return arm

@@ -5734,10 +5734,12 @@ class Api:
         client = self._session._drone_client
         if client is None:
             return fail("No vehicle connected.")
+        overrode = False
         if str(command).lower() == "start":
             held = self._preflight_hold(bool(kwargs.get("override_preflight")))
             if held is not None:
                 return held
+            overrode = bool(getattr(self, "_preflight_overridden", False))
         # The command set a ground station is expected to offer. Anything the
         # connected driver does not implement is reported as unsupported rather than
         # failing silently, because a pilot pressing a button needs to know whether
@@ -5791,7 +5793,11 @@ class Api:
                 "abort_mission": manager.abort_flight,
             }
             named = dispatch.get(method_name)
-            result = named(reason="operator") if named else manager.execute(method_name, action)
+            # A start the pilot forced past the checklist says so in the flight's own
+            # command log, beside the audit entry: an investigation reads the flight log.
+            reason = ("operator_preflight_override"
+                      if method_name == "start_mission" and overrode else "operator")
+            result = named(reason=reason) if named else manager.execute(method_name, action)
         else:
             result = action()
 
@@ -5813,6 +5819,7 @@ class Api:
             # The checklist itself could not be computed; that is not a pass.
             blocking, pending = [f"the checklist could not run: {report.get('error')}"], []
         elif report.get("can_start"):
+            self._preflight_overridden = False
             return None
         else:
             checks = report.get("checks") or []
@@ -5821,6 +5828,7 @@ class Api:
                         and not c.get("confirmed") and not c.get("requires_manual")]
             pending = [str(c.get("name") or c.get("id")) for c in checks
                        if c.get("requires_manual") and not c.get("confirmed")]
+        self._preflight_overridden = bool(override)
         if override:
             self._session.audit("preflight_override", {
                 "command": "start", "blocking": blocking, "unconfirmed": pending})

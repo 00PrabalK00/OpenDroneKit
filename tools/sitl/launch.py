@@ -196,7 +196,10 @@ class ArduPilotSITL:
             "--speedup", str(self.speedup),
             "--out", f"127.0.0.1:{self.connection_port}",
             "--out", f"127.0.0.1:{self.observer_port}",
-            "--mavproxy-args=--daemon",
+            # MAVProxy is only the router here. Its own 1 Hz GCS heartbeat would keep
+            # ArduPilot's GCS failsafe from ever seeing the ground station (the app)
+            # go away, so the app's heartbeat is the only one the vehicle hears.
+            "--mavproxy-args=--daemon --heartbeat-rate=0",
         ]
         for param_file in self.param_files:
             if not param_file.is_file():

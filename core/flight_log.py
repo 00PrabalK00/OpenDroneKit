@@ -39,6 +39,10 @@ MIN_USABLE_FIX = 2
 
 SUPPORTED_FORMATS = ("csv", "json", "gpx", "kml")
 
+# Consecutive samples further apart than this have a hole between them: the link was
+# lost (the same threshold the live display uses to say so).
+LINK_GAP_S = 3.0
+
 # Columns written to CSV, in the order an operator reads them.
 CSV_FIELDS = (
     "timestamp_utc", "elapsed_s", "latitude", "longitude", "altitude_rel_m",
@@ -147,6 +151,9 @@ class FlightLog:
     driver: str = ""
     connection_uri: str = ""
     is_simulated: bool = False
+    # Stretches with no telemetry: the link was lost. Recorded as gaps so the log says
+    # it did not see the aircraft there, rather than a track that jumps silently.
+    gaps: list[dict[str, Any]] = field(default_factory=list)
 
     def record(self, telemetry: Any) -> FlightSample | None:
         """Append a sample, stamped with where it came from.
@@ -159,6 +166,17 @@ class FlightLog:
         sample.simulated = self.is_simulated
         if self.samples and sample.timestamp and sample.timestamp == self.samples[-1].timestamp:
             return None
+        if self.samples and sample.timestamp:
+            previous = self.samples[-1]
+            if sample.timestamp - previous.timestamp > LINK_GAP_S:
+                self.gaps.append({
+                    "after_sample": len(self.samples) - 1,
+                    "from_utc": datetime.fromtimestamp(previous.timestamp, tz=timezone.utc).isoformat(),
+                    "to_utc": datetime.fromtimestamp(sample.timestamp, tz=timezone.utc).isoformat(),
+                    "duration_s": round(sample.timestamp - previous.timestamp, 1),
+                    "mode_before": previous.flight_mode,
+                    "mode_after": sample.flight_mode,
+                })
         self.samples.append(sample)
         return sample
 
@@ -210,6 +228,8 @@ class FlightLog:
             "connection_uri": self.connection_uri,
             "simulated": self.is_simulated,
             "simulated_notice": SIMULATED_NOTICE if self.is_simulated else "",
+            "link_gaps": list(self.gaps),
+            "link_gap_total_s": round(sum(g["duration_s"] for g in self.gaps), 1),
             "note": (
                 "Distance and altitude are computed only from samples with a usable GPS "
                 "fix. Gaps in the recording are left as gaps; nothing is interpolated."
@@ -273,8 +293,14 @@ def write_gpx(log: FlightLog, path: str | Path) -> Path:
     track = ET.SubElement(gpx, "trk")
     ET.SubElement(track, "name").text = _display_name(log, "Flight")
     segment = ET.SubElement(track, "trkseg")
+    # A link gap starts a new segment: the track must not draw a line across a stretch
+    # where nobody saw the aircraft.
+    gap_after = {int(g["after_sample"]) for g in log.gaps}
+    index_of = {id(s): i for i, s in enumerate(log.samples)}
 
     for sample in log.positioned_samples():
+        if index_of[id(sample)] - 1 in gap_after and len(segment):
+            segment = ET.SubElement(track, "trkseg")
         point = ET.SubElement(segment, "trkpt", {
             "lat": f"{sample.latitude:.8f}", "lon": f"{sample.longitude:.8f}"})
         ET.SubElement(point, "ele").text = f"{sample.altitude_abs_m:.2f}"

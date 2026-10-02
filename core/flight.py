@@ -54,6 +54,10 @@ class FlightState:
     # made a dead link look like a quiet aircraft.
     last_error: str = ""
     error_count: int = 0
+    # Every stretch the vehicle went silent: when it was last heard, when it was heard
+    # again, and what the session was doing. The telemetry log has no samples there,
+    # and these say why.
+    link_gaps: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -147,6 +151,8 @@ class FlightManager:
         self._poll_interval_s = 1.0
         self._lock = threading.RLock()
         self._telemetry_callbacks: list[Callable[[DroneTelemetry], None]] = []
+        # What the session was doing when the link went quiet, to go back to after.
+        self._status_before_link_loss = ""
 
     # ── Session lifecycle ────────────────────────────────────────────────────
 
@@ -271,6 +277,7 @@ class FlightManager:
         if not self._session:
             return
         state = self._session.state
+        self._track_link(self._session, telem)
         state.current_waypoint = telem.waypoint_index
         state.waypoint_total = telem.waypoint_total
         if telem.waypoint_total > 0:
@@ -301,7 +308,46 @@ class FlightManager:
             warnings.append("GPS fix degraded")
         if telem.link_quality_pct is not None and telem.link_quality_pct < 50.0:
             warnings.append("Link quality low")
+        # What the vehicle itself declares, as it declared it.
+        reported = telem.to_dict() if hasattr(telem, "to_dict") else {}
+        if reported.get("battery_failsafe"):
+            warnings.append(f"Battery failsafe ({reported.get('battery_state')})")
+        if reported.get("fence_breached"):
+            warnings.append("Geofence breached")
+        if reported.get("failsafe"):
+            warnings.append(f"Vehicle failsafe active (flying {telem.flight_mode})")
         state.warnings = warnings
+
+    def _track_link(self, session: FlightSession, telem: DroneTelemetry) -> None:
+        """Move the session into and out of link_lost, and log each gap.
+
+        "link_lost" was in the list of states and nothing ever entered it: a session
+        whose aircraft had gone silent still read "flying".
+        """
+        state = session.state
+        events = Path(session.log_dir) / "events.jsonl"
+        last_heard = float(getattr(telem, "timestamp", 0.0) or 0.0)
+        if self._is_stale(telem):
+            if state.status != "link_lost":
+                self._status_before_link_loss = state.status
+                state.status = "link_lost"
+                gap = {"last_heard": last_heard,
+                       "last_heard_iso": datetime.fromtimestamp(last_heard, timezone.utc).isoformat(),
+                       "status_before": self._status_before_link_loss,
+                       "last_mode": telem.flight_mode}
+                state.link_gaps.append(gap)
+                _append_jsonl(events, {"ts": time.time(), "ts_iso": _now_iso(),
+                                       "event": "link_lost", **gap})
+            return
+        if state.status == "link_lost":
+            state.status = self._status_before_link_loss or "idle"
+            gap = state.link_gaps[-1] if state.link_gaps else {}
+            gap["heard_again"] = last_heard
+            gap["heard_again_iso"] = datetime.fromtimestamp(last_heard, timezone.utc).isoformat()
+            gap["duration_s"] = round(last_heard - float(gap.get("last_heard", last_heard)), 1)
+            gap["mode_after"] = telem.flight_mode
+            _append_jsonl(events, {"ts": time.time(), "ts_iso": _now_iso(),
+                                   "event": "link_restored", **gap})
 
     # ── Flight commands (gateway) ─────────────────────────────────────────────
 

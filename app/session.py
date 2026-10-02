@@ -588,14 +588,54 @@ class AppSession:
                 f"Link lost: nothing heard from the vehicle for {age:.0f} s. The values "
                 "shown are the last ones it reported, not where it is now."
             )
+            payload["alerts"] = [{"kind": "link_lost", "message": payload["reason"]}]
             return payload
 
         payload["connected"] = True
         payload["stale"] = False
+        payload["alerts"] = vehicle_alerts(payload)
         # Recorded here as well as by the flight session's poll, so the log holds what
         # the pilot saw; the log drops a snapshot it has already recorded.
         self._record_telemetry(data)
         return payload
+
+
+def vehicle_alerts(telemetry: dict[str, Any]) -> list[dict[str, str]]:
+    """The conditions a pilot must see, each as the vehicle reported it.
+
+    Built only from the vehicle's own reports (failsafe state, battery charge state,
+    fence status, GPS fix) and quoting what it said in its STATUSTEXT where it said
+    anything. A failsafe that switched the aircraft to RTL used to show as a mode
+    change and nothing else.
+    """
+    said = [str(m.get("text", "")) for m in telemetry.get("vehicle_messages") or []
+            if int(m.get("severity", 6)) <= 4]
+
+    def quote(*words: str) -> str:
+        hits = [t for t in said if any(w in t.lower() for w in words)]
+        return f" The vehicle said: {hits[-1]}." if hits else ""
+
+    alerts: list[dict[str, str]] = []
+    if telemetry.get("battery_failsafe"):
+        alerts.append({"kind": "battery_failsafe", "message": (
+            f"Battery failsafe: the vehicle reports its battery {telemetry.get('battery_state')}"
+            + (f" at {telemetry['battery_v']:.2f} V" if telemetry.get("battery_v") is not None else "")
+            + "." + quote("battery"))})
+    if telemetry.get("fence_breached"):
+        alerts.append({"kind": "fence_breach", "message": (
+            f"Geofence breached ({telemetry.get('fence_breach_type', 'unknown limit')}); "
+            f"the vehicle is in {telemetry.get('flight_mode', 'an unknown mode')}."
+            + quote("fence"))})
+    if telemetry.get("gps_stale") or int(telemetry.get("gps_fix", 0) or 0) < 3:
+        alerts.append({"kind": "gps_lost", "message": (
+            "GPS: no 3D fix (" + ("no GPS report for several seconds" if telemetry.get("gps_stale")
+                                 else f"fix type {telemetry.get('gps_fix', 0)}") + ")."
+            + quote("gps", "ekf"))})
+    if telemetry.get("failsafe"):
+        alerts.append({"kind": "failsafe", "message": (
+            f"The vehicle reports a failsafe (state {telemetry.get('system_status')}); it is in "
+            f"{telemetry.get('flight_mode', 'an unknown mode')}." + quote("failsafe", "fs"))})
+    return alerts
 
 
 def _iter_coordinates(payload: Any):
