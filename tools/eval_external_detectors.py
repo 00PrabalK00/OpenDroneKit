@@ -865,13 +865,17 @@ def evaluate_bridge(args: argparse.Namespace) -> dict[str, Any]:
             "median_crack_ratio": round(float(np.median(seg_ratios)), 6) if seg_ratios else None,
             "max_crack_ratio": round(float(np.max(seg_ratios)), 6) if seg_ratios else None,
             "native_resolution_tiles": tiled_rows,
-            "native_resolution_note": "The app segments the whole frame resized to 1024 px. "
-                                      "These rows re-run the same model on 1024 px tiles at "
-                                      "full resolution for the first frames; compare the "
-                                      "*_tiled_segmentation.jpg overlays by eye.",
+            "native_resolution_note": BRIDGE_TILED_NOTE,
         },
+        "visual_review": BRIDGE_VISUAL_REVIEW,
         "artifacts": str(out_dir),
     }
+
+
+# What a person saw on the overlays of the unlabelled bridge run. Kept with the code so a
+# re-run cannot silently drop the caveat; update it if a re-review changes the reading.
+BRIDGE_TILED_NOTE = 'The app segments the whole frame resized to 1024 px. These rows re-run the same model on 1024 px tiles at full resolution for the first frames. The pixel counts are model output, NOT validated cracks: there are no labels.'
+BRIDGE_VISUAL_REVIEW = "UNVALIDATED. Reviewed by eye on the overlays: the tiled crack_segmentation pixels (frames 0100-0102) lie along kerb, barrier and lane edges and on a water/sand boundary, not on visible cracks; in frame 0145 the top structural 'Crack' box covers water and bridge deck, and crack_presence flags tiles of lane markings and pavers at p=0.90-1.00. With no labels these look like false positives. Nothing here shows the models find real cracks on this bridge, nor that tiling helps; it only shows tiling makes crack_segmentation respond more. Validating that needs labelled bridge-deck imagery (roadmap item 5)."
 
 
 # ── structural_det test split: app decoder vs published figure ───────────────

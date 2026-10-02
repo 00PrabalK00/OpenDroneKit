@@ -77,7 +77,8 @@
         "tiled_1024_crack_pixels": 60663
       }
     ],
-    "native_resolution_note": "The app segments the whole frame resized to 1024 px. These rows re-run the same model on 1024 px tiles at full resolution for the first frames; compare the *_tiled_segmentation.jpg overlays by eye."
+    "native_resolution_note": "The app segments the whole frame resized to 1024 px. These rows re-run the same model on 1024 px tiles at full resolution for the first frames. The pixel counts are model output, NOT validated cracks: there are no labels."
   },
-  "artifacts": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\bridge_h20t"
+  "artifacts": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\bridge_h20t",
+  "visual_review": "UNVALIDATED. Reviewed by eye on the overlays: the tiled crack_segmentation pixels (frames 0100-0102) lie along kerb, barrier and lane edges and on a water/sand boundary, not on visible cracks; in frame 0145 the top structural 'Crack' box covers water and bridge deck, and crack_presence flags tiles of lane markings and pavers at p=0.90-1.00. With no labels these look like false positives. Nothing here shows the models find real cracks on this bridge, nor that tiling helps; it only shows tiling makes crack_segmentation respond more. Validating that needs labelled bridge-deck imagery (roadmap item 5)."
 }

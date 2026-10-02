@@ -199,6 +199,19 @@ class TestPublishedEvidence:
         assert data["dataset"]["frames"] == 81
         assert "NONE" in data["dataset"]["labels"]
 
+    def test_bridge_crack_pixels_are_not_claimed_as_cracks(self) -> None:
+        """Unlabelled bridge output must be labelled unvalidated, never 'cracks found'."""
+        data = json.loads((HOLDOUT / "external_bridge_h20t_detectors.json").read_text(encoding="utf-8"))
+        assert data["visual_review"].startswith("UNVALIDATED")
+        assert "false positive" in data["visual_review"]
+        assert "NOT validated" in data["crack_segmentation"]["native_resolution_note"]
+        from docs.features.registry import ALL_FEATURES
+        rows = {f.id: f for f in ALL_FEATURES}
+        for key in ("ai.crack", "ai.external_measurement"):
+            text = rows[key].criteria + " " + rows[key].notes
+            assert "only resolves cracks when tiled" not in text
+            assert "false positive" in text
+
 
 class TestTheRoadRowsReproduce:
     def test_detector_rows_for_the_first_images_reproduce(self, tmp_path) -> None:

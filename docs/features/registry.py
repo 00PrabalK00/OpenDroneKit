@@ -858,8 +858,10 @@ VISION = [
       "threshold. B2 reached test-split IoU 0.515; the heuristic reaches 0.045. The "
       "threshold gained +0.030 IoU and +0.147 precision for no retraining. "
       "OUT OF DOMAIN (ai.external_measurement): on RDD2022 asphalt it finds 0.58 of "
-      "longitudinal and 0.22 of alligator crack boxes; on H20T bridge frames at 50 m it "
-      "only resolves cracks when tiled at native resolution."),
+      "longitudinal and 0.22 of alligator crack boxes. On unlabelled H20T bridge frames at "
+      "50 m its output is UNVALIDATED: tiled at native resolution it paints 14k-61k "
+      "pixels per frame, but by eye these sit on kerb, barrier and lane edges and a "
+      "water/sand boundary, not on visible cracks -- treat them as false positives."),
     F("ai.spalling", "Spalling detection", "vision", "AI",
       "Trained detector for spallation with published validation metrics, used in "
       "preference to the heuristic, and reporting an empty result as an empty result "
@@ -971,7 +973,10 @@ VISION = [
       "BRIDGE (Boga Cayi H20T wide, CC BY 4.0, 81 frames, no defect labels): qualitative "
       "only -- the structural detector fires on 38 frames letterboxed (52 stretched), "
       "crack_presence flags 581 of 3,888 tiles, crack_segmentation paints 7 frames at "
-      "whole-frame 1024 px but thousands of pixels when tiled at native resolution. "
+      "whole-frame 1024 px and 14k-61k pixels per frame when tiled at native resolution. "
+      "None of this is validated (no labels); reviewed by eye, the responses are mostly "
+      "kerb/barrier/lane edges, lane markings, pavers and water -- apparent false "
+      "positives, not cracks found. "
       "INTEGRATION FIXES MEASURED on the CODEBRIM test split: the YOLO decoder now "
       "letterboxes and uses per-class NMS as Ultralytics validates; defect-class mAP50 "
       "rose from 0.182 to 0.304 (square) and from 0.176 to 0.338 (4:3 crops). CODEBRIM "
