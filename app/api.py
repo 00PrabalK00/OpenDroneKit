@@ -3603,6 +3603,77 @@ class Api:
         return ok(dji_thermal_sdk=status)
 
     @guard
+    def dense_engine_settings(self) -> dict[str, Any]:
+        """The configured COLMAP binary, OpenMVS folder and dense engine, as saved."""
+        from core.settings import load_app_settings
+
+        settings = load_app_settings()
+        return ok(colmap_binary=settings.colmap_binary, openmvs_dir=settings.openmvs_dir,
+                  dense_engine=settings.dense_engine,
+                  env_overrides={name: os.environ.get(name, "")
+                                 for name in ("ODK_COLMAP", "ODK_OPENMVS_DIR")
+                                 if os.environ.get(name, "").strip()})
+
+    @guard
+    def set_colmap_binary(self, path: str) -> dict[str, Any]:
+        """Save the COLMAP used for dense stereo, after checking it is there, and re-test.
+
+        The answer is the capability report for that binary: saving a path is not the
+        same as dense working, and the screen should say which it is.
+        """
+        from core.reconstruction_colmap import _resolve_colmap_path, engine_capabilities
+        from core.settings import load_app_settings, save_app_settings
+
+        value = str(path or "").strip()
+        if value and not _resolve_colmap_path(value):
+            return fail(f"No colmap executable was found at {value}. Choose colmap.exe or "
+                        "the folder of the extracted COLMAP archive.")
+        settings = load_app_settings()
+        settings.colmap_binary = value
+        save_app_settings(settings)
+        caps = engine_capabilities()
+        note = ("The ODK_COLMAP environment variable is set and takes precedence over this "
+                "setting." if os.environ.get("ODK_COLMAP", "").strip() else "")
+        return ok(colmap_binary=caps.get("colmap_binary", ""),
+                  colmap_binary_source=caps.get("colmap_binary_source", ""),
+                  dense_stereo=bool(caps.get("dense_stereo")),
+                  dense_stereo_reason=caps.get("dense_stereo_reason", ""), note=note)
+
+    @guard
+    def set_openmvs_dir(self, path: str) -> dict[str, Any]:
+        """Save where OpenMVS was extracted, after checking its tools are there, and re-test."""
+        from core import openmvs
+        from core.settings import load_app_settings, save_app_settings
+
+        folder = str(path or "").strip()
+        if folder and openmvs.find_tools(folder) is None:
+            return fail(f"The OpenMVS tools ({', '.join(openmvs.TOOLS)}) were not found in "
+                        f"{folder}. Choose the folder you extracted OpenMVS into.")
+        settings = load_app_settings()
+        settings.openmvs_dir = folder
+        save_app_settings(settings)
+        status = openmvs.status()
+        if os.environ.get(openmvs.ENV_VAR, "").strip():
+            status["note"] = (f"The {openmvs.ENV_VAR} environment variable is set and takes "
+                              "precedence over this setting.")
+        return ok(**status)
+
+    @guard
+    def set_dense_engine(self, engine: str) -> dict[str, Any]:
+        """Choose COLMAP or OpenMVS for dense reconstruction (saved; used by Process)."""
+        from core.reconstruction_colmap import DENSE_ENGINES
+        from core.settings import load_app_settings, save_app_settings
+
+        name = str(engine or "").strip().lower()
+        if name not in DENSE_ENGINES:
+            return fail(f"Unknown dense engine {engine!r}; choose one of: "
+                        + ", ".join(DENSE_ENGINES) + ".")
+        settings = load_app_settings()
+        settings.dense_engine = name
+        save_app_settings(settings)
+        return ok(dense_engine=name)
+
+    @guard
     def marker_kinds(self) -> dict[str, Any]:
         """What a site marker can be, and what each kind means."""
         from core.site_markers import MARKER_KINDS
@@ -3941,15 +4012,28 @@ class Api:
         from core.reconstruction_colmap import engine_capabilities
 
         caps = engine_capabilities()
-        dense = bool(caps.get("dense_stereo"))
+        # The answer is for the dense engine a run will actually use (Settings ->
+        # dense_engine); the other engine's state is in capabilities.dense_engines.
+        engine = str(caps.get("dense_engine") or "colmap")
+        if engine == "openmvs":
+            dense = bool(caps.get("openmvs"))
+            reason = caps.get("openmvs_reason") or "OpenMVS is not available."
+            where = "GPU" if caps.get("openmvs_gpu") else "CPU"
+            yes = f"Dense MVS is available through OpenMVS ({where}); a dense cloud and a " \
+                  "textured mesh can be produced."
+        else:
+            dense = bool(caps.get("dense_stereo"))
+            reason = caps.get("dense_stereo_reason") or "no working CUDA COLMAP."
+            yes = "Dense patch-match stereo is available; a dense cloud can be produced."
         return ok(
             capabilities=caps,
             dense_available=dense,
+            dense_engine=engine,
+            dense_engines=dict(caps.get("dense_engines") or {}),
             note=(
-                "Dense patch-match stereo is available; a dense cloud can be produced."
-                if dense else
-                "Dense point clouds are NOT available in this environment: "
-                f"{caps.get('dense_stereo_reason') or 'no working CUDA COLMAP.'} "
+                yes if dense else
+                f"Dense point clouds are NOT available in this environment with the "
+                f"{engine} engine: {reason} "
                 "Sparse reconstruction, mesh and orthomosaic still work. The sparse "
                 "cloud is never inflated to imitate a dense one."
             ),
@@ -6581,6 +6665,7 @@ class Api:
                 opts.get("engine", "auto"),
                 profile=opts.get("profile", "standard"),
                 dense=opts.get("dense"),
+                dense_engine=opts.get("dense_engine") or None,
                 use_gpu=bool(opts.get("use_gpu", True)),
                 max_image_size=opts.get("max_image_size"),
                 target_epsg=opts.get("epsg") or chosen_epsg,

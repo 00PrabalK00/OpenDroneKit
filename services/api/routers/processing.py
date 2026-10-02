@@ -507,8 +507,8 @@ _RUNNERS = {
 }
 
 
-RECONSTRUCTION_OPTIONS = ("dense", "use_gpu", "max_image_size", "raster_px_per_m",
-                          "target_epsg", "ground_control")
+RECONSTRUCTION_OPTIONS = ("dense", "dense_engine", "use_gpu", "max_image_size",
+                          "raster_px_per_m", "target_epsg", "ground_control")
 
 
 def _reconstruction_settings(options: dict[str, Any]) -> dict[str, Any]:
@@ -523,6 +523,8 @@ def _reconstruction_settings(options: dict[str, Any]) -> dict[str, Any]:
     settings: dict[str, Any] = {}
     if "dense" in options:
         settings["dense"] = bool(options["dense"])
+    if options.get("dense_engine"):
+        settings["dense_engine"] = str(options["dense_engine"])
     if "use_gpu" in options:
         settings["use_gpu"] = bool(options["use_gpu"])
     if options.get("max_image_size") is not None:
@@ -549,6 +551,9 @@ def _validate_options(db: Session, project_id: int, payload: JobSubmit) -> None:
         for key in ("dense", "use_gpu"):
             if key in options and not isinstance(options[key], bool):
                 raise HTTPException(status_code=422, detail=f"options.{key} must be true or false.")
+        if "dense_engine" in options and options["dense_engine"] not in ("colmap", "openmvs"):
+            raise HTTPException(status_code=422,
+                                detail="options.dense_engine must be 'colmap' or 'openmvs'.")
         for key, low in (("max_image_size", 64), ("target_epsg", 1024)):
             value = options.get(key)
             if value is not None and (isinstance(value, bool) or not isinstance(value, int)

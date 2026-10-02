@@ -34,6 +34,15 @@ class AppSettings:
     # Folder of the DJI Thermal SDK the user downloaded under DJI's licence (not shipped).
     # The ODK_DJI_TSDK_DIR environment variable overrides it. See core/thermal_dji.py.
     dji_thermal_sdk_dir: str = ""
+    # Native COLMAP executable used for dense patch-match stereo (and image undistortion).
+    # The ODK_COLMAP environment variable overrides it. See docs/DENSE_GPU.md.
+    colmap_binary: str = ""
+    # Folder holding the OpenMVS tools (InterfaceCOLMAP, DensifyPointCloud,
+    # ReconstructMesh, TextureMesh). ODK_OPENMVS_DIR overrides it. See core/openmvs.py.
+    openmvs_dir: str = ""
+    # Which dense engine a reconstruction uses: "colmap" (patch-match + fusion) or
+    # "openmvs" (densify + textured mesh). Either one refuses honestly when unavailable.
+    dense_engine: str = "colmap"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -153,6 +162,10 @@ def validate_app_settings(settings: AppSettings) -> list[ValidationMessage]:
         msgs.append(ValidationMessage("default_units", SEVERITY_ERROR, "Units must be 'metric' or 'imperial'."))
     if settings.max_workers < 1 or settings.max_workers > 32:
         msgs.append(ValidationMessage("max_workers", SEVERITY_ERROR, "max_workers must be 1..32."))
+    if settings.dense_engine not in ("colmap", "openmvs"):
+        msgs.append(ValidationMessage("dense_engine", SEVERITY_ERROR,
+                                      f"Unknown dense engine: {settings.dense_engine}",
+                                      "Use 'colmap' or 'openmvs'."))
     if settings.device not in ("cpu", "cuda", "mps"):
         msgs.append(ValidationMessage("device", SEVERITY_WARNING, f"Unknown device: {settings.device}", "Use cpu, cuda, or mps."))
     return msgs

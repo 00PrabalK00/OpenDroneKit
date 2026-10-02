@@ -117,6 +117,8 @@ class PipelineConfig:
     # "auto" prefers COLMAP when pycolmap is importable, else the dependency-free engine.
     reconstruction_engine: str = "auto"
     reconstruction_dense: bool | None = None
+    # "colmap" or "openmvs"; None uses the dense_engine setting (default COLMAP).
+    reconstruction_dense_engine: str | None = None
     reconstruction_target_epsg: int | None = None
     run_structural_models: bool = True
     run_solar_models: bool = True
@@ -277,6 +279,7 @@ class StructuralFaultPipeline:
                 cloud_endpoint=self.config.reconstruction_cloud_endpoint,
                 cloud_token=self.config.reconstruction_cloud_token,
                 dense=self.config.reconstruction_dense,
+                dense_engine=self.config.reconstruction_dense_engine,
                 target_epsg=self.config.reconstruction_target_epsg,
                 ground_control=self.ground_control,
             )

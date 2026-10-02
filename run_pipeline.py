@@ -121,6 +121,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip dense MVS and derive products from the sparse cloud.",
     )
     parser.add_argument(
+        "--dense-engine",
+        choices=["colmap", "openmvs"],
+        default=None,
+        help=(
+            "Dense engine: 'colmap' (patch-match stereo, needs a CUDA COLMAP that runs on "
+            "this GPU) or 'openmvs' (densify + textured mesh, GPU or CPU). Default: the "
+            "dense_engine setting. An unavailable engine is reported and the run stays sparse."
+        ),
+    )
+    parser.add_argument(
         "--epsg",
         type=int,
         default=None,
@@ -337,6 +347,7 @@ def main() -> None:
         reconstruction_cloud_token=str(args.recon_cloud_token or ""),
         reconstruction_engine=str(args.engine or "auto"),
         reconstruction_dense=args.dense,
+        reconstruction_dense_engine=args.dense_engine,
         reconstruction_target_epsg=args.epsg,
         run_structural_models=not bool(args.disable_structural_models),
         run_solar_models=not bool(args.disable_solar_models),

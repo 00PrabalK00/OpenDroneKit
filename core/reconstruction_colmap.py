@@ -109,9 +109,29 @@ def colmap_available() -> bool:
 
 
 def colmap_executable() -> str | None:
-    """Locate a native colmap binary, which is what enables GPU dense stereo.
+    """Locate a native colmap binary, which is what enables GPU dense stereo."""
+    return colmap_executable_source()[0] or None
 
-    ODK_COLMAP wins, so an operator can point at a specific build without touching PATH.
+
+def _resolve_colmap_path(value: str) -> str:
+    """The executable for a configured path: the exe itself or the folder holding it."""
+    candidate = Path(value)
+    for path in (candidate, candidate / "bin" / "colmap.exe", candidate / "colmap.exe",
+                 candidate / "bin" / "colmap", candidate / "colmap"):
+        if path.is_file():
+            return str(path)
+    return ""
+
+
+def colmap_executable_source() -> tuple[str, str]:
+    """(path, origin) of the native COLMAP binary; ("", origin-of-a-bad-setting) if none.
+
+    Order: ODK_COLMAP, then the colmap_binary setting (Settings), then PATH, then the
+    usual install locations. The env var and the setting are explicit choices, so a
+    configured path that does not exist is reported as such and does not silently fall
+    through to some other COLMAP -- the operator would be told dense works with a binary
+    they did not pick.
+
     The per-user locations matter on Windows: the official CUDA archive is 359 MB and
     installing it under Program Files needs administrator rights, which a normal user
     running this application does not have. Searching only the machine-wide path meant a
@@ -120,16 +140,20 @@ def colmap_executable() -> str | None:
     """
     override = os.environ.get("ODK_COLMAP", "").strip()
     if override:
-        candidate = Path(override)
-        # Accept either the executable itself or the directory holding it.
-        for path in (candidate, candidate / "bin" / "colmap.exe", candidate / "colmap.exe"):
-            if path.is_file():
-                return str(path)
-        return None
+        return _resolve_colmap_path(override), "env:ODK_COLMAP"
+
+    try:
+        from .settings import load_app_settings
+
+        configured = str(load_app_settings().colmap_binary or "").strip()
+    except Exception:  # noqa: BLE001 - unreadable settings must not hide a PATH binary
+        configured = ""
+    if configured:
+        return _resolve_colmap_path(configured), "settings:colmap_binary"
 
     found = shutil.which("colmap")
     if found:
-        return found
+        return found, "PATH"
 
     local = Path(os.environ.get("LOCALAPPDATA", "")) if os.name == "nt" else None
     for candidate in (
@@ -142,8 +166,8 @@ def colmap_executable() -> str | None:
         Path("/usr/bin/colmap"),
     ):
         if candidate.exists():
-            return str(candidate)
-    return None
+            return str(candidate), "default location"
+    return "", ""
 
 
 # Dense stereo used to read True whenever a native binary existed. A CUDA build of
@@ -156,12 +180,19 @@ def colmap_executable() -> str | None:
 def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
     """Report exactly what this environment can do, for honest UI and log reporting."""
     caps = geo.geo_capabilities()
-    binary = colmap_executable() or ""
+    binary, binary_source = colmap_executable_source()
     bindings_dense = _pycolmap_has_dense() and pycolmap_has_cuda()
     if bindings_dense:
         probe = {"ok": True, "probed": True, "reason": "pycolmap was built with CUDA."}
     elif binary:
         probe = native_dense_probe(binary, run=probe_dense)
+    elif binary_source:
+        probe = {
+            "ok": False,
+            "probed": False,
+            "reason": f"The COLMAP path configured by {binary_source} does not exist or "
+                      "holds no colmap executable; no other COLMAP is used in its place.",
+        }
     else:
         probe = {
             "ok": False,
@@ -174,6 +205,10 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
             "pycolmap": _HAS_PYCOLMAP,
             "open3d": _HAS_OPEN3D,
             "colmap_binary": binary,
+            # Where the binary came from: env:ODK_COLMAP, settings:colmap_binary, PATH or
+            # a default install location -- so the screen says which COLMAP it tested.
+            "colmap_binary_source": binary_source,
+            "colmap_cuda_toolkit": binary_cuda_toolchain(binary) if binary else "",
             "pycolmap_cuda": pycolmap_has_cuda(),
             # Dense patch-match stereo needs a CUDA build that actually runs on this GPU.
             # Without it only the sparse cloud is available.
@@ -182,6 +217,17 @@ def engine_capabilities(probe_dense: bool = True) -> dict[str, Any]:
             "dense_stereo_probed": bool(probe.get("probed", False)),
         }
     )
+    from . import openmvs
+
+    caps.update(openmvs.status(probe_run=probe_dense))
+    caps["dense_engines"] = {
+        "colmap": bool(caps["dense_stereo"]),
+        "openmvs": bool(caps.get("openmvs")),
+    }
+    try:
+        caps["dense_engine"] = normalize_dense_engine(None)
+    except ValueError:
+        caps["dense_engine"] = "colmap"
     return caps
 
 
@@ -261,6 +307,51 @@ def _dense_probe_timeout() -> float:
         return 900.0
 
 
+def write_probe_scene(root: Path, *, size: int = 96, grid: int = 3,
+                      baseline: float = 0.2) -> tuple[Path, Path, int]:
+    """Write a two-view synthetic COLMAP scene under `root`: (images, sparse, size).
+
+    A textured plane two units in front of two rectified pinhole views. Shared by the
+    COLMAP patch-match probe and the OpenMVS densify probe, so both are asked the same
+    question on the same input. It is a test fixture and is never a product.
+    """
+    focal = 90.0 * size / 96.0
+    depth = 2.0
+    shift = int(round(focal * baseline / depth))
+    rng = np.random.default_rng(7)
+    texture = (rng.random((size, size + 16 + shift + 16)) * 255).astype(np.uint8)
+    texture = cv2.GaussianBlur(texture, (3, 3), 0)
+    left = texture[:, 16:16 + size]
+    right = texture[:, 16 + shift:16 + shift + size]
+
+    images = root / "images"
+    sparse = root / "sparse"
+    for folder in (images, sparse):
+        folder.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(images / "a.png"), cv2.cvtColor(left, cv2.COLOR_GRAY2BGR))
+    cv2.imwrite(str(images / "b.png"), cv2.cvtColor(right, cv2.COLOR_GRAY2BGR))
+
+    cx = cy = size / 2.0
+    points: list[str] = []
+    obs_a: list[str] = []
+    obs_b: list[str] = []
+    steps = np.linspace(-0.3, 0.3, grid) if grid > 1 else np.zeros(1)
+    samples = [(round(float(x), 6), round(float(y), 6)) for x in steps for y in steps]
+    for index, (x, y) in enumerate(samples):
+        points.append(f"{index + 1} {x} {y} {depth} 128 128 128 0.5 1 {index} 2 {index}")
+        obs_a.append(f"{focal * x / depth + cx} {focal * y / depth + cy} {index + 1}")
+        obs_b.append(f"{focal * (x - baseline) / depth + cx} {focal * y / depth + cy} {index + 1}")
+    (sparse / "cameras.txt").write_text(
+        f"1 PINHOLE {size} {size} {focal} {focal} {cx} {cy}\n", encoding="ascii")
+    (sparse / "images.txt").write_text(
+        f"1 1 0 0 0 0 0 0 1 a.png\n{' '.join(obs_a)}\n"
+        f"2 1 0 0 0 {-baseline} 0 0 1 b.png\n{' '.join(obs_b)}\n",
+        encoding="ascii",
+    )
+    (sparse / "points3D.txt").write_text("\n".join(points) + "\n", encoding="ascii")
+    return images, sparse, size
+
+
 def _run_dense_probe(binary: str, timeout: float | None = None) -> dict[str, Any]:
     """Undistort and patch-match a two-view synthetic scene with the native binary.
 
@@ -272,42 +363,12 @@ def _run_dense_probe(binary: str, timeout: float | None = None) -> dict[str, Any
 
     if timeout is None:
         timeout = _dense_probe_timeout()
-    size, focal = 96, 90.0
-    baseline, depth = 0.2, 2.0
-    rng = np.random.default_rng(7)
-    texture = (rng.random((size, size + 32)) * 255).astype(np.uint8)
-    texture = cv2.GaussianBlur(texture, (3, 3), 0)
-    shift = int(round(focal * baseline / depth))
-    left = texture[:, 16:16 + size]
-    right = texture[:, 16 + shift:16 + shift + size]
 
     with tempfile.TemporaryDirectory(prefix="odk_dense_probe_") as tmp:
         root = Path(tmp)
-        images = root / "images"
-        sparse = root / "sparse"
+        images, sparse, size = write_probe_scene(root)
         dense = root / "dense"
-        for folder in (images, sparse, dense):
-            folder.mkdir()
-        cv2.imwrite(str(images / "a.png"), cv2.cvtColor(left, cv2.COLOR_GRAY2BGR))
-        cv2.imwrite(str(images / "b.png"), cv2.cvtColor(right, cv2.COLOR_GRAY2BGR))
-
-        cx = cy = size / 2.0
-        points: list[str] = []
-        obs_a: list[str] = []
-        obs_b: list[str] = []
-        grid = [(x, y) for x in (-0.3, 0.0, 0.3) for y in (-0.3, 0.0, 0.3)]
-        for index, (x, y) in enumerate(grid):
-            points.append(f"{index + 1} {x} {y} {depth} 128 128 128 0.5 1 {index} 2 {index}")
-            obs_a.append(f"{focal * x / depth + cx} {focal * y / depth + cy} {index + 1}")
-            obs_b.append(f"{focal * (x - baseline) / depth + cx} {focal * y / depth + cy} {index + 1}")
-        (sparse / "cameras.txt").write_text(
-            f"1 PINHOLE {size} {size} {focal} {focal} {cx} {cy}\n", encoding="ascii")
-        (sparse / "images.txt").write_text(
-            f"1 1 0 0 0 0 0 0 1 a.png\n{' '.join(obs_a)}\n"
-            f"2 1 0 0 0 {-baseline} 0 0 1 b.png\n{' '.join(obs_b)}\n",
-            encoding="ascii",
-        )
-        (sparse / "points3D.txt").write_text("\n".join(points) + "\n", encoding="ascii")
+        dense.mkdir()
 
         steps = [
             ("image_undistorter",
@@ -336,6 +397,9 @@ def _run_dense_probe(binary: str, timeout: float | None = None) -> dict[str, Any
             if done.returncode != 0 or error:
                 lines = text.strip().splitlines()
                 detail = error or (lines[-1] if lines else f"exit {done.returncode}")
+                crash = describe_exit_code(done.returncode)
+                if crash and not error:
+                    detail = f"{crash}; last output: {detail}"
                 reason = f"COLMAP {label} failed on this machine: {detail}"
                 advice = explain_dense_failure(binary, reason)
                 return {"ok": False, "reason": f"{reason} {advice}".strip()}
@@ -410,10 +474,15 @@ def explain_dense_failure(binary: str, reason: str) -> str:
     supports CUDA 13.1. Saying "no sm_120 kernels" there sent people after the wrong
     fix, so the two versions are read and compared rather than assumed.
     """
-    if "unsupported toolchain" not in reason.lower():
+    lowered = reason.lower()
+    crashed = "crashed" in lowered
+    if "unsupported toolchain" not in lowered and not crashed:
         return ""
     toolkit = binary_cuda_toolchain(binary)
     driver, driver_cuda = driver_cuda_version()
+    # COLMAP 4.2.1 (CUDA 13.2) on driver 592.15 (CUDA 13.1) no longer prints the PTX
+    # error: patch_match_stereo dies with 0xC0000409 straight after "PatchMatch::Run".
+    # A crash is explained by the version gap only when there is one.
     if toolkit and driver_cuda and _version_tuple(toolkit) > _version_tuple(driver_cuda):
         # Measured on the RTX 5060 dev box (driver 592.15, CUDA 13.1): conda-forge's
         # colmap 4.2.0 cuda_129 build and the official COLMAP 4.0.4 Windows CUDA
@@ -431,6 +500,8 @@ def explain_dense_failure(binary: str, reason: str) -> str:
             f"{known_good} and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
             "reconstruction on RTX 50-series')."
         )
+    if crashed and "unsupported toolchain" not in lowered:
+        return ""
     known = []
     if toolkit:
         known.append(f"compiled with CUDA {toolkit}")
@@ -443,6 +514,31 @@ def explain_dense_failure(binary: str, reason: str) -> str:
         "driver supports, and point ODK_COLMAP at it (docs/INSTALLATION.md, 'Dense "
         "reconstruction on RTX 50-series')."
     )
+
+
+_NTSTATUS_NAMES = {
+    0xC0000005: "access violation",
+    0xC0000135: "a required DLL was not found",
+    0xC0000409: "fail-fast abort (STATUS_STACK_BUFFER_OVERRUN)",
+    0xC000001D: "illegal instruction",
+}
+
+
+def describe_exit_code(code: int | None) -> str:
+    """A crash, as opposed to an ordinary error exit, in words; "" for an ordinary exit.
+
+    Windows reports a process killed by an exception as an NTSTATUS (0xC0000000 and
+    up, sometimes seen as a negative int); POSIX reports a signal as a negative code.
+    """
+    if code is None or code in (0, 1, 2):
+        return ""
+    if -64 < code < 0:
+        return f"the process crashed with signal {-code}"
+    unsigned = code & 0xFFFFFFFF
+    if 0xC0000000 <= unsigned < 0xD0000000:
+        name = _NTSTATUS_NAMES.get(unsigned, "unhandled exception")
+        return f"the process crashed with exit code 0x{unsigned:08X} ({name})"
+    return ""
 
 
 def _first_error_line(text: str) -> str:
@@ -659,6 +755,26 @@ def _points_and_colors(reconstruction: Any) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------------------
 
 
+DENSE_ENGINES = ("colmap", "openmvs")
+
+
+def normalize_dense_engine(engine: str | None) -> str:
+    """The dense engine to use: the argument, else the dense_engine setting, else COLMAP."""
+    name = str(engine or "").strip().lower()
+    if not name:
+        try:
+            from .settings import load_app_settings
+
+            name = str(load_app_settings().dense_engine or "").strip().lower()
+        except Exception:  # noqa: BLE001
+            name = ""
+    name = name or "colmap"
+    if name not in DENSE_ENGINES:
+        raise ValueError(f"Unknown dense engine {engine!r}; expected one of: "
+                         + ", ".join(DENSE_ENGINES))
+    return name
+
+
 class ColmapReconstructor:
     """Georeferenced reconstruction engine with a drop-in `reconstruct()` signature."""
 
@@ -672,6 +788,7 @@ class ColmapReconstructor:
         raster_px_per_m: float | None = None,
         target_epsg: int | None = None,
         ground_control: Sequence[Any] | None = None,
+        dense_engine: str | None = None,
     ):
         self.profile = _normalize_profile(profile)
         settings = COLMAP_PROFILES.get(self.profile, COLMAP_PROFILES["standard"])
@@ -685,6 +802,7 @@ class ColmapReconstructor:
             self._overrides["raster_px_per_m"] = float(raster_px_per_m)
         if dense is not None:
             self._overrides["dense"] = bool(dense)
+        self.dense_engine = normalize_dense_engine(dense_engine)
         self.settings = {**settings, **self._overrides}
         self.use_gpu = bool(use_gpu)
         # Whether GPU SIFT actually ran, as opposed to whether it was asked for.
@@ -704,6 +822,8 @@ class ColmapReconstructor:
         self.band_sources: dict[str, str] = {}
         self.band_names: list[str] = []
         self.band_orthomosaic_path: str | None = None
+        # What the dense step actually did: engine, GPU or CPU, and OpenMVS products.
+        self.dense_report: dict[str, Any] = {}
 
     # -- helpers ---------------------------------------------------------
 
@@ -726,7 +846,8 @@ class ColmapReconstructor:
         if self._should_cancel is not None and self._should_cancel():
             raise OperationCancelled("Reconstruction cancelled")
 
-    def _run_command(self, command: list[str], timeout: float = 7200.0) -> subprocess.CompletedProcess:
+    def _run_command(self, command: list[str], timeout: float = 7200.0,
+                     cwd: str | Path | None = None) -> subprocess.CompletedProcess:
         """Run a native COLMAP step, killing it if the operator cancels.
 
         `subprocess.run` blocks until the child exits, so a cancel requested during a
@@ -737,7 +858,8 @@ class ColmapReconstructor:
         import time
 
         with tempfile.TemporaryFile() as out_handle, tempfile.TemporaryFile() as err_handle:
-            proc = subprocess.Popen(command, stdout=out_handle, stderr=err_handle)
+            proc = subprocess.Popen(command, stdout=out_handle, stderr=err_handle,
+                                    cwd=str(cwd) if cwd is not None else None)
             deadline = time.monotonic() + float(timeout)
             try:
                 while True:
@@ -1177,8 +1299,11 @@ class ColmapReconstructor:
     ) -> tuple[np.ndarray, np.ndarray]:
         """Dense MVS via the native COLMAP binary. Returns empty arrays when unavailable."""
         empty = (np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=np.uint8))
+        self.dense_report = {"engine": self.dense_engine, "ran": False}
         if not self.settings.get("dense", True):
             return empty
+        if self.dense_engine == "openmvs":
+            return self._run_dense_openmvs(image_dir, work_dir, sparse_model, progress)
 
         # The Python bindings can run the whole dense stage when the wheel was built
         # with CUDA, which avoids requiring a separate COLMAP install.
@@ -1223,7 +1348,8 @@ class ColmapReconstructor:
         progress(62, "Dense stereo (image undistortion)")
         steps = [
             [binary, "image_undistorter", "--image_path", str(image_dir), "--input_path", str(sparse_export),
-             "--output_path", str(dense_dir), "--output_type", "COLMAP"],
+             "--output_path", str(dense_dir), "--output_type", "COLMAP",
+             "--max_image_size", str(self._dense_image_size())],
             [binary, "patch_match_stereo", "--workspace_path", str(dense_dir),
              "--workspace_format", "COLMAP", "--PatchMatchStereo.geom_consistency", "true"],
             [binary, "stereo_fusion", "--workspace_path", str(dense_dir), "--workspace_format", "COLMAP",
@@ -1246,7 +1372,107 @@ class ColmapReconstructor:
         if not fused.exists():
             self._warn("Dense MVS produced no fused cloud; falling back to the sparse cloud.")
             return empty
+        self.dense_report.update(ran=True, gpu=True, binary=binary,
+                                 max_image_size=self._dense_image_size(),
+                                 dense_cloud=str(fused))
         return _read_ply(fused)
+
+    def _dense_image_size(self) -> int:
+        """Longest side of the undistorted images dense stereo runs on (the profile's)."""
+        return int(self.settings.get("dense_max_image_size")
+                   or self.settings.get("max_image_size") or 2400)
+
+    def _undistort_for_dense(self, image_dir: Path, work_dir: Path, sparse_model: Any,
+                             dense_dir: Path) -> str:
+        """Write COLMAP's undistorted workspace; returns "" or the reason it failed.
+
+        Undistortion needs no GPU, so any native COLMAP will do; without one the
+        pycolmap bindings do it (at full resolution, which they offer no limit for).
+        """
+        sparse_export = work_dir / "sparse_for_dense"
+        sparse_export.mkdir(parents=True, exist_ok=True)
+        try:
+            sparse_model.write(str(sparse_export))
+        except Exception as exc:  # noqa: BLE001
+            return f"could not export the sparse model ({exc})"
+        binary = colmap_executable()
+        if binary:
+            try:
+                done = self._run_command(
+                    [binary, "image_undistorter", "--image_path", str(image_dir),
+                     "--input_path", str(sparse_export), "--output_path", str(dense_dir),
+                     "--output_type", "COLMAP", "--max_image_size", str(self._dense_image_size())])
+            except (OSError, subprocess.SubprocessError) as exc:
+                return f"COLMAP image_undistorter could not run: {exc}"
+            if done.returncode == 0:
+                return ""
+            tail = (done.stderr or done.stdout or "").strip().splitlines()
+            return ("COLMAP image_undistorter failed: "
+                    + (tail[-1] if tail else describe_exit_code(done.returncode)
+                       or f"exit code {done.returncode}"))
+        if _HAS_PYCOLMAP and hasattr(pycolmap, "undistort_images"):
+            try:
+                pycolmap.undistort_images(  # type: ignore[union-attr]
+                    output_path=str(dense_dir), input_path=str(sparse_export),
+                    image_path=str(image_dir))
+            except Exception as exc:  # noqa: BLE001
+                return f"pycolmap could not undistort the images ({exc})"
+            return ""
+        return "neither a native COLMAP nor pycolmap is available to undistort the images"
+
+    def _run_dense_openmvs(
+        self, image_dir: Path, work_dir: Path, sparse_model: Any, progress: Callable[[int, str], None]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Dense cloud and textured mesh through OpenMVS, or a warning and nothing.
+
+        Falls back to the sparse cloud -- never to another engine's output under this
+        engine's name -- and says why.
+        """
+        from . import openmvs
+
+        empty = (np.zeros((0, 3), dtype=float), np.zeros((0, 3), dtype=np.uint8))
+        tools, _folder, _origin, reason = openmvs.locate()
+        if tools is None:
+            self._warn(f"Dense MVS skipped: {reason.rstrip('. ')}. Derived products come "
+                       "from the sparse cloud.")
+            return empty
+        check = openmvs.probe(tools)
+        if not check.get("ok"):
+            self._warn("Dense MVS skipped: OpenMVS cannot densify on this machine: "
+                       f"{str(check.get('reason', '')).rstrip('. ')}. Derived products come "
+                       "from the sparse cloud.")
+            return empty
+        gpu = bool(check.get("gpu"))
+        dense_dir = work_dir / "dense"
+        dense_dir.mkdir(parents=True, exist_ok=True)
+        progress(61, "Dense stereo (image undistortion)")
+        failure = self._undistort_for_dense(image_dir, work_dir, sparse_model, dense_dir)
+        if failure:
+            self._warn(f"Dense MVS skipped: {failure}. Derived products come from the "
+                       "sparse cloud.")
+            return empty
+
+        def runner(command, cwd=None, timeout=None, **_kwargs):
+            return self._run_command(list(command), timeout=float(timeout or 4 * 3600), cwd=cwd)
+
+        try:
+            products = openmvs.densify_and_texture(
+                tools, dense_dir, work_dir / "openmvs", gpu=gpu,
+                max_resolution=self._dense_image_size(), progress=progress, runner=runner)
+        except openmvs.OpenMVSFailed as exc:
+            self._warn(f"Dense MVS failed: {exc}. Falling back to the sparse cloud.")
+            return empty
+        points, colors = _read_ply(Path(products["dense_cloud"]))
+        if points.shape[0] == 0:
+            self._warn("OpenMVS produced an empty dense cloud; falling back to the sparse cloud.")
+            return empty
+        if not gpu:
+            self._warn("OpenMVS densified on the CPU: " + str(check.get("reason", "")))
+        self.dense_report.update(ran=True, gpu=gpu, max_image_size=self._dense_image_size(),
+                                 tools_dir=str(Path(tools["DensifyPointCloud"]).parent),
+                                 **products)
+        progress(71, f"Dense cloud (OpenMVS): {points.shape[0]:,} points")
+        return points, colors
 
     def _run_dense_pycolmap(
         self, image_dir: Path, work_dir: Path, sparse_model: Any, progress: Callable[[int, str], None]
@@ -1911,6 +2137,8 @@ class ColmapReconstructor:
             "registered_images": len(registered),
             "point_count": int(cloud_xyz.shape[0]),
             "dense": bool(dense_xyz.shape[0] > 0),
+            "dense_engine": self.dense_engine,
+            "dense_report": dict(self.dense_report),
             "mean_reprojection_error_px": reprojection_error,
             "geo_rmse_m": anchor.rmse_m if anchor else None,
             "georeferenced_by": (anchor.method if anchor else None),
@@ -1939,9 +2167,11 @@ class ColmapReconstructor:
             # The Poisson mesh carries vertex colours only; no UV texture is baked. It was
             # reported as "Textured mesh OBJ" with the orthomosaic as its "texture image",
             # neither of which was true of the files on disk.
-            textured_mesh_obj_path="",
-            textured_mesh_mtl_path="",
-            texture_image_path="",
+            # Only OpenMVS bakes a UV texture; it is reported when, and only when, the
+            # files exist. The Poisson mesh above carries vertex colours only.
+            textured_mesh_obj_path=str(self.dense_report.get("textured_obj", "")),
+            textured_mesh_mtl_path=str(self.dense_report.get("textured_mtl", "")),
+            texture_image_path=str(self.dense_report.get("texture_image", "")),
             mesh_obj_path=artifacts.get("mesh_obj", ""),
             digital_twin_path=str(twin_path),
             processing_profile=self.profile,
@@ -2431,6 +2661,7 @@ def _read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
 
         vertex_count = 0
         properties: list[tuple[str, str]] = []
+        list_properties: list[tuple[str, str, str]] = []
         fmt = "ascii"
         in_vertex = False
         for line in header_lines:
@@ -2443,7 +2674,12 @@ def _read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
                 in_vertex = parts[1] == "vertex"
                 if in_vertex:
                     vertex_count = int(parts[2])
+            elif parts[0] == "property" and in_vertex and len(parts) >= 5 and parts[1] == "list":
+                # OpenMVS writes per-point view lists after the fixed fields.
+                list_properties.append((parts[2], parts[3], parts[4]))
             elif parts[0] == "property" and in_vertex and len(parts) >= 3:
+                if list_properties:
+                    raise ValueError(f"{path}: fixed vertex property after a list property")
                 properties.append((parts[1], parts[2]))
 
         if vertex_count <= 0:
@@ -2456,7 +2692,15 @@ def _read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
             "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4",
         }
 
-        if fmt.startswith("binary"):
+        if fmt.startswith("binary") and list_properties:
+            endian = "<" if "little" in fmt else ">"
+            dtype = np.dtype([(name, endian + numpy_types.get(kind, "f4")) for kind, name in properties])
+            data = _read_binary_vertices_with_lists(
+                handle.read(), dtype, vertex_count,
+                [(np.dtype(endian + numpy_types.get(count_kind, "u1")),
+                  np.dtype(endian + numpy_types.get(item_kind, "f4")))
+                 for count_kind, item_kind, _name in list_properties])
+        elif fmt.startswith("binary"):
             endian = "<" if "little" in fmt else ">"
             dtype = np.dtype([(name, endian + numpy_types.get(kind, "f4")) for kind, name in properties])
             data = np.frombuffer(handle.read(dtype.itemsize * vertex_count), dtype=dtype, count=vertex_count)
@@ -2492,6 +2736,33 @@ def _read_ply(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return xyz, rgb
 
 
+def _read_binary_vertices_with_lists(buffer: bytes, fixed: np.dtype, count: int,
+                                     lists: list[tuple[np.dtype, np.dtype]]) -> np.ndarray:
+    """Fixed vertex fields from a binary PLY whose vertices end in variable-length lists.
+
+    Each vertex's size depends on its own list lengths, so the vertex starts are found
+    by one sequential walk over the counts; the fixed fields are then gathered at once.
+    """
+    import struct
+
+    codes = {1: "B", 2: "H", 4: "I"}
+    walkers = [(struct.Struct(count_dtype.byteorder.replace("=", "<").replace("|", "<")
+                              + codes[count_dtype.itemsize]).unpack_from,
+                count_dtype.itemsize, item_dtype.itemsize)
+               for count_dtype, item_dtype in lists]
+    starts = np.empty(count, dtype=np.int64)
+    position = 0
+    fixed_size = fixed.itemsize
+    for index in range(count):
+        starts[index] = position
+        position += fixed_size
+        for unpack, count_size, item_size in walkers:
+            position += count_size + unpack(buffer, position)[0] * item_size
+    raw = np.frombuffer(buffer, dtype=np.uint8)
+    gather = starts[:, None] + np.arange(fixed_size, dtype=np.int64)[None, :]
+    return np.frombuffer(raw[gather].tobytes(), dtype=fixed, count=count)
+
+
 def build_reconstructor(engine: str, **kwargs: Any):
     """Factory used by the pipeline and CLI to pick an engine by name.
 
@@ -2516,6 +2787,7 @@ def build_reconstructor(engine: str, **kwargs: Any):
             raster_px_per_m=kwargs.get("raster_px_per_m"),
             target_epsg=kwargs.get("target_epsg"),
             ground_control=kwargs.get("ground_control"),
+            dense_engine=kwargs.get("dense_engine"),
         )
     if name == "auto":
         name = "colmap" if _HAS_PYCOLMAP else "custom"
@@ -2530,6 +2802,7 @@ def build_reconstructor(engine: str, **kwargs: Any):
             raster_px_per_m=kwargs.get("raster_px_per_m"),
             target_epsg=kwargs.get("target_epsg"),
             ground_control=kwargs.get("ground_control"),
+            dense_engine=kwargs.get("dense_engine"),
         )
     if name == "custom":
         return CustomDroneReconstructor(

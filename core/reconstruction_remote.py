@@ -88,11 +88,14 @@ def job_options(
     raster_px_per_m: float | None = None,
     target_epsg: int | None = None,
     ground_control: Any = None,
+    dense_engine: str | None = None,
 ) -> dict[str, Any]:
     """The reconstruction settings a server job carries, leaving out the unset ones."""
     options: dict[str, Any] = {}
     if dense is not None:
         options["dense"] = bool(dense)
+    if dense_engine:
+        options["dense_engine"] = str(dense_engine).strip().lower()
     if use_gpu is not None:
         options["use_gpu"] = bool(use_gpu)
     if max_image_size not in (None, "", 0):
@@ -130,6 +133,7 @@ class RemoteReconstructor:
         raster_px_per_m: float | None = None,
         target_epsg: int | None = None,
         ground_control: Any = None,
+        dense_engine: str | None = None,
     ) -> None:
         self.base_url, self.project_id = parse_endpoint(endpoint)
         self.token = str(token or os.environ.get(TOKEN_ENV, "")).strip()
@@ -151,7 +155,7 @@ class RemoteReconstructor:
         self.options = job_options(
             dense=dense, use_gpu=use_gpu, max_image_size=max_image_size,
             raster_px_per_m=raster_px_per_m, target_epsg=target_epsg,
-            ground_control=ground_control,
+            ground_control=ground_control, dense_engine=dense_engine,
         )
         self.control_report: dict[str, Any] | None = None
 
@@ -362,7 +366,8 @@ class RemoteReconstructor:
                 "computer."
             ]
         label = {"ground_control": "ground control points", "target_epsg": "CRS (EPSG)",
-                 "dense": "dense MVS", "max_image_size": "max image size",
+                 "dense": "dense MVS", "dense_engine": "dense engine",
+                 "max_image_size": "max image size",
                  "raster_px_per_m": "raster resolution"}
         notes: list[str] = []
         unused = sorted(label.get(k, k) for k in requested if k not in applied)
