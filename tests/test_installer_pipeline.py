@@ -53,6 +53,31 @@ class TestManifest:
         with pytest.raises(ValueError, match="unsafe"):
             manifest.validate_manifest(data)
 
+    def test_transient_open_failure_is_retried_but_persistent_one_raises(self, tmp_path, monkeypatch):
+        target = tmp_path / "f.bin"
+        target.write_bytes(b"abc")
+        real_open = Path.open
+        calls = {"n": 0}
+
+        def flaky(self, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(22, "Invalid argument")
+            return real_open(self, *a, **k)
+
+        monkeypatch.setattr(manifest.time, "sleep", lambda s: None)
+        monkeypatch.setattr(Path, "open", flaky)
+        import hashlib
+
+        assert manifest.sha256_file(target) == hashlib.sha256(b"abc").hexdigest()
+
+        def broken(self, *a, **k):
+            raise OSError(22, "Invalid argument")
+
+        monkeypatch.setattr(Path, "open", broken)
+        with pytest.raises(OSError):
+            manifest.sha256_file(target)
+
     def test_signed_must_be_a_real_boolean(self):
         data = {"schema": 1, **_meta(signed="no"), "files": {}}
         with pytest.raises(ValueError, match="signed"):

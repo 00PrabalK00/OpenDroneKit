@@ -11,6 +11,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
@@ -19,12 +20,22 @@ SCHEMA = 1
 REQUIRED_KEYS = ("schema", "app", "version", "python", "signed", "files")
 
 
-def sha256_file(path: Path) -> str:
-    hasher = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            hasher.update(block)
-    return hasher.hexdigest()
+def sha256_file(path: Path, attempts: int = 3) -> str:
+    """sha256 of a file. A failed open or read is retried (a fresh hash each time): on a
+    busy external drive, opening one of ~30k files occasionally fails with EINVAL and
+    succeeds a moment later. A file that keeps failing raises."""
+    for attempt in range(1, attempts + 1):
+        hasher = hashlib.sha256()
+        try:
+            with Path(path).open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    hasher.update(block)
+            return hasher.hexdigest()
+        except OSError:
+            if attempt == attempts or not Path(path).is_file():
+                raise
+            time.sleep(0.5 * attempt)
+    raise AssertionError("unreachable")
 
 
 def iter_payload(root: Path) -> Iterable[Path]:
