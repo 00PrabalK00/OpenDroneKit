@@ -157,7 +157,8 @@
 .odk-footer-message[data-tone="warn"] { color: var(--warn); }
 .odk-footer-message:hover { color: var(--text); }
 .odk-footer-message:focus-visible { outline-offset: -2px; }
-.odk-footer-net { color: var(--muted); }
+.odk-footer-net { color: var(--muted); flex-shrink: 1; max-width: 40%; }
+.odk-footer-net .odk-net-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .odk-footer-net .odk-dot { width: 6px; height: 6px; }
 .odk-footer-net[data-tone="ok"] { color: var(--ok); }
 .odk-footer-net[data-tone="warn"] { color: var(--warn); }

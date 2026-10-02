@@ -286,8 +286,10 @@ export class Frame {
     if (!node) return;
     node.dataset.tone = tone;
     const words = this.mode === "field" ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+    // Long when several hosts were reached; it shortens with an ellipsis, never off the edge.
+    node.title = words;
     node.replaceChildren(el("span", { class: `odk-dot odk-dot--${tone}`, "aria-hidden": "true" }),
-      el("span", { text: words }));
+      el("span", { class: "odk-net-text", text: words }));
   }
 
   setBanner(visible, text, title) {

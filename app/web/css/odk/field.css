@@ -29,7 +29,9 @@
 .odk-field-net {
   display: flex; align-items: center; gap: var(--sp-3); height: 64px; padding: 0 var(--sp-4);
   border: 2px solid #FFFFFF; font-size: 16px; font-weight: 700; white-space: nowrap; color: #FFFFFF;
+  min-width: 0; max-width: 420px;
 }
+.odk-field-net .odk-net-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .odk-field-net .odk-dot { width: 12px; height: 12px; background: var(--ok); box-shadow: 0 0 0 2px #FFFFFF; }
 .odk-field-toggle {
   height: 64px; padding: 0 20px; display: flex; align-items: center; gap: 10px;
