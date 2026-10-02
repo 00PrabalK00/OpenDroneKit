@@ -90,12 +90,42 @@ const reportChoice = { tpl: "standard", fmt: "PDF" };
 const REPORT_FORMATS = { PDF: ["html", "pdf"], DOCX: ["html", "docx"],
                          "PDF+DOCX": ["html", "pdf", "docx"], HTML: ["html"] };
 
+/* What the Mission and Aircraft forms show, field by field: the default until it is
+ * edited, then what was typed.
+ *
+ * The shell used to send only the fields an operator had changed. The form showed
+ * Stand-off 12 m, Altitude AGL 60 m and RTH 90 m, but none of the three reached the
+ * planner until edited, so plan_mission fell back to its own 8 m, 55 m and 80 m. A
+ * multi-facade plan with the form reading 12 m flew 7.65 m off the wall, and a tower
+ * with radius 4 flew 8 m off its surface instead of 12 -- with nothing on screen to
+ * say so. The values are registered when the forms are DEFINED, not when they are
+ * drawn, because the Aircraft tab (RTH) is never drawn unless it is opened; and a
+ * redraw shows what is held here, so the screen and the plan cannot part again.
+ */
+const missionForm = {};
+function settingsForm(spec) {
+  for (const item of spec) {
+    if (item.key && !(item.key in missionForm)) missionForm[item.key] = item.value ?? "";
+  }
+  return () => fields(spec.map((item) => (item.key
+    ? { ...item, value: String(missionForm[item.key] ?? "") } : item)), settingChanged);
+}
+/** Every Mission / Aircraft field as it is on screen now, edited or not. */
+export function missionFormValues() {
+  return { ...missionForm };
+}
+/** Set a field the way the operator would (the Mission Types list sets Type). */
+export function setMissionFormValue(key, value) {
+  if (key in missionForm) missionForm[key] = value;
+}
+
 /* Every editable field reports onto the same bus the trees and tables use.
  *
  * fields() has always accepted an onChange and no caller passed one, so editing an
  * altitude or an overlap changed the input element and nothing else -- the mission that
  * Plan then generated used the defaults, silently. */
 const settingChanged = (key, value) => {
+  if (key in missionForm) missionForm[key] = value;
   // A token is a credential: the selection readout names it without echoing it.
   const shown = key === "cloud_token" ? (value ? "(set)" : "(empty)") : value;
   selection.select("setting", { id: key, label: `${key} = ${shown}`, key, value });
@@ -549,7 +579,7 @@ const planning = {
   }),
   right: [
     { id: "plan.props", title: "Mission Properties", tabs: [
-      { title: "Mission", render: () => fields([
+      { title: "Mission", render: settingsForm([
         { group: "Geometry" },
         { key: "type", label: "Type", value: "3D modelling", options: missionTypes },
         { key: "alt", label: "Altitude AGL", value: "60", unit: "m" },
@@ -585,12 +615,12 @@ const planning = {
         { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
         { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
         { key: "linked_version_ids", label: "Linked version ids", value: "" },
-      ], settingChanged) },
-      { title: "Aircraft", render: () => fields([
+      ]) },
+      { title: "Aircraft", render: settingsForm([
         { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },
         { key: "batt", label: "Batteries", value: "3" },
         { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
-      ], settingChanged) },
+      ]) },
       { title: "Camera", render: () => properties([
         { group: "P1 / 35 mm" },
         { label: "Sensor", value: "35.9 × 24.0", unit: "mm" },

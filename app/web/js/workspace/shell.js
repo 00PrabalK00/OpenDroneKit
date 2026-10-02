@@ -8,7 +8,9 @@
 
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
-import { WORKSPACES, WORKSPACE_BY_ID, auditLine } from "./workspaces.js";
+import {
+  WORKSPACES, WORKSPACE_BY_ID, auditLine, missionFormValues, setMissionFormValue,
+} from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
@@ -535,6 +537,17 @@ export class Shell {
         this.selectedEndpoint = { method: value.method, path: value.path };
         this.toast(`${value.method} ${value.path}${value.summary ? ` — ${value.summary}` : ""}. `
           + "Copy cURL and Send Request act on this one.", "ok");
+        return;
+      }
+      case "template": {
+        // Picking a type in the Mission Types list sets the form's Type, so Plan plans
+        // it and the Mission tab shows it. It used to print the name and do nothing.
+        const label = String(value.label || name);
+        this.settings = this.settings || {};
+        this.settings.type = label;
+        setMissionFormValue("type", label);
+        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
+        this.toast(`Mission type: ${label}. Plan uses it.`, "ok");
         return;
       }
       case "setting": {
@@ -1327,7 +1340,12 @@ export class Shell {
         // planned template=grid at altitude 55. That is the worst shape a bug can take
         // here -- a plausible mission that is not the one that was asked for, with
         // nothing on screen to say so.
-        const raw = this.settings || {};
+        //
+        // The same fault survived in a second form: only EDITED fields were sent. The
+        // form read Stand-off 12, Altitude 60 and RTH 90 while the planner used its own
+        // 8, 55 and 80, so a facade was flown 4 m closer than the screen said. What is
+        // on the form now goes, edited or not; an edit (this.settings) is on top.
+        const raw = { ...missionFormValues(), ...(this.settings || {}) };
         const numeric = {};
         for (const [key, value] of Object.entries(raw)) {
           const asNumber = Number(value);

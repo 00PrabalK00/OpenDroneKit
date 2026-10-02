@@ -314,15 +314,37 @@ export const ACTIONS = {
   Plan: {
     describe: "Plan the mission from the current AOI and parameters.",
     async run(ctx) {
-      const result = await call("plan_mission", ctx.missionOptions());
+      const options = ctx.missionOptions();
+      const result = await call("plan_mission", options);
       // The Api answers ok(summary={waypoints, distance_m, ...}, warnings); reading
       // result.waypoint_count printed "Planned ? waypoints" after every successful plan.
       const summary = result.summary || {};
       const warnings = result.warnings || [];
+      // The inputs the plan was made from, so a stand-off or altitude the planner did
+      // not get cannot pass unnoticed again (the form once showed 12 m and sent nothing).
+      // Where the planner changed one (a tower lifts the altitude and RTH above its
+      // top), what it planned is said beside what was asked.
+      const differs = (planned, asked) => planned !== undefined && planned !== null
+        && asked !== undefined && Math.abs(Number(planned) - Number(asked)) > 0.05;
+      const used = [
+        summary.template || options.template,
+        options.altitude_m !== undefined
+          ? `altitude ${options.altitude_m} m AGL`
+            + (differs(summary.altitude_m, options.altitude_m)
+              ? ` (poses average ${Number(summary.altitude_m).toFixed(1)} m)` : "")
+          : "",
+        options.standoff_m !== undefined ? `stand-off ${options.standoff_m} m` : "",
+        options.rth_altitude_m !== undefined
+          ? `RTH ${options.rth_altitude_m} m`
+            + (differs(summary.rth_altitude_m, options.rth_altitude_m)
+              ? ` (planned ${Number(summary.rth_altitude_m).toFixed(1)} m)` : "")
+          : "",
+      ].filter(Boolean).join(", ");
       return {
         message: `Planned ${summary.waypoints ?? "?"} waypoints, `
           + `${((summary.distance_m || 0) / 1000).toFixed(2)} km, ${summary.duration_min ?? "?"} min`
           + (summary.gsd_cm ? `, GSD ${summary.gsd_cm} cm` : "")
+          + (used ? ` (${used})` : "")
           + (warnings.length ? `. ${warnings.join(" ")}` : "."),
         refresh: true,
       };
