@@ -1,0 +1,18 @@
+{
+  "app_name": "OpenDroneKit",
+  "publisher": "OpenDroneKit contributors",
+  "app_url": "https://github.com/00PrabalK00/OpenDroneKit",
+  "inno_app_id": "{{8E0B5C1A-3F5D-4C55-9E77-0D6B2A4F1C11}",
+  "python": {
+    "version": "3.11.9",
+    "embed_url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+    "embed_sha256": "009d6bf7e3b2ddca3d784fa09f90fe54336d5b60f0e0f305c37f400bf83cfd3b",
+    "embed_sha256_note": "Computed from the python.org download on 2026-10-02; its MD5 (6d9aa08531d48fcc261ba667e2df17c4) matches the md5_sum python.org publishes for this file in its downloads API. python.org publishes no sha256 for 3.11.9."
+  },
+  "payload_exclude": ["tests/", ".github/", ".claude/", ".continuum/"],
+  "forbidden_payload_globs": [
+    "*.onnx", "*.onnx.data", "*.pt", "*.pth", "*.ckpt", "*.safetensors",
+    ".env", "*.key", "*.pem", "*.pfx", "kaggle.json", "access_token", "secrets.json",
+    "google*.html", "dji_thermal_sdk*", "libdirp*", "libv_*"
+  ]
+}
