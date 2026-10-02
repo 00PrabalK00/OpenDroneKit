@@ -266,7 +266,9 @@ def write_markdown_report(path: str | Path, payload: dict) -> str:
         if isinstance(multispectral, dict) and multispectral:
             lines.append(f"- NDVI frames: `{int(multispectral.get('frame_count', 0))}`")
             if multispectral.get("ndvi_mean_global") is not None:
-                lines.append(f"- NDVI global mean: `{float(multispectral.get('ndvi_mean_global', 0.0)):.4f}`")
+                basis = multispectral.get("ndvi_basis") or "uncalibrated_dn_ratio"
+                label = "" if basis == "surface_reflectance" else " (uncalibrated: raw sensor counts, not reflectance)"
+                lines.append(f"- NDVI global mean: `{float(multispectral.get('ndvi_mean_global', 0.0)):.4f}`{label}")
         if multisensor.get("summary_path"):
             lines.append(f"- Multi-sensor summary JSON: `{multisensor.get('summary_path')}`")
     else:

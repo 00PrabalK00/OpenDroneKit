@@ -816,6 +816,37 @@ PROCESSING = [
       "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run. "
       "Reconstructions run from the app and every report file now record provenance; "
       "Api.verify_provenance / record_provenance and Reports > Verify Provenance expose it."),
+    F("pr.multispectral.reflectance", "Multispectral radiometric calibration", "workers", "Processing",
+      "MicaSense band TIFFs (incl. 12-bit packed RedEdge-P) decoded, grouped into captures and "
+      "converted to surface reflectance from the camera's own radiometric model plus either the "
+      "DLS2 sun-sensor irradiance or a calibration-panel capture whose albedo the camera read from "
+      "the panel QR code; the panel reading checked against its albedo.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestReading", "tests/test_multispectral_real_data.py::TestPanelCalibration"],
+      "core/multispectral.py. Measured 2026-10-02 on MicaSense's MIT sample panel capture "
+      "(RedEdge-P, panel RP06-2051037-OB, albedo 0.485-0.488): DLS-derived panel reflectance "
+      "error blue -17.7 %, green -4.4 %, red +6.2 %, NIR +0.6 %, red edge +11.2 %, pan +14.1 % "
+      "(mean |error| 9.0 %). Altum sample: +39 % to +75 %, with the DLS reading 34 % less direct "
+      "sun at the panel than 2 min later in flight, so prefer the panel there; Altum green has no "
+      "panel reading and is left uncalibrated rather than given a typical albedo. Altum LWIR "
+      "decoded from centi-kelvin (8.1-43.2 C). Multisensor NDVI now uses reflectance for MicaSense "
+      "bands and labels any other input 'uncalibrated_dn_ratio'."),
+    F("pr.multispectral.alignment", "Multispectral band alignment", "workers", "Processing",
+      "Bands undistorted with their own XMP lens models and registered to the rig reference band, "
+      "with a measured per-band registration figure.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestAlignment"],
+      "Initial homography from the factory rig rotations (Camera:RigRelatives), refined by pyramid "
+      "ECC on gradient images and kept only when it agrees with the reference band better than the "
+      "rig model. Buergewald (24 captures): gradient correlation with green, median/min: blue "
+      "0.89/0.78, red 0.57/0.45, NIR 0.50/0.19, red edge 0.70/0.51."),
+    F("pr.multispectral.orthomosaic", "Multiband reflectance orthomosaic", "workers", "Processing",
+      "Per-band surface-reflectance orthomosaic, georeferenced, from the same solved camera poses "
+      "for every band so band ratios never mix views.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestBandOrthomosaic"],
+      "COLMAP solves poses on geotagged reflectance composites; ColmapReconstructor.band_sources "
+      "then orthorectifies each float band stack onto the ortho grid (orthomosaic_bands.tif, "
+      "float32, NaN nodata, band names + ODK_QUANTITY tags). Buergewald: 24/24 registered, "
+      "0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632, 0.0625 m/px, 5 bands. Sparse surface "
+      "only (no dense MVS in this run). Tools: tools/run_multispectral.py."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1330,8 +1361,11 @@ INDIA_FIRST = [
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
       "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable",
-                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration"],
-      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_agriculture_pack_runs_on_the_orthomosaic"],
+      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. "
+      "Real data: Buergewald RedEdge-P DLS reflectance orthomosaic, 203,091 valid px: NDVI mean 0.565 "
+      "(-0.06..0.98), NDRE mean 0.233, GNDVI mean 0.536."),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
