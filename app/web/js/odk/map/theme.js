@@ -64,7 +64,9 @@ export const THEMES = {
     vector: {
       fill: { color: DESK.accentHover, opacity: 0.12 },
       line: { color: DESK.accentHover, width: 1.5, casing: { color: DESK.well, width: 3.5, opacity: 0.55 } },
-      circle: { radius: 3.5, color: DESK.accentHover, stroke: DESK.well, strokeWidth: 1 },
+      // A ring, so a layer's points (photo positions, survey points) never read as the
+      // plan's filled capture dots drawn in the same blue family.
+      circle: { radius: 3.5, color: DESK.well, stroke: DESK.accentHover, strokeWidth: 1.5 },
     },
     measure: {
       fill: { color: DESK.accent, opacity: 0.18 },

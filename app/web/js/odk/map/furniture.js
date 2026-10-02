@@ -508,8 +508,11 @@ export function mountMapFurniture(map, host, {
     // Open beside the stack, not over it.
     const r = layersButton.getBoundingClientRect();
     const width = pop.node.offsetWidth || 340;
+    const top = Math.max(8, r.top);
     pop.node.style.left = `${Math.max(8, r.left - width - 8)}px`;
-    pop.node.style.top = `${Math.max(8, r.top)}px`;
+    pop.node.style.top = `${top}px`;
+    // It scrolls inside the window rather than running off its bottom edge.
+    pop.node.style.maxHeight = `${Math.max(160, window.innerHeight - top - 8)}px`;
   });
 
   const group = (label, children) => el("div", { class: "odk-mapf-group", role: "group", "aria-label": label }, [
@@ -591,7 +594,13 @@ export function mountMapFurniture(map, host, {
       const result = await runAction("Remove Layer", { layer });
       if (result && result.error) say(result.error, "danger");
       else if (result && result.message) say(result.message, "ok");
-      if (result && !result.skipped && !result.error) { await redraw(); buildLayers(); }
+      if (result && !result.skipped && !result.error) {
+        // The list answers at once: a removed layer must not linger, with live controls,
+        // for as long as the map takes to redraw. The notes refresh after the redraw.
+        await buildLayers();
+        await redraw();
+        buildLayers();
+      }
     });
 
     const range = el("input", { type: "range", min: "0", max: "100", step: "1",

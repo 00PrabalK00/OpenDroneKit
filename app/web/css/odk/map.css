@@ -46,7 +46,9 @@
 .odk-mapf-scale {
   flex-direction: column; gap: var(--sp-1);
   font-family: var(--font-mono); font-size: var(--fs-label); line-height: 14px; color: var(--text-2);
-  text-shadow: 0 0 3px var(--map-well), 0 0 1px var(--map-well);
+  /* On its own plate, like the chips: over bright imagery (grass, concrete at z20+)
+     bare labels fell below 4.5:1. */
+  padding: var(--sp-2) var(--sp-3); background: var(--overlay); border: 1px solid var(--line);
 }
 .odk-mapf-scale-labels { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
 .odk-mapf-scale-bar { display: flex; height: 6px; border: 1px solid var(--text); box-shadow: 0 0 0 1px rgba(10, 13, 17, 0.6); }
@@ -75,7 +77,7 @@
 .odk-geom-swatch--marker { width: 10px; height: 10px; margin: 0 7px; border-radius: 50%; background: var(--warn); }
 .odk-geom-swatch--cad { height: 0; border-top: 1px solid var(--text-2); }
 .odk-geom-swatch--vector { height: 0; border-top: 1.5px solid var(--accent-hover); }
-.odk-geom-swatch--vector-point { width: 7px; height: 7px; margin: 0 8.5px; border-radius: 50%; background: var(--accent-hover); box-shadow: 0 0 0 1px var(--map-well); }
+.odk-geom-swatch--vector-point { width: 8px; height: 8px; margin: 0 8px; border-radius: 50%; background: var(--map-well); border: 1.5px solid var(--accent-hover); }
 .odk-geom-swatch--flight { background: var(--text); height: 1.5px; }
 .odk-geom-swatch--vertex { border: 2px solid var(--accent); background: var(--text); border-radius: 0; }
 
