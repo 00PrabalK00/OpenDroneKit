@@ -132,3 +132,15 @@ def test_dji_kmz_has_the_required_wpml_members(tmp_path):
 def test_empty_plan_is_refused_rather_than_exported_blank():
     with pytest.raises(ValueError):
         build_mission_items({"waypoints": [], "flight_recipe": {}})
+
+
+def test_fractional_dwell_rounds_up_to_the_whole_seconds_ardupilot_stores():
+    # AP_Mission keeps NAV_LOITER_TIME's hold as a uint16 of seconds; a real ArduCopter
+    # read 1.5 back as 1. Rounded up, the aircraft holds at least as long as planned.
+    plan = {**PLAN, "flight_recipe": {**PLAN["flight_recipe"], "world_poses": [
+        {**pose, "dwell_s": dwell}
+        for pose, dwell in zip(PLAN["flight_recipe"]["world_poses"], (1.5, 2.0, 0.2, 3.01))
+    ]}}
+    holds = [item.param1 for item in build_mission_items(plan)
+             if item.command == MAV_CMD_NAV_LOITER_TIME]
+    assert holds == [2.0, 2.0, 1.0, 4.0]

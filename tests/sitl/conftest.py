@@ -4,11 +4,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from tools.sitl.launch import ArduPilotSITL, SITLStartupError, SITLUnavailable
+
+# The shared SITL is configured as a survey copter -- camera trigger, servo gimbal, SD
+# mission storage -- so camera and gimbal items have something real to act on. Set
+# ODK_SITL_PARAM_FILES to override (an empty value means ArduPilot's stock defaults).
+SURVEY_PARAMS = Path(__file__).resolve().parents[2] / "tools" / "sitl" / "params" / "survey_copter.parm"
+
+
+def _session_param_files() -> list[Path]:
+    configured = os.environ.get("ODK_SITL_PARAM_FILES")
+    if configured is None:
+        return [SURVEY_PARAMS]
+    return [Path(p) for p in configured.split(os.pathsep) if p.strip()]
 
 
 @dataclass(frozen=True)
@@ -54,7 +67,7 @@ def sitl_session(pytestconfig):
             instance = 0
     else:
         instance = None
-    launcher = ArduPilotSITL(instance=instance)
+    launcher = ArduPilotSITL(instance=instance, param_files=_session_param_files())
     try:
         launcher.start()
     except SITLUnavailable as exc:
@@ -135,3 +148,17 @@ def sitl_mission() -> PlannedSITLMission:
     )
     items = tuple(item.to_dict() for item in build_mission_items(plan, include_rth=False))
     return PlannedSITLMission(plan=plan, items=items)
+
+
+@pytest.fixture
+def sitl_trace(sitl_observer, request):
+    """An independent, timestamped MAVLink trace of the test, kept as evidence."""
+    from ._support import MavlinkTrace, evidence_dir
+
+    trace = MavlinkTrace(sitl_observer)
+    try:
+        yield trace
+    finally:
+        trace.stop()
+        name = request.node.name.replace("[", "_").replace("]", "").replace("/", "_")
+        trace.write(evidence_dir("traces") / f"{name}.jsonl")

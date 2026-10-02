@@ -145,8 +145,16 @@ class ArduPilotSITL:
         instance: int | None = None,
         speedup: int | None = None,
         rebuild: bool | None = None,
+        param_files: Sequence[str | Path] | None = None,
     ) -> None:
         self._configured_command = command
+        # Vehicle configuration loaded over ArduPilot's SITL defaults at boot, e.g. a
+        # camera trigger or SD-card mission storage. Some of these (CAM1_TYPE,
+        # BRD_SD_MISSION) only take effect at boot, so they cannot be set afterwards.
+        if param_files is None:
+            configured = os.environ.get("ODK_SITL_PARAM_FILES", "").strip()
+            param_files = [p for p in configured.split(os.pathsep) if p.strip()]
+        self.param_files = [Path(p).resolve() for p in param_files]
         self.startup_timeout_s = float(
             startup_timeout_s
             if startup_timeout_s is not None
@@ -190,6 +198,10 @@ class ArduPilotSITL:
             "--out", f"127.0.0.1:{self.observer_port}",
             "--mavproxy-args=--daemon",
         ]
+        for param_file in self.param_files:
+            if not param_file.is_file():
+                raise SITLStartupError(f"SITL parameter file {param_file} does not exist.")
+            command.append(f"--add-param-file={param_file}")
         if not self.rebuild:
             command.append("--no-rebuild")
         extra = os.environ.get("ODK_SITL_EXTRA_ARGS", "").strip()

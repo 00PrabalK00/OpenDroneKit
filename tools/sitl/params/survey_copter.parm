@@ -1,0 +1,13 @@
+# A survey quadcopter, as opposed to ArduPilot's bare SITL quad: a camera the mission's
+# DO_DIGICAM_CONTROL / IMAGE_START_CAPTURE items can actually fire (CAMERA_FEEDBACK is
+# the evidence), a servo gimbal for DO_MOUNT_CONTROL, and mission storage on the SD card.
+# Stock SITL storage holds 650 mission items -- about what a Pixhawk's FRAM holds -- and
+# structure templates over a modest site exceed it; that limit is tested separately
+# against a stock vehicle (test_copter_mission_rejection.py).
+CAM1_TYPE 1
+SERVO9_FUNCTION 10
+MNT1_TYPE 1
+SERVO10_FUNCTION 7
+MNT1_PITCH_MIN -90
+MNT1_PITCH_MAX 30
+BRD_SD_MISSION 256

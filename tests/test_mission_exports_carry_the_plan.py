@@ -156,7 +156,9 @@ class TestSpeedAndDwellReachTheFile:
         """Roof inspection is the stop-and-shoot grid; its dwell used to be dropped."""
         planned, written = plan_and_export(api, tmp_path, {"template": "roof_inspection"})
         loiters = [i for i in plan_items(written) if i["command"] == NAV_LOITER_TIME]
-        assert loiters and {i["params"][0] for i in loiters} == {1.5}
+        # The planner's 1.5 s hold, rounded UP to the whole seconds ArduPilot stores: a
+        # real ArduCopter truncated 1.5 to 1 (tests/sitl/test_copter_mission_templates.py).
+        assert loiters and {i["params"][0] for i in loiters} == {2.0}
 
 
 def _local(lat: float, lon: float) -> tuple[float, float]:

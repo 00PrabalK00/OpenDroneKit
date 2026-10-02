@@ -310,13 +310,19 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
 
         dwell = pose["dwell_s"]
         if dwell > 0.0:
+            # ArduPilot keeps a loiter time as whole seconds (a uint16 in AP_Mission) and
+            # truncates: the planner's 1.5 s stop-and-shoot hold was stored -- and read
+            # back from a real ArduCopter -- as 1 s, a third shorter than planned. Rounded
+            # up, the aircraft holds at least as long as the plan asked for.
+            hold_s = float(math.ceil(dwell - 1e-9))
             add(
                 MAV_CMD_NAV_LOITER_TIME,
-                param1=dwell,
+                param1=hold_s,
                 latitude=pose["lat"],
                 longitude=pose["lon"],
                 altitude=pose["alt"],
-                label=f"hold {dwell:.1f} s",
+                label=(f"hold {hold_s:.0f} s" if hold_s == dwell
+                       else f"hold {hold_s:.0f} s (planned {dwell:g} s)"),
             )
         else:
             add(
