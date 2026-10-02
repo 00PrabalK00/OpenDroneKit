@@ -167,7 +167,9 @@ def test_string_pickers_choose_what_was_clicked(api, tmp_path) -> None:
             const said = await ODK.waitFor(() => ODK.toasts().find((t) => t.includes(" at 60 m")));
             return {{ row, said }};
         """)
-    assert result["row"].strip() == name
+    # The row is labelled with the name (its profile key shown beside it as a hint), and
+    # the choice is the KEY: describe_camera given a name fell back to the placeholder.
+    assert result["row"].strip().startswith(name)
     described = cockpit.called("describe_camera")
-    assert described and described[0]["args"][0] == name
+    assert described and described[0]["args"][0] == cameras[0]["key"]
     assert result["said"].startswith(f"{name} at 60 m: GSD")

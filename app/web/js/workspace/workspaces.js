@@ -690,6 +690,10 @@ export const AIRCRAFT_FORM = [
 
 const missionDefault = (key) => (MISSION_FORM.find((f) => f.key === key) || {}).value;
 const airDefault = (key) => (AIRCRAFT_FORM.find((f) => f.key === key) || {}).value;
+/* The Camera tab's describe_camera arguments: the Camera field's camera at the Altitude
+   field's height. Kept out of the calls list so only method names appear there. */
+const cameraTabArgs = () => [String(FORM_VALUES.camera ?? missionDefault("camera")),
+  Number(FORM_VALUES.alt ?? missionDefault("alt")) || 60];
 
 const planning = {
   id: "planning",
@@ -787,8 +791,7 @@ const planning = {
          for. It now describes the Camera field's camera at the Altitude field's height,
          from the camera database -- the same numbers Plan uses. */
       { title: "Camera", render: () => live({
-        calls: [() => ["describe_camera", String(FORM_VALUES.camera ?? missionDefault("camera")),
-          Number(FORM_VALUES.alt ?? missionDefault("alt")) || 60]],
+        calls: [() => ["describe_camera", ...cameraTabArgs()]],
         empty: "That camera is not in the camera database; see Cameras for the list.",
         isEmpty: ([d]) => !(d && d.camera),
         render: ([d]) => {

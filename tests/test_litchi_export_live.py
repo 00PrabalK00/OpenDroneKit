@@ -137,7 +137,9 @@ class TestTheMenuItemExportsLitchi:
                 "__toasts.find((t) => t.includes('Exported') || t.includes('Export:'))", timeout_s=60))
             written = sorted(missions.glob("*"))
             assert written and {p.suffix for p in written} == {".csv"}, [p.name for p in written]
-            assert f"Exported {len(written)} mission file(s)" in toast, toast
+            # The one-format menu item names each file it wrote (Exported litchi: a, b, ...).
+            assert toast.startswith("Exported litchi:"), toast
+            assert all(str(p) in toast for p in written), (toast, written)
             rows = []
             for path in written:
                 rows.extend(csv.DictReader(open(path, encoding="utf-8")))
