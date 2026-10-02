@@ -131,7 +131,7 @@ def render_tile(token: str, z: int, x: int, y: int) -> bytes | None:
     from rasterio.enums import Resampling
     from rasterio.transform import from_bounds
     from rasterio.warp import reproject, transform_bounds
-    from rasterio.windows import from_bounds as window_from_bounds
+    from rasterio.windows import Window, from_bounds as window_from_bounds
 
     with _LOCK:
         entry = _BY_TOKEN.get(token)
@@ -155,9 +155,21 @@ def render_tile(token: str, z: int, x: int, y: int) -> bytes | None:
         # rather than every full-resolution pixel.
         window = window_from_bounds(max(sw, left), max(ss, bottom), min(se, right), min(sn, top),
                                     transform=src.transform)
-        window = window.round_offsets().round_lengths()
         if window.width <= 0 or window.height <= 0:
             return EMPTY_PNG
+        # Grow the window outward to whole pixels plus a margin of two read pixels, so
+        # the resampling at the tile's edges has source on both sides. Rounding it in
+        # place could trim up to half a pixel off a side, and at deep zoom (one source
+        # pixel spans several tile pixels) that left transparent seams along tile edges.
+        factor = max(1.0, max(window.width, window.height) / (TILE_SIZE * 2.0))
+        pad = 2 * factor
+        col0 = max(0, math.floor(window.col_off - pad))
+        row0 = max(0, math.floor(window.row_off - pad))
+        col1 = min(src.width, math.ceil(window.col_off + window.width + pad))
+        row1 = min(src.height, math.ceil(window.row_off + window.height + pad))
+        if col1 <= col0 or row1 <= row0:
+            return EMPTY_PNG
+        window = Window(col0, row0, col1 - col0, row1 - row0)
         factor = max(1.0, max(window.width, window.height) / (TILE_SIZE * 2.0))
         out_h = max(1, int(round(window.height / factor)))
         out_w = max(1, int(round(window.width / factor)))
