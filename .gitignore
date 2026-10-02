@@ -42,3 +42,6 @@ infrastructure/docker/.env
 # Training checkpoints: 338 MB each, reproducible from the run config.
 training/runs/*/best.pt
 training/runs/*/last.pt
+
+# Open sample datasets fetched by tools/fetch_sample_data.py (never committed)
+/sample_data/
