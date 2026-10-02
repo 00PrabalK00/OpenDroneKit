@@ -3216,6 +3216,114 @@ class Api:
         templates = self._session.store.get_setting("report_templates", {}) or {}
         return ok(templates=[{"name": k, **v} for k, v in sorted(templates.items())])
 
+    # ------------------------------------------------- standards-structured reports
+    #
+    # Reports laid out after a published standard's required contents (IEC TS 62446-3,
+    # FHWA SNBI, InterNACHI roof, ANSI/TIA-222-H Annex J). Every required item the
+    # project does not supply is printed MISSING; the PDF embeds a SHA-256 manifest of
+    # its inputs and is signed with this installation's Ed25519 key. Nothing here
+    # claims compliance -- see core/standards_reports.py and docs/REPORT_STANDARDS.md.
+
+    @guard
+    def standards_templates(self) -> dict[str, Any]:
+        """The standards templates, their sections, required items and cited sources."""
+        from app import standards_builder
+
+        return ok(templates=standards_builder.templates())
+
+    @guard
+    def standards_facts(self, template: str) -> dict[str, Any]:
+        """The values an inspector has entered for a template in the open project."""
+        from app import standards_builder
+
+        try:
+            return ok(template=template, **standards_builder.load_facts(self._session, template))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def save_standards_facts(self, template: str, facts: dict[str, Any],
+                             entered_by: str = "") -> dict[str, Any]:
+        """Store inspector-entered items/table rows; each is sourced 'entered by <who>'."""
+        from app import standards_builder
+
+        try:
+            stored = standards_builder.save_facts(self._session, template, facts, entered_by)
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("standards_facts_saved",
+                            {"template": template, "entered_by": entered_by,
+                             "items": len(stored["fields"])})
+        return ok(template=template, **stored)
+
+    @guard
+    def standards_report_readiness(self, template: str) -> dict[str, Any]:
+        """Which required items are provided and which will print as MISSING."""
+        from app import standards_builder
+
+        try:
+            return ok(template=template, **standards_builder.readiness(self._session, template))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def generate_standards_report(self, template: str, title: str = "") -> dict[str, Any]:
+        """Write a signed, manifest-carrying standards report into <project>/reports/standards."""
+        from app import standards_builder
+        from core.report_signing import SigningUnavailable
+
+        try:
+            result = standards_builder.generate(self._session, template, title)
+        except (ValueError, FileNotFoundError, SigningUnavailable) as exc:
+            return fail(str(exc))
+        return ok(**result)
+
+    @guard
+    def list_standards_reports(self) -> dict[str, Any]:
+        from app import standards_builder
+
+        return ok(reports=standards_builder.list_reports(self._session))
+
+    @guard
+    def verify_report(self, path: str, inputs_root: str = "",
+                      check_inputs: bool = True) -> dict[str, Any]:
+        """Check a signed report (PDF or folder): signature, manifest, and its inputs.
+
+        The call succeeds whenever the check ran; whether the report verified is
+        ``verified`` (with ``problems`` saying why not).
+        """
+        from core.report_signing import SigningUnavailable, verify_report
+
+        try:
+            result = verify_report(path, check_input_files=bool(check_inputs),
+                                   inputs_root=inputs_root or None)
+        except SigningUnavailable as exc:
+            return fail(str(exc))
+        verified = bool(result.pop("ok"))
+        return ok(verified=verified, **result)
+
+    @guard
+    def report_signing_key(self) -> dict[str, Any]:
+        """This installation's report-signing public key (created on first use)."""
+        from core.report_signing import SigningUnavailable, key_info
+
+        try:
+            info = key_info()
+        except SigningUnavailable as exc:
+            return fail(str(exc))
+        info.pop("private_key_path", None)
+        return ok(**info)
+
+    @guard
+    def trust_report_key(self, public_key_path: str, name: str = "") -> dict[str, Any]:
+        """Trust another signer's Ed25519 public key (PEM) for verify_report."""
+        from core.report_signing import trust_public_key
+
+        try:
+            return ok(**trust_public_key(public_key_path, name))
+        except (OSError, ValueError) as exc:
+            return fail(str(exc))
+
     @guard
     def record_finding(self, image: str, label: str, severity: str = "medium",
                        note: str = "", bbox: list[float] | None = None,
