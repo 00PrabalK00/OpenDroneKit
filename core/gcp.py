@@ -173,6 +173,16 @@ def epsg_from_crs_header(header: str) -> int:
     )
 
 
+def _names_a_crs(line: str) -> bool:
+    if "," in line:
+        return False
+    try:
+        epsg_from_crs_header(line)
+    except GcpError:
+        return False
+    return True
+
+
 def _looks_like_odm(lines: Sequence[str]) -> bool:
     """A first line that is not a CSV header, then rows of x y z px py image."""
     if len(lines) < 2 or "," in lines[0]:
@@ -228,7 +238,13 @@ def read_odm_gcp_file(path: str | Path) -> list[GroundControlPoint]:
         if len(tokens) >= 7:
             name = tokens[6]
         else:
-            name = by_position.get(key) or f"GCP{len(by_position) + 1:02d}"
+            name = by_position.get(key)
+            if name is None:
+                # Unnamed rows are numbered, skipping any number a named row already took.
+                serial = len(by_position) + 1
+                while f"GCP{serial:02d}" in points:
+                    serial += 1
+                name = f"GCP{serial:02d}"
         by_position.setdefault(key, name)
         point = points.get(name)
         if point is None:
@@ -261,7 +277,10 @@ def read_gcp_file(path: str | Path, default_epsg: int | None = None
     text = source.read_text(encoding="utf-8-sig", errors="replace")
     plain = [ln.strip() for ln in text.splitlines()
              if ln.strip() and not ln.strip().startswith("#")]
-    if _looks_like_odm(plain):
+    if _looks_like_odm(plain) or (plain and _names_a_crs(plain[0])):
+        # A first line that names a CRS is an ODM file even when a row is malformed;
+        # the ODM reader then says which line, where the CSV reader would only say
+        # there is no x column.
         return read_odm_gcp_file(source)
     rows = [r for r in csv.reader(text.splitlines()) if r and any(c.strip() for c in r)]
     if not rows:
@@ -925,12 +944,173 @@ def solve_with_control(points: Sequence[GroundControlPoint],
         else:
             report = accuracy_report(points, [], role="check")
         report["georeferenced_by"] = "camera_gps" if camera_anchor is not None else "none"
-        report["warnings"].append(
+        too_few = (
             f"{len(usable)} control point(s) are marked in at least {MIN_IMAGE_MARKS} "
-            "registered images; three are needed to georeference the model with them, "
-            "so they were not used for the fit."
+            "registered images; three are needed to fit the model's rotation and scale "
+            "to them, so they were not used for a similarity fit."
         )
+        report["warnings"].append(too_few)
+        if camera_anchor is not None and len(located) >= SHIFT_MIN_POINTS:
+            shifted = shift_anchor_to_control(located, camera_anchor, epsg)
+            report["control_shift"] = shifted.report
+            if shifted.anchor is not None:
+                anchor = shifted.anchor
+                camera_check = {k: report.get(k) for k in (
+                    "role", "rmse_m", "horizontal_rmse_m", "vertical_rmse_m",
+                    "mean_offset_m", "residuals")}
+                report = dict(shifted.report)
+                report["camera_gps_check"] = camera_check
+                report["warnings"] = (list(shifted.report["warnings"])
+                                      + check_report_warnings(located) + [too_few])
+                report["georeferenced_by"] = "camera_gps_shifted_to_control"
     report["located"] = located_info
+    return ControlSolution(anchor=anchor, report=report)
+
+
+# A thinly marked survey can still fix where the model is, if not how it is turned or
+# scaled: three located points give a translation and a leave-one-out check of it.
+SHIFT_MIN_POINTS = 3
+
+
+def check_report_warnings(located: Sequence[tuple[GroundControlPoint, LocatedPoint]]) -> list[str]:
+    single = [f.name for _p, f in located if f.views < 2]
+    if not single:
+        return []
+    return [
+        f"{len(single)} control point(s) are marked in one registered image only "
+        f"({', '.join(single[:8])}); each was placed by following its ray to the surface "
+        "of the model's tie points around the mark. That position carries the error of "
+        "that surface, and a single mark cannot show a wrong target, so treat these "
+        "residuals as indicative."
+    ]
+
+
+def _translation_model(placed: np.ndarray, world: np.ndarray):
+    shift = (world - placed).mean(axis=0)
+    return 1.0, placed.mean(axis=0), placed.mean(axis=0) + shift
+
+
+def _scale_translation_model(placed: np.ndarray, world: np.ndarray):
+    centre = placed.mean(axis=0)
+    target = world.mean(axis=0)
+    spread = float(np.sum((placed - centre) ** 2))
+    factor = float(np.sum((placed - centre) * (world - target)) / spread) if spread > 0 else 1.0
+    return factor, centre, target
+
+
+THIN_CONTROL_MODELS = {
+    "translation": _translation_model,
+    "scale_and_translation": _scale_translation_model,
+}
+
+
+def shift_anchor_to_control(located: Sequence[tuple[GroundControlPoint, LocatedPoint]],
+                            camera_anchor: Any, epsg: int) -> ControlSolution:
+    """Correct the camera-GPS georeferencing with control too thinly marked to fit.
+
+    Camera geotags fix a model's orientation well (dozens of cameras spread over the
+    survey) and its position and size less well: consumer GPS is metres out
+    horizontally, its heights are often in another vertical datum than the control, and
+    its scale can be off by per cent (the ODM bellus survey: 4.2 per cent). Control
+    marked in one or two images each cannot carry a 7-parameter fit -- with the points
+    placed on the tie-point surface, a free tilt is what goes wrong first -- but every
+    point the model can place still says where the model is and how big. The geotag
+    rotation is kept and either a translation or a scale about the control's centroid
+    plus a translation is fitted to the control.
+
+    The correction is fitted to the points it is measured on, so its residuals flatter
+    it. Leave-one-out residuals (each point checked against a correction computed from
+    the others) are the independent figure; the model with the lower leave-one-out
+    RMSE is used, and only when that beats the uncorrected camera-GPS residuals at the
+    same points. ``anchor`` is None when it does not.
+    """
+    import dataclasses
+
+    control = [p for p, _f in located]
+    world = surveyed_positions(control, epsg)
+    placed = camera_anchor.apply(np.asarray([f.position for _p, f in located]), absolute=True)
+
+    def apply(params, xyz):
+        factor, centre, target = params
+        return (xyz - centre) * factor + target
+
+    def residuals(errors: np.ndarray) -> list[GcpResidual]:
+        return [GcpResidual(name=p.name, dx=float(e[0]), dy=float(e[1]), dz=float(e[2]),
+                            mark_count=len(p.marks)) for p, e in zip(control, errors)]
+
+    def rms(errors: np.ndarray) -> float:
+        return float(np.sqrt(np.mean(np.sum(errors ** 2, axis=1))))
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for name, fit in THIN_CONTROL_MODELS.items():
+        params = fit(placed, world)
+        held = np.zeros_like(placed)
+        for index in range(len(located)):
+            keep = [k for k in range(len(located)) if k != index]
+            held[index] = apply(fit(placed[keep], world[keep]), placed[index:index + 1])[0] - world[index]
+        candidates[name] = {"params": params, "fit": apply(params, placed) - world,
+                            "held": held, "loo_rmse": rms(held)}
+    chosen = min(candidates, key=lambda k: candidates[k]["loo_rmse"])
+    best = candidates[chosen]
+    factor, centre, target = best["params"]
+
+    report = accuracy_report(control, residuals(best["fit"]), role="fit")
+    loo = accuracy_report(control, residuals(best["held"]), role="check")
+    loo["note"] = (
+        f"Each of the {len(located)} points checked against a correction computed from "
+        "the others only, so none of them took part in the georeferencing it is measured "
+        "against. This is the figure to quote for this survey."
+    )
+    report["leave_one_out"] = loo
+    before = rms(placed - world)
+    shift = target - centre
+    report.update({
+        "method": chosen,
+        "scale_factor": round(float(factor), 6),
+        "shift_m": [round(float(v), 4) for v in shift],
+        "camera_gps_rmse_m": round(before, 4),
+        "models_compared": {k: {"leave_one_out_rmse_m": round(v["loo_rmse"], 4),
+                                "fit_rmse_m": round(rms(v["fit"]), 4)}
+                            for k, v in candidates.items()},
+        "note": (
+            "The model keeps the rotation fitted to the camera geotags; "
+            + (f"it is scaled by {factor:.4f} about the control's centroid and "
+               if chosen == "scale_and_translation" else "it is ")
+            + f"translated by ({shift[0]:+.2f}, {shift[1]:+.2f}, {shift[2]:+.2f}) m onto "
+            f"{len(located)} control point(s) that are too thinly marked for a full fit. "
+            "These residuals are of the points the correction was fitted to; "
+            "leave_one_out is the independent check. Of the corrections compared, the one "
+            "with the lower leave-one-out RMSE was chosen, which makes that figure "
+            "slightly optimistic with this few points."
+        ),
+    })
+    # The correction has to earn its place: a tenth better than the geotags and by more
+    # than a centimetre, below which it is beneath what the control was surveyed to.
+    if loo["rmse_m"] is None or best["loo_rmse"] > min(0.9 * before, before - 0.01):
+        report["warnings"].append(
+            "Correcting onto the control would not improve the independent residuals "
+            f"(leave-one-out {loo['rmse_m']} m against {before:.3f} m from the geotags "
+            "alone), so the camera-GPS georeferencing was kept."
+        )
+        return ControlSolution(anchor=None, report=report)
+    # X' = f * (s R x + t + o - c) + target, expressed as a GeoAnchor about the same origin.
+    origin = camera_anchor.origin_vector
+    translation = factor * (camera_anchor.translation_vector + origin - centre) + target - origin
+    norms = np.linalg.norm(best["fit"], axis=1)
+    anchor = dataclasses.replace(
+        camera_anchor,
+        scale=float(camera_anchor.scale * factor),
+        translation=[float(v) for v in translation],
+        rmse_m=float(np.sqrt(np.mean(norms ** 2))),
+        max_residual_m=float(norms.max()),
+        method="camera_gps_shifted_to_control",
+    )
+    report["warnings"].append(
+        "Orientation comes from the camera geotags, not from the control: "
+        f"{len(located)} point(s) can place the model but fewer than three are marked in "
+        f"{MIN_IMAGE_MARKS} images, which a full fit needs. A tilt in the geotag fit "
+        "grows with distance from the control and is not measured here."
+    )
     return ControlSolution(anchor=anchor, report=report)
 
 

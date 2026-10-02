@@ -1058,7 +1058,9 @@ class Api:
             anchor = geo.GeoAnchor(**_json.loads(anchor_path.read_text(encoding="utf-8")))
             poses = poses_from_records(
                 _json.loads(poses_path.read_text(encoding="utf-8")).get("cameras", []))
-            fitted = anchor.method == "ground_control"
+            # A shift onto control is fitted to these points too, so its residuals
+            # here flatter it; the run's leave-one-out check is carried across below.
+            fitted = anchor.method in ("ground_control", "camera_gps_shifted_to_control")
             try:
                 report = check_against_anchor(points, poses, anchor,
                                               role="fit" if fitted else "check",
@@ -1068,7 +1070,7 @@ class Api:
             report["georeferenced_by"] = anchor.method
             report["reconstruction"] = str(run)
             usable = sum(1 for p in points if p.is_usable)
-            if not fitted and usable >= 3:
+            if anchor.method != "ground_control" and usable >= 3:
                 report["warnings"].append(
                     f"{usable} control points are now marked well enough to georeference "
                     "the model; run Process again to fit it to them."

@@ -72,3 +72,19 @@ def test_a_wall_in_an_unknown_height_datum_is_not_planned_on():
 def test_too_few_points_is_refused():
     with pytest.raises(FacadeError):
         measure_facade(np.zeros((10, 3)), np.zeros((3, 3)), EPSG)
+
+
+def test_a_facade_is_imaged_across_the_standoff_with_the_camera_that_flies_it():
+    """GSD from the 6 m stand-off, not the waypoint altitude; storage from the real camera.
+
+    The Hagenberg plan quoted 0.34 cm (mean altitude 9.4 m) for a wall 33.6 m away that
+    the M30T images at 1.22 cm, and sized its storage from a fallback camera.
+    """
+    points, cams, _a, _n = wall_cloud()
+    wall = measure_facade(points, cams, EPSG, home_elevation=500.0)
+    plan, _polygon = plan_facade_mission(wall, camera="m30t_wide")
+    expected = wall.camera_standoff_m["median"] * 6.4 / 4.4 / 4000 * 100
+    assert plan.estimated_gsd_cm == pytest.approx(expected, rel=1e-6)
+    storage = plan.estimates()["storage"]
+    assert storage["megapixels"] == pytest.approx(12.0)
+    assert not any("not in the preset database" in a for a in storage["assumptions"])

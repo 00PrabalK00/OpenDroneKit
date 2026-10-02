@@ -867,6 +867,12 @@ class ColmapReconstructor:
         # Multiple disconnected models mean the imagery split into separate clusters;
         # the largest is the usable one and the split is worth reporting.
         best = max(models, key=lambda model: len(_registered_images(model)))
+        best_names = {_image_name(image) for image in _registered_images(best)}
+        # The mapper can also leave a small model built only from images the largest one
+        # already holds (a re-seeded fragment: the NVS facade run left 3 of its 60
+        # frames in a second model). That is not a split of the survey.
+        models = [best] + [model for model in models if model is not best and
+                           {_image_name(i) for i in _registered_images(model)} - best_names]
         if len(models) > 1:
             self._warn(
                 f"COLMAP produced {len(models)} disconnected models; using the largest "
@@ -1966,6 +1972,17 @@ class ColmapReconstructor:
                    "not georeferenced.")
             )
             return camera_anchor
+        if solution.anchor.method == "camera_gps_shifted_to_control":
+            shift = solution.report.get("shift_m") or [0.0, 0.0, 0.0]
+            loo = (solution.report.get("leave_one_out") or {}).get("rmse_m")
+            self._warn(
+                "Ground control is too thinly marked for a full fit (fewer than three "
+                f"points in {gcp.MIN_IMAGE_MARKS} registered images), so the geotag "
+                f"georeferencing was corrected onto it (scale x{solution.report.get('scale_factor', 1.0)}, "
+                f"shift ({shift[0]:+.2f}, {shift[1]:+.2f}, {shift[2]:+.2f}) m); the "
+                f"orientation is still the geotags'. Leave-one-out check RMSE {loo} m "
+                "(gcp_report.json)."
+            )
         return solution.anchor
 
     def _write_products(

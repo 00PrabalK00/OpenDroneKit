@@ -132,8 +132,22 @@ def estimate_storage(image_count: int, camera: str = "custom", *,
 
     from .planner import CAMERA_PRESETS  # imported late to avoid a circular import
 
-    presets = camera_presets if camera_presets is not None else CAMERA_PRESETS
     key = (camera or "").lower()
+    if camera_presets is None and key not in CAMERA_PRESETS:
+        # CAMERA_PRESETS holds three cameras; the profile database holds every
+        # published one (and the operator's own), which the planner already uses for
+        # GSD. Sizing storage from the fallback while the GSD used the real camera
+        # contradicted itself.
+        from .cameras import resolve
+
+        resolved, known = resolve(camera or "")
+        if known:
+            presets = {key: {"image_w_px": resolved.image_w_px,
+                             "image_h_px": resolved.image_h_px}, "custom": CAMERA_PRESETS["custom"]}
+        else:
+            presets = CAMERA_PRESETS
+    else:
+        presets = camera_presets if camera_presets is not None else CAMERA_PRESETS
     known = key in presets
     profile = presets.get(key, presets["custom"])
 

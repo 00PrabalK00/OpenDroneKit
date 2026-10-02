@@ -87,8 +87,17 @@ class TestOdmRows:
 
     def test_a_short_row_is_refused_with_its_line_number(self, tmp_path):
         path = _write(tmp_path, "WGS84 UTM 17N\n1 2 3 10 10 a.jpg\n1 2 3 10\n")
-        with pytest.raises(GcpError):
+        # The CRS header marks it as an ODM file, so the error names the bad line
+        # instead of the CSV reader's "no x column".
+        with pytest.raises(GcpError, match="line 3"):
             read_gcp_file(path)
+
+    def test_unnamed_points_do_not_take_a_name_a_named_row_already_has(self, tmp_path):
+        path = _write(tmp_path, "EPSG:32617\n"
+                      "1 2 3 10 10 a.jpg GCP01\n"
+                      "7 8 9 10 10 b.jpg\n")
+        points = read_gcp_file(path)
+        assert [(p.name, p.x) for p in points] == [("GCP01", 1.0), ("GCP02", 7.0)]
 
     def test_headed_csv_still_reads_as_before(self, tmp_path):
         path = _write(tmp_path, "name,easting,northing,elevation,epsg\nT1,1,2,3,32617\n",
@@ -193,3 +202,78 @@ def test_a_shared_vertical_offset_is_named_as_a_datum_question():
     scattered = [GcpResidual(f"G{i}", 0, 0, dz, 1) for i, dz in enumerate([-3.0, 2.5, 0.4])]
     assert not any("vertical datum" in w
                    for w in accuracy_report(points, scattered, role="check")["warnings"])
+
+
+class TestThinControlCorrectsTheGeotagFit:
+    """Single-mark control cannot carry a 7-parameter fit but can fix position and size.
+
+    On the real bellus survey the geotag fit put every check point ~31.6 m low (heights in
+    another datum) and the model 4.2 per cent small; correcting scale and translation onto
+    the four single-mark points took the leave-one-out RMSE from 31.9 m to 1.57 m.
+    Here the geotag fit is wrong by a known scale and offset and the surface is exact,
+    so the correction must recover it exactly.
+    """
+
+    ORIGIN = [440000.0, 4564000.0, 300.0]
+    MARKS = [(12, 18), (16, 24), (8, 22), (14, 30)]
+
+    def control(self, pose, origin):
+        points = []
+        for i, (x, y) in enumerate(self.MARKS):
+            u, v = pose.project(np.array([x, y, 0.0]))
+            points.append(add_mark(GroundControlPoint(
+                f"G{i}", origin[0] + x, origin[1] + y, origin[2], 32617), "a.jpg", u, v))
+        return points
+
+    def anchor(self, scale, translation):
+        from core.geo import GeoAnchor
+
+        return GeoAnchor(scale=scale, rotation=np.eye(3).tolist(), translation=list(translation),
+                         epsg=32617, origin=list(self.ORIGIN), inlier_count=20,
+                         sample_count=20, rmse_m=2.0, max_residual_m=4.0)
+
+    def test_a_wrong_geotag_scale_and_datum_are_corrected(self):
+        from core.gcp import solve_with_control
+
+        single = TestSingleMark()
+        pose = single.pose()
+        camera = self.anchor(1 / 1.042, [1.4, -0.9, -31.6])
+        solution = solve_with_control(self.control(pose, self.ORIGIN), {"a.jpg": pose}, 32617,
+                                      camera, observations={"a.jpg": single.surface(pose)})
+        report = solution.report
+        assert report["georeferenced_by"] == "camera_gps_shifted_to_control"
+        assert report["method"] == "scale_and_translation"
+        assert report["scale_factor"] == pytest.approx(1.042, abs=1e-6)
+        assert report["camera_gps_check"]["vertical_rmse_m"] > 30
+        assert report["leave_one_out"]["role"] == "check"
+        assert report["leave_one_out"]["rmse_m"] == pytest.approx(0.0, abs=1e-6)
+        # The anchor the products are written with puts each point where it was surveyed.
+        placed = solution.anchor.apply(np.array([[x, y, 0.0] for x, y in self.MARKS]))
+        assert placed == pytest.approx(
+            np.array([[self.ORIGIN[0] + x, self.ORIGIN[1] + y, self.ORIGIN[2]]
+                      for x, y in self.MARKS]), abs=1e-6)
+        assert solution.anchor.rotation == np.eye(3).tolist()
+
+    def test_an_exact_geotag_fit_is_left_alone(self):
+        from core.gcp import solve_with_control
+
+        single = TestSingleMark()
+        pose = single.pose()
+        camera = self.anchor(1.0, [0.0, 0.0, 0.0])
+        solution = solve_with_control(self.control(pose, self.ORIGIN), {"a.jpg": pose}, 32617,
+                                      camera, observations={"a.jpg": single.surface(pose)})
+        assert solution.anchor is None
+        assert solution.report["georeferenced_by"] == "camera_gps"
+        assert any("would not improve" in w
+                   for w in solution.report["control_shift"]["warnings"])
+
+    def test_two_points_are_too_few_to_correct_anything(self):
+        from core.gcp import solve_with_control
+
+        single = TestSingleMark()
+        pose = single.pose()
+        camera = self.anchor(1 / 1.042, [1.4, -0.9, -31.6])
+        solution = solve_with_control(self.control(pose, self.ORIGIN)[:2], {"a.jpg": pose},
+                                      32617, camera, observations={"a.jpg": single.surface(pose)})
+        assert solution.anchor is None
+        assert "control_shift" not in solution.report
