@@ -272,15 +272,6 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
             label=f"speed {speed:.1f} m/s",
         )
 
-    if spacing > 0.0:
-        add(
-            MAV_CMD_DO_SET_CAM_TRIGG_DIST,
-            frame=MAV_FRAME_MISSION,
-            param1=spacing,
-            param3=1.0,
-            label=f"trigger every {spacing:.1f} m",
-        )
-
     for index, pose in enumerate(viewpoints):
         gimbal = pose["gimbal_pitch_deg"]
         # DO_GIMBAL_MANAGER_PITCHYAW: param1 pitch, param2 yaw (body frame: flags in x
@@ -296,10 +287,13 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
         # from north each leg and never reached its target (photos up to 115 deg off).
         # The gimbal-manager command sets the gimbal and leaves the heading alone, on
         # gimbals with and without a pan axis, in ArduPilot (4.3+) and PX4 alike.
+        #
+        # ArduPilot stores this pitch as whole degrees (int8) and truncates toward zero:
+        # a dome's -61.93 deg was read back as -61. Rounded here, it is the nearest degree.
         add(
             MAV_CMD_DO_GIMBAL_MANAGER_PITCHYAW,
             frame=MAV_FRAME_MISSION,
-            param1=gimbal,
+            param1=float(round(gimbal)),
             param2=0.0,
             param3=0.0,
             param4=0.0,
@@ -348,6 +342,20 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
                 longitude=pose["lon"],
                 altitude=pose["alt"],
                 label=f"waypoint {index + 1}",
+            )
+
+        if spacing > 0.0 and index == 0:
+            # Distance triggering starts on arrival at the first viewpoint (a do-command
+            # after a waypoint runs when it is reached; param3=1 shoots there at once).
+            # It used to be switched on before the first waypoint, so ArduCopter took
+            # photos all the way from the launch point to the survey (SITL: 16 shots for
+            # a 12-shot line flown from 28 m away).
+            add(
+                MAV_CMD_DO_SET_CAM_TRIGG_DIST,
+                frame=MAV_FRAME_MISSION,
+                param1=spacing,
+                param3=1.0,
+                label=f"trigger every {spacing:.1f} m",
             )
 
         if spacing <= 0.0 and pose["trigger"]:

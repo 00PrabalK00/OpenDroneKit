@@ -90,7 +90,8 @@ class TestTheCameraPoseReachesTheFile:
             round(p["yaw_deg"] % 360.0, 1) for p in locked]
 
         pitches = [round(i["params"][0], 1) for i in items if i["command"] == DO_GIMBAL_PITCHYAW]
-        assert pitches == [round(p["gimbal_pitch_deg"], 1) for p in props]
+        # Whole degrees: ArduPilot stores DO_GIMBAL_MANAGER_PITCHYAW's pitch as an int8.
+        assert pitches == [float(round(p["gimbal_pitch_deg"])) for p in props]
         assert set(pitches) != {-90.0}, f"{template} exported as nadir photographs"
 
     def test_litchi_carries_the_heading_and_pitch(self, api, tmp_path):

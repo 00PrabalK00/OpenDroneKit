@@ -42,6 +42,7 @@ LATLON_TOL_DEG = 1.5e-7
 # z is a float32 on the wire; ArduPilot stores altitude as int32 centimetres.
 ALT_TOL_M = 0.011
 FLOAT32_TOL = 1e-3
+GIMBAL_TOL_DEG = 0.5 + 1e-6
 
 
 def evidence_dir(name: str) -> Path:
@@ -261,6 +262,7 @@ class VehicleMission:
     viewpoints: list[VehicleViewpoint] = field(default_factory=list)
     ends_with: int | None = None
     triggers_before_first_viewpoint: int = 0
+    final_trigger_distance_m: float = 0.0
 
 
 def reconstruct(items: list[dict[str, Any]]) -> VehicleMission:
@@ -320,6 +322,7 @@ def reconstruct(items: list[dict[str, Any]]) -> VehicleMission:
                 else:
                     mission.triggers_before_first_viewpoint += 1
         gap_has_do = True
+    mission.final_trigger_distance_m = trig_dist
     return mission
 
 
@@ -397,7 +400,8 @@ def plan_mismatches(plan: dict[str, Any], received: list[dict[str, Any]]) -> lis
             problems.append(f"{where}: position {pose['lat']},{pose['lon']} -> {vp.lat},{vp.lon}")
         if abs(pose["alt"] + home_elev - vp.alt) > ALT_TOL_M:
             problems.append(f"{where}: altitude {pose['alt']} -> {vp.alt}")
-        if vp.gimbal is None or abs(vp.gimbal[0] - pose["gimbal_pitch_deg"]) > FLOAT32_TOL:
+        # ArduPilot keeps DO_GIMBAL_MANAGER_PITCHYAW's pitch in whole degrees.
+        if vp.gimbal is None or abs(vp.gimbal[0] - pose["gimbal_pitch_deg"]) > GIMBAL_TOL_DEG:
             problems.append(f"{where}: gimbal pitch {pose['gimbal_pitch_deg']} -> "
                             f"{None if vp.gimbal is None else vp.gimbal[0]}")
         if pose["yaw_locked"]:
@@ -419,10 +423,15 @@ def plan_mismatches(plan: dict[str, Any], received: list[dict[str, Any]]) -> lis
                             f"vehicle {'fires' if vp.trigger else 'does not fire'}")
         if cruise > 0.0 and (vp.speed_m_s is None or abs(vp.speed_m_s - cruise) > FLOAT32_TOL):
             problems.append(f"{where}: speed {cruise} -> {vp.speed_m_s}")
-        if spacing > 0.0 and abs(vp.trigger_distance_m - spacing) > FLOAT32_TOL:
-            problems.append(f"{where}: trigger distance {spacing} -> {vp.trigger_distance_m}")
+        # Distance triggering is switched on on arrival at the first viewpoint, so it
+        # is off on the way there and on for every leg after it.
+        want_distance = spacing if spacing > 0.0 and index > 0 else 0.0
+        if abs(vp.trigger_distance_m - want_distance) > FLOAT32_TOL:
+            problems.append(f"{where}: trigger distance {want_distance} -> {vp.trigger_distance_m}")
     if vehicle.takeoff is None:
         problems.append("the vehicle's mission has no NAV_TAKEOFF")
+    if vehicle.final_trigger_distance_m != 0.0:
+        problems.append("distance triggering is still on after the last viewpoint")
     return problems
 
 
