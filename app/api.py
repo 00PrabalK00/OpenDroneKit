@@ -5790,10 +5790,28 @@ class Api:
     @guard
     def connect_vehicle(self, uri: str, driver: str = "pymavlink") -> dict[str, Any]:
         vehicle = self._session.connect_vehicle(uri, driver)
+        if not vehicle.get("connected"):
+            # A link that did not open starts no log. This block used to read the
+            # session's current log, which is the PREVIOUS connection's, so a failed
+            # pymavlink attempt after a mock flight reported {driver: 'mock'}. It now
+            # describes the attempt the operator just made, and says no log began.
+            # The reply is a refusal (ok:false): a link that did not open is not a
+            # successful connect, and callers that only read `ok` must see that.
+            return fail(vehicle.get("last_error") or "The vehicle link did not open.",
+                        vehicle=vehicle, flight_log={
+                "driver": vehicle.get("driver", ""),
+                "uri": vehicle.get("uri", uri),
+                "simulated": bool(vehicle.get("is_simulated", False)),
+                "started": False,
+                "archived": None,
+                "note": "No flight log was started: the link did not open.",
+            })
         log = self._session.flight_log
         return ok(vehicle=vehicle, flight_log={
             "driver": getattr(log, "driver", ""),
+            "uri": getattr(log, "connection_uri", uri),
             "simulated": bool(getattr(log, "is_simulated", False)),
+            "started": True,
             "archived": (self._session.archived_flight_logs[-1]
                          if self._session.archived_flight_logs else None),
         })
@@ -6300,7 +6318,8 @@ class Api:
                 if opts.get(key):
                     setattr(config, key, str(opts[key]))
             for key in ("run_solar_detection", "run_metal_detection",
-                        "crack_presence_gate", "grade_corrosion"):
+                        "run_structural_detection", "crack_presence_gate",
+                        "grade_corrosion"):
                 if opts.get(key) is not None:
                     setattr(config, key, bool(opts[key]))
             pipeline = StructuralFaultPipeline(config, ground_control=control)
@@ -6357,6 +6376,22 @@ class Api:
                                              for r in reasons),
                     }
             payload["detectors_refused"] = refused
+            # The surface models (crack, structural, metal) left off images they do not
+            # read -- EL cells, IR module crops, a declared solar asset -- with the
+            # reason, so a solar run's message says why no crack or structural result.
+            not_run: dict[str, int] = {}
+            for r in summary.get("images", []) or []:
+                reason = str((r or {}).get("surface_models_not_run_reason") or "")
+                if reason:
+                    not_run[reason] = not_run.get(reason, 0) + 1
+            payload["surface_models_not_run"] = [
+                {"images": count, "reason": reason} for reason, count in not_run.items()]
+            # No defect component assessed: no severity index or condition grade exists
+            # for this run, and the message says so rather than leaving a blank score.
+            health = summary.get("health_scoring", {}) or {}
+            if health and health.get("severity_index") is None:
+                payload["health_not_assessed"] = str(
+                    health.get("not_assessed_reason") or "No defect component was assessed.")
             session.audit("pipeline_complete", {
                 "run_dir": Path(payload.get("run_dir", "")).name,
                 "report": Path(payload.get("report_markdown_path", "")).name,

@@ -1104,6 +1104,87 @@ def _is_grayscale(image_bgr: np.ndarray) -> bool:
     return float(np.mean(spread > 6)) < 0.01
 
 
+def _busbar_lines(gray: np.ndarray, side: int = 256, strips: int = 8) -> int:
+    """How many evenly spaced, full-span dark lines cross a grey picture (either axis).
+
+    The busbars of a solar cell under electroluminescence are narrow dark lines that
+    cross the whole cell at even spacing. A line counts only when it is a dip in the
+    row profile of at least strips-1 of `strips` vertical bands, so a crack or a stain
+    that crosses part of the picture is not one.
+    """
+    best = 0
+    for arr in (gray, gray.T):
+        a = cv2.resize(arr, (side, side), interpolation=cv2.INTER_AREA).astype(np.float32)
+        width = side // strips
+        hits = np.zeros(side, dtype=np.int32)
+        for s in range(strips):
+            profile = a[:, s * width:(s + 1) * width].mean(axis=1)
+            base = np.array([np.median(profile[max(0, i - 10):i + 11]) for i in range(side)],
+                            dtype=np.float32)
+            detrended = profile - base
+            dip = detrended < -max(6.0, float(np.std(detrended)))
+            hits += np.convolve(dip.astype(np.int32), [1, 1, 1], "same") > 0
+        rows = hits >= strips - 1
+        margin = int(side * 0.04)
+        rows[:margin] = False
+        rows[-margin:] = False
+        lines: list[tuple[int, int]] = []
+        i = 0
+        while i < side:
+            if rows[i]:
+                j = i
+                while j < side and rows[j]:
+                    j += 1
+                lines.append((i, j))
+                i = j
+            else:
+                i += 1
+        lines = [ln for ln in lines if ln[1] - ln[0] <= 10]
+        if len(lines) >= 2:
+            centres = np.array([(x + y) / 2.0 for x, y in lines])
+            gaps = np.diff(centres)
+            if gaps.min() > side * 0.12 and gaps.std() / gaps.mean() < 0.2:
+                best = max(best, len(lines))
+    return best
+
+
+def el_cell_signature(image_bgr: np.ndarray) -> dict[str, Any]:
+    """Whether a picture carries the look of an electroluminescence cell image.
+
+    Nobody declared what the image is, so this reads it and says which signs it saw:
+    greyscale, at least EL_CELL_MIN_SIDE_PX a side, and one of: evenly spaced busbar
+    lines crossing the whole cell; a bright cell inside a black frame (the dark room an
+    EL image is taken in); a near-black field (a dead or black-core cell); dark
+    chamfered corners of a pseudo-square cell. Measured on the corpora on this machine:
+    1,442 of 1,450 PVEL-AD and ELPV cells, and 2 of 1,983 concrete, pavement and
+    corrosion images (formwork panel joints read as busbars). `strong` is the busbar or
+    frame sign, the two that pick a model; any sign only keeps surface models off.
+    """
+    h, w = image_bgr.shape[:2]
+    out: dict[str, Any] = {"el_cell": False, "strong": False, "signs": []}
+    if not _is_grayscale(image_bgr) or min(h, w) < EL_CELL_MIN_SIDE_PX:
+        return out
+    gray = image_bgr if image_bgr.ndim == 2 else cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    a = cv2.resize(gray, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32)
+    signs: list[str] = []
+    if _busbar_lines(gray) >= 2:
+        signs.append("busbar_lines")
+    band = 6
+    sides = [a[:band].mean(), a[-band:].mean(), a[:, :band].mean(), a[:, -band:].mean()]
+    if max(sides) < 40 and np.percentile(a[16:-16, 16:-16], 90) > 3 * max(max(sides), 8):
+        signs.append("dark_frame")
+    if float(np.median(a)) < 25:
+        signs.append("near_black_field")
+    c = 8
+    corners = [a[:c, :c].mean(), a[:c, -c:].mean(), a[-c:, :c].mean(), a[-c:, -c:].mean()]
+    if max(corners) < 0.6 * float(np.median(a[64:-64, 64:-64])):
+        signs.append("dark_corners")
+    out["signs"] = signs
+    out["el_cell"] = bool(signs)
+    out["strong"] = bool({"busbar_lines", "dark_frame"} & set(signs))
+    return out
+
+
 def _imagery_of_model(model_key: str) -> str:
     for imagery, keys in SOLAR_MODELS_BY_IMAGERY.items():
         if model_key in keys:
@@ -1149,8 +1230,10 @@ def detect_solar_defects(
 
     `imagery` says what the picture is: `el_cell`, `thermal_module` or `rgb_photo`.
     `auto` reads it from the input -- a `thermal_gray` array is a thermal module, a
-    colour picture is an RGB photograph, and a grey picture is refused because an EL
-    cell image and an IR module crop are both grey and need different models. A named
+    colour picture is an RGB photograph, a grey picture with the busbars or black frame
+    of an EL cell (`el_cell_signature`) is an EL cell, and any other grey picture is
+    refused because an EL cell image and an IR module crop are both grey and need
+    different models. A named
     `model_key` also settles it. Each kind goes to the model trained on it; a model
     applied to imagery it was not trained on is refused, not run, because its answer
     would read exactly like a real one.
@@ -1174,6 +1257,10 @@ def detect_solar_defects(
         kind = _imagery_of_model(key)
     elif not grey:
         kind = "rgb_photo"
+    elif el_cell_signature(image_bgr)["strong"]:
+        # Busbars across the whole cell, or a bright cell in a black frame: an EL cell
+        # image, which an IR module crop (24x40 px, below the size floor) is not.
+        kind = "el_cell"
     else:
         return _solar_refusal(
             image_bgr,

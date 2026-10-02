@@ -47,6 +47,10 @@ function jobOutcome(result) {
       : [{ images: info.images, reason: info.reason }];
     for (const r of reasons) parts.push(`${name} refused on ${r.images} image(s): ${r.reason}`);
   }
+  for (const r of result.surface_models_not_run || []) {
+    if (r && r.images) parts.push(`crack/structural models not run on ${r.images} image(s): ${r.reason}`);
+  }
+  if (result.health_not_assessed) parts.push("no health score: no defect model read these images");
   if (result.reconstruction_status === "failed") parts.push("reconstruction failed; detection results kept");
   /* The pipeline's markdown report was written and never mentioned. */
   if (result.report_markdown_path) parts.push("inspection report written (reopen it from Reports > Inspection Report)");
@@ -1424,7 +1428,8 @@ export class Shell {
         for (const key of ["structure_type", "material_type", "solar_imagery"]) {
           if (raw[key]) options[key] = String(raw[key]);
         }
-        for (const key of ["run_solar_detection", "run_metal_detection", "crack_presence_gate"]) {
+        for (const key of ["run_solar_detection", "run_metal_detection",
+                           "run_structural_detection", "crack_presence_gate"]) {
           const value = String(raw[key] ?? "").toLowerCase();
           if (value === "on") options[key] = true;
           else if (value === "off") options[key] = false;

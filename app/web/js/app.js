@@ -456,14 +456,19 @@
           label: 'Connect', primary: true, onClick: async () => {
             const driver = $('#dlg-driver').value;
             const uri = $('#dlg-uri').value.trim();
-            const result = await tryCall('connect_vehicle', uri, driver);
-            if (result) {
-              updateVehicleChip(result.vehicle);
-              status(result.vehicle.connected
-                ? `Connected to ${uri} via ${driver}.`
-                : `Connection failed: ${result.vehicle.last_error}`);
-              if (result.vehicle.connected) { startTelemetry(); switchTab('telemetry'); }
+            /* A link that did not open is refused (ok:false) with the vehicle state
+               and the reason, so the chip still shows the attempt and why it failed. */
+            let result;
+            try {
+              result = await call('connect_vehicle', uri, driver);
+            } catch (err) {
+              if (err.result && err.result.vehicle) updateVehicleChip(err.result.vehicle);
+              status(`Connection failed: ${err.message}`);
+              return;
             }
+            updateVehicleChip(result.vehicle);
+            status(`Connected to ${uri} via ${driver}.`);
+            startTelemetry(); switchTab('telemetry');
           }
         }
       ]);
