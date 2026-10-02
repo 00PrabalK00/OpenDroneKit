@@ -9,9 +9,10 @@ Pipeline (each step refuses rather than guesses):
    downloaded once into the cache and checked against the pinned sha256.
 2. **Packages**: every wheel named in ``requirements-lock.txt`` -- exact versions and
    sha256 hashes -- downloaded with ``--require-hashes`` and installed into
-   ``runtime/Lib/site-packages``. ``--relock`` regenerates the lock by resolving
-   ``requirements.txt`` constrained to the versions in the environment running this
-   script (the environment the test suite passes in).
+   ``runtime/Lib/site-packages``. ``--relock`` regenerates the lock from the
+   environment running this script (the one the test suite passes in): the closure
+   of ``requirements.txt`` at exactly the installed versions, with the GPU build of
+   onnxruntime swapped for the CPU build and torch never included.
 3. **Payload**: ``git archive HEAD`` (so the build is the commit, not the working tree),
    minus tests and dev metadata. The build fails if any model weight, credential or
    vendor SDK file is in it.
@@ -110,22 +111,77 @@ def pth_contents(version: str) -> str:
 
 # -- 2. packages ----------------------------------------------------------------
 
-def env_constraints(path: Path) -> None:
-    out = subprocess.run([sys.executable, "-m", "pip", "list", "--format=freeze"],
-                         capture_output=True, text=True, check=True).stdout
-    lines = [l for l in out.splitlines() if "==" in l and "+" not in l]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+# The runtime ships the CPU build of onnxruntime: the GPU builds need a matching CUDA /
+# cuDNN install that an installer cannot assume. The tested env may carry a GPU build.
+SUBSTITUTE = {"onnxruntime-gpu": "onnxruntime", "onnxruntime-directml": "onnxruntime",
+              "opencv-python-headless": "opencv-python"}
+# Never bundled, whatever the env has (torch is optional and multi-GB; see INSTALLER.md).
+NEVER = {"torch", "torchvision", "pip", "setuptools", "wheel"}
+
+
+def env_closure(requirements: Path) -> dict[str, str]:
+    """{name: version} for requirements.txt and everything it pulls in, read from the
+    environment running this script -- the environment the test suite passes in.
+
+    Pinning what was tested, instead of asking pip to re-resolve against an index, is
+    what makes the bundle the same software the suite verified (and avoids resolver
+    backtracking across hundreds of candidate versions)."""
+    from importlib import metadata
+
+    from packaging.markers import default_environment
+    from packaging.requirements import Requirement
+
+    from app.dependencies import ALTERNATIVES, read_requirements
+
+    def dist_for(name: str):
+        for candidate in (name, *ALTERNATIVES.get(normalize(name), ())):
+            try:
+                return metadata.distribution(candidate)
+            except metadata.PackageNotFoundError:
+                continue
+        raise SystemExit(f"[build] {name} is required but not installed in {sys.executable}")
+
+    pins: dict[str, str] = {}
+    queue: list[tuple[str, frozenset[str]]] = []
+    for line in (requirements.read_text(encoding="utf-8").splitlines()):
+        line = line.split("#", 1)[0].strip()
+        if line:
+            req = Requirement(line)
+            queue.append((req.name, frozenset(req.extras)))
+    assert {normalize(r.name) for r in read_requirements()} <= {normalize(n) for n, _ in queue}
+    seen: set[tuple[str, frozenset[str]]] = set()
+    while queue:
+        name, extras = queue.pop()
+        if (normalize(name), extras) in seen:
+            continue
+        seen.add((normalize(name), extras))
+        dist = dist_for(name)
+        key = normalize(dist.metadata["Name"])
+        key = SUBSTITUTE.get(key, key)
+        if key in NEVER:
+            continue
+        pins[key] = dist.version
+        for spec in dist.requires or []:
+            req = Requirement(spec)
+            env = default_environment()
+            wanted = any(req.marker.evaluate({**env, "extra": e}) for e in extras or {""}) \
+                if req.marker else True
+            if wanted:
+                queue.append((req.name, frozenset(req.extras)))
+    return pins
 
 
 def relock(wheel_dir: Path) -> None:
-    """Resolve requirements.txt (constrained to this env's versions) into a hashed lock."""
+    """Pin the tested environment's closure of requirements.txt into a hashed lock."""
     with tempfile.TemporaryDirectory(prefix="odk-relock-", dir=str(wheel_dir.parent)) as tmp:
         tmpdir = Path(tmp)
-        constraints = tmpdir / "constraints.txt"
-        env_constraints(constraints)
+        pins = env_closure(REPO / "requirements.txt")
+        pinned = tmpdir / "pinned.txt"
+        pinned.write_text("".join(f"{n}=={v}\n" for n, v in sorted(pins.items())), encoding="utf-8")
+        log(f"pinning {len(pins)} distributions from {sys.executable}")
         dl = tmpdir / "dl"
-        run([sys.executable, "-m", "pip", "download", "-q", "--prefer-binary",
-             "-r", REPO / "requirements.txt", "-c", constraints, "-d", dl])
+        run([sys.executable, "-m", "pip", "download", "-q", "--no-deps", "--prefer-binary",
+             "-r", pinned, "-d", dl])
         lines = []
         for path in sorted(dl.iterdir(), key=lambda p: p.name.lower()):
             match = _DIST.match(path.name)
