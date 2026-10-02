@@ -52,7 +52,12 @@ MAV_TYPE_FIXED_WING = 1
 MAV_TYPE_QUADROTOR = 2
 
 
-def make_plan(*, dwell_s: float = 0.0, yaws=(90.0, 200.0, 300.0, 10.0), **extra) -> dict:
+PER_WAYPOINT = {"continuous_capture": False}
+DISTANCE = {"continuous_capture": True, "capture_spacing_m": 12.0}
+
+
+def make_plan(*, dwell_s: float = 0.0, yaws=(90.0, 200.0, 300.0, 10.0), capture=None,
+              triggers=None, **extra) -> dict:
     plan = {
         "altitude_m": 60.0,
         "gimbal_tilt_deg": -90.0,
@@ -66,12 +71,12 @@ def make_plan(*, dwell_s: float = 0.0, yaws=(90.0, 200.0, 300.0, 10.0), **extra)
                     "yaw_deg": yaw,
                     "gimbal_pitch_deg": -45.0,
                     "dwell_s": dwell_s,
-                    "trigger": True,
+                    "trigger": True if triggers is None else bool(triggers[index]),
                     "camera_yaw_locked": True,
                 }
                 for index, yaw in enumerate(yaws)
             ],
-            "capture": {"continuous_capture": False},
+            "capture": dict(capture or PER_WAYPOINT),
         },
         "safety_constraints": {
             "geofence": [
@@ -142,6 +147,31 @@ class TestLitchiCsv:
             assert all(0 < ms <= 32_000 for ms in stays), stays
             assert sum(stays) == 70_000
             assert actions[-1] == (TAKE_PHOTO, "0")
+
+    def test_per_waypoint_capture_writes_no_interval(self, tmp_path):
+        _, rows = litchi_rows(tmp_path, make_plan())
+        assert {(r["photo_timeinterval"], r["photo_distinterval"]) for r in rows} == {("-1", "-1")}
+
+    def test_distance_capture_sets_the_interval_on_each_leg_but_its_last_waypoint(self, tmp_path):
+        """Litchi's distance interval shoots from this waypoint to the next, so it sits on
+        every waypoint of a capture leg except the last, and nowhere on a transit leg."""
+        plan = make_plan(capture=DISTANCE, yaws=(0.0,) * 6,
+                         triggers=(True, True, False, True, True, True))
+        _, rows = litchi_rows(tmp_path, plan)
+        assert [r["photo_distinterval"] for r in rows] == ["12.00", "-1", "-1", "12.00", "12.00", "-1"]
+        assert all(r["photo_timeinterval"] == "-1" for r in rows)
+        assert all(litchi_actions(r) == [] for r in rows)
+
+    def test_a_lone_capture_waypoint_under_distance_capture_still_takes_its_photo(self, tmp_path):
+        plan = make_plan(capture=DISTANCE, yaws=(0.0,) * 4, triggers=(True, False, True, True))
+        _, rows = litchi_rows(tmp_path, plan)
+        assert litchi_actions(rows[0]) == [(TAKE_PHOTO, "0")]
+        assert [r["photo_distinterval"] for r in rows] == ["-1", "-1", "12.00", "-1"]
+
+    def test_a_spacing_past_litchis_100_m_interval_is_refused(self, tmp_path):
+        plan = make_plan(capture={"continuous_capture": True, "capture_spacing_m": 150.0})
+        with pytest.raises(ValueError, match="100 m"):
+            litchi_rows(tmp_path, plan)
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +323,43 @@ class TestQgcPlan:
         assert payload["mission"]["firmwareType"] == MAV_AUTOPILOT_ARDUPILOTMEGA
         assert qgc_plan_problems(payload) == []
 
+    def test_distance_capture_triggers_only_along_capture_legs(self, tmp_path):
+        """MAV_CMD_DO_SET_CAM_TRIGG_DIST (206): param1 distance in m, 0 stops; param3 1
+        fires once immediately. A DO_ item runs once the NAV item before it is reached,
+        so each leg starts after its first waypoint and stops after its last; the transit
+        waypoint between legs is flown without triggering."""
+        plan = make_plan(capture=DISTANCE, yaws=(0.0,) * 6,
+                         triggers=(True, True, False, True, True, True))
+        payload = write_plan(tmp_path, plan)
+        assert qgc_plan_problems(payload) == []
+        trail = []
+        for item in payload["mission"]["items"]:
+            if item["command"] in (exporters.MAV_CMD_NAV_WAYPOINT, exporters.MAV_CMD_NAV_LOITER_TIME):
+                trail.append("wp")
+            elif item["command"] == exporters.MAV_CMD_DO_SET_CAM_TRIGG_DIST:
+                trail.append(("dist", item["params"][0], item["params"][2]))
+            elif item["command"] == exporters.MAV_CMD_DO_DIGICAM_CONTROL:
+                trail.append("photo")
+        assert trail == ["wp", ("dist", 12.0, 1.0), "wp", ("dist", 0.0, 0.0), "wp",
+                         "wp", ("dist", 12.0, 1.0), "wp", "wp", ("dist", 0.0, 0.0)]
+
+    def test_a_lone_capture_waypoint_under_distance_capture_still_takes_its_photo(self, tmp_path):
+        plan = make_plan(capture=DISTANCE, triggers=(True, False, True, True))
+        trail = []
+        for item in write_plan(tmp_path, plan)["mission"]["items"]:
+            if item["command"] == exporters.MAV_CMD_NAV_WAYPOINT:
+                trail.append("wp")
+            elif item["command"] == exporters.MAV_CMD_DO_SET_CAM_TRIGG_DIST:
+                trail.append(("dist", item["params"][0]))
+            elif item["command"] == exporters.MAV_CMD_DO_DIGICAM_CONTROL:
+                trail.append("photo")
+        assert trail == ["wp", "photo", "wp", "wp", ("dist", 12.0), "wp", ("dist", 0.0)]
+
+    def test_per_waypoint_capture_never_sets_a_trigger_distance(self, tmp_path):
+        commands = [item["command"] for item in write_plan(tmp_path, make_plan())["mission"]["items"]]
+        assert exporters.MAV_CMD_DO_SET_CAM_TRIGG_DIST not in commands
+        assert commands.count(exporters.MAV_CMD_DO_DIGICAM_CONTROL) == 4
+
 
 # ---------------------------------------------------------------------------
 # DJI WPML
@@ -371,10 +438,41 @@ def assert_common_elements(root: ET.Element) -> None:
                                          "wpml:payloadLensIndex", "wpml:useGlobalPayloadLensIndex"}
         elif func == "hover":
             assert float(text(params, "hoverTime")) > 0.0
+    # waylineActionGroup is not a WPML element; action groups live on a Placemark.
+    assert not list(root.iter(f"{WPML}waylineActionGroup"))
+    folder = root.find(f"{KML}Document/{KML}Folder")
+    assert not folder.findall(f"{WPML}actionGroup")
+    waypoint_count = len(folder.findall(f"{KML}Placemark"))
+    group_ids = []
     for group in root.iter(f"{WPML}actionGroup"):
         assert children(group) >= {"wpml:actionGroupId", "wpml:actionGroupStartIndex",
                                    "wpml:actionGroupEndIndex", "wpml:actionGroupMode",
-                                   "wpml:actionTrigger"}
+                                   "wpml:actionTrigger", "wpml:action"}
+        group_ids.append(int(text(group, "actionGroupId")))
+        start, end = int(text(group, "actionGroupStartIndex")), int(text(group, "actionGroupEndIndex"))
+        assert 0 <= start <= end < waypoint_count
+        assert text(group, "actionGroupMode") == "sequence"
+        trigger = group.find(f"{WPML}actionTrigger")
+        kind = text(trigger, "actionTriggerType")
+        assert kind in {"reachPoint", "betweenAdjacentPoints", "multipleTiming", "multipleDistance"}
+        if kind in {"multipleTiming", "multipleDistance"}:
+            assert float(text(trigger, "actionTriggerParam")) > 0.0
+    assert len(group_ids) == len(set(group_ids)), "actionGroupId must be unique"
+
+
+def photo_groups(root: ET.Element) -> list[tuple[str, int, int, str]]:
+    """(trigger type, start, end, trigger param) of every action group holding takePhoto."""
+    found = []
+    for group in root.iter(f"{WPML}actionGroup"):
+        funcs = [text(a, "actionActuatorFunc") for a in group.findall(f"{WPML}action")]
+        if "takePhoto" in funcs:
+            trigger = group.find(f"{WPML}actionTrigger")
+            param = trigger.find(f"{WPML}actionTriggerParam")
+            found.append((text(trigger, "actionTriggerType"),
+                          int(text(group, "actionGroupStartIndex")),
+                          int(text(group, "actionGroupEndIndex")),
+                          "" if param is None else param.text))
+    return found
 
 
 class TestDjiWpml:
@@ -386,8 +484,9 @@ class TestDjiWpml:
         coordinate = template.find(f"{KML}Document/{KML}Folder/{WPML}waylineCoordinateSysParam")
         assert text(coordinate, "heightMode") == "relativeToStartPoint"
 
-    def test_template_kml_has_every_required_element(self, tmp_path):
-        template, _ = read_kmz(export_dji_wpml(tmp_path / "m.kmz", make_plan(dwell_s=2.0)))
+    @pytest.mark.parametrize("capture", [PER_WAYPOINT, DISTANCE], ids=["per_waypoint", "distance"])
+    def test_template_kml_has_every_required_element(self, tmp_path, capture):
+        template, _ = read_kmz(export_dji_wpml(tmp_path / "m.kmz", make_plan(dwell_s=2.0, capture=capture)))
         document = template.find(f"{KML}Document")
         assert children(document.find(f"{WPML}missionConfig")) >= MISSION_CONFIG_REQUIRED
         folder = document.find(f"{KML}Folder")
@@ -410,8 +509,10 @@ class TestDjiWpml:
             assert float(text(placemark, "gimbalPitchAngle")) == -45.0
         assert_common_elements(template)
 
-    def test_waylines_wpml_has_every_required_element(self, tmp_path):
-        template, waylines = read_kmz(export_dji_wpml(tmp_path / "m.kmz", make_plan(dwell_s=2.0)))
+    @pytest.mark.parametrize("capture", [PER_WAYPOINT, DISTANCE], ids=["per_waypoint", "distance"])
+    def test_waylines_wpml_has_every_required_element(self, tmp_path, capture):
+        template, waylines = read_kmz(export_dji_wpml(
+            tmp_path / "m.kmz", make_plan(dwell_s=2.0, capture=capture)))
         document = waylines.find(f"{KML}Document")
         config = document.find(f"{WPML}missionConfig")
         assert children(config) >= MISSION_CONFIG_REQUIRED | {"wpml:globalRTHHeight"}
@@ -433,6 +534,43 @@ class TestDjiWpml:
             if turn in CONTINUITY_TURNS:
                 assert "wpml:useStraightLine" in present
         assert_common_elements(waylines)
+
+    def test_per_waypoint_capture_takes_a_photo_on_reaching_each_waypoint(self, tmp_path):
+        for root in read_kmz(export_dji_wpml(tmp_path / "m.kmz", make_plan())):
+            assert photo_groups(root) == [("reachPoint", i, i, "") for i in range(4)]
+
+    def test_distance_capture_takes_photos_every_spacing_metres_along_the_leg(self, tmp_path):
+        """The verifier's finding: continuous capture wrote no takePhoto at all and a
+        Folder-level wpml:waylineActionGroup, which WPML does not define. DJI's common
+        elements: "multipleDistance" combined with "takePhoto" achieves equal-distance
+        interval capture, actionTriggerParam being the interval in metres, between the
+        group's actionGroupStartIndex and actionGroupEndIndex waypoints."""
+        for root in read_kmz(export_dji_wpml(tmp_path / "m.kmz", make_plan(capture=DISTANCE))):
+            assert photo_groups(root) == [("multipleDistance", 0, 3, "12.00")]
+            folder = root.find(f"{KML}Document/{KML}Folder")
+            first = folder.findall(f"{KML}Placemark")[0]
+            assert any(text(g.find(f"{WPML}actionTrigger"), "actionTriggerType") == "multipleDistance"
+                       for g in first.findall(f"{WPML}actionGroup"))
+            photo = [a for a in root.iter(f"{WPML}action")
+                     if text(a, "actionActuatorFunc") == "takePhoto"][0]
+            params = photo.find(f"{WPML}actionActuatorFuncParam")
+            assert text(params, "payloadPositionIndex") == "0"
+            assert text(params, "payloadLensIndex") == "wide"
+            assert_common_elements(root)
+
+    def test_distance_capture_covers_each_leg_and_skips_the_transit(self, tmp_path):
+        plan = make_plan(capture=DISTANCE, yaws=(0.0,) * 7,
+                         triggers=(True, True, False, True, True, True, True))
+        for root in read_kmz(export_dji_wpml(tmp_path / "m.kmz", plan)):
+            assert photo_groups(root) == [("multipleDistance", 0, 1, "12.00"),
+                                          ("multipleDistance", 3, 6, "12.00")]
+            assert_common_elements(root)
+
+    def test_a_lone_capture_waypoint_under_distance_capture_still_takes_its_photo(self, tmp_path):
+        plan = make_plan(capture=DISTANCE, triggers=(True, False, True, True))
+        for root in read_kmz(export_dji_wpml(tmp_path / "m.kmz", plan)):
+            assert photo_groups(root) == [("reachPoint", 0, 0, ""), ("multipleDistance", 2, 3, "12.00")]
+            assert_common_elements(root)
 
     def test_headings_are_in_djis_range(self, tmp_path):
         """waypointHeadingAngle is [-180, 180]; 200 deg is written as -160."""

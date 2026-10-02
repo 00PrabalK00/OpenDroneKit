@@ -219,6 +219,26 @@ def _capture_spacing(plan: dict[str, Any]) -> float:
     return float(capture.get("capture_spacing_m", 0.0) or 0.0)
 
 
+def _capture_legs(viewpoints: list[dict[str, Any]]) -> list[tuple[int, int]]:
+    """(first, last) waypoint index of each run of consecutive capture waypoints.
+
+    Distance-triggered capture shoots only along these runs; the legs between them
+    (transits with trigger off) are flown without photographs. A run of one waypoint
+    has no leg to shoot along, so the exporters take a single photo there instead.
+    """
+    legs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, pose in enumerate(viewpoints):
+        if pose["trigger"] and start is None:
+            start = index
+        elif not pose["trigger"] and start is not None:
+            legs.append((start, index - 1))
+            start = None
+    if start is not None:
+        legs.append((start, len(viewpoints) - 1))
+    return legs
+
+
 def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[MissionItem]:
     """Expand a mission plan into a full MAVLink item sequence.
 
@@ -271,14 +291,13 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
             label=f"speed {speed:.1f} m/s",
         )
 
-    if spacing > 0.0:
-        add(
-            MAV_CMD_DO_SET_CAM_TRIGG_DIST,
-            frame=MAV_FRAME_MISSION,
-            param1=spacing,
-            param3=1.0,
-            label=f"trigger every {spacing:.1f} m",
-        )
+    # Distance triggering runs only along capture legs. A DO_ item runs once the NAV
+    # item before it is reached, so the trigger starts on reaching the leg's first
+    # waypoint (param3=1 also fires once there) and stops on reaching its last.
+    legs = _capture_legs(viewpoints) if spacing > 0.0 else []
+    leg_starts = {first for first, last in legs if last > first}
+    leg_ends = {last for first, last in legs if last > first}
+    distance_covered = {i for first, last in legs if last > first for i in range(first, last + 1)}
 
     for index, pose in enumerate(viewpoints):
         gimbal = pose["gimbal_pitch_deg"]
@@ -329,7 +348,17 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
                 label=f"waypoint {index + 1}",
             )
 
-        if spacing <= 0.0 and pose["trigger"]:
+        if index in leg_starts:
+            add(
+                MAV_CMD_DO_SET_CAM_TRIGG_DIST,
+                frame=MAV_FRAME_MISSION,
+                param1=spacing,
+                param3=1.0,
+                label=f"trigger every {spacing:.1f} m",
+            )
+        elif index in leg_ends:
+            add(MAV_CMD_DO_SET_CAM_TRIGG_DIST, frame=MAV_FRAME_MISSION, param1=0.0, label="stop trigger")
+        elif pose["trigger"] and index not in distance_covered:
             # DO_DIGICAM_CONTROL takes the shutter command in param5, which is the
             # x/latitude slot of a mission item.
             add(
@@ -338,9 +367,6 @@ def build_mission_items(mission: Any, *, include_rth: bool = True) -> list[Missi
                 latitude=1.0,
                 label="capture",
             )
-
-    if spacing > 0.0:
-        add(MAV_CMD_DO_SET_CAM_TRIGG_DIST, frame=MAV_FRAME_MISSION, param1=0.0, label="stop trigger")
 
     if include_rth:
         action = str(constraints.get("rth_action", "return_home") or "return_home").lower()
@@ -698,6 +724,7 @@ LITCHI_ACTION_TILT_CAMERA_DEG = 5
 # longer planned dwell is written as consecutive stays.
 LITCHI_MAX_STAY_MS = 32_000
 LITCHI_MAX_ACTIONS = 15
+LITCHI_MAX_PHOTO_DIST_M = 100.0
 
 
 def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
@@ -726,8 +753,19 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
     ])
 
     spacing = _capture_spacing(plan)
+    # Litchi's photo_distinterval shoots "as the aircraft moves from this waypoint to
+    # the next", first photo on leaving it, and accepts 0-100 m (flylitchi.com/help,
+    # Waypoint Settings > Photo Capture Interval). So the interval goes on every
+    # waypoint of a capture leg except its last; a lone capture waypoint gets a photo.
+    legs = _capture_legs(viewpoints) if spacing > 0.0 else []
+    interval_from = {i for first, last in legs if last > first for i in range(first, last)}
+    distance_covered = {i for first, last in legs if last > first for i in range(first, last + 1)}
+    if interval_from and spacing > LITCHI_MAX_PHOTO_DIST_M:
+        raise ValueError(
+            f"Capture spacing {spacing:.1f} m exceeds Litchi's {LITCHI_MAX_PHOTO_DIST_M:.0f} m "
+            "photo distance interval; Litchi cannot fly this capture.")
     rows: list[str] = []
-    for pose in viewpoints:
+    for index, pose in enumerate(viewpoints):
         actions: list[str] = []
         # Litchi's action types (litchiutilities.com/docs/litchiCsv.php, and what Mission
         # Hub itself writes): -1 none, 0 stay for (ms), 1 take photo, 2 start recording,
@@ -736,7 +774,7 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
         # the camera to 0 deg at each point and took no photograph, and a dwell was a
         # photo instead of a hover. The hover comes first so the shot is taken steady.
         remaining_ms = int(round(pose["dwell_s"] * 1000)) if pose["dwell_s"] > 0.0 else 0
-        photo = spacing <= 0.0 and pose["trigger"]
+        photo = pose["trigger"] and index not in distance_covered
         stay_slots = LITCHI_MAX_ACTIONS - (1 if photo else 0)
         while remaining_ms > 0:
             if len(actions) // 2 >= stay_slots:
@@ -764,7 +802,7 @@ def export_litchi_csv(path: str | Path, mission: Any) -> str | list[str]:
         row.extend([
             "0", f"{min(15.0, pose['speed_mps'] or speed):.2f}", "0", "0", "0", "0",
             # -1 is Litchi's "not used" for the interval columns, as Mission Hub writes.
-            "-1", f"{spacing:.2f}" if spacing > 0 else "-1",
+            "-1", f"{spacing:.2f}" if index in interval_from else "-1",
         ])
         rows.append(",".join(row))
 
@@ -938,6 +976,16 @@ def export_dji_wpml(
     if not viewpoints:
         raise ValueError("Mission plan contains no waypoints to export.")
     spacing = _capture_spacing(plan)
+    # Distance-triggered capture: per DJI's common-element reference, an actionGroup
+    # whose actionTrigger is multipleDistance (actionTriggerParam = interval in m),
+    # combined with takePhoto, "can achieve equal-distance interval capture" between
+    # actionGroupStartIndex and actionGroupEndIndex. One such group per capture leg,
+    # carried on the leg's first waypoint. A lone capture waypoint gets a reachPoint
+    # photo instead, since a group spanning one waypoint has no distance to cover.
+    legs = [(first, last) for first, last in (_capture_legs(viewpoints) if spacing > 0.0 else [])
+            if last > first]
+    leg_at = {first: (leg_number, last) for leg_number, (first, last) in enumerate(legs)}
+    distance_covered = {i for first, last in legs for i in range(first, last + 1)}
     constraints = plan.get("safety_constraints") or {}
     speed = max(1.0, min(15.0, _cruise_speed(plan, 8.0)))
     altitude_frame, home_elevation = _altitude_frame(plan)
@@ -1093,7 +1141,7 @@ def export_dji_wpml(
             ]
             if pose["dwell_s"] > 0.0:
                 actions.append(("hover", {"hoverTime": f"{pose['dwell_s']:.1f}"}))
-            if spacing <= 0.0 and pose["trigger"]:
+            if pose["trigger"] and index not in distance_covered:
                 actions.append(("takePhoto", {
                     "payloadPositionIndex": "0",
                     "fileSuffix": f"wp{index + 1}",
@@ -1109,13 +1157,29 @@ def export_dji_wpml(
                 for key, value in params.items():
                     sub(param_node, key, value)
 
-        if spacing > 0.0:
-            interval = ET.SubElement(folder, wpml("waylineActionGroup"))
-            sub(interval, "actionGroupId", "9000")
-            sub(interval, "actionGroupMode", "sequence")
-            trigger = ET.SubElement(interval, wpml("actionTrigger"))
-            sub(trigger, "actionTriggerType", "multipleDistance")
-            sub(trigger, "actionTriggerParam", f"{spacing:.2f}")
+            if index in leg_at:
+                leg_number, last = leg_at[index]
+                # actionGroupId is unique in the kmz: the per-waypoint groups hold
+                # 0..n-1, so the leg groups continue from n.
+                interval = ET.SubElement(placemark, wpml("actionGroup"))
+                sub(interval, "actionGroupId", len(viewpoints) + leg_number)
+                sub(interval, "actionGroupStartIndex", index)
+                sub(interval, "actionGroupEndIndex", last)
+                sub(interval, "actionGroupMode", "sequence")
+                trigger = ET.SubElement(interval, wpml("actionTrigger"))
+                sub(trigger, "actionTriggerType", "multipleDistance")
+                sub(trigger, "actionTriggerParam", f"{spacing:.2f}")
+                action = ET.SubElement(interval, wpml("action"))
+                sub(action, "actionId", 0)
+                sub(action, "actionActuatorFunc", "takePhoto")
+                param_node = ET.SubElement(action, wpml("actionActuatorFuncParam"))
+                for key, value in {
+                    "payloadPositionIndex": "0",
+                    "fileSuffix": f"leg{leg_number + 1}",
+                    "payloadLensIndex": payload_lens,
+                    "useGlobalPayloadLensIndex": "0",
+                }.items():
+                    sub(param_node, key, value)
 
         return root
 
