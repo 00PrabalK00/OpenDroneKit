@@ -472,7 +472,10 @@ def verify_folder(folder: str | Path, **kwargs: Any) -> dict[str, Any]:
     files = {}
     if not valid:
         result["problems"].append("signature.json: " + why)
-    elif signed.get("fingerprint") != result.get("signer_fingerprint"):
+    elif result.get("signer_fingerprint") and (
+            signed.get("fingerprint") != result.get("signer_fingerprint")):
+        # Only comparable when the PDF's own signature could be read; an unreadable PDF
+        # is already reported as a problem above and must not be blamed on the key.
         result["problems"].append("signature.json was signed by a different key than the PDF.")
     for name, digest in (signed.get("statement", {}).get("files") or {}).items():
         target = folder / name

@@ -323,7 +323,11 @@ def iec_facts_from_frames(frames: list[str | Path], regions_file: str | Path,
             threshold_basis="not used: IEC TS 62446-3 CoA is assigned by the thermographer")
         rows = json.loads(Path(result.artifact_paths[0]).read_text(encoding="utf-8"))["modules"]
         when, how = _frame_time(meta, path)
-        reference = rows[0]["string_reference_c"] if rows else None
+        # The label below promises the median of every module median in the frame, so
+        # compute exactly that (a per-string reference would differ with several strings).
+        medians = sorted(float(r["median_c"]) for r in rows)
+        reference = ((medians[(len(medians) - 1) // 2] + medians[len(medians) // 2]) / 2
+                     if medians else None)
         for row in rows:
             delta = row["median_c"] - reference
             facts["tables"]["anomalies"].append({
