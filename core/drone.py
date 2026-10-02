@@ -397,6 +397,75 @@ _MAVSDK_MODE_NAMES = {
 }
 
 
+def _load_mavsdk():
+    """The gRPC MAVSDK-Python API and its version, under whichever name it is installed.
+
+    The API this driver speaks (System, mavsdk_server over gRPC, mission_raw) was
+    published as ``mavsdk`` up to 3.x. From 3.17 it is also ``mavsdk-grpc``, imported as
+    ``mavsdk_grpc``; and ``mavsdk`` 4.x is a different library -- a native binding with
+    its own API -- so ``pip install mavsdk`` now installs something this driver cannot
+    drive. That is refused by name rather than failing later inside a call.
+    """
+    import importlib
+
+    for name, dist in (("mavsdk_grpc", "mavsdk-grpc"), ("mavsdk", "mavsdk")):
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        version = str(getattr(module, "__version__", "") or "")
+        if not version:
+            try:
+                from importlib.metadata import version as dist_version
+                version = dist_version(dist)
+            except Exception:  # noqa: BLE001 - an unpackaged checkout has no metadata
+                version = ""
+        major = _major_version(version)
+        if name == "mavsdk" and major is not None and major >= 4:
+            raise RuntimeError(
+                f"mavsdk {version} is the native MAVSDK binding, which has a different API "
+                "from the one this driver uses. Install the gRPC API with "
+                "`pip install mavsdk-grpc` (or `pip install \"mavsdk<4\"`).")
+        raw = importlib.import_module(f"{name}.mission_raw")
+        return module, raw, (major if major is not None else 2)
+    raise RuntimeError(
+        "MAVSDK not installed. Install it with: pip install mavsdk-grpc\n"
+        "Or use MockDroneClient for offline testing.")
+
+
+def _major_version(version: str) -> int | None:
+    try:
+        return int(str(version).split(".")[0])
+    except ValueError:
+        return None
+
+
+def _mavsdk_address(uri: str, sdk_major: int) -> str:
+    """The connection URI in the spelling this MAVSDK accepts.
+
+    MAVSDK 3 deprecated ``udp://`` (a listening socket) for ``udpin://``, and 2.x does not
+    know ``udpin://``; the app and its users say ``udp://:14540`` either way.
+    """
+    text = str(uri or "").strip()
+    if sdk_major >= 3 and text.startswith("udp://"):
+        host_port = text[len("udp://"):]
+        host, _, port = host_port.rpartition(":")
+        return f"udpin://{host or '0.0.0.0'}:{port}"
+    if sdk_major < 3 and text.startswith("udpin://"):
+        host_port = text[len("udpin://"):]
+        host, _, port = host_port.rpartition(":")
+        return f"udp://{'' if host in ('', '0.0.0.0') else host}:{port}"
+    return text
+
+
+def _free_tcp_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _mavsdk_battery_percent(remaining: float, sdk_major: int) -> float:
     """MAVSDK 1.x reports remaining charge as 0..1; 2.x reports 0..100."""
     value = float(remaining)
@@ -422,6 +491,11 @@ class MAVSDKDroneClient:
 
     COMMAND_TIMEOUT_S = 15.0
     CONNECT_TIMEOUT_S = 10.0
+    # Starting mavsdk_server is separate from hearing a vehicle and can be much slower:
+    # its first start on Windows took 24 s (a 49 MB executable, scanned on launch), and
+    # the 10 s the whole connect used to get reported "no vehicle answered" about a PX4
+    # that was streaming the whole time.
+    SERVER_START_TIMEOUT_S = 60.0
 
     def __init__(self):
         self._drone = None
@@ -432,6 +506,7 @@ class MAVSDKDroneClient:
         self._thread: threading.Thread | None = None
         self._tasks: list[Any] = []
         self._sdk_major = 2
+        self._mission_raw: Any = None
 
     # -- event loop ---------------------------------------------------------
 
@@ -489,24 +564,19 @@ class MAVSDKDroneClient:
     # -- connection ---------------------------------------------------------
 
     def connect(self, connection_uri: str = "udp://:14540") -> None:
-        try:
-            import mavsdk
-            from mavsdk import System
-        except ImportError:
-            raise RuntimeError(
-                "MAVSDK not installed. Install with: pip install mavsdk\n"
-                "Or use MockDroneClient for offline testing."
-            )
-        try:
-            self._sdk_major = int(str(getattr(mavsdk, "__version__", "2")).split(".")[0] or 2)
-        except ValueError:
-            self._sdk_major = 2
+        sdk, self._mission_raw, self._sdk_major = _load_mavsdk()
+        System = sdk.System
 
         self._start_loop()
         try:
-            self._drone = System()
-            self._run(self._drone.connect(system_address=connection_uri),
-                      timeout=self.CONNECT_TIMEOUT_S)
+            # mavsdk_server listens on a free local port, not the library's fixed
+            # 50051: anything else already on 50051 (a Windows endpoint agent here)
+            # answered the SDK's gRPC with "unknown service mavsdk.rpc.core.CoreService"
+            # and the link never came up.
+            self._drone = System(port=_free_tcp_port())
+            self._run(self._drone.connect(
+                system_address=_mavsdk_address(connection_uri, self._sdk_major)),
+                timeout=self.SERVER_START_TIMEOUT_S)
             # connect() returns once mavsdk_server is listening, not once a vehicle has
             # been heard. Without this a link with nothing on the other end would be
             # reported as connected.
@@ -564,7 +634,11 @@ class MAVSDKDroneClient:
                 if opener is not None:
                     self._tasks.append(loop.create_task(
                         self._follow(opener, getattr(self, handler))))
-            progress = getattr(getattr(drone, "mission", None), "mission_progress", None)
+            # The plan goes up through mission_raw, so its progress is mission_raw's. The
+            # Mission plugin only tracks missions it uploaded itself: on a real PX4 its
+            # stream stayed at item 0 for a whole flown survey.
+            progress = (getattr(getattr(drone, "mission_raw", None), "mission_progress", None)
+                        or getattr(getattr(drone, "mission", None), "mission_progress", None))
             if progress is not None:
                 self._tasks.append(loop.create_task(self._follow(progress, self._on_progress)))
 
@@ -649,8 +723,7 @@ class MAVSDKDroneClient:
 
     # -- mission upload -----------------------------------------------------
 
-    @staticmethod
-    def _raw_items(items: list[dict[str, Any]], mission_type: int) -> list[Any]:
+    def _raw_items(self, items: list[dict[str, Any]], mission_type: int) -> list[Any]:
         """Planner items as MAVSDK MissionRaw items.
 
         mission_raw carries MAVLink items verbatim, so gimbal, yaw, dwell and trigger
@@ -658,7 +731,7 @@ class MAVSDKDroneClient:
         PX4 does not reserve sequence 0 for home the way ArduPilot does, so no home slot
         is added here.
         """
-        from mavsdk.mission_raw import MissionItem
+        MissionItem = self._mission_raw.MissionItem
 
         # The same scaling rule as the pymavlink bridge: positional commands carry
         # degrees scaled to int32, the rest carry plain values in x/y.
@@ -696,6 +769,12 @@ class MAVSDKDroneClient:
         except Exception as exc:  # noqa: BLE001 - MissionRawError carries the reason
             return CommandResult(False, name, f"Vehicle rejected the upload: {exc}", ack=ACK_DENIED)
         # mission_raw.upload_* resolves only on the vehicle's MISSION_ACK.
+        if mission_type == 0:
+            # Progress is shown against the plan from the moment the vehicle holds it;
+            # MAVSDK's mission_progress only speaks once the mission is running.
+            with self._lock:
+                self._telemetry.waypoint_total = len(items)
+                self._telemetry.waypoint_index = 0
         return CommandResult(True, name,
                              f"Uploaded {len(items)} items; the vehicle acknowledged.",
                              ack=ACK_ACCEPTED)
@@ -708,6 +787,51 @@ class MAVSDKDroneClient:
 
     def upload_rally_points(self, rally_items: list[dict[str, Any]]) -> CommandResult:
         return self._upload("upload_rally_points", rally_items, 2)
+
+    def clear_geofence(self) -> CommandResult:
+        """Remove the vehicle's fence, so it matches a plan that has none."""
+        return self._call("clear_geofence", "geofence", "clear_geofence",
+                          done="Cleared on the vehicle.")
+
+    # -- mission download ---------------------------------------------------
+
+    def _download(self, method: str, timeout_s: float) -> list[dict[str, Any]]:
+        """Read one item list back from the vehicle, in the form the planner wrote it.
+
+        The same dicts the pymavlink link returns, so a plan can be compared with what
+        the aircraft holds whichever driver is connected.
+        """
+        if not self._connected or self._drone is None:
+            raise RuntimeError("Not connected.")
+        downloader = getattr(getattr(self._drone, "mission_raw", None), method, None)
+        if downloader is None:
+            raise RuntimeError(f"This MAVSDK version has no mission_raw.{method}.")
+        from .mission_planner_bridge import _NON_POSITIONAL_COMMANDS
+
+        items = []
+        for raw in self._run(downloader(), timeout=timeout_s):
+            command = int(raw.command)
+            positional = command not in _NON_POSITIONAL_COMMANDS
+            items.append({
+                "seq": int(raw.seq), "command": command, "frame": int(raw.frame),
+                "param1": float(raw.param1), "param2": float(raw.param2),
+                "param3": float(raw.param3), "param4": float(raw.param4),
+                "lat": float(raw.x) / 1e7 if positional else float(raw.x),
+                "lon": float(raw.y) / 1e7 if positional else float(raw.y),
+                "alt": float(raw.z), "autocontinue": int(raw.autocontinue),
+            })
+        return items
+
+    def download_mission(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
+        """The flight plan stored on the vehicle. PX4 keeps no home slot to strip."""
+        return self._download("download_mission", timeout_s)
+
+    def download_geofence(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
+        return self._download("download_geofence", timeout_s)
+
+    def download_rally_points(self, timeout_s: float = 30.0) -> list[dict[str, Any]]:
+        # MAVSDK spells this one without the underscore.
+        return self._download("download_rallypoints", timeout_s)
 
     # -- commands -----------------------------------------------------------
 
@@ -747,7 +871,26 @@ class MAVSDKDroneClient:
         return self._call("emergency_stop", "action", "kill", done="Motors killed.")
 
     def start_mission(self) -> CommandResult:
-        return self._call("start_mission", "mission", "start_mission", done="Mission started.")
+        """Enter MISSION and arm: PX4 takes off into its mission once both hold.
+
+        mission.start_mission only switches the mode. This used to be the whole start, so
+        on a real PX4 (v1.15 SITL) Start Mission answered "Mission started." while the
+        aircraft sat disarmed on the ground in MISSION mode and never left it. The mode is
+        entered first, so a vehicle that refuses it (no valid mission) is never armed; the
+        arm that follows is what launches it.
+        """
+        with self._lock:
+            was_armed = bool(self._telemetry.armed)
+        started = self._call("start_mission", "mission", "start_mission",
+                             done="Mission started.")
+        if not started.success or was_armed:
+            return started
+        armed = self._call("start_mission", "action", "arm",
+                           done="Mission started; armed and taking off.")
+        if not armed.success:
+            armed.message = (f"The vehicle entered MISSION but refused to arm, so it is "
+                             f"still on the ground: {armed.message}")
+        return armed
 
     def pause_mission(self) -> CommandResult:
         return self._call("pause_mission", "mission", "pause_mission", done="Mission paused.")

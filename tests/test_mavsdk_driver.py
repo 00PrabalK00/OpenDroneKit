@@ -25,12 +25,24 @@ from fake_mavsdk import FakePX4, build_module
 AOI = [[8.5440, 47.3970], [8.5470, 47.3970], [8.5470, 47.3985], [8.5440, 47.3985]]
 
 
+def install(monkeypatch, module, *, name: str = "mavsdk") -> None:
+    """Install the stand-in as the SDK, under `name`, and hide any real one.
+
+    The driver prefers ``mavsdk_grpc`` (the gRPC API's current name) to ``mavsdk``, so
+    an installed real SDK would otherwise be picked over the stand-in.
+    """
+    for other in ("mavsdk", "mavsdk_grpc"):
+        monkeypatch.setitem(sys.modules, other, None)
+        monkeypatch.setitem(sys.modules, f"{other}.mission_raw", None)
+    monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setitem(sys.modules, f"{name}.mission_raw", module.mission_raw)
+
+
 @pytest.fixture
 def px4(monkeypatch):
     vehicle = FakePX4()
     module = build_module(vehicle)
-    monkeypatch.setitem(sys.modules, "mavsdk", module)
-    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    install(monkeypatch, module)
     return vehicle
 
 
@@ -62,8 +74,7 @@ def test_a_mavsdk_1_battery_fraction_is_read_as_a_fraction(tmp_path, monkeypatch
     vehicle = FakePX4()
     vehicle.battery_remaining = 0.64
     module = build_module(vehicle, version="1.4.9")
-    monkeypatch.setitem(sys.modules, "mavsdk", module)
-    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    install(monkeypatch, module)
     from core.drone import MAVSDKDroneClient
 
     client = MAVSDKDroneClient()
@@ -134,8 +145,7 @@ def test_a_vehicle_that_never_appears_is_not_connected(tmp_path, monkeypatch):
 
     module_core = module.System().core
     type(module_core).connection_state = lambda self: never()
-    monkeypatch.setitem(sys.modules, "mavsdk", module)
-    monkeypatch.setitem(sys.modules, "mavsdk.mission_raw", module.mission_raw)
+    install(monkeypatch, module)
     from core.drone import MAVSDKDroneClient
 
     client = MAVSDKDroneClient()
@@ -143,3 +153,56 @@ def test_a_vehicle_that_never_appears_is_not_connected(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="Failed to connect"):
         client.connect("udp://:14540")
     assert client.is_connected() is False
+
+
+def test_start_enters_mission_then_arms(api, px4):
+    """mission.start_mission only changes the mode: a real PX4 sat disarmed in MISSION."""
+    result = api.vehicle_command("start", {"override_preflight": True})
+    assert result["ok"] is True, result
+    assert px4.calls[-2:] == ["start_mission", "arm"]
+    assert px4.armed is True and px4.mode == "MISSION"
+
+
+def test_a_start_whose_arm_is_refused_says_the_aircraft_is_on_the_ground(api, px4):
+    px4.deny_actions.add("arm")
+    result = api.vehicle_command("start", {"override_preflight": True})
+    assert result["ok"] is False
+    assert "refused to arm" in result["error"] and "still on the ground" in result["error"]
+    assert px4.armed is False
+
+
+def test_the_grpc_api_is_found_under_its_new_name(monkeypatch):
+    vehicle = FakePX4()
+    module = build_module(vehicle, version="3.17.4")
+    install(monkeypatch, module, name="mavsdk_grpc")
+    from core.drone import MAVSDKDroneClient
+
+    client = MAVSDKDroneClient()
+    client.connect("udp://:14540")
+    try:
+        assert client.is_connected() and client._sdk_major == 3
+    finally:
+        client.disconnect()
+
+
+def test_the_native_mavsdk_4_binding_is_refused_by_name(monkeypatch):
+    """`pip install mavsdk` now installs a different library; say so, not 'cannot connect'."""
+    module = build_module(FakePX4(), version="4.0.3")
+    install(monkeypatch, module)
+    from core.drone import MAVSDKDroneClient
+
+    with pytest.raises(RuntimeError, match="mavsdk-grpc"):
+        MAVSDKDroneClient().connect("udp://:14540")
+
+
+@pytest.mark.parametrize("uri, major, expected", [
+    ("udp://:14540", 3, "udpin://0.0.0.0:14540"),
+    ("udp://192.168.1.5:14540", 3, "udpin://192.168.1.5:14540"),
+    ("udpin://0.0.0.0:14540", 2, "udp://:14540"),
+    ("udp://:14540", 2, "udp://:14540"),
+    ("serial:///dev/ttyACM0:57600", 3, "serial:///dev/ttyACM0:57600"),
+])
+def test_the_connection_uri_is_spelled_for_the_installed_sdk(uri, major, expected):
+    from core.drone import _mavsdk_address
+
+    assert _mavsdk_address(uri, major) == expected
