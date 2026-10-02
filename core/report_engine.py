@@ -1139,6 +1139,13 @@ def build_blocks(context: dict[str, Any], assets: dict[str, Any]) -> dict[str, d
         pass
     blocks["appendix"] = {"table": {"header": [], "rows": inputs}}
 
+    # Sections contributed by report-section plugins ("plugin:<name>"). They are built
+    # by the application layer (app/report_builder.py) before rendering, so this engine
+    # never imports plugin code; a plugin that failed arrives as a block saying so.
+    for key, block in (context.get("plugin_blocks") or {}).items():
+        if str(key).startswith("plugin:") and isinstance(block, dict):
+            blocks[str(key)] = dict(block)
+
     for key, block in blocks.items():
         block.setdefault("title", SECTION_TITLES.get(key, key.replace("_", " ").title()))
     return blocks

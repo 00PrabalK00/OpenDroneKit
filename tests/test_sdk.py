@@ -45,7 +45,7 @@ class TestPluginSystem:
 
         assert {kind.value for kind in PluginKind} == {
             "drone", "camera", "payload", "mission_type", "engine", "model",
-            "exporter", "report_template", "map_provider",
+            "exporter", "report_template", "report_section", "map_provider",
         }
         assert loaded[0].name == "district-wmts"
         assert registry.create("map_provider", "district-wmts", url="http://localhost/wmts") == {

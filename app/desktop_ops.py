@@ -876,16 +876,16 @@ def prelabel_image(project_root: str | Path, project_id: str, image_path: str,
 
 
 def list_plugins() -> list[dict[str, Any]]:
-    """What the plugin registry has actually loaded."""
-    from sdk.plugins import PluginRegistry
+    """What the plugin registry has actually loaded.
 
-    registry = PluginRegistry()
-    discovered = getattr(registry, "specs", None) or getattr(registry, "plugins", None) or []
-    out = []
-    for spec in discovered:
-        out.append({
-            "name": getattr(spec, "name", str(spec)),
-            "kind": str(getattr(spec, "kind", "")),
-            "version": getattr(spec, "version", ""),
-        })
-    return out
+    This used to build a fresh, empty PluginRegistry and read attributes it does not
+    have, so it always answered "no plugins" whatever was installed. It now reads the
+    process-wide host, which discovers the installed ``opendronekit.plugins`` entry
+    points once (skipping, and recording, any that are broken).
+    """
+    from opendronekit.plugins import plugin_status
+
+    return [{"name": row["name"], "kind": row["kind"], "version": row["version"],
+             "api_version": row["api_version"], "package": row["package"],
+             "description": row["description"]}
+            for row in plugin_status()["loaded"]]

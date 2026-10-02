@@ -237,6 +237,14 @@ class Api:
             caps["pymavlink"] = False
         caps["geo"] = geo.geo_capabilities()
         caps["platform"] = f"{platform.system()} {platform.release()}"
+        # Installed plugins and the ones that were skipped, with the reason. Discovery
+        # never raises for a broken plugin, and this must not fail because of one.
+        try:
+            from opendronekit.plugins import plugin_status
+
+            caps["plugins"] = plugin_status()
+        except Exception as exc:  # noqa: BLE001
+            caps["plugins"] = {"error": f"{type(exc).__name__}: {exc}"}
         return ok(capabilities=caps)
 
     @guard
@@ -3769,12 +3777,17 @@ class Api:
             return fail(str(exc))
 
     @guard
-    def list_plugins(self) -> dict[str, Any]:
-        """What the plugin registry has actually loaded."""
+    def list_plugins(self, refresh: bool = False) -> dict[str, Any]:
+        """What the plugin registry has actually loaded, and what it skipped and why."""
         from app import desktop_ops
+        from opendronekit.plugins import plugin_status, load_plugins
 
         try:
-            return ok(plugins=desktop_ops.list_plugins())
+            if refresh:
+                load_plugins(refresh=True)
+            status = plugin_status()
+            return ok(plugins=desktop_ops.list_plugins(), failed=status["failed"],
+                      api_version=status["api_version"], packages=status["packages"])
         except (ValueError, RuntimeError) as exc:
             return fail(str(exc))
 

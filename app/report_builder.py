@@ -192,15 +192,48 @@ def readiness(session: Any, config: ReportConfig) -> ReportReadiness:
     return _judge(desktop_context(session, config), config)
 
 
+def attach_plugin_sections(context: dict[str, Any]) -> list[str]:
+    """Build every ``plugin:<name>`` section the report asks for; return warnings.
+
+    A report-section plugin is handed a copy of the context, so it cannot alter what the
+    other sections print. A plugin that is not installed, raises, or returns something
+    that is not a section is not allowed to stop the report: its section says it was left
+    out and why, and the report carries a warning. Nothing is filled in on its behalf.
+    """
+    sections = [str(s) for s in (context.get("config") or {}).get("sections") or []]
+    wanted = [s for s in sections if s.startswith("plugin:")]
+    if not wanted:
+        return []
+    from opendronekit.plugins import PluginError, host
+
+    host.load()
+    blocks: dict[str, dict[str, Any]] = {}
+    warnings: list[str] = []
+    for key in wanted:
+        name = key.split(":", 1)[1]
+        try:
+            blocks[key] = host.report_section(name, context)
+        except PluginError as exc:
+            warnings.append(str(exc))
+            blocks[key] = {
+                "title": f"{name} (plugin section not included)",
+                "paragraphs": [f"This section was to be written by the report-section plugin "
+                               f"{name!r}, which failed, so it is left out: {exc.reason}"],
+            }
+    context["plugin_blocks"] = blocks
+    return warnings
+
+
 def generate(session: Any, config: ReportConfig) -> ReportResult:
     """Write a report of the open project into <project root>/reports."""
     context = desktop_context(session, config)
     ready = _judge(context, config)
     if not ready.ok:
         raise ValueError("Report not generated: " + "; ".join(ready.missing))
+    plugin_warnings = attach_plugin_sections(context)
     root = Path(session.project_root())
     result = render_report(context, root / "reports", config.formats)
-    result.warnings = list(ready.warnings)
+    result.warnings = list(ready.warnings) + plugin_warnings
     (Path(result.output_dir) / "report.json").write_text(
         json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     session.store.save_report(
