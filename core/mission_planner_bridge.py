@@ -97,7 +97,25 @@ HOME_REQUEST_INTERVAL_S = 2.0
 GCS_HEARTBEAT_INTERVAL_S = 1.0
 MAV_TYPE_GCS = 6
 MAV_AUTOPILOT_INVALID = 8
+MAV_AUTOPILOT_PX4 = 12
 MAV_STATE_ACTIVE = 4
+
+# PX4 speaks MAVLink too, but differently from ArduPilot in the places this link relied
+# on: it has no home slot at mission sequence 0, encodes its mode as main/sub mode in
+# custom_mode, is commanded into a mode with DO_SET_MODE, has no GUIDED, answers
+# DO_PAUSE_CONTINUE with "unsupported", and takes NAV_TAKEOFF's altitude as AMSL. Each
+# was found against PX4 v1.15.4 SITL; before it, this link uploaded a mission PX4 refused
+# to fly ("takeoff not first waypoint item"), showed the mode as UNKNOWN, and could not
+# change it.
+#
+# PX4 mode names (pymavlink's) in the vocabulary the rest of the toolkit speaks -- the
+# same one the MAVSDK driver reports.
+_PX4_MODE_NAMES = {"MISSION": "AUTO", "POSCTL": "POSHOLD", "ALTCTL": "ALT_HOLD",
+                   "STABILIZED": "STABILIZE"}
+# A mode asked for in that vocabulary, as PX4 calls it.
+_PX4_MODE_REQUESTS = {"AUTO": "MISSION", "HOLD": "LOITER", "BRAKE": "LOITER",
+                      "POSHOLD": "POSCTL", "ALT_HOLD": "ALTCTL", "STABILIZE": "STABILIZED",
+                      "RETURN_TO_LAUNCH": "RTL"}
 
 # ArduCopter modes the vehicle refuses to arm in from a MAVLink arm command.
 _NOT_ARMABLE_ON_GROUND = {"RTL", "LAND", "SMART_RTL", "AUTO", "BRAKE", "AUTO_RTL",
@@ -414,6 +432,12 @@ class MissionPlannerDroneClient:
         # monotonic time of the last HOME_POSITION request; asked again until it arrives.
         self._last_home_request = 0.0
         self._last_gcs_heartbeat = 0.0
+        # MAV_AUTOPILOT of the vehicle, from its HEARTBEAT. Not every autopilot is
+        # ArduPilot; PX4 differs in the ways listed at _PX4_MODE_NAMES.
+        self._autopilot = 0
+
+    def _px4(self) -> bool:
+        return self._autopilot == MAV_AUTOPILOT_PX4
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -445,6 +469,7 @@ class MissionPlannerDroneClient:
                     ),
                     recovery_action="Set the MAVLINK20=1 environment variable and restart.",
                 )
+            self._autopilot = int(getattr(hb, "autopilot", 0) or 0)
             self._connected = True
             self._uri = connection_uri
             self._send_gcs_heartbeat()
@@ -553,7 +578,8 @@ class MissionPlannerDroneClient:
                 # custom_mode is a number. Reporting it as the flight mode gives the
                 # operator "3" where they need "AUTO", and makes it impossible to say
                 # who is flying the aircraft, so it is resolved to its name here.
-                tel.flight_mode = self._mode_name(getattr(msg, "custom_mode", None)) or tel.flight_mode
+                tel.flight_mode = self._mode_name(getattr(msg, "custom_mode", None),
+                                                  getattr(msg, "base_mode", 0)) or tel.flight_mode
                 tel.armed = bool(getattr(msg, "base_mode", 0) & 0x80)
                 # MAV_STATE. ArduPilot reports CRITICAL while any failsafe is active
                 # (radio, GCS, battery, EKF, ...) and EMERGENCY when it has given up.
@@ -620,13 +646,16 @@ class MissionPlannerDroneClient:
                 # answered "which waypoint" in two different numbering schemes
                 # depending on which call you asked -- and the one place that shows up
                 # is an operator watching progress against the plan they drew.
-                tel.waypoint_index = max(0, int(getattr(msg, "seq", tel.waypoint_index + 1)) - 1)
+                # PX4 has no home slot, so its sequence is the plan's own.
+                slot = 0 if self._px4() else 1
+                tel.waypoint_index = max(0, int(getattr(msg, "seq", tel.waypoint_index + slot)) - slot)
             elif t == "MISSION_COUNT":
                 # Only the flight plan's count is progress, and it includes the home slot
                 # the plan never had. A fence or rally download also answers MISSION_COUNT
                 # and used to overwrite the waypoint total with its vertex count.
                 if int(getattr(msg, "mission_type", MAV_MISSION_TYPE_MISSION) or 0) == MAV_MISSION_TYPE_MISSION:
-                    tel.waypoint_total = max(0, int(getattr(msg, "count", 1)) - 1)
+                    tel.waypoint_total = max(0, int(getattr(msg, "count", 1))
+                                             - (0 if self._px4() else 1))
             elif t == "HOME_POSITION":
                 tel.home_lat = float(msg.latitude) / 1e7
                 tel.home_lon = float(msg.longitude) / 1e7
@@ -891,8 +920,12 @@ class MissionPlannerDroneClient:
         This is the defect the SITL harness was built to find, and it was invisible to
         every test that did not talk to a real autopilot.
         """
+        # PX4 keeps home out of the mission. Given ArduPilot's home slot it flies it as the
+        # first item, and its feasibility check refused the plan outright: "Mission
+        # rejected: takeoff not first waypoint item" (PX4 v1.15.4 SITL).
         result = self._upload_list(
-            _with_home_slot(mission_items),
+            [dict(item, seq=index) for index, item in enumerate(mission_items)]
+            if self._px4() else _with_home_slot(mission_items),
             mission_type=MAV_MISSION_TYPE_MISSION,
             name="upload_mission",
         )
@@ -1035,7 +1068,8 @@ class MissionPlannerDroneClient:
 
     def download_mission(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
         """Read the flight plan stored on the vehicle, without its home slot."""
-        return _without_home_slot(self._download_list(MAV_MISSION_TYPE_MISSION, timeout_s))
+        items = self._download_list(MAV_MISSION_TYPE_MISSION, timeout_s)
+        return items if self._px4() else _without_home_slot(items)
 
     def _clear_list(self, mission_type: int, name: str, timeout_s: float = 5.0) -> CommandResult:
         """MISSION_CLEAR_ALL for one list, confirmed by the vehicle's MISSION_ACK."""
@@ -1193,6 +1227,19 @@ class MissionPlannerDroneClient:
         """
         if altitude_m <= 0:
             return CommandResult(False, "takeoff", "Takeoff altitude must be positive.")
+        if self._px4():
+            # PX4 has no GUIDED: NAV_TAKEOFF itself puts it in TAKEOFF mode. Its param7 is
+            # an altitude above mean sea level, not above home.
+            with self._lock:
+                home_set = self._latest_telemetry.home_set
+                home_alt = float(self._latest_telemetry.home_alt)
+            if not home_set:
+                return CommandResult(False, "takeoff",
+                                     "PX4 takes off to an altitude above sea level, and the "
+                                     "vehicle has not reported its home altitude yet.")
+            nan = float("nan")
+            return self._command_long(22, -1.0, 0.0, 0.0, nan, nan, nan,
+                                      home_alt + float(altitude_m), name="takeoff")
         mode = self.set_flight_mode("GUIDED")
         if not mode.success:
             return CommandResult(False, "takeoff", f"Could not enter GUIDED: {mode.message}")
@@ -1332,10 +1379,15 @@ class MissionPlannerDroneClient:
         """Hold the current position."""
         return self.set_flight_mode("LOITER")
 
-    def _mode_name(self, custom_mode: Any) -> str:
+    def _mode_name(self, custom_mode: Any, base_mode: Any = 0) -> str:
         """Resolve a numeric custom_mode to the name a pilot recognises."""
         if custom_mode is None:
             return ""
+        if self._px4():
+            from pymavlink import mavutil
+
+            name = str(mavutil.interpret_px4_mode(int(base_mode or 0), int(custom_mode))).upper()
+            return _PX4_MODE_NAMES.get(name, name)
         try:
             mapping = self._conn.mode_mapping() if self._conn is not None else None
         except Exception:
@@ -1361,6 +1413,8 @@ class MissionPlannerDroneClient:
             conn = self._ensure()
         except AppError as exc:
             return CommandResult(False, "set_flight_mode", exc.user_message)
+        if self._px4():
+            return self._set_px4_mode(mode, verify=verify, timeout_s=timeout_s)
         try:
             wanted = mode.upper()
             mode_id = conn.mode_mapping().get(wanted)
@@ -1396,6 +1450,42 @@ class MissionPlannerDroneClient:
             )
         except Exception as exc:
             return CommandResult(False, "set_flight_mode", str(exc))
+
+    def _set_px4_mode(self, mode: str, *, verify: bool, timeout_s: float) -> CommandResult:
+        """PX4: MAV_CMD_DO_SET_MODE with its main/sub mode, acknowledged, then confirmed.
+
+        ArduPilot's SET_MODE with a single custom_mode number means nothing to PX4, and
+        pymavlink's PX4 table holds (base, main, sub) tuples, so the ArduPilot path sent a
+        tuple where a number belonged and failed.
+        """
+        from pymavlink import mavutil
+
+        asked = str(mode).upper()
+        px4_name = _PX4_MODE_REQUESTS.get(asked, asked)
+        entry = mavutil.px4_map.get(px4_name)
+        if entry is None:
+            available = ", ".join(sorted(_PX4_MODE_NAMES.get(n, n) for n in mavutil.px4_map))
+            return CommandResult(False, "set_flight_mode",
+                                 f"Unknown mode {mode!r} on PX4. Available: {available}.")
+        base_mode, main_mode, sub_mode = entry
+        sent = self._command_long(176, float(base_mode), float(main_mode), float(sub_mode),
+                                  name="set_flight_mode")
+        if not sent.success or not verify:
+            return sent
+        expected = _PX4_MODE_NAMES.get(px4_name, px4_name)
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        while time.monotonic() < deadline:
+            with self._lock:
+                current = (self._latest_telemetry.flight_mode or "").upper()
+            if current == expected:
+                return CommandResult(True, "set_flight_mode", f"Mode is {expected}.",
+                                     ack=sent.ack)
+            time.sleep(0.1)
+        with self._lock:
+            current = (self._latest_telemetry.flight_mode or "unknown").upper()
+        return CommandResult(False, "set_flight_mode",
+                             f"The vehicle accepted {expected} but did not enter it within "
+                             f"{timeout_s:.0f} s; it is still in {current}.", ack=sent.ack)
 
     def start_mission(self) -> CommandResult:
         """Arm if needed, then MAV_CMD_MISSION_START (300).
@@ -1433,11 +1523,23 @@ class MissionPlannerDroneClient:
         return started
 
     def pause_mission(self) -> CommandResult:
+        if self._px4():
+            # PX4 answers DO_PAUSE_CONTINUE "unsupported"; a mission is paused by holding
+            # (AUTO.LOITER) and resumed by re-entering MISSION, which continues from the
+            # current item. This is what QGroundControl and MAVSDK do.
+            return self._renamed(self.set_flight_mode("LOITER"), "pause_mission")
         # MAV_CMD_DO_PAUSE_CONTINUE = 193, p1=0 to pause
         return self._command_long(193, 0.0, name="pause_mission")
 
     def resume_mission(self) -> CommandResult:
+        if self._px4():
+            return self._renamed(self.set_flight_mode("AUTO"), "resume_mission")
         return self._command_long(193, 1.0, name="resume_mission")
+
+    @staticmethod
+    def _renamed(result: CommandResult, name: str) -> CommandResult:
+        result.command = name
+        return result
 
     def return_to_home(self) -> CommandResult:
         # MAV_CMD_NAV_RETURN_TO_LAUNCH = 20
