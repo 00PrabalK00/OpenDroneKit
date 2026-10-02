@@ -2056,6 +2056,49 @@ PLATFORM = [
       "out still declares itself. Sites are at Null Island and timestamps at the epoch, "
       "so a reader who misses the flag still cannot mistake it for a survey. "
       "refuse_if_demo() lets any publish or register path reject it."),
+    # -- Windows installer (roadmap #1) --------------------------------------------
+    F("inf.installer.windows", "Windows installer", "infra", "Installer",
+      "A reproducible build produces a per-user (no admin) Windows installer with a bundled "
+      "Python runtime and every requirement, Start-menu and desktop shortcuts and an "
+      "uninstaller; the build is HEAD of git with pinned, hashed packages, refuses weights "
+      "or secrets in the payload, and ships a manifest the installed app re-verifies.",
+      "verified", ["tests/test_installer_pipeline.py::TestManifest",
+                   "tests/test_installer_pipeline.py::TestRuntimeLayout",
+                   "tests/test_installer_pipeline.py::TestInnoScript",
+                   "tests/test_installer_pipeline.py::TestLauncher",
+                   "tests/test_installer_pipeline.py::TestSelfTest"],
+      "tools/installer/build.py + OpenDroneKit.iss (Inno Setup 6). The end-to-end run -- build, "
+      "silent install to a temp folder, self-test under a scrubbed environment, uninstall -- is "
+      "tools/installer/smoke_install.py; its evidence is in docs/INSTALLER.md. The tests pin the "
+      "manifest, lock, runtime layout, script and launcher."),
+    F("inf.installer.signing", "Installer code signing", "infra", "Installer",
+      "The build signs the installer and uninstaller with Azure Trusted Signing or a "
+      "certificate when one is configured, and otherwise skips signing with a clear message "
+      "and marks every output UNSIGNED.",
+      "implemented", ["tests/test_installer_pipeline.py::TestSigningPlan",
+                      "tests/test_installer_pipeline.py::TestInnoScript::test_unsigned_is_marked"],
+      "The signtool command lines are tested; no build has been signed because the project "
+      "has no certificate yet. Stays `implemented` until one is configured and a signed build verifies."),
+    F("inf.installer.model_download", "First-run model weights download", "infra", "Installer",
+      "Missing weights are downloaded only from a location the registry (or ODK_MODEL_SOURCES) "
+      "publishes, verified against the registry sha256, and refused on mismatch; with no "
+      "published location the model is reported as not available for download yet.",
+      "verified", ["tests/test_installer_runtime.py::TestModelDownloadVerification"],
+      "core/model_download.py. No weights are hosted yet, so the shipped registry publishes no URL "
+      "and the downloader says so; a test pins that no row invents one."),
+    F("inf.installer.update_check", "Opt-in update check", "infra", "Installer",
+      "Off by default; when opted in, compares GitHub Releases of 00PrabalK00/OpenDroneKit "
+      "with this version, offers only releases that publish a sha256 for the installer, "
+      "verifies the download, and never installs it silently.",
+      "verified", ["tests/test_installer_runtime.py::TestVersionComparison",
+                   "tests/test_installer_runtime.py::TestUpdateCheck"],
+      "core/updates.py against a loopback release server: up to date, newer, no release, "
+      "no digest, disagreeing digests, tampered download, unreachable."),
+    F("inf.env.gpu_detection", "GPU detection in Environment Capabilities", "infra", "Installer",
+      "Environment Capabilities reports the GPUs present and, separately, whether this "
+      "build can use one for inference (onnxruntime providers, torch CUDA).",
+      "verified", ["tests/test_installer_runtime.py::TestGpuDetection"],
+      "core/gpu.py via Api.capabilities (gpu_detection, gpu_summary)."),
 ]
 
 ALL_FEATURES: list[Feature] = [

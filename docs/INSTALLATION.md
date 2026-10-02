@@ -16,6 +16,10 @@ Everything else is a Python package.
 
 ## Install
 
+On Windows there is also a self-contained installer (bundled Python runtime, per-user,
+no admin rights); how it is built, what it does and its current limits are in
+[INSTALLER.md](INSTALLER.md). The rest of this page is the source install.
+
 The reference environment is the `odk` conda environment in `environment.yml`: Python
 3.11 plus everything in `requirements.txt` (which stays the single package list).
 
