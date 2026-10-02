@@ -135,9 +135,83 @@ def calculate_crack_length_from_mask(mask: "np.ndarray", scale_mm_per_px: float)
         ) from exc
     binary = (mask > 0).astype(np.uint8)
     skeleton = skeletonize(binary)
-    crack_px = float(np.sum(skeleton))
+    crack_px = skeleton_length_px(skeleton)
 
     return crack_px * float(scale_mm_per_px) / 1000.0
+
+
+# Skeleton pixels are sampled every this many steps along a branch and joined by straight
+# chords. Counting the pixels instead makes a 45-degree crack 29% short (a diagonal step
+# is sqrt(2) px, not 1), and counting 1 / sqrt(2) per step makes any other angle up to 8%
+# long (the staircase of an 8-connected line). Chords over a few pixels follow the line.
+SKELETON_CHORD_PX = 8
+
+
+def skeleton_length_px(skeleton: "np.ndarray", chord_px: int = SKELETON_CHORD_PX) -> float:
+    """Length in pixels of a one-pixel-wide skeleton, measured along its branches.
+
+    The skeleton is walked as a graph (4-neighbours, and diagonal neighbours only where
+    no 4-neighbour path already joins them, so a staircase corner is not counted twice).
+    Each branch between end points / junctions -- and each closed loop -- is measured as
+    a polyline through every ``chord_px``-th pixel and its last pixel.
+    """
+    sk = np.asarray(skeleton).astype(bool)
+    ys, xs = np.nonzero(sk)
+    if ys.size == 0:
+        return 0.0
+    on = set(zip(ys.tolist(), xs.tolist()))
+
+    def neighbours(p: tuple[int, int]) -> list[tuple[int, int]]:
+        y, x = p
+        out = [q for q in ((y, x + 1), (y + 1, x), (y, x - 1), (y - 1, x)) if q in on]
+        for dy, dx in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+            q = (y + dy, x + dx)
+            if q in on and (y, x + dx) not in on and (y + dy, x) not in on:
+                out.append(q)
+        return out
+
+    ordered = sorted(on)  # a fixed walking order, so the same mask gives the same number
+    adjacent = {p: neighbours(p) for p in ordered}
+    walked: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    step = max(1, int(chord_px))
+
+    def key(a, b):
+        return (a, b) if a < b else (b, a)
+
+    def polyline_length(path: list[tuple[int, int]]) -> float:
+        picks = list(range(0, len(path), step))
+        if picks[-1] != len(path) - 1:
+            picks.append(len(path) - 1)
+        return float(sum(math.hypot(path[i][0] - path[j][0], path[i][1] - path[j][1])
+                         for i, j in zip(picks, picks[1:])))
+
+    def walk(start, nxt) -> list[tuple[int, int]]:
+        path = [start, nxt]
+        walked.add(key(start, nxt))
+        prev, cur = start, nxt
+        while len(adjacent[cur]) == 2:
+            a, b = adjacent[cur]
+            following = b if a == prev else a
+            if key(cur, following) in walked:
+                break
+            walked.add(key(cur, following))
+            path.append(following)
+            prev, cur = cur, following
+        return path
+
+    total = 0.0
+    # Branches start at end points and junctions (anything without exactly two neighbours).
+    for p in ordered:
+        if len(adjacent[p]) != 2:
+            for q in adjacent[p]:
+                if key(p, q) not in walked:
+                    total += polyline_length(walk(p, q))
+    # What remains are closed loops, where every pixel has two neighbours.
+    for p in ordered:
+        for q in adjacent[p]:
+            if key(p, q) not in walked:
+                total += polyline_length(walk(p, q))
+    return total
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -268,6 +342,7 @@ def measure_image_distance(
     p2: tuple[int, int],
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_pixel_distance(p1, p2, scale_mm_per_px)
     return create_measurement(
@@ -280,6 +355,7 @@ def measure_image_distance(
         value=value,
         unit="m",
         label=label or f"Distance {round(value, 3)} m",
+        details=details,
     )
 
 
@@ -290,6 +366,7 @@ def measure_polygon_area(
     vertices: list[tuple[int, int]],
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_polygon_area_px(vertices, scale_mm_per_px)
     return create_measurement(
@@ -302,6 +379,7 @@ def measure_polygon_area(
         value=value,
         unit="m2",
         label=label or f"Area {round(value, 4)} m²",
+        details=details,
     )
 
 
@@ -312,6 +390,7 @@ def measure_crack_length(
     mask: "np.ndarray",
     scale_mm_per_px: float,
     label: str = "",
+    details: dict[str, Any] | None = None,
 ) -> Measurement:
     value = calculate_crack_length_from_mask(mask, scale_mm_per_px)
     return create_measurement(
@@ -324,4 +403,5 @@ def measure_crack_length(
         value=value,
         unit="m",
         label=label or f"Crack length {round(value, 4)} m",
+        details=details,
     )

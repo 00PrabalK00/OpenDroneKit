@@ -4228,6 +4228,182 @@ class Api:
         removed = delete_measurement(self._session.project_root(), str(measurement_id))
         return ok(removed=True) if removed else fail(f"No measurement {measurement_id}.")
 
+    @staticmethod
+    def _displayed_size(path: Path) -> tuple[int, int]:
+        """Width and height of a photograph as it is shown, EXIF orientation applied.
+
+        image_preview (and so every click the cockpit maps back to the frame) reads the
+        photograph with cv2.imread, which turns it upright by its EXIF Orientation tag. A
+        portrait frame stored landscape with Orientation 5-8 is therefore clicked in its
+        rotated axes, and its bounds must be the rotated ones too.
+        """
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+            try:
+                orientation = image.getexif().get(0x0112)
+            except Exception:  # noqa: BLE001 - no readable EXIF: shown as stored
+                orientation = None
+        if orientation in (5, 6, 7, 8):
+            return int(height), int(width)
+        return int(width), int(height)
+
+    def _dataset_image(self, name: str) -> tuple[Path | None, str]:
+        """A photograph in the active dataset, contained the way image_preview checks it."""
+        folder = self._session.active_dataset_dir
+        if not folder:
+            return None, "Select a dataset first."
+        root = Path(folder).resolve()
+        target = (root / str(name)).resolve()
+        if root not in target.parents:
+            return None, "That image is outside the active dataset."
+        if not target.is_file():
+            return None, f"No such image in the dataset: {name}"
+        return target, ""
+
+    @staticmethod
+    def _image_scale(scale_mm_per_px: Any, reference_pixels: Any,
+                     reference_length_mm: Any) -> tuple[float | None, dict[str, Any], str]:
+        """The photograph's scale, either typed or taken from a reference of known length.
+
+        A photograph has no scale of its own. It is the operator's: a number they know
+        (a calibrated camera at a known stand-off) or a feature of known size clicked on
+        the same photograph. Neither is guessed here.
+        """
+        import math
+
+        caveat = ("A single scale is only right in the plane of the reference and at its "
+                  "distance from the camera; parts of the photograph nearer or farther, "
+                  "or seen obliquely, are mis-scaled by the perspective.")
+        if reference_pixels:
+            points = [[float(v) for v in list(p)[:2]] for p in list(reference_pixels)[:2]]
+            try:
+                known = float(reference_length_mm)
+            except (TypeError, ValueError):
+                known = float("nan")
+            if len(points) != 2 or any(len(p) != 2 for p in points) or not (known > 0) \
+                    or math.isinf(known):
+                return None, {}, ("A reference needs two points on the photograph and its "
+                                  "real length in millimetres.")
+            span = math.dist(points[0], points[1])
+            if span < 2.0:
+                return None, {}, "The two reference points are the same pixel; click both ends."
+            scale = known / span
+            return scale, {"scale_source": "reference", "reference_pixels": points,
+                           "reference_length_mm": known, "reference_span_px": span,
+                           "scale_mm_per_px": scale, "caveat": caveat}, ""
+        try:
+            scale = float(scale_mm_per_px)
+        except (TypeError, ValueError):
+            scale = float("nan")
+        if not (scale > 0) or math.isinf(scale):
+            return None, {}, ("A photograph has no scale of its own: give millimetres per "
+                              "pixel, or click a reference of known length.")
+        return scale, {"scale_source": "entered", "scale_mm_per_px": scale,
+                       "caveat": caveat}, ""
+
+    @guard
+    def measure_on_image(self, kind: str, image_name: str, pixels: list[list[float]],
+                         scale_mm_per_px: Any = None, reference_pixels: Any = None,
+                         reference_length_mm: Any = None, label: str = "") -> dict[str, Any]:
+        """A distance or area on one photograph of the dataset, kept in the history.
+
+        ``pixels`` are in the source frame's pixels (the cockpit maps a click through the
+        downscaled preview). The scale is the operator's: typed, or from a reference of
+        known length on the same photograph -- and the record says which.
+        """
+        from core.measurements import measure_image_distance, measure_polygon_area
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        kind = str(kind or "").lower()
+        if kind not in ("distance", "area"):
+            return fail(f"Photographs are measured by distance or area, not {kind!r}.")
+        target, why = self._dataset_image(image_name)
+        if target is None:
+            return fail(why)
+        width, height = self._displayed_size(target)
+        points = [[float(v) for v in list(p)[:2]] for p in (pixels or [])]
+        if any(len(p) != 2 for p in points):
+            return fail("Each point is [x, y] in the photograph's pixels.")
+        need = 2 if kind == "distance" else 3
+        if len(points) < need:
+            return fail(f"A {kind} on a photograph needs at least {need} points.")
+        if kind == "distance":
+            points = points[:2]
+        outside = [p for p in points if not (0 <= p[0] <= width and 0 <= p[1] <= height)]
+        if outside:
+            return fail(f"A point lies outside the {width}x{height} photograph: {outside[0]}.")
+        scale, details, why = self._image_scale(scale_mm_per_px, reference_pixels,
+                                                reference_length_mm)
+        if scale is None:
+            return fail(why)
+        details.update({"image": str(target), "image_width": width, "image_height": height})
+        common = dict(project_root=Path(root), project_id=str(self._session.project_id()),
+                      source_id=str(target), scale_mm_per_px=scale, label=str(label or ""),
+                      details=details)
+        if kind == "distance":
+            m = measure_image_distance(p1=tuple(points[0]), p2=tuple(points[1]), **common)
+        else:
+            m = measure_polygon_area(vertices=[tuple(p) for p in points], **common)
+        self._session.audit("image_measured", {"kind": kind, "image": str(target)})
+        return ok(measurement=m.to_dict(), measurement_id=m.id, value=m.value, unit=m.unit,
+                  scale_mm_per_px=scale, scale_source=details["scale_source"],
+                  caveat=details["caveat"])
+
+    @guard
+    def measure_crack_on_image(self, image_name: str, mask_path: str,
+                               scale_mm_per_px: Any = None, reference_pixels: Any = None,
+                               reference_length_mm: Any = None,
+                               label: str = "") -> dict[str, Any]:
+        """Crack length from a binary crack mask drawn over one dataset photograph.
+
+        The mask is skeletonised to its centre line and the line's pixels are scaled.
+        A mask that is not the photograph's size is refused rather than stretched onto it.
+        """
+        import cv2
+
+        from core.measurements import measure_crack_length
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        target, why = self._dataset_image(image_name)
+        if target is None:
+            return fail(why)
+        mask_file = Path(str(mask_path or ""))
+        if not mask_file.is_file():
+            return fail(f"No crack mask at {mask_path!r}.")
+        mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            return fail(f"Could not read {mask_file.name} as an image mask.")
+        width, height = self._displayed_size(target)
+        if (mask.shape[1], mask.shape[0]) != (width, height):
+            return fail(f"The mask is {mask.shape[1]}x{mask.shape[0]} but {target.name} is "
+                        f"{width}x{height}; a crack mask must be drawn on the photograph "
+                        "it measures.")
+        if not (mask > 0).any():
+            return fail(f"{mask_file.name} marks no crack pixels.")
+        scale, details, why = self._image_scale(scale_mm_per_px, reference_pixels,
+                                                reference_length_mm)
+        if scale is None:
+            return fail(why)
+        details.update({"image": str(target), "mask": str(mask_file),
+                        "image_width": width, "image_height": height,
+                        "method": ("skeleton (scikit-image) centre line, measured along each branch "
+                                   "as a polyline")})
+        try:
+            m = measure_crack_length(Path(root), str(self._session.project_id()), str(target),
+                                     mask, scale, label=str(label or ""), details=details)
+        except RuntimeError as exc:
+            return fail(str(exc))
+        self._session.audit("crack_measured", {"image": str(target), "mask": str(mask_file)})
+        return ok(measurement=m.to_dict(), measurement_id=m.id, value=m.value, unit=m.unit,
+                  scale_mm_per_px=scale, scale_source=details["scale_source"],
+                  caveat=details["caveat"])
+
     @guard
     def compare_survey_volumes(self, earlier_path: str, later_path: str,
                                polygon_lonlat: list[list[float]] | None = None,
@@ -4557,6 +4733,36 @@ class Api:
                 "orthomosaic, or name a semantic class raster.")
         return raster, schema or manifest
 
+    @staticmethod
+    def _validated_classes(schema: str) -> list[str] | None:
+        """The classes the semantic model's holdout validates, or None when unknown.
+
+        From the semantic map's own manifest when Semantic Map recorded it; otherwise
+        from the installed model registry entry whose SHA-256 is the one the map was
+        made with. A class raster from elsewhere, with no such record, is unknown.
+        """
+        try:
+            payload = json.loads(Path(schema).read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if isinstance(payload.get("validated_classes"), list):
+            return [str(v) for v in payload["validated_classes"]]
+        sha = str((payload.get("model") or {}).get("checkpoint_sha256") or "").casefold()
+        if not sha:
+            return None
+        try:
+            from core.models import load_registry
+
+            for entry in (load_registry().get("models") or {}).values():
+                if str(entry.get("sha256") or "").casefold() == sha \
+                        and isinstance(entry.get("usable_labels"), list):
+                    return [str(v) for v in entry["usable_labels"]]
+        except Exception:  # noqa: BLE001 - an unreadable registry means unknown
+            return None
+        return None
+
     def _finish_pack(self, pack: str, result: Any) -> dict[str, Any]:
         """Read the pack's summary and put its GeoJSON and GeoTIFF outputs on the map."""
         summary_path = getattr(result, "summary_path", "")
@@ -4660,6 +4866,17 @@ class Api:
                     max_cpu_pixels=int(defaults.get("max_cpu_pixels", 4_000_000)),
                     min_polygon_area_m2=float(defaults.get("min_polygon_area_m2", 1.0)),
                 ))
+            # The holdout verdict is kept with the map, so every pack that reads this
+            # map later can flag the classes that do not hold up.
+            try:
+                written = json.loads(Path(package.manifest_path).read_text(encoding="utf-8"))
+                written["validated_classes"] = usable
+                written["validation_source"] = ("models/model_registry.json "
+                                                "shared_semantic_landcover usable_labels")
+                Path(package.manifest_path).write_text(json.dumps(written, indent=2),
+                                                       encoding="utf-8")
+            except (OSError, ValueError):
+                pass
             session.register_raster_layer(package.class_map_path, name="Semantic classes")
             session.register_vector_layer(package.polygons_path, name="Semantic polygons")
             return {"class_map": package.class_map_path, "polygons": package.polygons_path,
@@ -4686,7 +4903,9 @@ class Api:
                 raster, classes, cadastral_geojson, out,
                 previous_semantic_class_raster=previous_semantic_raster or None,
                 boundary_tolerance_m=float(boundary_tolerance_m)))
-        return self._pack("land_gis", lambda out: extract_land_gis(raster, classes, out))
+        validated = self._validated_classes(classes)
+        return self._pack("land_gis", lambda out: extract_land_gis(
+            raster, classes, out, validated_classes=validated))
 
     @guard
     def india_design_progress(self, design_geojson: str, semantic_raster: str = "",
@@ -4817,8 +5036,12 @@ class Api:
 
     @guard
     def india_anomaly_baseline(self, raster_paths: list[str], validated_by: str,
-                               validation_scope: str) -> dict[str, Any]:
-        """Fit a normal baseline from rasters someone has confirmed to be normal."""
+                               validation_scope: str, feature_schema: str = "") -> dict[str, Any]:
+        """Fit a normal baseline from rasters someone has confirmed to be normal.
+
+        ``feature_schema`` says what the bands of an untagged raster are (an orthomosaic
+        or DSM carries no ODK_FEATURE_SCHEMA tag); it is recorded as declared.
+        """
         from core.india_anomaly import fit_validated_baseline
         from core.india_geospatial import IndiaPackRefused
 
@@ -4826,19 +5049,22 @@ class Api:
         try:
             baseline = fit_validated_baseline(list(raster_paths), target,
                                               validated_by=str(validated_by),
-                                              validation_scope=str(validation_scope))
+                                              validation_scope=str(validation_scope),
+                                              declared_schema=str(feature_schema or ""))
         except (IndiaPackRefused, ValueError, FileNotFoundError) as exc:
             return fail(str(exc))
         return ok(pack="anomaly_baseline", baseline_path=str(target), baseline=baseline.to_dict())
 
     @guard
     def india_find_anomalies(self, feature_raster: str, baseline_path: str,
-                             threshold_sigma: float = 3.5) -> dict[str, Any]:
+                             threshold_sigma: float = 3.5,
+                             feature_schema: str = "") -> dict[str, Any]:
         """Deviation candidates against a validated baseline (never named as defects)."""
         from core.india_anomaly import detect_anomaly_candidates
 
         return self._pack("anomalies", lambda out: detect_anomaly_candidates(
-            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma)))
+            feature_raster, baseline_path, out, threshold_sigma=float(threshold_sigma),
+            declared_schema=str(feature_schema or "")))
 
     @guard
     def import_boundary(self, path: str) -> dict[str, Any]:

@@ -14,6 +14,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _skimage_skeletonize = None
 
+from .measurements import skeleton_length_px
 from .models import get_model_spec, model_identity, model_status
 
 LOGGER = logging.getLogger(__name__)
@@ -744,7 +745,7 @@ def _crack_result_from_mask(
         crack_pixels=crack_pixels,
         total_pixels=total_pixels,
         crack_ratio=float(crack_pixels / max(total_pixels, 1)),
-        estimated_length_px=float(skeleton.sum()),
+        estimated_length_px=skeleton_length_px(skeleton),
         estimated_max_width_px=float(
             np.clip(max_width * 2.0, 0.0, float(max(image_bgr.shape[:2]) * 2.0))
         ),

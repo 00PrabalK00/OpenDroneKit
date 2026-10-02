@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -244,3 +245,7 @@ def test_semantic_map_button_then_a_pack_on_the_projects_latest_map(api, tmp_pat
     ], workspace="processing")
     assert "[ok] Land GIS / encroachment:" in land["land"], land
     assert "building" in land["land"] and "layer(s) added" in land["land"]
+    # Water and road are predicted but not validated by the model's holdout; the
+    # operator reads that next to their areas.
+    assert re.search(r"water [\d.]+ m² \(UNVALIDATED\)", land["land"]), land
+    assert not re.search(r"vegetation [\d.]+ m² \(UNVALIDATED\)", land["land"]), land

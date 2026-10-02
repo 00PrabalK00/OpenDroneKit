@@ -53,6 +53,54 @@ async function semanticSource(ctx) {
   return [raster, (schema && schema.path) || ""];
 }
 
+/* -- photographs ------------------------------------------------------------ */
+
+/** Choose a dataset photograph and put it on the canvas; its name, or null. */
+async function photoOnCanvas(ctx, title) {
+  const images = ((await call("list_dataset_images")).images || [])
+    .map((i) => (typeof i === "string" ? i : i.name));
+  if (!images.length) throw new Error("Select a dataset with photographs first.");
+  const image = await ctx.choose(title, images);
+  if (!image) return null;
+  await ctx.showImage(image);
+  return image;
+}
+
+/**
+ * The photograph's scale: typed in mm per pixel, or a reference of known length clicked
+ * on it. Never assumed -- a photograph has no scale of its own.
+ */
+async function photoScale(ctx, image) {
+  const typed = await ctx.prompt(
+    "Scale in millimetres per pixel (blank = click a reference of known length)", "");
+  if (typed === null) return null;
+  if (String(typed).trim()) {
+    const mm = Number.parseFloat(String(typed).trim());
+    if (!(mm > 0)) throw new Error(`Not a scale: ${typed}`);
+    return { mm, reference: null, length: null };
+  }
+  const a = await ctx.pickImagePixel(
+    `Click one end of a reference of known length on ${image} (Esc to cancel).`);
+  if (!a) return null;
+  const b = await ctx.pickImagePixel("Click the other end of the reference (Esc to cancel).");
+  if (!b) return null;
+  const length = Number.parseFloat(
+    await required(ctx, "Real length of that reference, millimetres"));
+  if (!(length > 0)) throw new Error("The reference length must be a positive number of millimetres.");
+  return { mm: null, reference: [[a.x, a.y], [b.x, b.y]], length };
+}
+
+/** "412.3 mm at 0.500 mm/px (scale entered)" -- the figure with the scale it rests on. */
+function photoValue(result) {
+  const value = Number(result.value);
+  const scale = Number(result.scale_mm_per_px).toPrecision(3);
+  const text = result.unit === "m2"
+    ? (value < 1 ? `${Math.round(value * 1e6).toLocaleString()} mm²` : `${value.toFixed(3)} m²`)
+    : (value < 1 ? `${(value * 1000).toFixed(1)} mm` : `${value.toFixed(3)} m`);
+  return `${text} at ${scale} mm/px (${result.scale_source === "reference"
+    ? "from the reference" : "scale entered"})`;
+}
+
 async function required(ctx, label, fallback = "") {
   const value = await ctx.prompt(label, fallback);
   if (value === null || String(value).trim() === "") throw new Error(`${label} is required.`);
@@ -164,15 +212,31 @@ const SURVEY_PACKS = {
     }
     const by = await required(ctx, "Confirmed normal by");
     const scope = await required(ctx, "Where and when this baseline applies");
-    return call("india_anomaly_baseline", rasters, by, scope);
+    return withFeatureSchema(ctx, "india_anomaly_baseline", [rasters, by, scope]);
   },
   "Find anomalies": async (ctx) => {
     const raster = await pickPath(["tif", "tiff"], "feature raster");
     const baseline = await pickPath(["json"], "validated baseline");
     const sigma = await number(ctx, "Threshold (robust sigma)", "3.5");
-    return call("india_find_anomalies", raster, baseline, sigma);
+    return withFeatureSchema(ctx, "india_find_anomalies", [raster, baseline, sigma]);
   },
 };
+
+/* Every raster the application writes except a vegetation index -- orthomosaic, DSM, a
+   raster from another tool -- has no ODK_FEATURE_SCHEMA tag, so the anomaly pack refused
+   them all. The meaning of the bands is the operator's to state; it is asked for only
+   when the raster does not carry it, and the pack records it as declared. */
+async function withFeatureSchema(ctx, method, args) {
+  const first = await tryCall(method, ...args);
+  if (first) return first;
+  const why = lastError.get(method) || "";
+  if (!/ODK_FEATURE_SCHEMA tag;/.test(why)) throw new Error(why || `${method} failed.`);
+  const schema = await ctx.prompt(
+    "What the raster bands are (feature schema, e.g. rgb_orthomosaic_8bit or dsm_elevation_m); "
+    + "rasters are only compared with the same schema", "");
+  if (!schema || !String(schema).trim()) throw new Error(why);
+  return call(method, ...args, String(schema).trim());
+}
 
 const CAPTURE_GEOMETRIES = {
   power: ["close_range_oblique", "close_range_orbit"],
@@ -211,11 +275,19 @@ function summarisePack(result) {
   }
   if (summary.categories) {
     parts.push(Object.entries(summary.categories)
-      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`).join(", "));
+      .map(([name, value]) => `${name} ${value && value.area_m2 !== undefined ? `${value.area_m2} m²` : ""}`
+        // A class the model's holdout does not support looks as confident as one it
+        // does; the flag is said next to the number, not only in the summary file.
+        + (value && value.validated === false ? " (UNVALIDATED)" : "")
+        + (value && value.status === "available" && value.validated === null ? " (validation unknown)" : ""))
+      .join(", "));
   }
+  if (summary.crs_note) parts.push(summary.crs_note);
   if (summary.totals) parts.push(`${Object.keys(summary.totals).length} total(s)`);
   const layers = (result.layer_ids || []).length;
-  return `${parts.filter(Boolean).join("; ") || "done"}. ${layers} layer(s) added; summary ${result.summary_path}.`;
+  // A part that is a sentence (the CRS note) ends in its own full stop: not doubled.
+  const said = (parts.filter(Boolean).join("; ") || "done").replace(/\.+$/, "");
+  return `${said}. ${layers} layer(s) added; summary ${result.summary_path}.`;
 }
 
 /** Actions that need images on disk. */
@@ -242,7 +314,8 @@ async function pickAircraft(ctx) {
 
 const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match Captures",
                                "Coverage QA",
-                               "Open in 3D", "Label"]);
+                               "Open in 3D", "Label",
+                               "Photo Distance", "Photo Area", "Crack Length"]);
 
 /**
  * The dispatch table.
@@ -1041,6 +1114,66 @@ export const ACTIONS = {
   Area: { tool: "area", draw: "polygon", measure: "area",
           describe: "Measure an area on the map; it also becomes the selection." },
   Edit: { tool: "edit", describe: "Edit the selected geometry." },
+
+  /* -- measuring on a photograph -------------------------------------------
+     core/measurements.py has measured distances, areas and crack lengths in a
+     photograph's pixels since the start, and nothing in the application called it: a
+     crack could be seen on a frame and not measured there. These three put the photo on
+     the canvas, take the clicks through the same pixel mapping Mark GCP uses, and hand
+     the pixels to the Api, which scales and stores them. The scale is the operator's --
+     typed, or from a reference of known length clicked on the same photograph. */
+  "Photo Distance": {
+    describe: "Measure a distance between two points on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Measure on which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const a = await ctx.pickImagePixel("Click the start of the distance (Esc to cancel).");
+      if (!a) return { skipped: "No point clicked." };
+      const b = await ctx.pickImagePixel("Click the end of the distance (Esc to cancel).");
+      if (!b) return { skipped: "No end point clicked." };
+      const result = await call("measure_on_image", "distance", image, [[a.x, a.y], [b.x, b.y]],
+        scale.mm, scale.reference, scale.length);
+      return { message: `Distance on ${image}: ${photoValue(result)}. Kept in the measurement `
+        + `history. ${result.caveat}`, refresh: true };
+    },
+  },
+  "Photo Area": {
+    describe: "Measure an area outlined on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Measure on which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const corners = [];
+      for (;;) {
+        const at = await ctx.pickImagePixel(
+          `Click corner ${corners.length + 1} of the area (Esc when done).`);
+        if (!at) break;
+        corners.push([at.x, at.y]);
+      }
+      if (corners.length < 3) return { skipped: "An area needs at least three corners." };
+      const result = await call("measure_on_image", "area", image, corners,
+        scale.mm, scale.reference, scale.length);
+      return { message: `Area on ${image}: ${photoValue(result)} over ${corners.length} corners. `
+        + `Kept in the measurement history. ${result.caveat}`, refresh: true };
+    },
+  },
+  "Crack Length": {
+    describe: "Length of a crack from a crack mask drawn on a photograph.",
+    async run(ctx) {
+      const image = await photoOnCanvas(ctx, "Crack in which photograph?");
+      if (!image) return { skipped: "No photograph chosen." };
+      const mask = await pickPath(["png", "tif", "tiff", "bmp", "jpg"], "crack mask");
+      const scale = await photoScale(ctx, image);
+      if (!scale) return { skipped: "A photograph needs a scale to be measured." };
+      const result = await call("measure_crack_on_image", image, mask,
+        scale.mm, scale.reference, scale.length);
+      return { message: `Crack length on ${image}: ${photoValue(result)} (mask skeleton). `
+        + `Kept in the measurement history. ${result.caveat}`, refresh: true };
+    },
+  },
 
   /* -- fly to draw --------------------------------------------------------
      The pilot flies the aircraft to each corner of the site and presses a button. That

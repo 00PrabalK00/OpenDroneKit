@@ -23,6 +23,8 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     _skimage_skeletonize = None
 
+from .measurements import skeleton_length_px
+
 
 @dataclass
 class ForecastMetrics:
@@ -219,7 +221,7 @@ class CrackPropagationForecaster:
             step=step,
             crack_pixels=crack_pixels,
             crack_ratio=float(crack_pixels / max(total, 1)),
-            estimated_length_px=float(skel.sum()),
+            estimated_length_px=skeleton_length_px(skel),
             estimated_max_width_px=float(np.clip(max_width * 2.0, 0.0, float(max(h, w) * 2.0))),
         )
 
