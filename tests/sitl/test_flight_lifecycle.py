@@ -69,9 +69,16 @@ def test_arm_takeoff_waypoints_and_rtl(sitl_client, sitl_observer, sitl_mission)
 
     # MISSION_CURRENT is what OpenDroneKit currently exposes. The independent
     # stream supplies ArduPilot's stronger MISSION_ITEM_REACHED evidence.
-    expected_reached = {
+    #
+    # ArduPilot numbers the stored mission from its home slot, so a plan item's vehicle
+    # sequence is one more than its plan sequence. This compared plan numbers with vehicle
+    # numbers and passed only because the exporter's DO_MOUNT_CONTROL sat just before each
+    # waypoint and Copter also reports MISSION_ITEM_REACHED for it -- the "waypoints
+    # reached" were the gimbal commands. Waypoints are now expected at their vehicle seqs.
+    planned_waypoints = {
         int(item["seq"]) for item in sitl_mission.items if int(item["command"]) == 16
     }
+    expected_reached = {seq + 1 for seq in planned_waypoints}
     reached: set[int] = set()
     current_sequences: set[int] = set()
     flight_timeout_s = float(os.environ.get("ODK_SITL_FLIGHT_TIMEOUT_S", "120"))
@@ -88,7 +95,8 @@ def test_arm_takeoff_waypoints_and_rtl(sitl_client, sitl_observer, sitl_mission)
         f"ArduPilot reached {sorted(reached)}, expected waypoint sequences "
         f"{sorted(expected_reached)}; MISSION_CURRENT observed {sorted(current_sequences)}"
     )
-    assert current_sequences.intersection(expected_reached), (
+    # waypoint_index is reported in the plan's own numbering.
+    assert current_sequences.intersection(planned_waypoints), (
         "ArduPilot emitted reached events, but OpenDroneKit telemetry never exposed "
         "a corresponding MISSION_CURRENT sequence."
     )
