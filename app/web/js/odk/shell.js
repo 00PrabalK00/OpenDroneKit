@@ -818,7 +818,12 @@ export class Shell {
   showShortcuts() {
     if (this.root.querySelector("[data-shortcuts]")) return;
     const close = () => { node.remove(); document.removeEventListener("keydown", onKey, true); };
-    const onKey = (e) => { if (e.key === "Escape" || e.key === "?") { e.preventDefault(); e.stopPropagation(); close(); } };
+    const onKey = (e) => {
+      // A mode switch re-renders the root and takes the overlay with it; a listener left
+      // behind would swallow the next Escape meant for a popover or a drawing.
+      if (!node.isConnected) { document.removeEventListener("keydown", onKey, true); return; }
+      if (e.key === "Escape" || e.key === "?") { e.preventDefault(); e.stopPropagation(); close(); }
+    };
     const done = el("button", { type: "button", class: "odk-btn odk-btn--secondary", "data-control": "close-shortcuts", text: "Close" });
     done.addEventListener("click", close);
     const node = el("div", { class: "odk-palette-backdrop", "data-shortcuts": "" }, [
