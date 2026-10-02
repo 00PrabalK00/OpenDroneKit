@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odk-csv-exporter"
+version = "0.1.0"
+description = "OpenDroneKit example plugin: a waypoint CSV mission exporter and a mission report section."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+# OpenDroneKit itself is the host: the plugin imports `opendronekit.plugins` from the
+# installation it is loaded into, so it is not declared as a dependency here.
+dependencies = []
+
+[project.entry-points."opendronekit.plugins"]
+csv_exporter = "odk_csv_exporter:manifest"
+
+[tool.setuptools]
+packages = ["odk_csv_exporter"]

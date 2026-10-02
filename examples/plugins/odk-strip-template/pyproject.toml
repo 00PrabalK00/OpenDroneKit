@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "odk-strip-template"
+version = "0.1.0"
+description = "OpenDroneKit example plugin: a fixed-width strip survey along a centreline."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.entry-points."opendronekit.plugins"]
+strip_template = "odk_strip_template:manifest"
+
+[tool.setuptools]
+packages = ["odk_strip_template"]
