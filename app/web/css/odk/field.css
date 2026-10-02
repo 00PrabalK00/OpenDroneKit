@@ -6,12 +6,14 @@
 
 /* -- frame ------------------------------------------------------------------ */
 [data-mode="field"] .odk-frame {
-  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--tabbar-h);
+  grid-template-rows: var(--header-h) auto minmax(0, 1fr) var(--tabbar-h);
   grid-template-columns: minmax(0, 1fr) var(--left-w);
   grid-template-areas:
     "header header"
+    "banner banner"
     "main   left"
     "tabbar tabbar";
+  transition: none;
 }
 [data-mode="field"] .odk-frame-inspector,
 [data-mode="field"] .odk-frame-footer { display: none; }
@@ -153,3 +155,72 @@
 [data-mode="field"] .odk-geom-swatch--simulated { width: 32px; height: 0; border-top: 6px dashed var(--sim); outline: 2px solid #0A0A0A; }
 [data-mode="field"] .odk-swatch-chip { height: 36px; border: var(--rule) solid var(--line); }
 [data-mode="field"] .odk-toast-link { display: inline-flex; align-items: center; min-height: 64px; min-width: 64px; font-size: 18px; font-weight: 700; }
+
+/* -- the Field shell (js/odk/frame.js buildField) --------------------------- */
+.odk-field-mark { width: 40px; height: 40px; flex-shrink: 0; display: block; }
+.odk-field-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.odk-field-title { font-size: 22px; font-weight: 700; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.odk-field-subtitle { font-size: 16px; line-height: 1.2; color: #F4F4F4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.odk-field-sim:empty { display: none; }
+.odk-field-sim .odk-tag {
+  height: 40px; padding: 0 var(--sp-3); background: var(--sim); color: #0A0A0A; border: 0;
+  font-family: var(--font-ui); font-size: 16px; font-weight: 700; letter-spacing: 0.04em;
+}
+.odk-field-net[data-tone="warn"] .odk-dot { background: #FFD400; }
+.odk-field-net[data-tone="sim"] .odk-dot { background: var(--sim); }
+.odk-field-toggle:hover { background: #F4F4F4; }
+.odk-field-toggle:focus-visible { outline: 4px solid #FFD400; outline-offset: -4px; }
+.odk-field-tab { gap: var(--sp-3); }
+.odk-field-tab:hover:not([aria-current="page"]) { background: var(--surface-2); }
+.odk-field-tab:focus-visible { outline: 4px solid var(--selection); outline-offset: -4px; }
+[data-mode="field"] .odk-frame-main { background: var(--map-well); }
+
+[data-mode="field"] .odk-banner {
+  min-height: 48px; padding: 0 var(--sp-4); background: var(--sim); color: #0A0A0A; border-bottom: var(--rule) solid var(--line);
+  font-family: var(--font-ui); font-size: 16px; font-weight: 700; letter-spacing: 0.02em;
+}
+[data-mode="field"] .odk-banner .odk-dot { display: none; }
+
+/* image view */
+[data-mode="field"] .odk-shell-imageview-bar { height: 72px; background: var(--bg); border-bottom: var(--rule-strong) solid var(--line); }
+[data-mode="field"] .odk-shell-imageview-name { font-size: var(--fs-body); font-weight: 700; }
+[data-mode="field"] .odk-shell-imageview-dims { font-family: var(--font-ui); font-size: 16px; color: var(--text); }
+[data-mode="field"] .odk-shell-imageview-bar .odk-btn { height: 64px; font-size: 18px; }
+
+/* palette and shortcuts: white sheet, ink rules, 64 px rows */
+[data-mode="field"] .odk-palette-backdrop { background: color-mix(in srgb, #0A0A0A 70%, transparent); padding-top: 8vh; }
+[data-mode="field"] .odk-palette { width: min(760px, calc(100vw - 32px)); background: var(--bg); border: var(--rule-strong) solid var(--line); }
+[data-mode="field"] .odk-palette-head { height: 72px; border-bottom: var(--rule) solid var(--line); color: var(--text); }
+[data-mode="field"] .odk-palette-input { font-size: 22px; font-weight: 700; caret-color: var(--selection); }
+[data-mode="field"] .odk-palette-input::placeholder { color: #4A4A4A; font-weight: 400; }
+[data-mode="field"] .odk-palette-group { padding: var(--sp-4) var(--sp-4) var(--sp-2); }
+[data-mode="field"] .odk-palette-row { min-height: 64px; font-size: var(--fs-body); font-weight: 700; border-bottom: 2px solid var(--surface-2); }
+[data-mode="field"] .odk-palette-row[aria-selected="true"] { background: var(--selection); color: var(--on-selection); box-shadow: none; }
+[data-mode="field"] .odk-palette-row[aria-selected="true"] .odk-palette-hint { color: var(--on-selection); }
+[data-mode="field"] .odk-palette-hint { font-family: var(--font-ui); font-size: 16px; font-weight: 400; color: var(--text); }
+[data-mode="field"] .odk-palette-foot { min-height: 48px; border-top: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: 16px; color: var(--text); }
+[data-mode="field"] .odk-kbd { height: 32px; padding: 0 var(--sp-2); font-family: var(--font-ui); font-size: 16px; font-weight: 700; color: var(--text); border: 2px solid var(--line); }
+[data-mode="field"] .odk-shortcuts-head { height: 64px; border-bottom: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-shortcuts-list dd { color: var(--text); font-size: var(--fs-body); }
+
+/* popovers */
+[data-mode="field"] .odk-popover-note { font-size: 16px; color: var(--text); padding: var(--sp-3) var(--sp-4); }
+[data-mode="field"] .odk-menu-item[aria-current="true"] { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+[data-mode="field"] .odk-menu-item-hint { font-family: var(--font-ui); font-size: 16px; color: var(--text); }
+
+/* dialogs (modal.js) */
+[data-mode="field"] .modal { width: min(640px, calc(100vw - 32px)); background: var(--bg); border: var(--rule-strong) solid var(--line); padding: var(--sp-5); font-size: var(--fs-body); }
+[data-mode="field"] .modal-title { font-size: 24px; font-weight: 700; }
+[data-mode="field"] .modal-text, [data-mode="field"] .modal-hint { color: var(--text); font-size: 16px; }
+[data-mode="field"] .modal-field > span { color: var(--text); font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+[data-mode="field"] .modal-field input, [data-mode="field"] .modal-field select {
+  height: 64px; background: var(--bg); border: var(--rule) solid var(--line); font-size: 20px; padding: 0 var(--sp-3);
+}
+[data-mode="field"] .modal-field input:focus, [data-mode="field"] .modal-field select:focus { border-color: var(--selection); box-shadow: inset 0 0 0 2px var(--selection); }
+[data-mode="field"] .modal-list { background: var(--line); border: var(--rule) solid var(--line); gap: 2px; }
+[data-mode="field"] .modal-row { min-height: 64px; justify-content: center; background: var(--bg); font-weight: 700; padding: var(--sp-2) var(--sp-4); }
+[data-mode="field"] .modal-row:hover { background: var(--surface-2); }
+[data-mode="field"] .modal .tbtn { height: 64px; min-width: 64px; padding: 0 var(--sp-5); background: var(--bg); border: var(--rule) solid var(--line); font-size: 20px; font-weight: 700; color: var(--text); }
+[data-mode="field"] .modal .tbtn.primary { background: #0A0A0A; color: #FFFFFF; border-color: #0A0A0A; }
+[data-mode="field"] .modal-reveal { font-size: 16px; border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-palette-hint--prose { font-size: 16px; }

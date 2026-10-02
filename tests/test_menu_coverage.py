@@ -1,4 +1,4 @@
-"""Every native menu item does something in both UIs.
+"""Every native menu item does something: in odk.html (the v1 shell) and in both old UIs.
 
 app/shell.py builds the OS menu bar and dispatches each item into the page as
 `window.odk.onMenu({action, payload})`. The classic UI handled all of them; the cockpit
@@ -8,8 +8,11 @@ started the full reconstruction pipeline, Mission History ran Simulate.
 
 The action ids are collected by pressing every real menu item against a stand-in for
 the webview window (the one external boundary), so the list cannot drift from the menu.
-The last test drives the real cockpit in a hidden WebView2 window and is opt-in
-(ODK_GUI_TESTS=1) because it needs a desktop session.
+The v1 shell (js/odk/menu.js) is checked twice: its MENU table names every id, and every
+item is pressed in headless Edge/Chromium against the real Api (tests/ui_live_bridge.py),
+with no "not handled" and a visible effect for each. The ids added for v1 (V1_ONLY) are
+answered by odk.html only; the classic and cockpit pages are retired at the switchover.
+The cockpit WebView2 test is opt-in (ODK_GUI_TESTS=1) because it needs a desktop session.
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 WEB = REPO_ROOT / "app" / "web" / "js"
 
 pytest.importorskip("webview")
+
+# Menu ids added with the v1 shell (REBUILD_PLAN 2.7): odk.html handles them; the classic
+# and cockpit pages answer "not handled here" until they are removed (U15).
+V1_ONLY = {"view.field_mode", "view.settings", "view.palette", "view.toggle_panels"}
 
 
 class _RecordingWindow:
@@ -68,7 +75,8 @@ def messages():
 def test_the_menu_is_what_we_think(messages) -> None:
     actions = {action for _, action, _ in messages}
     assert {"fly.connect", "fly.command", "analysis.models", "mission.history",
-            "view.cache_tiles", "tools.audit", "view.panel"} <= actions
+            "view.cache_tiles", "tools.audit", "view.panel"} | V1_ONLY <= actions
+    assert len(messages) >= 66  # 62 before v1, plus the four V1_ONLY ids
     commands = {p["command"] for _, a, p in messages if a == "fly.command"}
     assert commands == {"arm", "start", "pause", "resume", "rth", "abort"}
 
@@ -76,7 +84,7 @@ def test_the_menu_is_what_we_think(messages) -> None:
 def test_the_classic_ui_handles_every_item(messages) -> None:
     source = (WEB / "app.js").read_text(encoding="utf-8")
     handled = set(re.findall(r"'([a-z_]+\.[a-z_]+)':", source))
-    missing = sorted({a for _, a, _ in messages} - handled)
+    missing = sorted({a for _, a, _ in messages} - handled - V1_ONLY)
     assert not missing, f"classic UI has no handler for {missing}"
 
 
@@ -87,7 +95,7 @@ def test_the_cockpit_handles_every_item(messages) -> None:
     cases = set(re.findall(r'case "([a-z_]+\.[a-z_]+)":', bridge))
     to_action = dict(re.findall(r'"([a-z_]+\.[a-z_]+)":\s*"([^"]+)"',
                                 bridge.split("const toAction = {", 1)[1].split("};", 1)[0]))
-    missing = sorted({a for _, a, _ in messages} - (set(to_action) | cases))
+    missing = sorted({a for _, a, _ in messages} - (set(to_action) | cases) - V1_ONLY)
     assert not missing, f"cockpit falls through to 'not handled' for {missing}"
     assert mapped  # sanity: the parse found the maps
 
@@ -163,3 +171,112 @@ def test_every_item_is_handled_in_the_real_cockpit(tmp_path, messages) -> None:
     assert results, "the probe never ran"
     unhandled = {t: r for t, r in results.items() if "not handled" in (r or "")}
     assert not unhandled, unhandled
+
+
+# -- the v1 shell (odk.html) -------------------------------------------------------
+
+V1_MENU = WEB / "odk" / "menu.js"
+
+
+def _v1_table() -> dict[str, dict[str, str]]:
+    source = V1_MENU.read_text(encoding="utf-8")
+    body = source.split("export const MENU = {", 1)[1].split("\n};", 1)[0]
+    table = {}
+    for mid, spec in re.findall(r'"([a-z_]+\.[a-z_]+)":\s*\{([^}]*)\}', body):
+        table[mid] = dict(re.findall(r'(open|action|handler):\s*"([^"]+)"', spec))
+    return table
+
+
+def test_the_v1_shell_maps_every_item(messages) -> None:
+    table = _v1_table()
+    missing = sorted({a for _, a, _ in messages} - set(table))
+    assert not missing, f"odk.html has no MENU entry for {missing}"
+    source = V1_MENU.read_text(encoding="utf-8")
+    handlers = set(re.findall(r"^  (?:async )?([a-zA-Z]+)\(shell", source, re.M))
+    for mid, spec in table.items():
+        assert ("action" in spec) != ("handler" in spec), (mid, spec)
+        if "handler" in spec:
+            assert spec["handler"] in handlers, (mid, spec)
+    # The verbs are the right ones (the cockpit got these wrong once).
+    assert table["analysis.models"]["action"] == "Verify Models"
+    assert table["mission.history"]["action"] == "History"
+    assert "action" not in table["tools.capabilities"]
+    # The View menu's panels go to the screens they now live on (REBUILD_PLAN 2.7).
+    assert 'PANEL_SCREEN = { layers: "analyse", mission: "plan", telemetry: "fly", jobs: "process" }' in source
+    # Through the helper that holds Start to the preflight checklist.
+    assert "shell.sendVehicleCommand(command)" in source
+
+
+LOOK = """window.__toasts = [];
+new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
+  if (n.classList && n.classList.contains('odk-toast')) window.__toasts.push(n.textContent);
+}))).observe(document.body, { childList: true, subtree: true });
+window.__look = () => JSON.stringify({
+  toasts: window.__toasts.length,
+  dialog: !!document.querySelector('.modal-backdrop, [data-palette], [data-shortcuts]'),
+  mode: document.documentElement.dataset.mode, screen: odkShell.workspaceId,
+  left: document.querySelector('.odk-frame').dataset.left || '',
+  inspector: document.querySelector('.odk-frame').dataset.inspector || '' });
+odkShell.confirmAll = true; true"""
+
+RESET = """document.querySelectorAll('.modal-backdrop,[data-palette],[data-shortcuts]').forEach((n) => n.remove());
+(document.documentElement.dataset.mode !== 'desk' ? odkShell.setMode('desk') : Promise.resolve()).then(() => true)"""
+
+
+def test_every_item_is_handled_in_odk_html(tmp_path, messages, monkeypatch) -> None:
+    """Press every menu item in odk.html against the real Api; each must do something."""
+    pytest.importorskip("websocket")
+    pytest.importorskip("requests")
+    sys.path.insert(0, str(Path(__file__).parent))
+    from ui_live_bridge import Browser, chromium_path, serve
+
+    from app.api import Api
+    from app.session import AppSession
+    from app.store import ProjectStore
+
+    executable = chromium_path()
+    if executable is None:
+        pytest.skip("No Chromium-family browser is installed to drive the UI.")
+    monkeypatch.chdir(tmp_path)
+    api = Api(AppSession(ProjectStore(tmp_path / "projects.db")))
+    api.create_project("menu", str(tmp_path / "project"))
+    api.set_aoi([[-81.752, 41.303], [-81.748, 41.303], [-81.748, 41.306], [-81.752, 41.306]])
+    assert api.plan_mission({"template": "grid", "altitude_m": 60})["ok"]
+    api.set_geocoding_provider("offline")
+    server, base = serve(api)
+    browser = Browser(executable)
+    # Opening a folder would launch Explorer on the tester's desktop.
+    skip = {"project.reveal", "recon.reveal"}
+    results: dict[str, dict] = {}
+    try:
+        browser.open(f"{base}/odk.html?mode=desk", settle_s=0.2)
+        browser.wait_for("window.__odkReady === true || window.__odkBootError", 30)
+        assert browser.js("window.__odkBootError || null") is None
+        browser.wait_for("odkShell.connection === 'connected'", 20)
+        assert set(browser.js("window.odk.menuIds()")) >= {a for _, a, _ in messages}
+        browser.js(LOOK)
+        for title, action, payload in messages:
+            if action in skip:
+                continue
+            before = browser.js("__look()")
+            seen = browser.js("__toasts.length")
+            browser.js(f"window.odk.onMenu({json.dumps({'action': action, 'payload': payload})}); true")
+            after = before
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                time.sleep(0.25)
+                after = browser.js("__look()")
+                busy = browser.js("[...document.querySelectorAll('.odk-toast')].some((t) => t.textContent.endsWith('…'))")
+                if after != before and not busy:
+                    break
+            results[title] = {"changed": after != before, "toasts": browser.js(f"__toasts.slice({seen})")}
+            browser.js(RESET)  # close whatever the item opened; the next starts from the frame
+            time.sleep(0.2)
+    finally:
+        browser.close()
+        server.shutdown()
+    assert len(results) == len(messages) - len(skip)
+    unhandled = {t: r for t, r in results.items() if any("not handled" in x for x in r["toasts"])}
+    assert not unhandled, unhandled
+    silent = sorted(t for t, r in results.items() if not r["changed"])
+    assert not silent, f"menu items with no visible effect in odk.html: {silent}"

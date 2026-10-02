@@ -12,7 +12,8 @@ use) and checks what a reviewer would otherwise check by eye:
   * OFFLINE: no request leaves 127.0.0.1 -- no Google Fonts, no CDN. The artboards load
     their fonts from fonts.googleapis.com; a copy of that line would pass every visual
     check on a connected machine and leave the app in a fallback font in the field.
-  * every screen module imports, and odk.html without ?gallery opens the blank frame.
+  * every screen module imports, and odk.html without ?gallery opens the shell's desk frame
+    (the shell itself is tested in test_ui_v1_shell.py).
 """
 
 from __future__ import annotations
@@ -318,20 +319,22 @@ class TestTheFrameAndTheModules:
         assert tags == ["SIMULATED", None, None, None, "DEMO RECORD", "DEMO RECORD", None, None,
                         "Batterynot reported"]
 
-    def test_the_blank_frame_opens(self, page) -> None:
+    def test_the_shell_frame_opens(self, page) -> None:
         browser, base = page
         before = len(browser.requests)
-        browser.open(base + "/odk.html", settle_s=0.3)
+        browser.open(base + "/odk.html?mode=desk", settle_s=0.3)
         browser.wait_for("window.__odkReady === true || window.__odkBootError")
         assert browser.js("window.__odkBootError || null") is None
         frame = browser.js("""(() => {
-          const f = document.querySelector('.odk-frame[data-frame=blank]');
+          const f = document.querySelector('.odk-frame[data-frame=desk]');
           const h = (s) => getComputedStyle(f.querySelector(s)).height;
           const w = (s) => getComputedStyle(f.querySelector(s)).width;
           return { header: h('[data-region=header]'), footer: h('[data-region=footer]'),
-                   left: w('[data-region=left]'), inspector: w('[data-region=inspector]'),
+                   left: w('.odk-frame-left'), inspector: w('.odk-frame-inspector'),
                    text: f.querySelector('[data-region=main]').textContent };
         })()""")
+        # The screens are still stubs: they render nothing rather than anything invented.
         assert frame == {"header": "48px", "footer": "28px", "left": "264px", "inspector": "312px", "text": ""}
-        outside = [u for u in browser.requests[before:] if not u.startswith(base + "/")]
+        outside = [u for u in browser.requests[before:]
+                   if not (u.startswith(base + "/") or u.startswith("data:") or u.startswith("blob:"))]
         assert not outside, outside

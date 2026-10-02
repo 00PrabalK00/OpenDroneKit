@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-02T15:49:44.005476+00:00",
+  "title": "Design System: OpenDroneKit",
+  "extensions": {
+    "colorMeta": {
+      "survey-blue": {
+        "role": "primary",
+        "displayName": "Survey Blue",
+        "canonical": "#2F86FF"
+      },
+      "safety-yellow": {
+        "role": "primary",
+        "displayName": "Safety Yellow (Field)",
+        "canonical": "#FFD400"
+      },
+      "synthetic-violet": {
+        "role": "tertiary",
+        "displayName": "Synthetic Violet",
+        "canonical": "#C084FC"
+      },
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "canonical": "#0E1116",
+        "tonalRamp": [
+          "#0A0D11",
+          "#0E1116",
+          "#11151B",
+          "#151A21",
+          "#18202B"
+        ]
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Panel collapse (180 ms) and overlay rise (160 ms)."
+      },
+      {
+        "name": "fade",
+        "value": "120ms ease-out",
+        "purpose": "Scrim fade, hover colour changes."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "desk-compact",
+        "value": "1320px"
+      },
+      {
+        "name": "desk-min",
+        "value": "1160px"
+      },
+      {
+        "name": "window-min",
+        "value": "1100px"
+      }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "The Survey Instrument (desk) / Field Daylight (field)",
+    "overview": "See DESIGN.md Overview.",
+    "rules": [
+      {
+        "name": "The Violet Means Synthetic Rule",
+        "body": "#C084FC only on values the Api marked simulated or demo.",
+        "section": "colors"
+      },
+      {
+        "name": "The Rule Not Shadow Rule",
+        "body": "Separate with a rule or a tone step, never a shadow.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Mono Is Data Rule",
+        "body": "Mono for coordinates, ids, keys and the status bar; prose in sans.",
+        "section": "typography"
+      }
+    ]
+  }
+}

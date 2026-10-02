@@ -9,7 +9,7 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 | Measure | Count |
 |---|---:|
 | Rows | 178 |
-| Native menu items covered | 62 |
+| Native menu items covered | 66 |
 | Cockpit ACTIONS keys covered | 129 |
 | Api methods covered (plus 1 internal) | 213 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
@@ -26,7 +26,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
 | `shell.switch-workspace` | Switch workspace | — | — | — | Header tabs; keys 1–8 | artboard |
-| `shell.command-palette` | Command palette | — | — | `list_projects` | Header search field (Ctrl K). Groups: Actions (every ACTIONS key, so nothing is ever unreachable), Workspaces, Projects, Places, Shortcuts | artboard |
+| `shell.command-palette` | Command palette | `view.palette` | — | `list_projects` | Header search field (Ctrl K). Groups: Actions (every ACTIONS key, so nothing is ever unreachable), Workspaces, Projects, Places, Shortcuts | artboard |
 | `shell.place-and-address-search` | Place and address search | — | — | `search_places` | Palette "Places" group; picking a result flies the map | proposed |
 | `shell.geocoding-provider` | Geocoding provider | — | — | `set_geocoding_provider` ★ | Settings › Units & CRS › "Geocoding provider" | proposed |
 | `shell.project-switcher` | Project switcher | — | — | `list_projects`, `set_active_project` | Header project name opens a menu; also Home project list | artboard |
@@ -37,13 +37,13 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `shell.vehicle-chip` | Vehicle chip | — | — | `telemetry` | Footer segment "driver … / no vehicle" | artboard |
 | `shell.running-jobs-indicator` | Running jobs indicator | — | — | `list_jobs`, `job_status` | Footer segment "job n of m" | artboard |
 | `shell.demo-mode-demo-1-and-banner` | Demo mode (?demo=1) and banner | — | — | — | Kept. Banner and tags in #C084FC "DEMO RECORD" / "SIMULATED" | artboard |
-| `shell.collapse-side-panels` | Collapse side panels <sup>U00</sup> | — | `Reset` | — | Panel collapse buttons + Ctrl B (needed at 1100 px) | proposed |
+| `shell.collapse-side-panels` | Collapse side panels <sup>U00</sup> | `view.toggle_panels` | `Reset` | — | Panel collapse buttons + Ctrl B (needed at 1100 px) | proposed |
 | `shell.full-screen-canvas-fit` | Full-screen canvas / fit | — | — | — | Kept as shortcuts | proposed |
 | `shell.keyboard-shortcuts` | Keyboard shortcuts | `help.shortcuts` | — | — | "?" overlay + Settings › About | proposed |
 | `shell.about` | About | `help.about` | — | `capabilities` | Settings › About | artboard |
 | `shell.environment-capabilities` | Environment capabilities <sup>U00</sup> | `tools.capabilities` | `Capabilities` | `capabilities` | Settings › About › Environment | proposed |
-| `shell.field-mode-toggle` | Field mode toggle | — | — | — | Header "Field mode" / "Desk mode"; Settings › Appearance; **new menu id `view.field_mode`** | artboard |
-| `shell.settings` | Settings | — | — | — | Header gear button | artboard |
+| `shell.field-mode-toggle` | Field mode toggle | `view.field_mode` | — | — | Header "Field mode" / "Desk mode"; Settings › Appearance; **new menu id `view.field_mode`** | artboard |
+| `shell.settings` | Settings | `view.settings` | — | — | Header gear button | artboard |
 | `shell.exit` | Exit | — | — | — | Unchanged | none |
 
 ## Home (20)
@@ -317,6 +317,10 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `tools.audit` | Audit Log | `home.recent-activity-and-full-audit-log`, `settings.about-environment-audit` |
 | `help.about` | About OpenDroneKit | `shell.about`, `settings.about-environment-audit` |
 | `help.shortcuts` | Keyboard Shortcuts | `shell.keyboard-shortcuts` |
+| `view.field_mode` | Field Mode / Desk Mode | `shell.field-mode-toggle` |
+| `view.palette` | Command Palette | `shell.command-palette` |
+| `view.toggle_panels` | Hide or Show Side Panels | `shell.collapse-side-panels` |
+| `view.settings` | Settings... | `shell.settings` |
 
 ## Internal Api methods (no control by design)
 

@@ -98,7 +98,52 @@ its import changed and nothing else.
 | `setMode("desk" \| "field")` | Sets `<html data-mode>`, persists it in localStorage `odk.mode`, re-renders the frame for the mode, re-applies the map theme. |
 
 Also kept from the cockpit: `img.canvas-product` on the image view, and `draw.js`'s
-`addVertex` / `finishDrawing` / `canDraw` reachable from the shell's map.
+`addVertex` / `finishDrawing` / `canDraw` reachable from the shell's map
+(`shell.drawing`).
+
+### What U2 shipped around the contract
+
+- `odk.html` boots `new Shell(root)` (`window.odkShell`); `?gallery` still shows the
+  components. `open()` resolves `true` (or `false` for an id that names no screen). In
+  Field mode, a screen with no Field renderer (Home, Review, Fleet, Settings) opens by
+  switching to Desk. `ctx.workspaceId()` returns the id that was asked for (an old id
+  stays old), so actions that tell two old screens apart keep working.
+- `runAction(key, payload)` resolves `{error}` for an unknown key, `{skipped}` for a
+  refused prerequisite or a cancelled confirm, and the action's own result otherwise.
+- Screen renderers get `render(regions, context)` with `context = {shell, screen, mode,
+  actions, setFooter(text), setSubtitle(text), provide(name, fn)}`. `setFooter` fills the
+  desk footer's screen segment; `setSubtitle` the Field header's second line;
+  `provide("missionOptions" | "reconstructionOptions" | "reportOptions" | "imageView", fn)`
+  replaces the shell's default builder (the Plan form owns mission options, U3 the image view).
+- `actionContext()` members: `prompt choose ask form showResult labelBoxes confirm reveal
+  showText toast missionOptions reconstructionOptions pipelineOptions inspectionOptions
+  reportOptions selectedReport selectedJob selectedFinding selectedFleetId
+  selectedFleetRecord selectedEndpoint selectionGeometry selectionVertices
+  requireSelection pickPoint pickImagePixel showImage showView setSetting resetLayout
+  organizationId projectId workspaceId openWorkspace open refresh map selection drawing
+  payload`.
+- Window events: `odk:screen {id, mode}` after a screen renders, `odk:mode {mode}` after a
+  mode switch (map/theme.js re-paints), `odk:refresh` (REFRESH_EVENT) after
+  `refreshState()`. The shell listens for `odk:action` (run a key) and `odk:say` (toast).
+- Footer (desk): cursor lon/lat (+ UTM E/N when the project CRS is a WGS 84 UTM zone),
+  project CRS (`get_project_crs`, else the layers' CRS), scale `1 : N` at 96 dpi, vehicle
+  (`telemetry`, SIMULATED tag from `is_simulated`), jobs (`list_jobs`: "job n of m ·
+  state"), the screen's own segment, the last message (opens the session log), and the
+  network state. Cursor and scale follow `draw.js currentMap()`; with no map the footer
+  says so. "local · no network" is shown only while no request from this window has left
+  the machine: the page's own resource timing, online basemaps and place searches by a
+  network provider all switch it to "local · network: …".
+- Registry: `js/odk/registry.js` merges core `ACTIONS`, `map/actions.js` (source `map`)
+  and every `screens/<ws>/actions.js`, and throws on a duplicate key.
+- Menu: `js/odk/menu.js` `MENU` maps every native id (66: the 62 earlier ones plus
+  `view.field_mode`, `view.palette`, `view.toggle_panels`, `view.settings`) to an
+  ACTIONS key or a named handler. `view.panel` goes to Analyse / Plan / Fly / Process.
+- Shortcuts: Ctrl/⌘ K palette, `/` search, `?` shortcuts, 1–8 screens (Field 1–5),
+  Ctrl/⌘ , settings, Ctrl/⌘ Shift F mode, Ctrl/⌘ B both panels, F11 full canvas, F fit,
+  Ctrl/⌘ S save, Ctrl/⌘ Z undo point, Esc stop drawing.
+- Panel collapse persists in localStorage `odk.panel.left` / `odk.panel.inspector`; the
+  last screen in `odk.workspace`.
+- `tests/ui_live_bridge.Browser` gained `set_viewport()` and `screenshot()`.
 
 ### Old workspace ids
 
@@ -185,12 +230,14 @@ These carry the project's no-fabrication rule into the interface.
    basemap table U3 will add; no `fonts.googleapis`; no `/_blob/`; every `@font-face`
    resolves to a file under `vendor/fonts`.
 
-## Guards added in U00 / U1
+## Guards added in U00 / U1 / U2
 
 | Test | Guards |
 |---|---|
 | `tests/test_ui_v1_inventory.py` | Every native menu item, every cockpit `ACTIONS` key and every public `Api` method has an inventory row; every row has a new home; `INVENTORY.md` is generated from the JSON; every screen stub exists; `UI_PAGES` maps `odk` without changing the default. |
 | `tests/test_ui_v1_gallery.py` | `odk.html?gallery` renders every component in desk and field mode; field targets are at least 64 px; text tokens meet 4.5:1; all fonts load from `vendor/fonts`; no request leaves 127.0.0.1; every screen module imports; the blank frame opens. |
+| `tests/test_ui_v1_shell.py` (U2) | The shell contract against the real Api in headless Edge/Chromium: every new and old id opens, `runAction` never throws, the footer's CRS / jobs / vehicle / network come from the Api, the palette lists every ACTIONS key and searches places, Field mode geometry and 64 px targets, collapse persists, the demo banner; writes desk and Field screenshots at 1440x900 and 1180x820 to `$ODK_UI_SHOTS`. |
+| `tests/test_menu_coverage.py` (U2 port) | `js/odk/menu.js` names every native menu id, and every item pressed in `odk.html` against the real Api is handled with a visible effect. |
 
 ## Baseline
 

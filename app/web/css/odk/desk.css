@@ -1,42 +1,292 @@
-/* Desk frame: header 48 / left 264 / map / inspector 312 / footer 28.
- * Both side panels collapse (needed at the 1100 px minimum window width, where the
- * two panels would leave the map 524 px). The frame itself is built by
- * js/odk/frame.js (U2); this file only fixes its geometry. */
+/* Desk frame: header 48 / left 264 / map / inspector 312 / footer 28, plus the shell's
+ * own surfaces: the demo banner, panel collapse handles, the command palette, the
+ * session-log and project popovers, the image view, and the modal dialogs drawn by
+ * js/workspace/modal.js (restyled here; its markup is kept).
+ *
+ * Both side panels collapse (needed at the 1100 px minimum window width, where the two
+ * panels would leave the map 524 px). Built by js/odk/frame.js and js/odk/shell.js.
+ * Field overrides are in field.css. */
+
+/* -- frame grid ------------------------------------------------------------- */
+.odk-shell { height: 100vh; }
 
 .odk-frame {
   height: 100vh; min-height: 0;
   display: grid;
-  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--footer-h);
+  grid-template-rows: var(--header-h) auto minmax(0, 1fr) var(--footer-h);
   grid-template-columns: var(--left-w) minmax(0, 1fr) var(--inspector-w);
   grid-template-areas:
     "header header header"
+    "banner banner banner"
     "left   main   inspector"
     "footer footer footer";
   background: var(--bg);
+  transition: grid-template-columns 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .odk-frame[data-left="collapsed"] { grid-template-columns: 0 minmax(0, 1fr) var(--inspector-w); }
 .odk-frame[data-inspector="collapsed"] { grid-template-columns: var(--left-w) minmax(0, 1fr) 0; }
-.odk-frame[data-left="collapsed"][data-inspector="collapsed"] { grid-template-columns: 0 minmax(0, 1fr) 0; }
+.odk-frame[data-left="collapsed"][data-inspector="collapsed"],
+.odk-frame[data-full] { grid-template-columns: 0 minmax(0, 1fr) 0; }
+@media (prefers-reduced-motion: reduce) { .odk-frame { transition: none; } }
 
+/* -- header ----------------------------------------------------------------- */
 .odk-frame-header {
-  grid-area: header; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4);
+  grid-area: header; min-width: 0; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-2) 0 var(--sp-4);
   background: var(--surface-1); border-bottom: 1px solid var(--line);
 }
-.odk-frame-header .odk-tab { min-height: var(--header-h); }
 .odk-brand { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-title); font-weight: var(--fw-strong); letter-spacing: -0.01em; white-space: nowrap; }
 .odk-brand img { width: 24px; height: 24px; display: block; }
+.odk-header-spacer { flex: 1 1 auto; min-width: 0; }
+
+.odk-header-tabs { margin-left: var(--sp-2); align-self: stretch; }
+.odk-frame-header .odk-tab { min-height: calc(var(--header-h) - 1px); padding: 0 var(--sp-3); font-size: var(--fs-body); white-space: nowrap; }
+.odk-frame-header .odk-tab:focus-visible { outline-offset: -2px; }
+
+.odk-header-search {
+  flex: 0 0 auto; width: 240px; height: var(--control-h); display: flex; align-items: center; gap: var(--sp-2);
+  padding: 0 var(--sp-2); background: var(--bg); border: 1px solid var(--line); color: var(--muted);
+  font-size: var(--fs-small); cursor: text; transition: border-color 120ms ease-out;
+}
+.odk-header-search:hover { border-color: var(--line-strong); }
+.odk-header-search:focus-within { border-color: var(--accent); }
+.odk-header-search-input {
+  flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-size: var(--fs-small);
+}
+.odk-header-search-input::placeholder { color: var(--muted); }
+.odk-header-search-input::-webkit-search-cancel-button { display: none; }
+.odk-kbd {
+  display: inline-flex; align-items: center; height: 16px; padding: 0 4px;
+  font-family: var(--font-mono); font-size: var(--fs-label); line-height: 1; color: var(--muted);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-chip); white-space: nowrap;
+}
+
+.odk-header-project {
+  flex: 0 1 auto; min-width: 0; max-width: 220px; height: var(--control-h); display: inline-flex; align-items: center; gap: 6px;
+  padding: 0 var(--sp-1); background: transparent; border: 0; color: var(--text-2);
+  font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.odk-header-project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-header-project svg { flex-shrink: 0; color: var(--muted); }
+.odk-header-project.is-empty { color: var(--muted); }
+.odk-header-project:hover, .odk-header-project[aria-expanded="true"] { color: var(--text); }
+
+.odk-btn.odk-header-mode {
+  height: var(--control-h); padding: 0 var(--sp-3); font-size: var(--fs-small);
+  border-color: var(--line-strong); flex-shrink: 0;
+}
+.odk-header-settings {
+  flex-shrink: 0; width: 36px; height: calc(var(--header-h) - 1px); padding: 0; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; color: var(--muted); transition: color 120ms ease-out;
+}
+.odk-header-settings:hover { color: var(--text); }
+.odk-header-settings[aria-current="page"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.odk-header-settings:focus-visible { outline-offset: -2px; }
+
+/* At the 1100-1320 px window the search field folds to its icon; it still opens the palette. */
+@media (max-width: 1320px) {
+  [data-frame="desk"] .odk-header-search { width: var(--control-h); padding: 0; justify-content: center; }
+  [data-frame="desk"] .odk-header-search-input { flex: 0 0 0; width: 0; }
+  [data-frame="desk"] .odk-header-search .odk-kbd { display: none; }
+  [data-frame="desk"] .odk-header-project { max-width: 150px; }
+}
+@media (max-width: 1160px) {
+  [data-frame="desk"] .odk-header-tabs .odk-tab { padding: 0 var(--sp-2); }
+  [data-frame="desk"] .odk-frame-header { gap: var(--sp-3); }
+}
+
+/* -- demo banner ------------------------------------------------------------ */
+.odk-banner {
+  grid-area: banner; min-height: 28px; display: flex; align-items: center; gap: var(--sp-2); padding: 0 var(--sp-4);
+  background: var(--sim-fill); border-bottom: 1px solid var(--sim); color: var(--sim-text);
+  font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.odk-banner[hidden] { display: none; }
+.odk-banner .odk-dot { width: 6px; height: 6px; }
+
+/* -- panels and the canvas -------------------------------------------------- */
 .odk-frame-left {
   grid-area: left; min-width: 0; overflow: auto; background: var(--surface-1); border-right: 1px solid var(--line);
 }
-.odk-frame-main { grid-area: main; min-width: 0; min-height: 0; position: relative; background: var(--map-well); }
+.odk-frame-main { grid-area: main; min-width: 0; min-height: 0; position: relative; overflow: hidden; background: var(--map-well); }
 .odk-frame-inspector {
   grid-area: inspector; min-width: 0; overflow: auto; background: var(--surface-1); border-left: 1px solid var(--line);
 }
 .odk-frame[data-left="collapsed"] .odk-frame-left,
-.odk-frame[data-inspector="collapsed"] .odk-frame-inspector { overflow: hidden; border: 0; }
-.odk-frame-footer {
-  grid-area: footer; display: flex; align-items: center; gap: var(--sp-5); padding: 0 var(--sp-4);
-  background: var(--surface-1); border-top: 1px solid var(--line);
-  font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); white-space: nowrap;
+.odk-frame[data-inspector="collapsed"] .odk-frame-inspector,
+.odk-frame[data-full] .odk-frame-left,
+.odk-frame[data-full] .odk-frame-inspector { overflow: hidden; border: 0; }
+.odk-region { min-width: 0; }
+.odk-frame-canvas { position: absolute; inset: 0; }
+.odk-main-overlay { position: absolute; inset: 0; z-index: 4; }
+.odk-main-overlay[hidden] { display: none; }
+
+/* Edge handles: a 16 x 48 tab on the inner edge of each panel. */
+.odk-collapse {
+  position: absolute; top: 50%; z-index: 6; width: 16px; height: 48px; padding: 0; transform: translateY(-50%);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface-1); border: 1px solid var(--line); color: var(--muted);
+  transition: color 120ms ease-out, background-color 120ms ease-out;
 }
-.odk-frame-footer .odk-footer-net { margin-left: auto; color: var(--ok); }
+.odk-collapse svg { width: 12px; height: 12px; }
+.odk-collapse--left { left: 0; border-left: 0; }
+.odk-collapse--inspector { right: 0; border-right: 0; }
+.odk-collapse:hover { color: var(--text); background: var(--surface-2); }
+.odk-collapse[aria-expanded="false"] { color: var(--accent-hover); }
+.odk-frame[data-full] .odk-collapse { display: none; }
+
+/* -- footer ----------------------------------------------------------------- */
+.odk-frame-footer {
+  grid-area: footer; min-width: 0; display: flex; align-items: center; gap: var(--sp-5); padding: 0 var(--sp-4);
+  background: var(--surface-1); border-top: 1px solid var(--line); overflow: hidden;
+  font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.odk-footer-seg { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex-shrink: 0; }
+.odk-footer-seg[hidden] { display: none; }
+.odk-footer-seg[data-tone="live"] { color: var(--text-2); }
+.odk-footer-seg[data-tone="danger"] { color: var(--danger); }
+.odk-footer-seg[data-tone="warn"] { color: var(--warn); }
+.odk-footer-seg .odk-tag { height: 16px; padding: 0 4px; font-size: 10px; }
+.odk-footer-message {
+  margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 42%; height: 100%; padding: 0;
+  display: block; overflow: hidden; text-overflow: ellipsis; text-align: right;
+  background: transparent; border: 0; color: var(--muted); font: inherit; cursor: pointer;
+}
+.odk-footer-message[data-tone="danger"] { color: var(--danger); }
+.odk-footer-message[data-tone="warn"] { color: var(--warn); }
+.odk-footer-message:hover { color: var(--text); }
+.odk-footer-message:focus-visible { outline-offset: -2px; }
+.odk-footer-net { color: var(--muted); }
+.odk-footer-net .odk-dot { width: 6px; height: 6px; }
+.odk-footer-net[data-tone="ok"] { color: var(--ok); }
+.odk-footer-net[data-tone="warn"] { color: var(--warn); }
+.odk-footer-net[data-tone="sim"] { color: var(--sim); }
+
+/* -- image view (img.canvas-product) ---------------------------------------- */
+.odk-shell-imageview { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--map-well); }
+.odk-shell-imageview-bar {
+  height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-2) 0 var(--sp-4);
+  background: var(--surface-1); border-bottom: 1px solid var(--line); min-width: 0;
+}
+.odk-shell-imageview-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-body); }
+.odk-shell-imageview-dims { font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); white-space: nowrap; }
+.odk-shell-imageview-bar .odk-btn { height: 28px; font-size: var(--fs-small); }
+.odk-shell-imageview-well { flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; padding: var(--sp-4); }
+.odk-shell-imageview-well img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: crosshair; display: block; }
+
+/* -- command palette and the shortcuts sheet -------------------------------- */
+.odk-palette-backdrop {
+  position: fixed; inset: 0; z-index: 70; display: flex; justify-content: center; align-items: flex-start;
+  padding-top: 12vh; background: color-mix(in srgb, var(--map-well) 72%, transparent);
+  animation: odk-fade 120ms ease-out;
+}
+.odk-palette {
+  width: min(640px, calc(100vw - 32px)); max-height: 72vh; display: flex; flex-direction: column;
+  background: var(--surface-1); border: 1px solid var(--line-strong); color: var(--text);
+  animation: odk-rise 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.odk-palette-head {
+  height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-4);
+  border-bottom: 1px solid var(--line); color: var(--muted);
+}
+.odk-palette-input {
+  flex: 1 1 auto; min-width: 0; height: 100%; padding: 0; background: transparent; border: 0; outline: none;
+  color: var(--text); font-size: var(--fs-title); caret-color: var(--accent);
+}
+.odk-palette-input::placeholder { color: var(--muted); }
+.odk-palette-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 0 var(--sp-2); overscroll-behavior: contain; }
+.odk-palette-group { padding: var(--sp-4) var(--sp-4) var(--sp-1); }
+.odk-palette-row {
+  width: 100%; min-height: var(--row-h); display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4);
+  background: transparent; border: 0; text-align: left; color: var(--text); font-size: var(--fs-body);
+}
+.odk-palette-row[aria-selected="true"] { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--selection); }
+.odk-palette-row:focus-visible { outline-offset: -2px; }
+.odk-palette-label { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-palette-hint {
+  margin-left: auto; flex: 0 1 auto; min-width: 0; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted);
+}
+.odk-palette-empty { padding: var(--sp-5) var(--sp-4); color: var(--muted); }
+.odk-palette-foot {
+  min-height: 28px; flex-shrink: 0; display: flex; align-items: center; padding: var(--sp-1) var(--sp-4);
+  border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted);
+}
+.odk-shortcuts { max-width: 520px; }
+.odk-shortcuts-head { height: 44px; display: flex; align-items: center; padding: 0 var(--sp-4); border-bottom: 1px solid var(--line); }
+.odk-shortcuts-list {
+  margin: 0; padding: var(--sp-3) var(--sp-4); display: grid; grid-template-columns: max-content 1fr;
+  column-gap: var(--sp-5); row-gap: var(--sp-2); align-items: center; overflow-y: auto;
+}
+.odk-shortcuts-list dt { justify-self: start; }
+.odk-shortcuts-list dd { margin: 0; color: var(--text-2); }
+.odk-shortcuts-foot { display: flex; justify-content: flex-end; padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--line); }
+@keyframes odk-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes odk-rise { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .odk-palette-backdrop, .odk-palette { animation: none; }
+}
+
+/* -- shell popovers (project switcher, session log) ------------------------- */
+.odk-popover-note { padding: var(--sp-2) var(--sp-3); color: var(--muted); font-size: var(--fs-small); }
+.odk-menu-item-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-menu-item-hint { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); }
+.odk-menu-item[aria-current="true"] { background: var(--surface-3); box-shadow: inset 2px 0 0 var(--selection); }
+.odk-menu-item--rule { border-top: 1px solid var(--line); margin-top: var(--sp-1); }
+.odk-project-list { display: flex; flex-direction: column; max-height: 50vh; overflow-y: auto; }
+.odk-popover--log { width: 460px; max-width: calc(100vw - 32px); }
+.odk-log-list { max-height: 320px; overflow-y: auto; padding: var(--sp-1) 0; }
+.odk-log-row {
+  display: grid; grid-template-columns: 8px max-content 1fr; align-items: baseline; column-gap: var(--sp-2);
+  padding: 6px var(--sp-3); font-size: var(--fs-small); color: var(--text-2);
+}
+.odk-log-row .odk-dot { width: 6px; height: 6px; transform: translateY(-1px); }
+.odk-log-time { font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); font-variant-numeric: tabular-nums; }
+.odk-log-text { min-width: 0; overflow-wrap: anywhere; }
+
+/* -- dialogs (js/workspace/modal.js markup, restyled) ----------------------- */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center;
+  padding: var(--sp-4); background: color-mix(in srgb, var(--map-well) 72%, transparent); animation: odk-fade 120ms ease-out;
+}
+.modal {
+  width: min(480px, calc(100vw - 32px)); max-height: 86vh; overflow-y: auto; padding: var(--sp-5);
+  background: var(--surface-1); border: 1px solid var(--line-strong); color: var(--text);
+  font-family: var(--font-ui); font-size: var(--fs-body);
+  animation: odk-rise 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.modal.modal-wide { width: min(1100px, 92vw); max-height: 92vh; }
+.modal-title { font-size: var(--fs-title); font-weight: var(--fw-strong); margin-bottom: var(--sp-4); }
+.modal-text { color: var(--text-2); margin-bottom: var(--sp-3); line-height: 1.5; }
+.modal-field { display: flex; flex-direction: column; gap: var(--sp-1); margin-bottom: var(--sp-3); }
+.modal-field > span { color: var(--muted); font-size: var(--fs-small); }
+.modal-field input, .modal-field select, .modal-reveal {
+  height: var(--control-h); padding: 0 var(--sp-2); background: var(--bg); border: 1px solid var(--line);
+  color: var(--text); font-size: var(--fs-body); border-radius: 0; outline: none;
+}
+.modal-field input:focus, .modal-field select:focus, .modal-reveal:focus { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.modal-reveal { width: 100%; height: auto; min-height: 120px; padding: var(--sp-2); font-family: var(--font-mono); font-size: var(--fs-small); line-height: 1.5; resize: vertical; }
+.modal-list { display: flex; flex-direction: column; gap: 1px; max-height: 50vh; overflow-y: auto; margin-bottom: var(--sp-3); background: var(--line); border: 1px solid var(--line); }
+.modal-row { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-2) var(--sp-3); background: var(--surface-1); cursor: pointer; }
+.modal-row:hover { background: var(--surface-2); }
+.modal-hint { color: var(--muted); font-size: var(--fs-small); }
+.modal-empty { color: var(--muted); padding: var(--sp-2); }
+.modal-image { display: block; max-width: 100%; max-height: 60vh; margin: 0 auto var(--sp-3); }
+.modal table.props { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.modal table.props td { padding: 6px var(--sp-2); border-bottom: 1px solid var(--line); vertical-align: top; }
+.modal table.props td:first-child { color: var(--muted); white-space: nowrap; }
+.modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
+.modal .tbtn {
+  height: var(--button-h); padding: 0 var(--sp-4); display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; color: var(--text); border: 1px solid var(--line); font-size: var(--fs-body);
+}
+.modal .tbtn:hover { background: var(--surface-2); border-color: var(--line-strong); }
+.modal .tbtn.primary { background: var(--action); color: var(--on-action); border-color: var(--action); font-weight: var(--fw-strong); }
+.modal .tbtn.primary:hover { background: var(--action-hover); }
+.modal .label-canvas { max-width: 100%; }
+
+/* -- browser surfaces ------------------------------------------------------- */
+.odk-shell ::selection { background: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--text); }
+.odk-shell input, .odk-shell textarea { caret-color: var(--accent); }
+.odk-palette-hint--prose { font-family: var(--font-ui); font-size: var(--fs-small); color: var(--muted); }

@@ -218,6 +218,24 @@ class Browser:
             time.sleep(poll_s)
         raise AssertionError(f"timed out waiting for: {expression} (last value {value!r})")
 
+    def set_viewport(self, width: int, height: int) -> None:
+        """Lay the page out at width x height CSS px (1:1), as a window of that size."""
+        self._send("Emulation.setDeviceMetricsOverride", width=int(width), height=int(height),
+                   deviceScaleFactor=1, mobile=False)
+
+    def screenshot(self, path: str | Path, width: int | None = None, height: int | None = None) -> Path:
+        """Save a PNG of the viewport (optionally resized first); returns the path."""
+        import base64
+
+        if width and height:
+            self.set_viewport(width, height)
+            time.sleep(0.4)
+        data = self._send("Page.captureScreenshot", format="png", captureBeyondViewport=False)["data"]
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(base64.b64decode(data))
+        return target
+
     def close(self) -> None:
         try:
             self.socket.close()

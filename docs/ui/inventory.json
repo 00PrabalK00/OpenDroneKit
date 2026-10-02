@@ -42,7 +42,9 @@
    "workspace": "shell",
    "feature": "Command palette",
    "sources": "Ck Ctrl K",
-   "menu": [],
+   "menu": [
+    "view.palette"
+   ],
    "actions": [],
    "api": [
     "list_projects"
@@ -228,7 +230,9 @@
    "workspace": "shell",
    "feature": "Collapse side panels",
    "sources": "Ck Ctrl B",
-   "menu": [],
+   "menu": [
+    "view.toggle_panels"
+   ],
    "actions": [
     "Reset"
    ],
@@ -317,7 +321,9 @@
    "workspace": "shell",
    "feature": "Field mode toggle",
    "sources": "— (new)",
-   "menu": [],
+   "menu": [
+    "view.field_mode"
+   ],
    "actions": [],
    "api": [],
    "star_methods": [],
@@ -332,7 +338,9 @@
    "workspace": "shell",
    "feature": "Settings",
    "sources": "—",
-   "menu": [],
+   "menu": [
+    "view.settings"
+   ],
    "actions": [],
    "api": [],
    "star_methods": [],
@@ -3921,6 +3929,30 @@
    "title": "Keyboard Shortcuts",
    "rows": [
     "shell.keyboard-shortcuts"
+   ]
+  },
+  "view.field_mode": {
+   "title": "Field Mode / Desk Mode",
+   "rows": [
+    "shell.field-mode-toggle"
+   ]
+  },
+  "view.palette": {
+   "title": "Command Palette",
+   "rows": [
+    "shell.command-palette"
+   ]
+  },
+  "view.toggle_panels": {
+   "title": "Hide or Show Side Panels",
+   "rows": [
+    "shell.collapse-side-panels"
+   ]
+  },
+  "view.settings": {
+   "title": "Settings...",
+   "rows": [
+    "shell.settings"
    ]
   }
  },

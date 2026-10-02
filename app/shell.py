@@ -178,6 +178,13 @@ class Shell:
                 MenuSeparator(),
                 MenuAction("Zoom to Area of Interest", act("view.zoom_aoi")),
                 MenuAction("Zoom to Mission", act("view.zoom_mission")),
+                MenuSeparator(),
+                # The v1 interface (odk.html). The classic and cockpit pages answer these
+                # with "not handled here"; they are retired at the switchover (U15).
+                MenuAction("Field Mode / Desk Mode", act("view.field_mode")),
+                MenuAction("Command Palette", act("view.palette")),
+                MenuAction("Hide or Show Side Panels", act("view.toggle_panels")),
+                MenuAction("Settings...", act("view.settings")),
             ],
         )
 
