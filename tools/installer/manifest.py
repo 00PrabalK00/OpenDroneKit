@@ -20,10 +20,12 @@ SCHEMA = 1
 REQUIRED_KEYS = ("schema", "app", "version", "python", "signed", "files")
 
 
-def sha256_file(path: Path, attempts: int = 3) -> str:
+def sha256_file(path: Path, attempts: int = 7) -> str:
     """sha256 of a file. A failed open or read is retried (a fresh hash each time): on a
-    busy external drive, opening one of ~30k files occasionally fails with EINVAL and
-    succeeds a moment later. A file that keeps failing raises."""
+    busy external drive, or a machine whose memory other processes have exhausted,
+    opening one of ~30k files occasionally fails (EINVAL, WinError 1450 "insufficient
+    system resources") and succeeds later. Backoff doubles from 0.5 s (~30 s in all).
+    A file that keeps failing raises."""
     for attempt in range(1, attempts + 1):
         hasher = hashlib.sha256()
         try:
@@ -31,10 +33,10 @@ def sha256_file(path: Path, attempts: int = 3) -> str:
                 for block in iter(lambda: handle.read(1024 * 1024), b""):
                     hasher.update(block)
             return hasher.hexdigest()
-        except OSError:
+        except (OSError, MemoryError):
             if attempt == attempts or not Path(path).is_file():
                 raise
-            time.sleep(0.5 * attempt)
+            time.sleep(0.5 * 2 ** (attempt - 1))
     raise AssertionError("unreachable")
 
 
