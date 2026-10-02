@@ -144,17 +144,24 @@ docker run -d --name odk-redis -p 6379:6379 redis:7-alpine
 python -m pytest tests/test_celery_broker.py tests/test_worker_tasks.py -rs
 ```
 
-S3. Any S3-compatible server works; SeaweedFS is a single container. The bucket must
-exist before the test runs:
+S3. Any S3-compatible server works. The project uses SeaweedFS, which is also what the
+Docker Compose stack and the Helm chart deploy (MinIO no longer publishes public images;
+see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)). It is a single container. The live tests
+create a bucket of their own with the `ODK_S3_*` keys and remove it afterwards:
 
 ```bash
 docker run -d --name odk-s3 -p 8333:8333 chrislusf/seaweedfs:latest server -s3
-python -c "import boto3; boto3.client('s3', endpoint_url='http://127.0.0.1:8333', aws_access_key_id='x', aws_secret_access_key='y', region_name='us-east-1').create_bucket(Bucket='odk-test')"
-ODK_TEST_S3_ENDPOINT=http://127.0.0.1:8333 ODK_S3_BUCKET=odk-test \
+ODK_TEST_S3_ENDPOINT=http://127.0.0.1:8333 \
 ODK_S3_ACCESS_KEY=x ODK_S3_SECRET_KEY=y python -m pytest tests/test_storage.py -rs
 ```
 
-(With no identities configured, SeaweedFS accepts any key. Do not deploy it like that.)
+(With no identities configured, SeaweedFS accepts any key. Do not deploy it like that;
+the compose stack writes an identity from `ODK_S3_ACCESS_KEY`/`ODK_S3_SECRET_KEY`.)
+`ODK_TEST_DOCKER_COMPOSE=1` additionally lets `tests/test_compose.py` boot the compose
+object store itself and round-trip the storage layer through it.
+
+The Celery worker picks the solo pool on Windows (Celery's prefork pool fails every task
+there) and prefork elsewhere; `ODK_WORKER_POOL` overrides it.
 
 On Windows PowerShell, set variables with `$env:ODK_TEST_POSTGIS = "..."` before the
 `python -m pytest` line instead of the `VAR=value command` prefix.
@@ -179,6 +186,12 @@ write its cache into your checkout. In Git Bash on Windows, prefix the `docker r
 `MSYS_NO_PATHCONV=1`.) To run SITL natively on Linux or WSL instead, see
 [docs/SITL.md](docs/SITL.md); `python tools/sitl/launch.py --check` reports whether a
 simulator can be found without starting one.
+
+The suite is three tests (mission upload round trip, arm/takeoff/waypoints/RTL, and the
+full lifecycle through the `Api`). Run with the container above under Docker Desktop on
+the Windows development machine, all three pass (3 passed, 0 skipped, about 90 s). Add
+`-v "<dir>:/out"` and `--junit-xml=/out/sitl-report.xml` to keep the report for
+`tools/feature_status.py --extra-report`.
 
 ### What CI runs
 

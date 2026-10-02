@@ -56,7 +56,26 @@ from passing tests, as before.
   labelled boxes can be trained into a deployed custom model from inside the app.
 - **Reports**: PDF and Word deliverables built from the open project, with distinct
   report types; refused report types say what is missing.
-- **India survey packs** run from the cockpit with all their inputs.
+- **India survey packs** run from the cockpit with all their inputs. Anomaly
+  baseline/find accepts the app's own rasters (vegetation indices tag their band schema;
+  an untagged raster can be given a declared schema, recorded as declared); power/rail
+  corridors accept a WGS84 centreline and measure it in the UTM zone of its midpoint;
+  land GIS marks each category validated, unvalidated or unknown.
+- **Deep zoom**: project rasters are served as XYZ tiles cut from the GeoTIFF at the
+  survey's native resolution (`core/raster_tiles.py`, `Api.raster_tiles`), with the PNG
+  preview as fallback; both maps zoom to z24.
+- **Measurement on a photograph**: Photo Distance, Photo Area and Crack Length in the
+  cockpit's Measurements, in source-frame pixels, scaled by an operator mm/px or a
+  reference of known length on the same photograph (never assumed)
+  (`Api.measure_on_image`, `Api.measure_crack_on_image`).
+- **Run AI Settings "Structural detection"** (and `run_pipeline --structural-detection`)
+  switches the crack and structural models back on for a declared solar asset.
+- **Live-service tests**: `tests/test_live_stack.py` runs a job through PostGIS, Redis, a
+  separate worker process and the S3 store; `tests/test_compose.py` gains a live boot of
+  the compose object store (`ODK_TEST_DOCKER_COMPOSE=1`).
+- **Community files**: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` (Contributor Covenant
+  2.1), `SECURITY.md`, `SUPPORT.md`, issue forms and a pull request checklist, this
+  changelog and `CITATION.cff`; README badges and a Contributing section.
 - **Docs**: the dense-MVS guide for RTX 50-series GPUs, measured on the development
   machine; the installation guide describes the launcher, data root and offline cache.
 
@@ -84,6 +103,27 @@ from passing tests, as before.
   passes no longer move it.
 - Core package exports resolve lazily, so the window opens without loading the
   processing stack.
+- Object storage in the Docker Compose stack and the Helm chart is a SeaweedFS S3 gateway
+  (`chrislusf/seaweedfs`, port 8333) instead of MinIO, which no longer publishes public
+  images. A one-shot init creates the bucket; the in-stack endpoint is
+  `http://seaweedfs:8333`; env var names and the storage API are unchanged. The Helm
+  chart now deploys the store it points at, and refuses to render `storage.backend=s3`
+  without S3 keys.
+- The Celery worker uses the solo pool on Windows (prefork elsewhere; `ODK_WORKER_POOL`
+  overrides).
+- With no ceiling given, the planner's default ceiling admits its default RTH climb
+  (max altitude + 10 m); an explicit ceiling is untouched.
+- On solar EL cell or IR module imagery, Run AI runs no concrete surface model (crack,
+  structural, metal), whether or not the imagery was declared: an undeclared grey image
+  with the signs of an EL cell is recognised as one. A run with no assessed defect
+  component has no health index or grade ("Not assessed") instead of a score from the
+  coverage penalty alone.
+- Saved mission versions record the planned speed, and a repeat re-plans at it.
+- A connection that did not open is answered `ok: false` with the vehicle's error, and
+  its flight-log block describes the attempted driver and link; both Connect UIs show the
+  reason.
+- The cockpit's Mission Properties form plans with the values it shows (untouched fields
+  included), Mission Types sets Type, and the Planned message states what was sent.
 
 ### Fixed
 
@@ -117,6 +157,33 @@ from passing tests, as before.
 - The classic window no longer sticks on "Ready" with no map when the network is
   unreachable at start.
 - A Compare no longer makes the open project unreadable to the UI.
+- Map deep zoom: past the depth Esri World Imagery holds imagery for, its grey "Map data
+  not yet available" tile is recognised and replaced by the enlarged nearest real
+  ancestor, and the basemap is capped at the deepest level the service lists for the
+  view; the offline cache never stores the placeholder and purges cached ones.
+- Flight: the MAVLink bridge requests `HOME_POSITION` on connect and every 2 s until home
+  arrives (ArduPilot does not stream it), so a lifecycle no longer waits on the ground
+  for a home that never comes.
+- Litchi CSV: action codes corrected (0 = stay for ms, 1 = take photo), so structure
+  missions take their photographs instead of tilting the camera to 0 deg; Mission >
+  Export Litchi CSV (and the other single-format items) writes only that format.
+- Missions: multi-facade transits go round corners at the stand-off instead of cutting
+  them; a turbine's back-face detour is chosen inside the altitude band and every leg is
+  re-checked against the nacelle.
+- Crack length follows the skeleton as a polyline (pixel counts made a 45 deg crack 29%
+  short); photo bounds honour EXIF orientation.
+- Import Terrain, Import Vector, Import Raster and Add Layer open their file chooser in
+  the default window; the cockpit says when the chooser was cancelled and whether the DEM
+  covers the site.
+- Mission version pickers: diff/history no longer raise once two versions exist; Compare
+  Versions, History and Repeat Survey show the Api's results, and a modified-boundary
+  repeat re-plans the new area instead of reporting 0 capture points. The Cameras picker
+  describes the chosen camera rather than a generic placeholder.
+- Cockpit frame: the status bar's CRS comes from the project's layers, the clock shows no
+  reading before the bridge answers, and the Simulation Timeline is drawn from the
+  planned route.
+- The model-weight tests and live S3 storage tests find what the application uses
+  (`ODK_MODEL_WEIGHTS_DIR`, a test-owned bucket) instead of skipping or refusing.
 
 ### Removed
 
