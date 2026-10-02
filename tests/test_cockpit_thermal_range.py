@@ -107,10 +107,35 @@ def test_the_temperature_map_a_thermal_run_wrote_is_accepted(tmp_path) -> None:
     assert "saturates 4 pixel(s)" in toast
 
 
+def _press_and_answer_unit(api, tmp_path, raster, unit):
+    with Cockpit(api, tmp_path / "profile") as cockpit:
+        cockpit.picks["file"] = str(raster)
+        result = cockpit.run(f"""
+            await ODK.nav("Thermal");
+            await ODK.press("Temperature Range");
+            await ODK.pick("Automatic (1st to 99th percentile)");
+            await ODK.pick({json.dumps(unit)});
+            return {{ toast: await ODK.waitFor(() => ODK.toasts().find((t) => t.startsWith("Range") || t.startsWith("Temperature Range:")), 10000) }};
+        """)
+    return result["toast"], cockpit.called("scale_thermal")
+
+
 def test_a_raster_that_is_not_a_temperature_map_is_refused(tmp_path, surface_pair) -> None:
+    """A DSM says nothing about temperature: the user is asked, and declining reads nothing."""
     api = make_api(tmp_path)
-    toast, calls = _press(api, tmp_path, surface_pair["dsm"], "Automatic (1st to 99th percentile)")
-    assert calls and not calls[-1]["ok"], calls
-    assert toast.startswith("Temperature Range:"), toast
-    assert "does not say it holds measured temperatures" in toast
+    toast, calls = _press_and_answer_unit(api, tmp_path, surface_pair["dsm"],
+                                          "Not temperatures / not sure")
+    assert len(calls) == 1 and not calls[-1]["ok"], calls
+    assert "does not say it holds temperatures" in calls[-1]["error"]
+    assert api.scale_thermal(str(surface_pair["dsm"]), "auto")["needs_unit_confirmation"] is True
+    assert toast.startswith("Temperature Range:") and "not confirmed" in toast, toast
+
+
+def test_a_raster_whose_unit_the_user_confirms_is_read(tmp_path, surface_pair) -> None:
+    api = make_api(tmp_path)
+    toast, calls = _press_and_answer_unit(api, tmp_path, surface_pair["dsm"], "Degrees Celsius")
+    assert calls[-1]["ok"] and calls[-1]["args"][-1] == "celsius", calls
+    assert toast.startswith("Range "), toast
+    direct = api.scale_thermal(str(surface_pair["dsm"]), "auto", confirmed_unit="celsius")
+    assert direct["provenance"]["unit_source"] == "confirmed_by_user"
 

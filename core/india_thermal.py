@@ -23,7 +23,13 @@ from .india_geospatial import (
     geometry_area_units2,
     read_geojson_features,
 )
-from .thermal import NotRadiometric, ThermalImage, load_radiometric_file, write_thermal_geotiff
+from .thermal import (
+    NotRadiometric,
+    ThermalImage,
+    load_radiometric_file,
+    load_temperature_geotiff,
+    write_thermal_geotiff,
+)
 
 
 @dataclass(frozen=True)
@@ -154,8 +160,9 @@ def score_rgb_thermal_registration(
         thermal_image = load_radiometric_file(thermal_file)
     except (NotRadiometric, KeyError, ValueError, json.JSONDecodeError) as exc:
         raise IndiaPackRefused(
-            "RGB/thermal registration requires radiometric counts and camera calibration; "
-            "a rendered thermal palette is not a temperature source."
+            "RGB/thermal registration requires radiometric counts from a thermal file (sidecar, "
+            "FLIR radiometric JPEG, DJI R-JPEG with the DJI Thermal SDK, or FLIR TLinear "
+            f"TIFF); a rendered thermal palette is not a temperature source. ({exc})"
         ) from exc
 
     import cv2
@@ -230,6 +237,11 @@ def score_rgb_thermal_registration(
     )
 
 
+def _temperature_source(image: ThermalImage) -> str:
+    decoder = str(image.provenance.get("decoder", "")) if image.provenance else ""
+    return f"{decoder}_via_core.thermal" if decoder else "radiometric_counts_via_core.thermal"
+
+
 def _json_temperatures(celsius: np.ndarray) -> list[float | None]:
     return [round(float(value), 6) if math.isfinite(float(value)) else None
             for value in celsius.reshape(-1)]
@@ -289,7 +301,7 @@ def write_radiometric_thermal_map(
         raster.update_tags(
             ODK_VALUE_KIND="measured_surface_temperature",
             ODK_VALUE_UNIT="celsius",
-            ODK_TEMPERATURE_SOURCE="radiometric_counts_via_core.thermal",
+            ODK_TEMPERATURE_SOURCE=_temperature_source(image),
             ODK_INTERPOLATED="false",
         )
 
@@ -306,7 +318,8 @@ def write_radiometric_thermal_map(
         "values": _json_temperatures(field),
         "stats": image.stats,
         "source": image.source,
-        "temperature_source": "radiometric_counts_via_core.thermal",
+        "temperature_source": _temperature_source(image),
+        "provenance": image.provenance,
         "interpolated": False,
         "calibration": asdict(image.calibration) if image.calibration is not None else None,
         "geotiff": geotiff.name,
@@ -341,7 +354,42 @@ def write_radiometric_thermal_map(
     )
 
 
+def _geotiff_georeferencing(path: Path) -> tuple[ThermalImage, int, tuple[float, ...]]:
+    """A temperature GeoTIFF supplies its own CRS and affine transform."""
+    import rasterio
+
+    try:
+        image = load_temperature_geotiff(path)
+    except (NotRadiometric, ValueError) as exc:
+        raise IndiaPackRefused(str(exc)) from exc
+    with rasterio.open(path) as raster:
+        if raster.crs is None or raster.crs.to_epsg() is None:
+            raise IndiaPackRefused(f"{path.name} has no EPSG coordinate system.")
+        if not raster.crs.is_projected:
+            raise IndiaPackRefused(
+                "Module-level thermal deliverables require a projected thermal CRS.")
+        transform = raster.transform
+        epsg = int(raster.crs.to_epsg())
+    return image, epsg, (transform.a, transform.b, transform.c,
+                         transform.d, transform.e, transform.f)
+
+
 def _radiometric_georeferencing(path: Path) -> tuple[ThermalImage, int, tuple[float, ...]]:
+    if path.suffix.lower() in {".tif", ".tiff"}:
+        from .thermal_tlinear import is_tlinear_tiff
+
+        if not is_tlinear_tiff(path):
+            return _geotiff_georeferencing(path)
+    if path.suffix.lower() != ".json":
+        try:
+            load_radiometric_file(path)
+        except (NotRadiometric, ValueError) as exc:
+            raise IndiaPackRefused(str(exc)) from exc
+        raise IndiaPackRefused(
+            f"{path.name} is a radiometric camera frame, which has no map georeferencing "
+            "of its own. Map-placed module temperatures need a temperature orthomosaic "
+            "(GeoTIFF) or a sidecar with georeferencing; for a single frame use the "
+            "image-space module analysis (module_temperatures_in_image).")
     try:
         image = load_radiometric_file(path)
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -634,3 +682,154 @@ def associate_module_temperatures(
         summary_path=str(summary),
         artifact_paths=(str(modules_output), str(candidates_output)),
     )
+
+
+def _image_regions(value: Sequence[Mapping[str, Any]] | str | Path) -> list[dict[str, Any]]:
+    if isinstance(value, (str, Path)):
+        payload = json.loads(Path(value).read_text(encoding="utf-8"))
+        value = payload.get("regions", payload) if isinstance(payload, Mapping) else payload
+    if not isinstance(value, Sequence) or not value:
+        raise IndiaPackRefused("Image-space module analysis needs at least one module region.")
+    return [dict(row) for row in value]
+
+
+def module_temperatures_in_image(
+    thermal_path: str | Path,
+    regions: Sequence[Mapping[str, Any]] | str | Path,
+    output_dir: str | Path,
+    *,
+    region_source: str,
+    warning_delta_c: float,
+    critical_delta_c: float,
+    hot_cell_delta_c: float,
+    threshold_basis: str,
+    minimum_valid_fraction: float = 0.8,
+) -> IndiaPackResult:
+    """Per-module temperatures in one radiometric frame, in its own pixel grid.
+
+    For frames that are not georeferenced (a hand-held or mast capture, or a single
+    drone frame before mapping). Each region is ``{"module_id", "string_id",
+    "polygon_px": [[col, row], ...]}`` in the thermal image's pixel coordinates, drawn
+    by the operator named in ``region_source``. Temperatures are read only from the
+    decoded frame. Nothing is placed on a map, and the output says so.
+    """
+    if not region_source.strip():
+        raise IndiaPackRefused("Module regions must name who drew them (region_source).")
+    if not threshold_basis.strip():
+        raise IndiaPackRefused(
+            "Temperature severity thresholds need a named standard or configured convention.")
+    if warning_delta_c <= 0 or critical_delta_c < warning_delta_c or hot_cell_delta_c <= 0:
+        raise ValueError("Temperature-delta thresholds must be positive and ordered.")
+    if not 0 < minimum_valid_fraction <= 1:
+        raise ValueError("minimum_valid_fraction must be between zero and one.")
+
+    thermal_file = Path(thermal_path)
+    try:
+        image = load_radiometric_file(thermal_file)
+    except (NotRadiometric, KeyError, ValueError, json.JSONDecodeError) as exc:
+        raise IndiaPackRefused(str(exc)) from exc
+    field = np.asarray(image.celsius, dtype=np.float64)
+    if field.ndim != 2 or not field.size:
+        raise IndiaPackRefused("Module analysis requires a non-empty 2D thermal grid.")
+    height, width = field.shape
+
+    import cv2
+
+    modules: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, region in enumerate(_image_regions(regions)):
+        module_id = str(region.get("module_id") or "").strip()
+        string_id = str(region.get("string_id") or "").strip()
+        if not module_id or not string_id:
+            raise IndiaPackRefused(f"Region {index + 1} must name module_id and string_id.")
+        if module_id in seen:
+            raise IndiaPackRefused(f"Duplicate module_id {module_id!r}.")
+        seen.add(module_id)
+        polygon = np.asarray(region.get("polygon_px") or [], dtype=np.float64)
+        if polygon.ndim != 2 or polygon.shape[0] < 3 or polygon.shape[1] != 2 or not np.all(
+                np.isfinite(polygon)):
+            raise IndiaPackRefused(f"Module {module_id} needs a polygon_px of at least three [col, row] points.")
+        if np.any(polygon[:, 0] < 0) or np.any(polygon[:, 0] > width) or np.any(
+                polygon[:, 1] < 0) or np.any(polygon[:, 1] > height):
+            raise IndiaPackRefused(f"Module {module_id} polygon lies outside the {width}x{height} thermal frame.")
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [np.rint(polygon).astype(np.int32)], 1)
+        inside = mask > 0
+        valid = inside & np.isfinite(field)
+        valid_fraction = float(valid.sum() / max(1, inside.sum()))
+        if not inside.any() or valid_fraction < minimum_valid_fraction:
+            raise IndiaPackRefused(
+                f"Module {module_id} has {valid_fraction:.1%} valid temperature coverage, "
+                f"below the required {minimum_valid_fraction:.1%}.")
+        values = field[valid]
+        positions = np.argwhere(valid)
+        hottest = positions[int(np.argmax(values))]
+        modules.append({
+            "module_id": module_id, "string_id": string_id,
+            "polygon_px": polygon.tolist(), "pixels": int(values.size),
+            "valid_fraction": valid_fraction,
+            "min_c": float(values.min()), "max_c": float(values.max()),
+            "mean_c": float(values.mean()), "median_c": float(np.median(values)),
+            "hottest_px": [int(hottest[1]), int(hottest[0])],
+        })
+
+    by_string: dict[str, list[float]] = {}
+    for module in modules:
+        by_string.setdefault(module["string_id"], []).append(module["median_c"])
+    string_references = {key: float(np.median(v)) for key, v in by_string.items()}
+    site_reference = float(np.median(list(string_references.values())))
+    rows = []
+    for module in modules:
+        reference = string_references[module["string_id"]]
+        deltas = {
+            "hot_cell_delta_c": max(0.0, module["max_c"] - module["median_c"]),
+            "module_delta_c": max(0.0, module["median_c"] - reference),
+            "string_delta_c": max(0.0, reference - site_reference),
+        }
+        findings = [name for name, key, limit in (
+            ("hot_cell_candidate", "hot_cell_delta_c", hot_cell_delta_c),
+            ("module_deviation_candidate", "module_delta_c", warning_delta_c),
+            ("string_deviation_candidate", "string_delta_c", warning_delta_c),
+        ) if deltas[key] >= limit]
+        measured = max(deltas.values())
+        severity = "critical" if measured >= critical_delta_c and findings else (
+            "warning" if findings else "normal")
+        rows.append({
+            **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in module.items()},
+            "string_reference_c": round(reference, 3),
+            "site_reference_c": round(site_reference, 3),
+            **{k: round(v, 3) for k, v in deltas.items()},
+            "severity": severity, "finding_types": findings,
+            "review_state": "review_required" if findings else "within_peer_baseline",
+        })
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    modules_output = output / "module_temperatures_image.json"
+    modules_output.write_text(json.dumps({
+        "type": "odk-module-temperatures-image-space", "schema_version": 1,
+        "coordinate_frame": "thermal_image_pixels", "georeferenced": False,
+        "frame_size_px": [int(width), int(height)], "modules": rows,
+    }, indent=2, allow_nan=False), encoding="utf-8")
+    summary = output / "solar_thermal_image_summary.json"
+    summary.write_text(json.dumps({
+        "status": "complete", "module_count": len(rows),
+        "module_hotspot_count": sum(1 for r in rows if r["finding_types"]),
+        "site_reference_c": round(site_reference, 3),
+        "severity_thresholds": {"warning_delta_c": warning_delta_c,
+                                "critical_delta_c": critical_delta_c,
+                                "hot_cell_delta_c": hot_cell_delta_c},
+        "severity_threshold_basis": threshold_basis.strip(),
+        "severity_classification": "configured_convention_not_equipment_diagnosis",
+        "region_source": region_source.strip(),
+        "thermal_source": str(thermal_file), "thermal_sha256": _sha256(thermal_file),
+        "temperature_source": _temperature_source(image),
+        "provenance": image.provenance, "frame_stats": image.stats,
+        "limits": [
+            "Image-space analysis: module regions are pixel polygons in this frame and "
+            "are not placed on a map.",
+            "Module regions were supplied by the named operator, not detected.",
+            "Every candidate is review_required and is not a confirmed electrical defect.",
+        ],
+    }, indent=2, allow_nan=False), encoding="utf-8")
+    return IndiaPackResult(summary_path=str(summary), artifact_paths=(str(modules_output),))

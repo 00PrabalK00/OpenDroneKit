@@ -202,3 +202,33 @@ class TestGeoreferencedOutput:
         assert meta["epsg"] == 32617
         # Values are degrees Celsius, not palette indices.
         assert float(np.nanmean(data[0])) == pytest.approx(42.0, abs=0.1)
+
+
+class TestFlirPathModel:
+    """The FLIR atmosphere/window correction inverts its own forward model."""
+
+    def test_object_temperature_is_recovered_through_air_and_window(self):
+        from core.thermal import Calibration, FlirAtmosphere, kelvin_to_raw, raw_to_celsius
+
+        calibration = Calibration(
+            r1=14866.514, r2=0.011086479, b=1395.7, f=1.0, o=-5859.0,
+            emissivity=0.9, reflected_temp_c=21.0,
+            atmosphere=FlirAtmosphere(atmospheric_temp_c=14.0, object_distance_m=20.0,
+                                      relative_humidity=0.49, ir_window_temp_c=19.0,
+                                      ir_window_transmission=0.98))
+        tau = calibration.atmosphere.transmission()
+        assert 0.9 < tau < 1.0
+        window = 0.98
+
+        def counts(celsius):
+            return float(kelvin_to_raw(celsius + 273.15, calibration))
+
+        target = np.array([[35.0, 60.0]])
+        signal = (
+            calibration.emissivity * tau * window * tau * kelvin_to_raw(target + 273.15, calibration)
+            + (1 - calibration.emissivity) * tau * window * tau * counts(21.0)
+            + (1 - tau) * window * tau * counts(14.0)
+            + (1 - tau) * counts(14.0)
+            + (1 - window) * tau * counts(19.0)
+        )
+        assert raw_to_celsius(signal, calibration) == pytest.approx(target, abs=1e-6)

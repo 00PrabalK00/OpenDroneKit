@@ -1292,6 +1292,7 @@ INDIA_FIRST = [
       "Aligned RGB/radiometric thermal imagery with module-level hotspots, hot cells, "
       "string/module anomalies and temperature-backed severity.",
       "implemented", ["tests/test_thermal.py", "tests/test_hub_thermal.py",
+                      "tests/test_thermal_real_data.py::TestDownstreamOnRealFrames",
                       "tests/test_solar_thermal.py::TestRgbThermalRegistration",
                       "tests/test_solar_thermal.py::TestModuleTemperatureAssociation",
                       "tests/test_solar_thermal.py::TestSolarThermalRefusals"],
@@ -1445,8 +1446,45 @@ INSPECTION = [
       "implemented", ["tests/test_thermal.py::TestConversion",
                       "tests/test_thermal.py::TestEmissivity",
                       "tests/test_thermal.py::TestRefusal"],
-      "Sidecar counts supported; extracting the embedded APP1 payload from a thermal "
-      "JPEG is not implemented and says so."),
+      "Sidecar counts plus real camera files: FLIR radiometric JPEGs, DJI R-JPEGs via the "
+      "user's DJI Thermal SDK, FLIR TLinear TIFFs (th.decode.* rows)."),
+    F("th.decode.dji", "DJI R-JPEG thermal decoding", "workers", "Thermal",
+      "DJI R-JPEGs (H20T, H20N, H30T, M2EA, M30T, M3T, M3TD, M4T, XT S) decode to °C "
+      "through the DJI Thermal SDK loaded from the user's folder (ODK_DJI_TSDK_DIR or "
+      "the dji_thermal_sdk_dir setting), matching the SDK-decoded reference arrays of a "
+      "real survey; without the SDK the file is refused with the DJI download address.",
+      "implemented", ["tests/test_thermal_real_data.py::TestDjiThermalSdk"],
+      "Measured 2026-10-02 on the Boga Cayi bridge H20T survey (81 frames): max abs "
+      "error 0.0 C, mean 0.0 C against the authors' SDK float32 arrays, i.e. a pixel "
+      "exact reproduction of the SDK, not an independent calibration. All 49 SDK and "
+      "57 thermal_parser DJI samples and the 227-frame M30T facade survey decode. "
+      "The SDK is proprietary and never shipped; tests skip without it."),
+    F("th.decode.flir", "FLIR radiometric JPEG decoding", "workers", "Thermal",
+      "FLIR radiometric JPEGs (FLIR cameras and FLIR-core DJI XT2/XT R) decode to °C "
+      "from their FFF raw image and Planck/atmosphere constants with a clean-room "
+      "parser, agreeing with the camera's own on-screen readings.",
+      "implemented", ["tests/test_thermal_real_data.py::TestFlirRadiometricJpeg",
+                      "tests/test_thermal.py::TestFlirPathModel"],
+      "Constants match ExifTool dumps for 7 files. Against readings FLIR firmware burned "
+      "into the images: E40 spot 20.92 vs 20.9 C; B60 spot 18.80 vs 19.0 F; AX8 "
+      "max/min/avg 25.47/24.36/25.03 vs 25.5/24.3/25.1 C; T640 interior max 199.56 vs "
+      "199 F (box outline not recorded). FLIR.jpg, XT2 and XT R have no on-screen "
+      "reference and are labelled unvalidated."),
+    F("th.decode.tlinear", "FLIR TLinear TIFF decoding", "workers", "Thermal",
+      "FLIR Duo Pro R TLinear TIFFs decode with the gain FLIR documents (0.04 or 0.40 "
+      "K/count, minus 273.15) read from the file; any other gain is refused.",
+      "implemented", ["tests/test_thermal_real_data.py::TestFlirTlinearTiff"],
+      "Formula from FLIR's Duo Pro R User Guide Rev 1.0 s6.2.2. THED-PV: 58 frames, "
+      "medians 39.3-53.3 C against 24.3 C ambient at 920 W/m2 (plausibility only; no "
+      "reference thermometer). Emissivity is fixed in-camera and not recorded."),
+    F("th.geotiff_unit", "Temperature GeoTIFF with declared or confirmed unit", "workers",
+      "Thermal",
+      "A temperature GeoTIFF is read when it declares Celsius/kelvin (ODK tags or band "
+      "unit) or the user confirms the unit; otherwise the user is asked, never assumed.",
+      "implemented", ["tests/test_thermal_real_data.py::TestTemperatureGeotiff",
+                      "tests/test_cockpit_thermal_range.py"],
+      "Bridge orthomosaic B1_Aug22.tif (band unit metadata 'metre') is refused until "
+      "confirmed; confirmed as Celsius it reads 15.05-57.29 C, matching its provenance."),
     F("th.map_2d", "2D thermal map", "workers", "Thermal",
       "Temperature field written as a georeferenced raster in Celsius, so its units "
       "are unambiguous in GIS.",
