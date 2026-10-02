@@ -9,7 +9,7 @@ pip install -e examples/plugins/odk-strip-template
 
 ```python
 plan = project.plan_mission([], template="plugin:strip_survey",
-                            centreline_lonlat=[[-82.2260, 41.3058], [-82.2230, 41.3076]],
+                            centreline_lonlat=[[-81.7538, 41.3039], [-81.7506, 41.3048]],
                             width_m=50, altitude_m=60)
 ```
 

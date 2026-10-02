@@ -468,6 +468,8 @@ def _print_list(catalog: dict[str, dict]) -> None:
     for name, row in catalog.items():
         size = f"{row['size_mb']} MB" if row.get("size_mb") else "-"
         print(f"{name:40s} {row['fetch']:10s} {row['licence']:28s} {size:>8s}  {row['title']}")
+        if row.get("attribution"):
+            print(f"{'':40s} credit: {row['attribution']}")
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -505,6 +507,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     except FetchRefused as exc:
         print(str(exc))
         return 3
+    if catalog[args.name].get("attribution"):
+        print(f"Licence {catalog[args.name]['licence']}: credit {catalog[args.name]['attribution']}")
     if not args.dry_run:
         print(f"{args.name}: {len(result['downloaded'])} downloaded, "
               f"{len(result['already_present'])} already present, {len(result['failed'])} failed, "

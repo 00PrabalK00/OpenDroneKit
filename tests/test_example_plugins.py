@@ -29,7 +29,7 @@ EXAMPLES = REPO / "examples" / "plugins"
 PACKAGES = ("odk-csv-exporter", "odk-strip-template")
 
 # A real place: the Aukerman park survey site (Ohio), where the sample dataset was flown.
-CENTRELINE = [[-82.22610, 41.30570], [-82.22450, 41.30660], [-82.22300, 41.30760]]
+CENTRELINE = [[-81.75380, 41.30390], [-81.75220, 41.30440], [-81.75060, 41.30480]]
 
 
 def install_editable(prefix: Path) -> Path:
