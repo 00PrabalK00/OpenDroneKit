@@ -1,0 +1,42 @@
+/* Desk frame: header 48 / left 264 / map / inspector 312 / footer 28.
+ * Both side panels collapse (needed at the 1100 px minimum window width, where the
+ * two panels would leave the map 524 px). The frame itself is built by
+ * js/odk/frame.js (U2); this file only fixes its geometry. */
+
+.odk-frame {
+  height: 100vh; min-height: 0;
+  display: grid;
+  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--footer-h);
+  grid-template-columns: var(--left-w) minmax(0, 1fr) var(--inspector-w);
+  grid-template-areas:
+    "header header header"
+    "left   main   inspector"
+    "footer footer footer";
+  background: var(--bg);
+}
+.odk-frame[data-left="collapsed"] { grid-template-columns: 0 minmax(0, 1fr) var(--inspector-w); }
+.odk-frame[data-inspector="collapsed"] { grid-template-columns: var(--left-w) minmax(0, 1fr) 0; }
+.odk-frame[data-left="collapsed"][data-inspector="collapsed"] { grid-template-columns: 0 minmax(0, 1fr) 0; }
+
+.odk-frame-header {
+  grid-area: header; display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-4);
+  background: var(--surface-1); border-bottom: 1px solid var(--line);
+}
+.odk-frame-header .odk-tab { min-height: var(--header-h); }
+.odk-brand { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-title); font-weight: var(--fw-strong); letter-spacing: -0.01em; white-space: nowrap; }
+.odk-brand img { width: 24px; height: 24px; display: block; }
+.odk-frame-left {
+  grid-area: left; min-width: 0; overflow: auto; background: var(--surface-1); border-right: 1px solid var(--line);
+}
+.odk-frame-main { grid-area: main; min-width: 0; min-height: 0; position: relative; background: var(--map-well); }
+.odk-frame-inspector {
+  grid-area: inspector; min-width: 0; overflow: auto; background: var(--surface-1); border-left: 1px solid var(--line);
+}
+.odk-frame[data-left="collapsed"] .odk-frame-left,
+.odk-frame[data-inspector="collapsed"] .odk-frame-inspector { overflow: hidden; border: 0; }
+.odk-frame-footer {
+  grid-area: footer; display: flex; align-items: center; gap: var(--sp-5); padding: 0 var(--sp-4);
+  background: var(--surface-1); border-top: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); white-space: nowrap;
+}
+.odk-frame-footer .odk-footer-net { margin-left: auto; color: var(--ok); }

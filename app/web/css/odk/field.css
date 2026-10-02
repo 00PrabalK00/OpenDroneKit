@@ -1,0 +1,155 @@
+/* Field Daylight: a separate layout, not only a theme.
+ * 72 px black header, 88 px bottom tab bar, 64 px touch targets, 3-4 px ink rules,
+ * yellow = the one action per screen, black = commit, outline = alternate.
+ * Every rule here is scoped to [data-mode="field"], so a field board can sit beside a
+ * desk board on one page. */
+
+/* -- frame ------------------------------------------------------------------ */
+[data-mode="field"] .odk-frame {
+  grid-template-rows: var(--header-h) minmax(0, 1fr) var(--tabbar-h);
+  grid-template-columns: minmax(0, 1fr) var(--left-w);
+  grid-template-areas:
+    "header header"
+    "main   left"
+    "tabbar tabbar";
+}
+[data-mode="field"] .odk-frame-inspector,
+[data-mode="field"] .odk-frame-footer { display: none; }
+[data-mode="field"] .odk-frame-left { overflow: auto; background: var(--bg); border: 0; border-left: var(--rule-strong) solid var(--line); }
+
+.odk-field-header,
+[data-mode="field"] .odk-frame-header {
+  height: var(--header-h); display: flex; align-items: center; gap: var(--sp-4); padding: 0 var(--sp-1) 0 var(--sp-4);
+  background: #0A0A0A; color: #FFFFFF; border: 0;
+}
+[data-mode="field"] .odk-brand { font-size: var(--fs-title); font-weight: 700; color: #FFFFFF; }
+[data-mode="field"] .odk-brand img { width: 40px; height: 40px; }
+.odk-field-net {
+  display: flex; align-items: center; gap: var(--sp-3); height: 64px; padding: 0 var(--sp-4);
+  border: 2px solid #FFFFFF; font-size: 16px; font-weight: 700; white-space: nowrap; color: #FFFFFF;
+}
+.odk-field-net .odk-dot { width: 12px; height: 12px; background: var(--ok); box-shadow: 0 0 0 2px #FFFFFF; }
+.odk-field-toggle {
+  height: 64px; padding: 0 20px; display: flex; align-items: center; gap: 10px;
+  background: #FFFFFF; color: #0A0A0A; border: 0; font-size: 18px; font-weight: 700; white-space: nowrap;
+}
+
+.odk-field-tabbar {
+  grid-area: tabbar; height: var(--tabbar-h); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-top: var(--rule-strong) solid var(--line); background: var(--bg);
+}
+.odk-field-tab {
+  display: flex; align-items: center; justify-content: center; min-height: 64px;
+  font-size: 20px; font-weight: 700; color: var(--text); text-decoration: none; background: var(--bg);
+  border: 0; border-right: var(--rule) solid var(--line);
+}
+.odk-field-tab:last-child { border-right: 0; }
+.odk-field-tab[aria-current="page"] { background: var(--action); color: var(--on-action); }
+
+/* -- components ------------------------------------------------------------- */
+[data-mode="field"] .odk-section { background: var(--bg); border: var(--rule-strong) solid var(--line); }
+[data-mode="field"] .odk-section-head { min-height: 56px; border-bottom: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-rule { border-top: var(--rule) solid var(--line); }
+
+[data-mode="field"] .odk-btn { font-size: 22px; font-weight: 700; padding: 0 var(--sp-5); }
+[data-mode="field"] .odk-btn--primary { border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-btn--primary:disabled { background: var(--surface-2); color: var(--text); border: var(--rule) dashed var(--line); }
+[data-mode="field"] .odk-btn--commit { background: #0A0A0A; color: #FFFFFF; border: 0; }
+[data-mode="field"] .odk-btn--secondary { background: var(--bg); color: var(--text); border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-btn--secondary:is(:hover, .is-hover):not(:disabled) { background: var(--surface-2); }
+[data-mode="field"] .odk-btn--secondary:disabled { background: var(--surface-2); color: var(--text); border: var(--rule) dashed var(--line); }
+[data-mode="field"] .odk-btn--ghost { color: var(--text); text-decoration: underline; text-underline-offset: 6px; }
+[data-mode="field"] .odk-btn--ghost:is(:hover, .is-hover):not(:disabled) { color: var(--link); }
+[data-mode="field"] .odk-btn--danger { background: var(--danger); color: var(--on-danger); border: var(--rule-strong) solid var(--line); }
+[data-mode="field"] .odk-btn--danger:is(:hover, .is-hover):not(:disabled) { background: #0A0A0A; color: #FFFFFF; }
+[data-mode="field"] .odk-btn--danger:disabled { background: var(--surface-2); color: var(--text); border: var(--rule) dashed var(--line); }
+
+[data-mode="field"] .odk-icon-btn { background: var(--bg); color: var(--text); border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-icon-btn:is(:hover, .is-hover):not(:disabled) { background: var(--surface-2); box-shadow: none; }
+[data-mode="field"] .odk-icon-btn[aria-pressed="true"] { background: var(--selection); color: var(--on-selection); }
+[data-mode="field"] .odk-icon-btn:disabled { background: var(--surface-2); border-style: dashed; outline: 0; box-shadow: none; color: var(--text); }
+[data-mode="field"] .odk-icon-group { gap: var(--sp-2); background: transparent; }
+
+[data-mode="field"] .odk-field > label { font-size: var(--fs-label); font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: var(--ls-label); }
+[data-mode="field"] .odk-input { background: var(--bg); border: var(--rule) solid var(--line); color: var(--text); padding: 0 var(--sp-3); }
+[data-mode="field"] .odk-input:is(:focus-within, .is-focus) { border-color: var(--selection); box-shadow: inset 0 0 0 2px var(--selection); }
+[data-mode="field"] .odk-input--readonly { background: var(--surface-2); }
+[data-mode="field"] .odk-input input,
+[data-mode="field"] .odk-input select { font-size: var(--fs-body); }
+[data-mode="field"] .odk-input--mono input { font-size: 22px; font-weight: 700; }
+[data-mode="field"] .odk-input-unit { font-size: 16px; color: var(--text); }
+
+[data-mode="field"] .odk-check-row,
+[data-mode="field"] .odk-layer-row { border-bottom: 2px solid var(--line); font-size: var(--fs-body); }
+[data-mode="field"] .odk-check-row input,
+[data-mode="field"] .odk-layer-row input { width: 28px; height: 28px; accent-color: var(--selection); }
+[data-mode="field"] .odk-layer-row--selected { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+[data-mode="field"] .odk-layer-note { font-size: var(--fs-small); color: var(--text); font-weight: 700; }
+[data-mode="field"] .odk-swatch--polygon { width: 16px; height: 16px; border: 4px solid var(--selection); }
+[data-mode="field"] .odk-swatch--point { width: 14px; height: 14px; background: var(--text); }
+[data-mode="field"] .odk-swatch--line { width: 24px; height: 4px; background: var(--text); }
+[data-mode="field"] .odk-swatch--ramp { width: 32px; height: 14px; outline: 2px solid var(--line); }
+
+[data-mode="field"] .odk-chip { border: 2px solid var(--line); font-weight: 700; font-size: var(--fs-small); color: var(--text); }
+[data-mode="field"] .odk-chip--ok { background: var(--ok); color: var(--on-ok); }
+[data-mode="field"] .odk-chip--warn { background: var(--warn); color: #0A0A0A; }
+[data-mode="field"] .odk-chip--danger { background: var(--danger); color: var(--on-danger); }
+[data-mode="field"] .odk-chip .odk-dot { display: none; }
+[data-mode="field"] .odk-tag { border: 2px solid var(--sim); font-family: var(--font-ui); font-size: var(--fs-small); font-weight: 700; padding: 0 var(--sp-2); }
+[data-mode="field"] .odk-tag--small { height: auto; padding: 1px 6px; }
+[data-mode="field"] .odk-dot { width: 12px; height: 12px; }
+[data-mode="field"] .odk-status { font-size: 16px; font-weight: 700; color: var(--text); }
+
+[data-mode="field"] .odk-toast { background: var(--bg); border: var(--rule-strong) solid var(--line); padding: var(--sp-4); }
+[data-mode="field"] .odk-toast--danger { border-color: var(--danger); }
+[data-mode="field"] .odk-toast-title { font-size: 20px; font-weight: 700; }
+[data-mode="field"] .odk-toast-detail,
+[data-mode="field"] .odk-toast-detail--mono { font-size: 16px; color: var(--text); line-height: 1.35; font-family: var(--font-ui); }
+[data-mode="field"] .odk-toast > .odk-dot { margin-top: 6px; }
+[data-mode="field"] .odk-toast-close { flex-shrink: 0; width: 64px; min-width: 64px; height: 64px; margin: -16px -16px -16px 0; color: var(--text); }
+[data-mode="field"] .odk-toasts { width: 440px; }
+
+[data-mode="field"] .odk-tab { min-height: 64px; min-width: 64px; justify-content: center; font-size: 20px; font-weight: 700; color: var(--text); padding: 0 var(--sp-4); }
+[data-mode="field"] .odk-tab[aria-current="page"],
+[data-mode="field"] .odk-tab[aria-selected="true"] { background: var(--action); color: var(--on-action); box-shadow: none; }
+[data-mode="field"] .odk-panel-tabs { gap: 0; background: var(--bg); border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-panel-tab { min-width: 64px; padding: 0 var(--sp-5); background: var(--bg); color: var(--text); font-size: 18px; font-weight: 700; border-right: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-panel-tab:last-child { border-right: 0; }
+[data-mode="field"] .odk-panel-tab[aria-selected="true"] { background: var(--selection); color: var(--on-selection); box-shadow: none; }
+[data-mode="field"] .odk-panel-tab .odk-num { font-size: 16px; }
+
+[data-mode="field"] .odk-table th { height: 48px; font-family: var(--font-ui); font-size: var(--fs-label); font-weight: 700; color: var(--text); border-bottom: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-table td { border-bottom: 2px solid var(--line); font-size: var(--fs-body); }
+[data-mode="field"] .odk-table td.num { font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700; }
+[data-mode="field"] .odk-table td.dim { color: var(--text); }
+[data-mode="field"] .odk-table tbody tr:is(:hover, .is-hover) { background: var(--surface-2); }
+[data-mode="field"] .odk-table tbody tr.selected { background: var(--surface-2); box-shadow: inset 6px 0 0 var(--selection); }
+
+[data-mode="field"] .odk-stat-label { font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--text); }
+[data-mode="field"] .odk-stat-value { font-weight: 700; line-height: 1; }
+[data-mode="field"] .odk-stat-unit { color: var(--text); }
+
+[data-mode="field"] .odk-popover { background: var(--bg); border: var(--rule-strong) solid var(--line); }
+[data-mode="field"] .odk-menu-item { min-height: 64px; font-size: var(--fs-body); font-weight: 700; border-bottom: 2px solid var(--line); }
+[data-mode="field"] .odk-menu-item:last-child { border-bottom: 0; }
+
+/* -- map furniture: white boxes, 3px ink borders, ink-cased lines ---------- */
+[data-mode="field"] .odk-map-chip { height: 64px; min-width: 64px; padding: 0 var(--sp-3); border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: 16px; font-weight: 700; }
+[data-mode="field"] .odk-map-stack { gap: var(--sp-2); background: transparent; }
+[data-mode="field"] .odk-scalebar { flex-direction: column-reverse; align-items: flex-start; gap: var(--sp-1); padding: var(--sp-2) var(--sp-3); border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: 16px; font-weight: 700; }
+[data-mode="field"] .odk-scalebar-bar > span { height: 10px; }
+[data-mode="field"] .odk-scalebar-bar > span:first-child { background: transparent; border: 3px solid var(--text); border-top: 0; border-right: 0; }
+[data-mode="field"] .odk-scalebar-bar > span:last-child { border: 3px solid var(--text); border-top: 0; border-left: 0; }
+[data-mode="field"] .odk-scalebar-ratio { color: var(--text); font-weight: 400; }
+[data-mode="field"] .odk-north { width: 64px; height: 64px; border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: 14px; font-weight: 700; }
+[data-mode="field"] .odk-north path.odk-north-outline { stroke: none; }
+[data-mode="field"] .odk-legend { border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-legend-ramp { width: 20px; outline: 2px solid var(--line); }
+[data-mode="field"] .odk-legend-ticks { font-family: var(--font-ui); font-size: 16px; font-weight: 700; line-height: 18px; }
+[data-mode="field"] .odk-geom-item { font-size: 16px; font-weight: 700; color: var(--text); }
+[data-mode="field"] .odk-geom-swatch--measurement { height: 16px; background: rgba(255, 212, 0, 0.24); border: 4px solid #0A0A0A; }
+[data-mode="field"] .odk-geom-swatch--vertex { width: 14px; height: 14px; background: #FFD400; box-shadow: 0 0 0 3px #0A0A0A; }
+[data-mode="field"] .odk-geom-swatch--flight { width: 32px; height: 8px; background: #FFD400; border-top: 2px solid #0A0A0A; border-bottom: 2px solid #0A0A0A; }
+[data-mode="field"] .odk-geom-swatch--simulated { width: 32px; height: 0; border-top: 6px dashed var(--sim); outline: 2px solid #0A0A0A; }
+[data-mode="field"] .odk-swatch-chip { height: 36px; border: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-toast-link { display: inline-flex; align-items: center; min-height: 64px; min-width: 64px; font-size: 18px; font-weight: 700; }

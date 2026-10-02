@@ -1,0 +1,24 @@
+Vendored fonts for the OpenDroneKit v1 interface (css/odk/fonts.css).
+
+The application never fetches a font at runtime: every @font-face in
+app/web/css/odk/fonts.css points at a file in this folder, and
+tests/test_ui_v1_gallery.py fails if a request leaves 127.0.0.1.
+
+All three families are licensed under the SIL Open Font License 1.1;
+the licence text for each is alongside (OFL-*.txt).
+
+IBM Plex Sans 400 / 500 / 600   (IBMPlexSans-{Regular,Medium,SemiBold}.woff2)
+  Source: IBM, npm package @ibm/plex-sans 1.1.0, fonts/complete/woff2/
+  Licence: OFL-IBM-Plex-Sans.txt (package LICENSE.txt)
+
+IBM Plex Mono 400 / 500         (IBMPlexMono-{Regular,Medium}.woff2)
+  Source: IBM, npm package @ibm/plex-mono 2.5.0, fonts/complete/woff2/
+  Licence: OFL-IBM-Plex-Mono.txt (package LICENSE.txt)
+
+Atkinson Hyperlegible 400 / 700 (AtkinsonHyperlegible-{Regular,Bold}-{latin,latin-ext}.woff2)
+  Designed by the Braille Institute of America.
+  Source: Google Fonts (fonts.googleapis.com css2, v12), the latin and
+  latin-ext subsets, declared with the same unicode-range values Google uses.
+  Licence: OFL-Atkinson-Hyperlegible.txt (google/fonts ofl/atkinsonhyperlegible/OFL.txt)
+
+Downloaded 2026-10-02.

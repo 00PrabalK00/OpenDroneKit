@@ -1,0 +1,58 @@
+/* Base: reset, body and text utilities. Reads tokens only. */
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+[data-mode] {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--fs-body);
+}
+
+a { color: var(--link); }
+a:hover { color: var(--link-hover); }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+h1, h2, h3, h4, p { margin: 0; }
+
+.odk-mono { font-family: var(--font-mono); }
+.odk-num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.odk-muted { color: var(--muted); }
+.odk-text-2 { color: var(--text-2); }
+.odk-label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-label);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.odk-unit { color: var(--muted); font-size: 0.5em; }
+.odk-visually-hidden {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+[data-mode="field"] .odk-label { font-family: var(--font-ui); font-weight: 700; color: var(--text); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--surface-1); }
+::-webkit-scrollbar-thumb { background: var(--line-strong); }

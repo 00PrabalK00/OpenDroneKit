@@ -391,7 +391,9 @@ def start_hub_service(runtime: dict[str, Any], *, ui_origin: str,
     return thread
 
 
-UI_PAGES = {"classic": "index.html", "cockpit": "workspace.html"}
+# "odk" is the v1 interface under construction (docs/ui/ARCHITECTURE.md). It opens only
+# when asked for with --ui odk or ODK_UI=odk; the default stays classic until switchover.
+UI_PAGES = {"classic": "index.html", "cockpit": "workspace.html", "odk": "odk.html"}
 DEFAULT_UI = "classic"
 
 

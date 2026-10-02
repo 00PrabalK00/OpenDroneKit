@@ -1,0 +1,5113 @@
+{
+ "schema": 1,
+ "description": "Every reachable control of the classic and cockpit UIs, mapped to its Api methods and its home in the v1 interface. Source of truth for docs/ui/INVENTORY.md (python tools/ui_inventory.py --write). Guarded by tests/test_ui_v1_inventory.py.",
+ "source": "REBUILD_PLAN.md section 1 (approved 2026-09-29), plus U00 supplements for verbs the plan did not list",
+ "placement_kinds": {
+  "artboard": "drawn in an approved artboard",
+  "proposed": "placed with an approved component pattern, not drawn",
+  "artboard+proposed": "partly drawn, partly proposed",
+  "gap": "the design shows it but the Api cannot back it yet (owner decision 2026-09-29: build the backend for real)",
+  "none": "no new control: unchanged, or not carried with the reason stated in new_home"
+ },
+ "workspaces": [
+  "shell",
+  "home",
+  "plan",
+  "fly",
+  "process",
+  "analyse",
+  "review",
+  "fleet",
+  "report",
+  "settings"
+ ],
+ "rows": [
+  {
+   "id": "shell.switch-workspace",
+   "workspace": "shell",
+   "feature": "Switch workspace",
+   "sources": "Ck nav, keys 1–9",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Header tabs; keys 1–8",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.command-palette",
+   "workspace": "shell",
+   "feature": "Command palette",
+   "sources": "Ck Ctrl K",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_projects"
+   ],
+   "star_methods": [],
+   "new_home": "Header search field (Ctrl K). Groups: Actions (every ACTIONS key, so nothing is ever unreachable), Workspaces, Projects, Places, Shortcuts",
+   "placement": "artboard",
+   "placement_note": "A (search field) + P (palette)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.place-and-address-search",
+   "workspace": "shell",
+   "feature": "Place and address search",
+   "sources": "Cl `#place-search`",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "search_places"
+   ],
+   "star_methods": [],
+   "new_home": "Palette \"Places\" group; picking a result flies the map",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.geocoding-provider",
+   "workspace": "shell",
+   "feature": "Geocoding provider",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_geocoding_provider"
+   ],
+   "star_methods": [
+    "set_geocoding_provider"
+   ],
+   "new_home": "Settings › Units & CRS › \"Geocoding provider\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.project-switcher",
+   "workspace": "shell",
+   "feature": "Project switcher",
+   "sources": "Ck palette, Cl Open dialog",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_projects",
+    "set_active_project"
+   ],
+   "star_methods": [],
+   "new_home": "Header project name opens a menu; also Home project list",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.status-and-toasts",
+   "workspace": "shell",
+   "feature": "Status and toasts",
+   "sources": "Cl status bar, Ck toast",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Toast (full 1px outline + status dot); footer message area",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.session-log-console",
+   "workspace": "shell",
+   "feature": "Session log / console",
+   "sources": "Cl Console tab",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Clicking the footer message opens a \"Session log\" popover; also Settings › About",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.cursor-lat-lon-crs-scale",
+   "workspace": "shell",
+   "feature": "Cursor lat/lon, CRS, scale",
+   "sources": "Cl status bar",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_project_crs",
+    "list_layers"
+   ],
+   "star_methods": [],
+   "new_home": "Footer",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.bridge-network-state",
+   "workspace": "shell",
+   "feature": "Bridge / network state",
+   "sources": "Ck bridge dot",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_state"
+   ],
+   "star_methods": [],
+   "new_home": "Footer \"● local · no network\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.vehicle-chip",
+   "workspace": "shell",
+   "feature": "Vehicle chip",
+   "sources": "Cl `#vehicle-chip`",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "telemetry"
+   ],
+   "star_methods": [],
+   "new_home": "Footer segment \"driver … / no vehicle\"",
+   "placement": "artboard",
+   "placement_note": "A (Fly footer)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.running-jobs-indicator",
+   "workspace": "shell",
+   "feature": "Running jobs indicator",
+   "sources": "Ck chrome poll",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_jobs",
+    "job_status"
+   ],
+   "star_methods": [],
+   "new_home": "Footer segment \"job n of m\"",
+   "placement": "artboard",
+   "placement_note": "A (Process footer)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.demo-mode-demo-1-and-banner",
+   "workspace": "shell",
+   "feature": "Demo mode (?demo=1) and banner",
+   "sources": "Ck demo.js",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Kept. Banner and tags in #C084FC \"DEMO RECORD\" / \"SIMULATED\"",
+   "placement": "artboard",
+   "placement_note": "A (tag style)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.collapse-side-panels",
+   "workspace": "shell",
+   "feature": "Collapse side panels",
+   "sources": "Ck Ctrl B",
+   "menu": [],
+   "actions": [
+    "Reset"
+   ],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Panel collapse buttons + Ctrl B (needed at 1100 px)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "shell.full-screen-canvas-fit",
+   "workspace": "shell",
+   "feature": "Full-screen canvas / fit",
+   "sources": "Ck F11, F",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Kept as shortcuts",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.keyboard-shortcuts",
+   "workspace": "shell",
+   "feature": "Keyboard shortcuts",
+   "sources": "help.shortcuts; Cl keys A/N/M/Del/Ctrl P; Ck list",
+   "menu": [
+    "help.shortcuts"
+   ],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "\"?\" overlay + Settings › About",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.about",
+   "workspace": "shell",
+   "feature": "About",
+   "sources": "help.about",
+   "menu": [
+    "help.about"
+   ],
+   "actions": [],
+   "api": [
+    "capabilities"
+   ],
+   "star_methods": [],
+   "new_home": "Settings › About",
+   "placement": "artboard",
+   "placement_note": "A (About section)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.environment-capabilities",
+   "workspace": "shell",
+   "feature": "Environment capabilities",
+   "sources": "tools.capabilities; Cl Environment dock; Ck Capabilities",
+   "menu": [
+    "tools.capabilities"
+   ],
+   "actions": [
+    "Capabilities"
+   ],
+   "api": [
+    "capabilities"
+   ],
+   "star_methods": [],
+   "new_home": "Settings › About › Environment",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "shell.field-mode-toggle",
+   "workspace": "shell",
+   "feature": "Field mode toggle",
+   "sources": "— (new)",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Header \"Field mode\" / \"Desk mode\"; Settings › Appearance; **new menu id `view.field_mode`**",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.settings",
+   "workspace": "shell",
+   "feature": "Settings",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Header gear button",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "shell.exit",
+   "workspace": "shell",
+   "feature": "Exit",
+   "sources": "File › Exit",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Unchanged",
+   "placement": "none",
+   "placement_note": "—",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.new-project",
+   "workspace": "home",
+   "feature": "New project",
+   "sources": "project.new; Ck \"New Project\"",
+   "menu": [
+    "project.new"
+   ],
+   "actions": [
+    "New Project"
+   ],
+   "api": [
+    "pick_folder",
+    "create_project",
+    "set_active_project"
+   ],
+   "star_methods": [],
+   "new_home": "\"New project\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.open-project",
+   "workspace": "home",
+   "feature": "Open project",
+   "sources": "project.open; Ck \"Open\"",
+   "menu": [
+    "project.open"
+   ],
+   "actions": [
+    "Open"
+   ],
+   "api": [
+    "list_projects",
+    "set_active_project"
+   ],
+   "star_methods": [],
+   "new_home": "Projects list",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.open-project-folder",
+   "workspace": "home",
+   "feature": "Open project folder",
+   "sources": "project.reveal",
+   "menu": [
+    "project.reveal"
+   ],
+   "actions": [],
+   "api": [
+    "get_state",
+    "get_project",
+    "open_path"
+   ],
+   "star_methods": [],
+   "new_home": "Icon button \"Open project folder\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.import-imagery",
+   "workspace": "home",
+   "feature": "Import imagery",
+   "sources": "data.import_imagery; Cl dataset \"…\"; Ck \"Import\"",
+   "menu": [
+    "data.import_imagery"
+   ],
+   "actions": [
+    "Import"
+   ],
+   "api": [
+    "pick_folder",
+    "import_dataset",
+    "set_active_dataset"
+   ],
+   "star_methods": [],
+   "new_home": "\"Import photos\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.dataset-list-and-selection",
+   "workspace": "home",
+   "feature": "Dataset list and selection",
+   "sources": "Cl dataset path; Ck proj.history, proj.datasets",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_datasets",
+    "list_dataset_images",
+    "set_active_dataset"
+   ],
+   "star_methods": [],
+   "new_home": "PHOTOS tile opens a datasets popover; also Process › INPUT",
+   "placement": "artboard+proposed",
+   "placement_note": "A/P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.project-summary-tiles",
+   "workspace": "home",
+   "feature": "Project summary tiles",
+   "sources": "Ck home.active, proj.props General",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_project",
+    "get_state",
+    "list_layers",
+    "list_dataset_images"
+   ],
+   "star_methods": [],
+   "new_home": "Tiles: PHOTOS, SURVEY DATE, BOUNDARY, GRID MISSION, FINDINGS",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.reconstruction-card",
+   "workspace": "home",
+   "feature": "Reconstruction card",
+   "sources": "Ck home.jobs",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_jobs",
+    "list_layers"
+   ],
+   "star_methods": [],
+   "new_home": "Reconstruction card",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.measurements-card",
+   "workspace": "home",
+   "feature": "Measurements card",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_measurements"
+   ],
+   "star_methods": [],
+   "new_home": "Measurements card → \"Open in Analyse\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.report-card",
+   "workspace": "home",
+   "feature": "Report card",
+   "sources": "Cl report info",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_reports",
+    "report_readiness"
+   ],
+   "star_methods": [],
+   "new_home": "Report card → Open / Regenerate",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.exports-card",
+   "workspace": "home",
+   "feature": "Exports card",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_state"
+   ],
+   "star_methods": [],
+   "new_home": "Exports card",
+   "placement": "artboard",
+   "placement_note": "A (Gap: there is no \"list exports\" Api)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.recent-activity-and-full-audit-log",
+   "workspace": "home",
+   "feature": "Recent activity and full audit log",
+   "sources": "tools.audit; Ck home.alerts, home.activity",
+   "menu": [
+    "tools.audit"
+   ],
+   "actions": [],
+   "api": [
+    "audit_log"
+   ],
+   "star_methods": [],
+   "new_home": "Recent activity + \"View all activity\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.notifications",
+   "workspace": "home",
+   "feature": "Notifications",
+   "sources": "report.notifications; Cl Notifications button",
+   "menu": [
+    "report.notifications"
+   ],
+   "actions": [],
+   "api": [
+    "list_notifications",
+    "mark_all_notifications_read",
+    "mark_notification_read",
+    "clear_notifications"
+   ],
+   "star_methods": [
+    "mark_notification_read",
+    "clear_notifications"
+   ],
+   "new_home": "Recent activity gets a \"Notifications\" tab (per-row mark read, Clear); unread dot on the Home tab",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.project-tags",
+   "workspace": "home",
+   "feature": "Project tags",
+   "sources": "Ck proj.props Tags",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_annotation_tags"
+   ],
+   "star_methods": [],
+   "new_home": "Project card chip row → Review filter",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.share-read-only-link",
+   "workspace": "home",
+   "feature": "Share read-only link",
+   "sources": "Ck \"Share\"",
+   "menu": [],
+   "actions": [
+    "Share"
+   ],
+   "api": [
+    "create_share_link"
+   ],
+   "star_methods": [],
+   "new_home": "Project overflow menu (…)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.revoke-links",
+   "workspace": "home",
+   "feature": "Revoke links",
+   "sources": "Ck \"Revoke Links\"",
+   "menu": [],
+   "actions": [
+    "Revoke Links"
+   ],
+   "api": [
+    "list_share_links",
+    "revoke_share_link"
+   ],
+   "star_methods": [],
+   "new_home": "Project overflow menu",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.sync-a-refresh-in-reality",
+   "workspace": "home",
+   "feature": "Sync (a refresh in reality)",
+   "sources": "Ck \"Sync\"",
+   "menu": [],
+   "actions": [
+    "Sync"
+   ],
+   "api": [
+    "list_projects",
+    "list_jobs"
+   ],
+   "star_methods": [],
+   "new_home": "Left-panel SYNC row \"offline · disabled\"; the refresh goes in the palette",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.system-status",
+   "workspace": "home",
+   "feature": "System status",
+   "sources": "Ck home.system",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "capabilities",
+    "verify_models"
+   ],
+   "star_methods": [],
+   "new_home": "Left-panel BUILD row → Settings",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.storage-used",
+   "workspace": "home",
+   "feature": "Storage used",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Left-panel STORAGE row",
+   "placement": "artboard",
+   "placement_note": "A (Gap)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.fleet-summary",
+   "workspace": "home",
+   "feature": "Fleet summary",
+   "sources": "Ck home.summary",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "fleet_status"
+   ],
+   "star_methods": [],
+   "new_home": "Moves to Fleet (not on the Home artboard)",
+   "placement": "artboard",
+   "placement_note": "A (Fleet)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "home.load-demo-workflow",
+   "workspace": "home",
+   "feature": "Load demo workflow",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "demo_workflow"
+   ],
+   "star_methods": [
+    "demo_workflow"
+   ],
+   "new_home": "Settings › About › \"Load demo project\" (output is marked synthetic)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.template-list",
+   "workspace": "plan",
+   "feature": "Template list",
+   "sources": "Cl `#mission-template` (12); Ck Mission Types",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "mission_templates"
+   ],
+   "star_methods": [],
+   "new_home": "Left \"MISSION TEMPLATES\" grouped Area / Structure / Capture, with \"Show n more\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.multi-facade-irregular-facade",
+   "workspace": "plan",
+   "feature": "Multi-facade / irregular facade",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_complex_facade",
+    "plan_irregular_facade"
+   ],
+   "star_methods": [
+    "plan_complex_facade",
+    "plan_irregular_facade"
+   ],
+   "new_home": "\"Multi-facade\" template (drawn in the artboard list)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.pylon-thermal-multispectral-linked",
+   "workspace": "plan",
+   "feature": "Pylon, thermal, multispectral, linked",
+   "sources": "Cl data-for rows; Ck fields",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission",
+    "plan_pylon_mission",
+    "plan_thermal_survey",
+    "plan_multispectral_survey",
+    "plan_linked_mission"
+   ],
+   "star_methods": [
+    "plan_pylon_mission",
+    "plan_thermal_survey",
+    "plan_multispectral_survey",
+    "plan_linked_mission"
+   ],
+   "new_home": "Template entries; per-template inspector section",
+   "placement": "artboard+proposed",
+   "placement_note": "A/P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.parameters-altitude-gsd-overlaps-speed-gimbal-li",
+   "workspace": "plan",
+   "feature": "Parameters: altitude, GSD, overlaps, speed, gimbal, line spacing, trigger",
+   "sources": "Cl form; Ck plan.props",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector \"PARAMETERS\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.advanced-dwell-min-max-altitude-rth-altitude-win",
+   "workspace": "plan",
+   "feature": "Advanced: dwell, min/max altitude, RTH altitude, wind, stand-off, AGL/AMSL, line heading",
+   "sources": "Cl form",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector \"Advanced\" disclosure; the \"Rotate flight lines\" tool sets heading",
+   "placement": "proposed",
+   "placement_note": "P / A (tool)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.template-specific-inputs-thermal-camera-and-gsd-",
+   "workspace": "plan",
+   "feature": "Template-specific inputs (thermal camera and GSD, paired RGB, MS payload, calibration panel, relative values, pylon elements, dome radius/base, box levels, linked ids)",
+   "sources": "Cl `#mission-template-options`; Ck fields",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Conditional inspector section",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.two-way-gsd-altitude",
+   "workspace": "plan",
+   "feature": "Two-way GSD ↔ altitude",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "altitude_for_gsd"
+   ],
+   "star_methods": [
+    "altitude_for_gsd"
+   ],
+   "new_home": "Editing GSD recomputes altitude",
+   "placement": "artboard",
+   "placement_note": "A (fields)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.camera-picker",
+   "workspace": "plan",
+   "feature": "Camera picker",
+   "sources": "Ck \"Cameras\"",
+   "menu": [],
+   "actions": [
+    "Cameras"
+   ],
+   "api": [
+    "list_cameras",
+    "describe_camera",
+    "add_camera",
+    "camera_capabilities"
+   ],
+   "star_methods": [
+    "add_camera",
+    "camera_capabilities"
+   ],
+   "new_home": "\"Camera: …\" button opens a picker (describe, add custom, connected-camera capabilities)",
+   "placement": "artboard",
+   "placement_note": "A (button) + P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.payload-picker",
+   "workspace": "plan",
+   "feature": "Payload picker",
+   "sources": "Ck \"Payloads\"",
+   "menu": [],
+   "actions": [
+    "Payloads"
+   ],
+   "api": [
+    "list_payloads",
+    "describe_payload",
+    "add_payload"
+   ],
+   "star_methods": [
+    "add_payload"
+   ],
+   "new_home": "Camera picker › Payload tab",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.draw-area-of-interest",
+   "workspace": "plan",
+   "feature": "Draw area of interest",
+   "sources": "Cl tool aoi / key A; Ck Draw polygon",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_aoi"
+   ],
+   "star_methods": [],
+   "new_home": "Map tool \"Draw area\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.edit-vertices-delete",
+   "workspace": "plan",
+   "feature": "Edit vertices / delete",
+   "sources": "Cl Delete; Ck Edit",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_aoi"
+   ],
+   "star_methods": [],
+   "new_home": "\"Edit vertices\" tool; Delete key",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.no-fly-zone",
+   "workspace": "plan",
+   "feature": "No-fly zone",
+   "sources": "Cl nofly / key N; Ck Exclusion zone",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_no_fly_zones"
+   ],
+   "star_methods": [],
+   "new_home": "Tool stack \"More\" › No-fly",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.route-line-interest-region",
+   "workspace": "plan",
+   "feature": "Route line / interest region",
+   "sources": "Cl route, interest",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Tool stack \"More\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.place-home",
+   "workspace": "plan",
+   "feature": "Place home",
+   "sources": "Ck Place home",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "add_site_marker"
+   ],
+   "star_methods": [],
+   "new_home": "Tool stack \"More\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.clear-area-clear-no-fly",
+   "workspace": "plan",
+   "feature": "Clear area / clear no-fly",
+   "sources": "mission.clear_aoi, mission.clear_nofly",
+   "menu": [
+    "mission.clear_aoi",
+    "mission.clear_nofly"
+   ],
+   "actions": [],
+   "api": [
+    "set_aoi",
+    "set_no_fly_zones"
+   ],
+   "star_methods": [],
+   "new_home": "AOI section overflow",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.import-boundary",
+   "workspace": "plan",
+   "feature": "Import boundary",
+   "sources": "Ck \"Import Boundary\"",
+   "menu": [],
+   "actions": [
+    "Import Boundary"
+   ],
+   "api": [
+    "import_boundary"
+   ],
+   "star_methods": [],
+   "new_home": "\"Import KML\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.fly-to-draw-boundary",
+   "workspace": "plan",
+   "feature": "Fly-to-draw boundary",
+   "sources": "Ck \"Mark Corner\", \"Close Boundary\", \"Clear Corners\"",
+   "menu": [],
+   "actions": [
+    "Mark Corner",
+    "Close Boundary",
+    "Clear Corners"
+   ],
+   "api": [
+    "mark_boundary_corner",
+    "boundary_from_marks",
+    "clear_boundary_marks"
+   ],
+   "star_methods": [],
+   "new_home": "AOI section › \"Fly the corners…\" (needs a vehicle); also Fly and Field Plan \"Edit boundary\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.terrain-source-cache-coverage",
+   "workspace": "plan",
+   "feature": "Terrain source, cache, coverage",
+   "sources": "data.import_terrain; Cl terrain \"…\"; Ck \"Cache Terrain\", plan.log",
+   "menu": [
+    "data.import_terrain"
+   ],
+   "actions": [
+    "Cache Terrain"
+   ],
+   "api": [
+    "set_terrain_source",
+    "cache_terrain",
+    "terrain_coverage",
+    "describe_terrain_cache"
+   ],
+   "star_methods": [
+    "describe_terrain_cache"
+   ],
+   "new_home": "SAFETY › \"Terrain model\" row with Load / Cache / details",
+   "placement": "artboard",
+   "placement_note": "A (row) + P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.generate-plan",
+   "workspace": "plan",
+   "feature": "Generate plan",
+   "sources": "mission.plan; Cl Plan button, Ctrl P; Ck \"Plan\"/\"New Mission\"",
+   "menu": [
+    "mission.plan"
+   ],
+   "actions": [
+    "Plan",
+    "New Mission"
+   ],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "\"Generate\" in the inspector header; Ctrl P",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.estimates",
+   "workspace": "plan",
+   "feature": "Estimates",
+   "sources": "Ck plan.estimates",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "mission_estimates"
+   ],
+   "star_methods": [],
+   "new_home": "WAYPOINTS / DISTANCE / FLIGHT TIME strip + altitude profile",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.battery-segments",
+   "workspace": "plan",
+   "feature": "Battery segments",
+   "sources": "Ck plan.segments",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_battery_segments"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector tab \"Segments\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.validate-site",
+   "workspace": "plan",
+   "feature": "Validate site",
+   "sources": "Ck \"Validate\"",
+   "menu": [],
+   "actions": [
+    "Validate"
+   ],
+   "api": [
+    "verify_site"
+   ],
+   "star_methods": [],
+   "new_home": "SAFETY › \"Check site\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.hazards",
+   "workspace": "plan",
+   "feature": "Hazards",
+   "sources": "Ck \"Check Hazards\"",
+   "menu": [],
+   "actions": [
+    "Check Hazards"
+   ],
+   "api": [
+    "check_hazards"
+   ],
+   "star_methods": [],
+   "new_home": "SAFETY row \"Obstacle clearance\"",
+   "placement": "artboard",
+   "placement_note": "A (row)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.simulate",
+   "workspace": "plan",
+   "feature": "Simulate",
+   "sources": "Ck \"Simulate\"",
+   "menu": [],
+   "actions": [
+    "Simulate"
+   ],
+   "api": [
+    "mission_geojson"
+   ],
+   "star_methods": [],
+   "new_home": "Scrub or play on the altitude-profile strip",
+   "placement": "artboard",
+   "placement_note": "A (strip)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.save-version",
+   "workspace": "plan",
+   "feature": "Save version",
+   "sources": "mission.save; Ck \"Save\", Ctrl S",
+   "menu": [
+    "mission.save"
+   ],
+   "actions": [
+    "Save"
+   ],
+   "api": [
+    "get_state",
+    "save_mission"
+   ],
+   "star_methods": [],
+   "new_home": "MISSION header \"Save version\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.history-and-restore",
+   "workspace": "plan",
+   "feature": "History and restore",
+   "sources": "mission.history; Ck \"History\"",
+   "menu": [
+    "mission.history"
+   ],
+   "actions": [
+    "History"
+   ],
+   "api": [
+    "list_mission_versions",
+    "mission_version_history",
+    "restore_mission_version"
+   ],
+   "star_methods": [],
+   "new_home": "Version menu on MISSION name",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.compare-versions-specifications",
+   "workspace": "plan",
+   "feature": "Compare versions / specifications",
+   "sources": "Ck \"Compare Versions\"",
+   "menu": [],
+   "actions": [
+    "Compare Versions"
+   ],
+   "api": [
+    "diff_mission_versions",
+    "compare_survey_specifications"
+   ],
+   "star_methods": [
+    "compare_survey_specifications"
+   ],
+   "new_home": "Version menu › Compare…",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.repeat-survey",
+   "workspace": "plan",
+   "feature": "Repeat survey",
+   "sources": "Ck \"Repeat Survey\"",
+   "menu": [],
+   "actions": [
+    "Repeat Survey"
+   ],
+   "api": [
+    "repeat_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Mission overflow",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.site-markers",
+   "workspace": "plan",
+   "feature": "Site markers",
+   "sources": "Ck \"Add Marker\"",
+   "menu": [],
+   "actions": [
+    "Add Marker"
+   ],
+   "api": [
+    "marker_kinds",
+    "add_site_marker",
+    "list_site_markers",
+    "remove_site_marker"
+   ],
+   "star_methods": [
+    "remove_site_marker"
+   ],
+   "new_home": "Map Layers popover \"Site markers\" + marker popup \"Remove\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.cad-image-overlay",
+   "workspace": "plan",
+   "feature": "CAD / image overlay",
+   "sources": "Ck \"Import CAD\"; data.import_raster/import_vector",
+   "menu": [
+    "data.import_raster"
+   ],
+   "actions": [
+    "Import CAD"
+   ],
+   "api": [
+    "import_cad_overlay",
+    "place_image_overlay",
+    "add_layer_from_file",
+    "list_cad_overlays"
+   ],
+   "star_methods": [],
+   "new_home": "Map Layers popover \"Add overlay…\"",
+   "placement": "artboard",
+   "placement_note": "A (Layers button)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.export-6-formats",
+   "workspace": "plan",
+   "feature": "Export (6 formats)",
+   "sources": "mission.export_all, mission.export{format}; Ck \"Export\"",
+   "menu": [
+    "mission.export_all",
+    "mission.export{format=qgc_plan}",
+    "mission.export{format=qgc_wpl}",
+    "mission.export{format=dji_wpml}",
+    "mission.export{format=litchi}",
+    "mission.export{format=kml}",
+    "mission.export{format=geojson}"
+   ],
+   "actions": [
+    "Export"
+   ],
+   "api": [
+    "export_mission",
+    "open_path"
+   ],
+   "star_methods": [],
+   "new_home": "EXPORT section: checkboxes + \"Export n formats\" + open folder",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.send-to-fly",
+   "workspace": "plan",
+   "feature": "Send to Fly",
+   "sources": "fly.upload",
+   "menu": [
+    "fly.upload"
+   ],
+   "actions": [],
+   "api": [
+    "upload_mission"
+   ],
+   "star_methods": [],
+   "new_home": "\"Send to Fly\" switches to Fly with Upload armed",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.basemap-cache-view-cache-status",
+   "workspace": "plan",
+   "feature": "Basemap, cache view, cache status",
+   "sources": "view.basemap, view.cache_tiles; Cl select, \"Cache view\"",
+   "menu": [
+    "view.basemap{basemap=satellite}",
+    "view.basemap{basemap=street}",
+    "view.basemap{basemap=topo}",
+    "view.basemap{basemap=offline}",
+    "view.cache_tiles"
+   ],
+   "actions": [],
+   "api": [
+    "cache_basemap_area",
+    "basemap_cache_status"
+   ],
+   "star_methods": [],
+   "new_home": "Map Layers popover (every map) + Settings › Offline basemap",
+   "placement": "artboard+proposed",
+   "placement_note": "A/P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.zoom-to-area-mission",
+   "workspace": "plan",
+   "feature": "Zoom to area / mission",
+   "sources": "view.zoom_aoi, view.zoom_mission; Cl buttons",
+   "menu": [
+    "view.zoom_aoi",
+    "view.zoom_mission"
+   ],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "\"Fit to area of interest\" + palette",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.measure-on-the-map",
+   "workspace": "plan",
+   "feature": "Measure on the map",
+   "sources": "tools.measure{distance/area}; Cl tools, M",
+   "menu": [
+    "tools.measure{mode=distance}",
+    "tools.measure{mode=area}"
+   ],
+   "actions": [],
+   "api": [
+    "measure_drawn",
+    "measure_geometry"
+   ],
+   "star_methods": [],
+   "new_home": "\"Measure distance\" tool",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.view-mission-panel",
+   "workspace": "plan",
+   "feature": "View › Mission panel",
+   "sources": "view.panel{mission}",
+   "menu": [
+    "view.panel{panel=mission}"
+   ],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Opens Plan",
+   "placement": "none",
+   "placement_note": "—",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.connect-driver-uri",
+   "workspace": "fly",
+   "feature": "Connect (driver + URI)",
+   "sources": "fly.connect; Cl Connect; Ck \"Connect\"",
+   "menu": [
+    "fly.connect"
+   ],
+   "actions": [
+    "Connect"
+   ],
+   "api": [
+    "connect_vehicle"
+   ],
+   "star_methods": [],
+   "new_home": "Left CONNECTION: driver segmented control + URI",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.disconnect-reconnect",
+   "workspace": "fly",
+   "feature": "Disconnect / reconnect",
+   "sources": "fly.disconnect; Ck",
+   "menu": [
+    "fly.disconnect"
+   ],
+   "actions": [
+    "Disconnect"
+   ],
+   "api": [
+    "disconnect_vehicle"
+   ],
+   "star_methods": [],
+   "new_home": "\"Disconnect\" / \"Reconnect\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fly.preflight-acknowledge-checks",
+   "workspace": "fly",
+   "feature": "Preflight, acknowledge checks",
+   "sources": "Cl Preflight tab; Ck \"Preflight\", \"Confirm Checks\"",
+   "menu": [],
+   "actions": [
+    "Preflight",
+    "Confirm Checks"
+   ],
+   "api": [
+    "run_preflight"
+   ],
+   "star_methods": [],
+   "new_home": "PREFLIGHT list with per-row acknowledge",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.upload",
+   "workspace": "fly",
+   "feature": "Upload",
+   "sources": "fly.upload; Cl Upload; Ck \"Upload\"",
+   "menu": [
+    "fly.upload"
+   ],
+   "actions": [
+    "Upload",
+    "Start_Flight"
+   ],
+   "api": [
+    "upload_mission"
+   ],
+   "star_methods": [],
+   "new_home": "\"Mission loaded\" row → Upload",
+   "placement": "artboard",
+   "placement_note": "A (row)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fly.arm-start-pause-resume-rth-abort",
+   "workspace": "fly",
+   "feature": "Arm, Start, Pause, Resume, RTH, Abort",
+   "sources": "fly.command{arm,start,pause,resume,rth,abort}; Ck",
+   "menu": [
+    "fly.command{command=arm}",
+    "fly.command{command=start}",
+    "fly.command{command=pause}",
+    "fly.command{command=resume}",
+    "fly.command{command=rth}",
+    "fly.command{command=abort}"
+   ],
+   "actions": [
+    "Start Mission",
+    "Pause",
+    "Resume",
+    "RTL",
+    "Abort"
+   ],
+   "api": [
+    "vehicle_command"
+   ],
+   "star_methods": [],
+   "new_home": "Command bar (Pause/Resume toggle); Abort is hold-to-abort",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fly.land-manual-override-capture-now",
+   "workspace": "fly",
+   "feature": "Land, Manual override, Capture now",
+   "sources": "Ck \"Land\", \"Manual Override\", \"Capture Now\"",
+   "menu": [],
+   "actions": [
+    "Land",
+    "Manual Override",
+    "Capture Now"
+   ],
+   "api": [
+    "vehicle_command",
+    "take_manual_control",
+    "camera_command"
+   ],
+   "star_methods": [],
+   "new_home": "Command bar \"More\" menu",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.mode-control-state",
+   "workspace": "fly",
+   "feature": "Mode / control state",
+   "sources": "Ck fly.aircraft",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "control_state",
+    "telemetry"
+   ],
+   "star_methods": [],
+   "new_home": "\"MODE\" readout",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.telemetry",
+   "workspace": "fly",
+   "feature": "Telemetry",
+   "sources": "Cl Telemetry tab; Ck fly.telemetry; view.panel{telemetry}",
+   "menu": [
+    "view.panel{panel=telemetry}"
+   ],
+   "actions": [],
+   "api": [
+    "telemetry"
+   ],
+   "star_methods": [],
+   "new_home": "Right TELEMETRY (SIMULATED tags when `is_simulated`)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.mission-progress",
+   "workspace": "fly",
+   "feature": "Mission progress",
+   "sources": "Ck fly.progress",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "telemetry"
+   ],
+   "star_methods": [],
+   "new_home": "Bottom MISSION PROGRESS",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.alerts-and-clearing-them",
+   "workspace": "fly",
+   "feature": "Alerts and clearing them",
+   "sources": "Ck fly.alerts, \"Clear Alerts\"",
+   "menu": [],
+   "actions": [
+    "Clear Alerts"
+   ],
+   "api": [
+    "list_notifications",
+    "mark_all_notifications_read"
+   ],
+   "star_methods": [],
+   "new_home": "Map banner (link lost …) + \"Details\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.event-log",
+   "workspace": "fly",
+   "feature": "Event log",
+   "sources": "Ck fly.events",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "audit_log"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector tab \"Events\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.mission-queue",
+   "workspace": "fly",
+   "feature": "Mission queue",
+   "sources": "Ck fly.queue",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_mission_versions"
+   ],
+   "star_methods": [],
+   "new_home": "\"Mission loaded\" row version picker",
+   "placement": "artboard",
+   "placement_note": "A (row)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.export-flight-log",
+   "workspace": "fly",
+   "feature": "Export flight log",
+   "sources": "Ck \"Export Log\"",
+   "menu": [],
+   "actions": [
+    "Export Log"
+   ],
+   "api": [
+    "export_flight_log"
+   ],
+   "star_methods": [],
+   "new_home": "Left \"SESSION\" section",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.load-flight-resume-interrupted",
+   "workspace": "fly",
+   "feature": "Load flight / resume interrupted",
+   "sources": "Ck \"Load Flight\"",
+   "menu": [],
+   "actions": [
+    "Load Flight"
+   ],
+   "api": [
+    "list_datasets",
+    "set_active_dataset",
+    "check_interrupted_flight",
+    "discard_interrupted_flight",
+    "resume_from_images"
+   ],
+   "star_methods": [
+    "discard_interrupted_flight",
+    "resume_from_images"
+   ],
+   "new_home": "SESSION › \"Resume interrupted…\" with Resume / Discard / From images",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.session-status",
+   "workspace": "fly",
+   "feature": "Session status",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "flight_session"
+   ],
+   "star_methods": [
+    "flight_session"
+   ],
+   "new_home": "Footer vehicle segment tooltip + SESSION header",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.linked-mission-progress",
+   "workspace": "fly",
+   "feature": "Linked mission progress",
+   "sources": "Ck \"Linked Progress\"",
+   "menu": [],
+   "actions": [
+    "Linked Progress"
+   ],
+   "api": [
+    "pick_folder",
+    "linked_mission_progress"
+   ],
+   "star_methods": [],
+   "new_home": "SESSION",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.fly-to-draw-corners",
+   "workspace": "fly",
+   "feature": "Fly-to-draw corners",
+   "sources": "Ck",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "SESSION › \"Mark corner\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.telemetry-charts-camera-live-view",
+   "workspace": "fly",
+   "feature": "Telemetry charts, camera live view",
+   "sources": "Ck fly.charts, fly.camera",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Not carried: they drew no data. Recorded so this is visibly a non-removal.",
+   "placement": "none",
+   "placement_note": "—",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.run-reconstruction-engine-profile-image-size-den",
+   "workspace": "process",
+   "feature": "Run reconstruction (engine, profile, image size, dense, mesh depth, AGL)",
+   "sources": "recon.run{colmap/custom}; Cl `#btn-recon`; Ck \"Process\", \"New Job\", proc.settings",
+   "menu": [
+    "recon.run{engine=colmap}",
+    "recon.run{engine=custom}"
+   ],
+   "actions": [
+    "Process",
+    "New Job"
+   ],
+   "api": [
+    "run_reconstruction"
+   ],
+   "star_methods": [],
+   "new_home": "\"New job\" dialog; \"Re-run\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.full-pipeline",
+   "workspace": "process",
+   "feature": "Full pipeline",
+   "sources": "analysis.pipeline; Cl `#btn-pipeline`; Ck \"Start\", \"Run AI\"",
+   "menu": [
+    "analysis.pipeline"
+   ],
+   "actions": [
+    "Start",
+    "Run AI"
+   ],
+   "api": [
+    "run_pipeline"
+   ],
+   "star_methods": [],
+   "new_home": "New job › type \"Full pipeline\"",
+   "placement": "artboard",
+   "placement_note": "A (New job)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.semantic-map-land-cover",
+   "workspace": "process",
+   "feature": "Semantic map / land cover",
+   "sources": "Ck \"Semantic Map\", \"Land Cover\"",
+   "menu": [],
+   "actions": [
+    "Land Cover",
+    "Semantic Map"
+   ],
+   "api": [
+    "semantic_map",
+    "run_landcover"
+   ],
+   "star_methods": [],
+   "new_home": "New job › type",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.reconstruction-settings",
+   "workspace": "process",
+   "feature": "Reconstruction settings",
+   "sources": "recon.settings",
+   "menu": [
+    "recon.settings"
+   ],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "ENGINE section / New job dialog",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.engine-capabilities",
+   "workspace": "process",
+   "feature": "Engine capabilities",
+   "sources": "Ck proc.settings Engine",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "reconstruction_capabilities"
+   ],
+   "star_methods": [],
+   "new_home": "ENGINE section (DENSE MVS unavailable …)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.job-list-status-cancel",
+   "workspace": "process",
+   "feature": "Job list, status, cancel",
+   "sources": "Cl Jobs tab; Ck proc.jobs, proc.progress, \"Cancel\"; view.panel{jobs}",
+   "menu": [
+    "view.panel{panel=jobs}"
+   ],
+   "actions": [
+    "Cancel"
+   ],
+   "api": [
+    "list_jobs",
+    "job_status",
+    "cancel_job"
+   ],
+   "star_methods": [],
+   "new_home": "JOBS list + job header",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.processing-log",
+   "workspace": "process",
+   "feature": "Processing log",
+   "sources": "Ck proc.logs",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_jobs"
+   ],
+   "star_methods": [],
+   "new_home": "\"View log\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.size-job-chunks-queue",
+   "workspace": "process",
+   "feature": "Size job, chunks, queue",
+   "sources": "Ck \"Size Job\"",
+   "menu": [],
+   "actions": [
+    "Size Job"
+   ],
+   "api": [
+    "size_reconstruction_job",
+    "plan_job_chunks",
+    "processing_queue_report"
+   ],
+   "star_methods": [
+    "plan_job_chunks",
+    "processing_queue_report"
+   ],
+   "new_home": "New job › Estimate; \"Queue idle\" row",
+   "placement": "artboard",
+   "placement_note": "A (row) + P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.input-summary",
+   "workspace": "process",
+   "feature": "Input summary",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_dataset_images",
+    "capture_report"
+   ],
+   "star_methods": [],
+   "new_home": "INPUT (photos, camera, geotags)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.geotag-ppk-check",
+   "workspace": "process",
+   "feature": "Geotag / PPK check",
+   "sources": "Ck \"Check PPK\"",
+   "menu": [],
+   "actions": [
+    "Check PPK"
+   ],
+   "api": [
+    "check_ppk_inputs"
+   ],
+   "star_methods": [],
+   "new_home": "GEOTAGS row action",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.ground-control",
+   "workspace": "process",
+   "feature": "Ground control",
+   "sources": "Ck \"Add GCPs\", \"Mark GCP\", \"GCP Report\"",
+   "menu": [],
+   "actions": [
+    "Add GCPs",
+    "Mark GCP",
+    "GCP Report"
+   ],
+   "api": [
+    "import_gcps",
+    "list_gcps",
+    "mark_gcp",
+    "image_preview",
+    "gcp_accuracy_report"
+   ],
+   "star_methods": [],
+   "new_home": "GCPS row: Import / Mark (image view in centre) / Report",
+   "placement": "artboard",
+   "placement_note": "A (row) + P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.crs",
+   "workspace": "process",
+   "feature": "CRS",
+   "sources": "Ck \"Set CRS\", Spatial tab",
+   "menu": [],
+   "actions": [
+    "Set CRS"
+   ],
+   "api": [
+    "get_project_crs",
+    "set_project_crs",
+    "check_spatial_reference"
+   ],
+   "star_methods": [],
+   "new_home": "Output CRS row + Settings › Units & CRS",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.capture-qc-was-verification",
+   "workspace": "process",
+   "feature": "Capture QC (was Verification)",
+   "sources": "Ck \"Match Captures\", ver.* panels",
+   "menu": [],
+   "actions": [
+    "Match Captures",
+    "Coverage QA"
+   ],
+   "api": [
+    "match_captures",
+    "capture_report",
+    "list_dataset_images",
+    "mission_estimates",
+    "gcp_accuracy_report",
+    "check_coverage",
+    "coverage_qa_report"
+   ],
+   "star_methods": [],
+   "new_home": "Centre tab \"Capture QC\" (planned vs actual map, missing captures, QC log)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "process.accept-flag-capture-request-reflight",
+   "workspace": "process",
+   "feature": "Accept / flag capture, request reflight",
+   "sources": "Ck \"Accept\", \"Flag\", \"Request Reflight\"",
+   "menu": [],
+   "actions": [
+    "Accept",
+    "Flag",
+    "Request Reflight"
+   ],
+   "api": [
+    "review_finding",
+    "request_reflight"
+   ],
+   "star_methods": [],
+   "new_home": "Capture QC toolbar",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.preview-ortho-dsm-hillshade",
+   "workspace": "process",
+   "feature": "Preview Ortho / DSM / Hillshade",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "raster_preview"
+   ],
+   "star_methods": [],
+   "new_home": "PREVIEW segmented control",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.outputs-reveal-export",
+   "workspace": "process",
+   "feature": "Outputs, reveal, export",
+   "sources": "recon.reveal; Ck proc.outputs, \"Export Products\"",
+   "menu": [
+    "recon.reveal"
+   ],
+   "actions": [
+    "Export Products"
+   ],
+   "api": [
+    "list_layers",
+    "get_state",
+    "open_path"
+   ],
+   "star_methods": [],
+   "new_home": "OUTPUTS + \"Export outputs\" + \"Reveal output folder\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "process.stage-timeline",
+   "workspace": "process",
+   "feature": "Stage timeline",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "STAGE TIMELINE",
+   "placement": "artboard",
+   "placement_note": "A (Gap: jobs record no stage timings)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.layer-list-and-visibility",
+   "workspace": "analyse",
+   "feature": "Layer list and visibility",
+   "sources": "Cl layer tree; Ck ms.layers, plan.layers; view.panel{layers}",
+   "menu": [
+    "view.panel{panel=layers}"
+   ],
+   "actions": [],
+   "api": [
+    "list_layers",
+    "set_layer_visible"
+   ],
+   "star_methods": [],
+   "new_home": "Left LAYERS",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.layer-opacity-remove-zoom-to",
+   "workspace": "analyse",
+   "feature": "Layer opacity / remove / zoom to",
+   "sources": "Cl slider, ×, zoom",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_layer_opacity",
+    "remove_layer"
+   ],
+   "star_methods": [],
+   "new_home": "Row \"Layer options\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.add-layer",
+   "workspace": "analyse",
+   "feature": "Add layer",
+   "sources": "Cl +; data.import_vector/raster; Ck \"Add Layer\"",
+   "menu": [
+    "data.import_vector"
+   ],
+   "actions": [
+    "Add Layer"
+   ],
+   "api": [
+    "pick_file",
+    "add_layer_from_file"
+   ],
+   "star_methods": [],
+   "new_home": "\"Add layer\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.attribute-table",
+   "workspace": "analyse",
+   "feature": "Attribute table",
+   "sources": "Cl Attributes tab",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "read_vector_layer"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector tab \"Attributes\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.select-distance-area-volume-profile-annotate",
+   "workspace": "analyse",
+   "feature": "Select / Distance / Area / Volume / Profile / Annotate",
+   "sources": "Ck tools",
+   "menu": [],
+   "actions": [
+    "Volume",
+    "Profile",
+    "Measure",
+    "Distance",
+    "Area",
+    "Select Area",
+    "Select Line"
+   ],
+   "api": [
+    "measure_drawn",
+    "measure_volume",
+    "elevation_profile",
+    "measure_on_raster",
+    "measure_geometry",
+    "record_finding"
+   ],
+   "star_methods": [
+    "measure_volume",
+    "elevation_profile",
+    "measure_on_raster"
+   ],
+   "new_home": "Top tool row",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "analyse.stockpile-cut-fill-slope-ponding",
+   "workspace": "analyse",
+   "feature": "Stockpile / Cut & Fill / Slope / Ponding",
+   "sources": "Ck",
+   "menu": [],
+   "actions": [
+    "Cut & Fill",
+    "Slope",
+    "Stockpile",
+    "Ponding"
+   ],
+   "api": [
+    "measure_drawn",
+    "measure_stockpile",
+    "measure_slope",
+    "find_ponding"
+   ],
+   "star_methods": [
+    "measure_stockpile",
+    "measure_slope"
+   ],
+   "new_home": "Tool row \"More\"; reference-surface select (DTM / plane / lowest)",
+   "placement": "artboard",
+   "placement_note": "A (select) + P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "analyse.compare-dates-surface-compare",
+   "workspace": "analyse",
+   "feature": "Compare dates / surface compare",
+   "sources": "Ck \"Compare\", \"Compare Dates\", \"Change\"",
+   "menu": [],
+   "actions": [
+    "Compare",
+    "Compare Dates",
+    "Change"
+   ],
+   "api": [
+    "project_surfaces",
+    "compare_survey_volumes",
+    "compare_surveys"
+   ],
+   "star_methods": [],
+   "new_home": "MEASUREMENTS › \"Surface compare\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.measurement-history-and-details",
+   "workspace": "analyse",
+   "feature": "Measurement history and details",
+   "sources": "Ck ms.history, ms.details, ms.profile",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_measurements",
+    "delete_measurement"
+   ],
+   "star_methods": [
+    "delete_measurement"
+   ],
+   "new_home": "MEASUREMENTS list (row delete) + inspector",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.add-to-report-export-measurement",
+   "workspace": "analyse",
+   "feature": "Add to report / export measurement",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Inspector buttons",
+   "placement": "artboard",
+   "placement_note": "A (Gap for \"Add to report\": the report includes all measurements; see 1.11)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.3d-mesh-point-cloud",
+   "workspace": "analyse",
+   "feature": "3D mesh / point cloud",
+   "sources": "Ck \"Textured Mesh\", \"Point Cloud\"",
+   "menu": [],
+   "actions": [
+    "Point Cloud",
+    "Textured Mesh"
+   ],
+   "api": [
+    "model_scene",
+    "model_mesh_scene"
+   ],
+   "star_methods": [
+    "model_mesh_scene"
+   ],
+   "new_home": "\"Toggle 3D view\" swaps in viewer3d",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.measure-in-3d",
+   "workspace": "analyse",
+   "feature": "Measure in 3D",
+   "sources": "Ck \"Measure in 3D\"",
+   "menu": [],
+   "actions": [
+    "Measure in 3D"
+   ],
+   "api": [
+    "measure_in_model",
+    "measure_on_model",
+    "pick_model_point"
+   ],
+   "star_methods": [
+    "pick_model_point"
+   ],
+   "new_home": "3D tool row",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.annotate-model",
+   "workspace": "analyse",
+   "feature": "Annotate model",
+   "sources": "Ck \"Annotate\"",
+   "menu": [],
+   "actions": [
+    "Annotate"
+   ],
+   "api": [
+    "annotate_model"
+   ],
+   "star_methods": [],
+   "new_home": "3D tool row",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.saved-views",
+   "workspace": "analyse",
+   "feature": "Saved views",
+   "sources": "Ck \"Save View\", \"Open View\"",
+   "menu": [],
+   "actions": [
+    "Save View",
+    "Open View"
+   ],
+   "api": [
+    "save_view",
+    "list_views",
+    "open_view",
+    "set_default_view",
+    "remove_view"
+   ],
+   "star_methods": [
+    "remove_view"
+   ],
+   "new_home": "Inspector tab \"Views & clips\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.clips",
+   "workspace": "analyse",
+   "feature": "Clips",
+   "sources": "Ck \"Clip\"",
+   "menu": [],
+   "actions": [
+    "Clip"
+   ],
+   "api": [
+    "list_clips",
+    "add_plane_clip",
+    "add_polygon_clip",
+    "set_clip_visible",
+    "remove_clip",
+    "export_clipped_model"
+   ],
+   "star_methods": [
+    "add_polygon_clip"
+   ],
+   "new_home": "Inspector tab \"Views & clips\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti",
+   "workspace": "analyse",
+   "feature": "RGB / Thermal / Fused / 3D thermal / Radiometric / Semantic",
+   "sources": "Ck view keys",
+   "menu": [],
+   "actions": [
+    "Map",
+    "RGB",
+    "Thermal",
+    "3D Thermal",
+    "Fused",
+    "Radiometric",
+    "Semantic"
+   ],
+   "api": [
+    "raster_preview",
+    "model_scene"
+   ],
+   "star_methods": [],
+   "new_home": "BASE layer group (radio) + ANALYSIS layers",
+   "placement": "artboard",
+   "placement_note": "A (layer rows)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "analyse.thermal-palette-range",
+   "workspace": "analyse",
+   "feature": "Thermal palette / range",
+   "sources": "Ck \"Temperature Range\", th.*",
+   "menu": [],
+   "actions": [
+    "Temperature Range"
+   ],
+   "api": [
+    "thermal_palettes",
+    "scale_thermal"
+   ],
+   "star_methods": [],
+   "new_home": "Thermal layer options",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.survey-packs-13-india-packs",
+   "workspace": "analyse",
+   "feature": "Survey packs (13 india_* packs)",
+   "sources": "Ck \"Survey Packs\"",
+   "menu": [],
+   "actions": [
+    "Survey Packs"
+   ],
+   "api": [
+    "india_land_gis",
+    "india_design_progress",
+    "india_canopy_cover",
+    "india_vegetation_indices",
+    "india_stress_zones",
+    "india_plant_count",
+    "india_road_condition",
+    "india_corridor_inspection",
+    "india_solar_inventory",
+    "india_module_temperatures",
+    "india_anomaly_baseline",
+    "india_find_anomalies"
+   ],
+   "star_methods": [],
+   "new_home": "ANALYSIS header \"Run survey pack…\" + palette",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "analyse.twin-scene-timeline-history",
+   "workspace": "analyse",
+   "feature": "Twin scene, timeline, history",
+   "sources": "Ck twin.hierarchy, twin.timeline, twin.history",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_layers",
+    "list_mission_versions",
+    "audit_log"
+   ],
+   "star_methods": [],
+   "new_home": "3D inspector tabs",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.findings-on-the-model",
+   "workspace": "analyse",
+   "feature": "Findings on the model",
+   "sources": "Ck twin.props",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "find_annotations"
+   ],
+   "star_methods": [],
+   "new_home": "3D inspector tab",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.contours-layer",
+   "workspace": "analyse",
+   "feature": "Contours layer",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "ANALYSIS \"Contours · 2 m\"",
+   "placement": "artboard",
+   "placement_note": "A (Gap: no contour Api)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.review-queue-and-filters-all-label-runs-refused",
+   "workspace": "review",
+   "feature": "Review queue and filters (All / Label / Runs / Refused)",
+   "sources": "report.review; Cl Review dialog; Ck ai.findings",
+   "menu": [
+    "report.review"
+   ],
+   "actions": [],
+   "api": [
+    "find_annotations"
+   ],
+   "star_methods": [],
+   "new_home": "Left REVIEW QUEUE",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.accept-reject-flag",
+   "workspace": "review",
+   "feature": "Accept / Reject / Flag",
+   "sources": "Ck",
+   "menu": [],
+   "actions": [
+    "Reject"
+   ],
+   "api": [
+    "review_finding"
+   ],
+   "star_methods": [],
+   "new_home": "DECISION buttons (A / X keys)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "review.edit-box-reclassify",
+   "workspace": "review",
+   "feature": "Edit box / Reclassify",
+   "sources": "Ck \"Edit\"",
+   "menu": [],
+   "actions": [
+    "Edit"
+   ],
+   "api": [
+    "review_finding"
+   ],
+   "star_methods": [],
+   "new_home": "Edit box (E), Reclassify (R)",
+   "placement": "artboard",
+   "placement_note": "A (Gap to verify: reclassify decision in desktop_ops)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.tag-untag-tag-filter",
+   "workspace": "review",
+   "feature": "Tag / untag / tag filter",
+   "sources": "Ck \"Tag\", ai.filters",
+   "menu": [],
+   "actions": [
+    "Tag"
+   ],
+   "api": [
+    "tag_annotations",
+    "untag_annotations",
+    "list_annotation_tags"
+   ],
+   "star_methods": [
+    "untag_annotations"
+   ],
+   "new_home": "Inspector tags row + queue filter",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.run-model-prelabel-grade-corrosion",
+   "workspace": "review",
+   "feature": "Run model / prelabel / grade corrosion",
+   "sources": "analysis.models (partly); Ck",
+   "menu": [
+    "analysis.models"
+   ],
+   "actions": [
+    "Run Model",
+    "Prelabel",
+    "Grade Corrosion"
+   ],
+   "api": [
+    "model_status",
+    "run_model",
+    "prelabel_image",
+    "grade_corrosion"
+   ],
+   "star_methods": [],
+   "new_home": "Queue header \"Run model…\" (lists installed models)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "review.run-ai-settings-structure-material-solar-metal-c",
+   "workspace": "review",
+   "feature": "Run AI settings (structure, material, solar/metal, crack gate)",
+   "sources": "Ck ai.runsettings",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "run_pipeline"
+   ],
+   "star_methods": [],
+   "new_home": "\"Run model…\" dialog",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.refused-runs",
+   "workspace": "review",
+   "feature": "Refused runs",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "\"RUN REFUSED\" card",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.record-finding",
+   "workspace": "review",
+   "feature": "Record finding",
+   "sources": "report.finding; Cl `#btn-finding`; Ck \"Record Finding\"",
+   "menu": [
+    "report.finding"
+   ],
+   "actions": [
+    "Record Finding"
+   ],
+   "api": [
+    "pick_file",
+    "list_datasets",
+    "record_finding"
+   ],
+   "star_methods": [],
+   "new_home": "\"Add finding\" (draw box on image)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.label-boxes",
+   "workspace": "review",
+   "feature": "Label boxes",
+   "sources": "Ck \"Label\"",
+   "menu": [],
+   "actions": [
+    "Label"
+   ],
+   "api": [
+    "list_dataset_images",
+    "list_label_boxes",
+    "image_preview",
+    "save_label_boxes"
+   ],
+   "star_methods": [],
+   "new_home": "\"Label\" filter mode",
+   "placement": "artboard",
+   "placement_note": "A (filter)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.build-corpus-train-deploy",
+   "workspace": "review",
+   "feature": "Build corpus / train / deploy",
+   "sources": "Ck \"Build Corpus\", \"Train Model\"",
+   "menu": [],
+   "actions": [
+    "Build Corpus",
+    "Train Model"
+   ],
+   "api": [
+    "build_detection_corpus",
+    "build_training_corpus",
+    "list_training_artifacts",
+    "train_custom_model",
+    "deploy_custom_model"
+   ],
+   "star_methods": [
+    "build_training_corpus"
+   ],
+   "new_home": "Queue overflow › \"Training…\"; deployed models appear in Settings › Models",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.defect-taxonomy",
+   "workspace": "review",
+   "feature": "Defect taxonomy",
+   "sources": "Ck ai.library",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "asset_taxonomy"
+   ],
+   "star_methods": [],
+   "new_home": "Reclassify options + filter",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.installed-models-detectors",
+   "workspace": "review",
+   "feature": "Installed models / detectors",
+   "sources": "Ck ai.datasets",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "verify_models",
+    "model_status"
+   ],
+   "star_methods": [],
+   "new_home": "\"Run model…\" list + \"Open model registry\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.thermal-inventory-module-anomaly-summary",
+   "workspace": "review",
+   "feature": "Thermal inventory, module, anomaly summary",
+   "sources": "Ck th.arrays, th.module, th.summary",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "find_annotations",
+    "model_status"
+   ],
+   "star_methods": [],
+   "new_home": "Queue filter \"Thermal\" + inspector thermal fields",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.asset-inventory",
+   "workspace": "review",
+   "feature": "Asset inventory",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "build_asset_inventory"
+   ],
+   "star_methods": [
+    "build_asset_inventory"
+   ],
+   "new_home": "Review overflow › \"Build asset inventory\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "review.open-in-3d",
+   "workspace": "review",
+   "feature": "Open in 3D",
+   "sources": "Ck \"Open in 3D\"",
+   "menu": [],
+   "actions": [
+    "Open in 3D"
+   ],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Finding inspector link → Analyse 3D",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.aircraft-batteries-pilots-lists",
+   "workspace": "fleet",
+   "feature": "Aircraft, batteries, pilots lists",
+   "sources": "Cl Fleet tab; Ck fl.*",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "list_fleet"
+   ],
+   "star_methods": [],
+   "new_home": "Left lists",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.advisories",
+   "workspace": "fleet",
+   "feature": "Advisories",
+   "sources": "Ck home.summary",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "fleet_status"
+   ],
+   "star_methods": [],
+   "new_home": "ADVISORIES",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.add-aircraft-battery-pilot",
+   "workspace": "fleet",
+   "feature": "Add aircraft / battery / pilot",
+   "sources": "Cl + Ck buttons",
+   "menu": [],
+   "actions": [
+    "Add Aircraft",
+    "Add Battery",
+    "Add Pilot"
+   ],
+   "api": [
+    "add_aircraft",
+    "add_battery",
+    "add_pilot"
+   ],
+   "star_methods": [],
+   "new_home": "\"Add aircraft\" + section add buttons",
+   "placement": "artboard+proposed",
+   "placement_note": "A/P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fleet.log-maintenance",
+   "workspace": "fleet",
+   "feature": "Log maintenance",
+   "sources": "Cl + Ck",
+   "menu": [],
+   "actions": [
+    "Log Maintenance"
+   ],
+   "api": [
+    "log_maintenance"
+   ],
+   "star_methods": [],
+   "new_home": "\"Log maintenance\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fleet.assign-mission",
+   "workspace": "fleet",
+   "feature": "Assign mission",
+   "sources": "Cl + Ck",
+   "menu": [],
+   "actions": [
+    "Assign Mission"
+   ],
+   "api": [
+    "assign_mission_to_aircraft"
+   ],
+   "star_methods": [],
+   "new_home": "\"ASSIGN TO MISSION\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1 (+ U00: cockpit verbs the table named only generically)"
+  },
+  {
+   "id": "fleet.fleet-toolbar-export",
+   "workspace": "fleet",
+   "feature": "Fleet toolbar \"Export\"",
+   "sources": "Ck (the generic Export, which is mission export)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "export_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Kept in the palette only; it is a mislabelled duplicate of Plan › Export",
+   "placement": "none",
+   "placement_note": "—",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.edit-aircraft-log-flight-exif-flight-record",
+   "workspace": "fleet",
+   "feature": "Edit aircraft, log flight, EXIF flight record",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Design shows them",
+   "placement": "gap",
+   "placement_note": "Gap",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.generate-regenerate-type-title-author-org-client",
+   "workspace": "report",
+   "feature": "Generate / regenerate (type, title, author, org, client, logo, formats, summary, recommendations)",
+   "sources": "report.generate; Cl dialog; Ck \"Generate\", \"New Report\", \"Generate Report\", \"Export Report\", \"Export PDF\", \"Export Word\"",
+   "menu": [
+    "report.generate"
+   ],
+   "actions": [
+    "New Report",
+    "Generate",
+    "Generate Report",
+    "Export Report",
+    "Export PDF",
+    "Export Word"
+   ],
+   "api": [
+    "report_readiness",
+    "generate_report",
+    "pick_file"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector settings + \"Export n files\" / \"Regenerate\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.report-types-templates-save-template",
+   "workspace": "report",
+   "feature": "Report types / templates / save template",
+   "sources": "Ck rp.settings, \"Save Template\"",
+   "menu": [],
+   "actions": [
+    "Save Template"
+   ],
+   "api": [
+    "report_types",
+    "report_templates",
+    "save_report_template"
+   ],
+   "star_methods": [],
+   "new_home": "TEMPLATE select + \"Save as template\"",
+   "placement": "artboard+proposed",
+   "placement_note": "A/P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.readiness",
+   "workspace": "report",
+   "feature": "Readiness",
+   "sources": "Ck rp.log",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "report_readiness"
+   ],
+   "star_methods": [],
+   "new_home": "READINESS",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.generated-reports-open",
+   "workspace": "report",
+   "feature": "Generated reports / open",
+   "sources": "report.list; Cl `#btn-reports`; Ck \"Open Report\"",
+   "menu": [
+    "report.list"
+   ],
+   "actions": [
+    "Open Report"
+   ],
+   "api": [
+    "list_reports",
+    "open_report"
+   ],
+   "star_methods": [],
+   "new_home": "Outline header report picker; PDF / HTML / WORD buttons open files",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.findings-only-export",
+   "workspace": "report",
+   "feature": "Findings-only export",
+   "sources": "report.export{pdf,docx}",
+   "menu": [
+    "report.export{format=pdf}",
+    "report.export{format=docx}"
+   ],
+   "actions": [],
+   "api": [
+    "export_report",
+    "report_formats"
+   ],
+   "star_methods": [
+    "report_formats"
+   ],
+   "new_home": "Overflow › \"Export findings only\" (formats from report_formats)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.provenance",
+   "workspace": "report",
+   "feature": "Provenance",
+   "sources": "report.provenance",
+   "menu": [
+    "report.provenance"
+   ],
+   "actions": [],
+   "api": [
+    "verify_provenance",
+    "record_provenance"
+   ],
+   "star_methods": [],
+   "new_home": "READINESS \"Output provenance\" row → Verify / Record",
+   "placement": "artboard",
+   "placement_note": "A (row)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.audit-export",
+   "workspace": "report",
+   "feature": "Audit export",
+   "sources": "report.audit_export",
+   "menu": [
+    "report.audit_export"
+   ],
+   "actions": [],
+   "api": [
+    "export_audit_log"
+   ],
+   "star_methods": [],
+   "new_home": "INCLUDE \"Audit trail\" row action",
+   "placement": "artboard",
+   "placement_note": "A (row)",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.included-findings",
+   "workspace": "report",
+   "feature": "Included findings",
+   "sources": "Ck rp.included",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "find_annotations"
+   ],
+   "star_methods": [],
+   "new_home": "Outline \"Findings (n)\"",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.branding",
+   "workspace": "report",
+   "feature": "Branding",
+   "sources": "Ck rp.branding",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "generate_report"
+   ],
+   "star_methods": [],
+   "new_home": "ORGANIZATION / CLIENT / LOGO",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.share-revoke",
+   "workspace": "report",
+   "feature": "Share / revoke",
+   "sources": "Ck \"Share\"",
+   "menu": [],
+   "actions": [
+    "Share"
+   ],
+   "api": [
+    "create_share_link",
+    "list_share_links",
+    "revoke_share_link"
+   ],
+   "star_methods": [],
+   "new_home": "Overflow",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.page-preview",
+   "workspace": "report",
+   "feature": "Page preview",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Centre preview",
+   "placement": "gap",
+   "placement_note": "Gap: needs a report-HTML route (see 1.11)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.add-reorder-edit-sections",
+   "workspace": "report",
+   "feature": "Add / reorder / edit sections",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Design",
+   "placement": "gap",
+   "placement_note": "Gap",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.model-registry-verify",
+   "workspace": "settings",
+   "feature": "Model registry / verify",
+   "sources": "analysis.models; Ck \"Verify Models\", set.models",
+   "menu": [
+    "analysis.models"
+   ],
+   "actions": [
+    "Verify Models"
+   ],
+   "api": [
+    "verify_models",
+    "model_status"
+   ],
+   "star_methods": [],
+   "new_home": "Models section",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.storage",
+   "workspace": "settings",
+   "feature": "Storage",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_project",
+    "get_state"
+   ],
+   "star_methods": [],
+   "new_home": "Storage section (read-only)",
+   "placement": "artboard",
+   "placement_note": "A (Gap: \"Change\" location)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.offline-basemap",
+   "workspace": "settings",
+   "feature": "Offline basemap",
+   "sources": "view.cache_tiles",
+   "menu": [
+    "view.cache_tiles"
+   ],
+   "actions": [],
+   "api": [
+    "basemap_cache_status",
+    "cache_basemap_area"
+   ],
+   "star_methods": [],
+   "new_home": "Offline basemap section",
+   "placement": "artboard",
+   "placement_note": "A (Gap: import .mbtiles)",
+   "unbacked": true,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.units-crs",
+   "workspace": "settings",
+   "feature": "Units & CRS",
+   "sources": "Ck set.detail",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_project_crs",
+    "set_project_crs"
+   ],
+   "star_methods": [],
+   "new_home": "Units & CRS (units are a local preference)",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.appearance-desk-field",
+   "workspace": "settings",
+   "feature": "Appearance (Desk / Field)",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [],
+   "star_methods": [],
+   "new_home": "Appearance",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.processing-defaults",
+   "workspace": "settings",
+   "feature": "Processing defaults",
+   "sources": "Ck Engine",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "reconstruction_capabilities"
+   ],
+   "star_methods": [],
+   "new_home": "Processing",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.about-environment-audit",
+   "workspace": "settings",
+   "feature": "About / environment / audit",
+   "sources": "help.about, tools.capabilities, tools.audit",
+   "menu": [
+    "tools.capabilities",
+    "tools.audit",
+    "help.about"
+   ],
+   "actions": [],
+   "api": [
+    "capabilities",
+    "audit_log"
+   ],
+   "star_methods": [],
+   "new_home": "About",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "settings.integrations-not-drawn-rest-endpoints-send-reque",
+   "workspace": "settings",
+   "feature": "**Integrations (not drawn)**: REST endpoints, Send request, Copy cURL, API token, webhooks, plugins, Hub link",
+   "sources": "Ck Developers: \"Send Request\", \"Copy cURL\", \"New Key\", \"Add Webhook\", \"Install Plugin\", dev.*; Cl Hub link",
+   "menu": [],
+   "actions": [
+    "Add Webhook",
+    "New Key",
+    "Copy cURL",
+    "Send Request",
+    "Install Plugin"
+   ],
+   "api": [
+    "rest_endpoints",
+    "rest_request",
+    "issue_api_token",
+    "add_webhook",
+    "list_webhooks",
+    "list_plugins"
+   ],
+   "star_methods": [],
+   "new_home": "New section \"Integrations\", same pattern as Models (table + inspector). \"Open Hub\" opens hub.html.",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "plan.mission-settings-menu",
+   "workspace": "plan",
+   "feature": "Mission settings (menu)",
+   "sources": "mission.settings",
+   "menu": [
+    "mission.settings"
+   ],
+   "actions": [],
+   "api": [
+    "plan_mission"
+   ],
+   "star_methods": [],
+   "new_home": "Opens Plan and focuses the inspector \"PARAMETERS\" section",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  },
+  {
+   "id": "report.pipeline-inspection-report",
+   "workspace": "report",
+   "feature": "Pipeline inspection report",
+   "sources": "report.pipeline; Ck \"Inspection Report\"",
+   "menu": [
+    "report.pipeline"
+   ],
+   "actions": [
+    "Inspection Report"
+   ],
+   "api": [
+    "pipeline_reports",
+    "read_pipeline_report"
+   ],
+   "star_methods": [],
+   "new_home": "Report overflow › \"Pipeline inspection report…\" (reads the report a Full pipeline run wrote)",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.log-battery-cycle",
+   "workspace": "fleet",
+   "feature": "Log battery cycle",
+   "sources": "Ck \"Log Battery Cycle\"",
+   "menu": [],
+   "actions": [
+    "Log Battery Cycle"
+   ],
+   "api": [
+    "log_battery_cycle"
+   ],
+   "star_methods": [],
+   "new_home": "Batteries list › selected battery › \"Log cycle\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.remove-fleet-record",
+   "workspace": "fleet",
+   "feature": "Remove fleet record",
+   "sources": "Ck \"Remove Record\"",
+   "menu": [],
+   "actions": [
+    "Remove Record"
+   ],
+   "api": [
+    "remove_fleet_record"
+   ],
+   "star_methods": [],
+   "new_home": "Selected aircraft / battery / pilot overflow › \"Remove\"",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fleet.export-fleet-register",
+   "workspace": "fleet",
+   "feature": "Export fleet register",
+   "sources": "Ck \"Export Fleet\"",
+   "menu": [],
+   "actions": [
+    "Export Fleet"
+   ],
+   "api": [
+    "export_fleet",
+    "open_path"
+   ],
+   "star_methods": [],
+   "new_home": "Fleet left panel header › \"Export register\" (CSV + JSON); distinct from the mislabelled generic Export",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  }
+ ],
+ "menu": {
+  "project.new": {
+   "title": "New Project",
+   "rows": [
+    "home.new-project"
+   ]
+  },
+  "project.open": {
+   "title": "Open Project...",
+   "rows": [
+    "home.open-project"
+   ]
+  },
+  "data.import_imagery": {
+   "title": "Import Imagery Folder...",
+   "rows": [
+    "home.import-imagery"
+   ]
+  },
+  "data.import_terrain": {
+   "title": "Import Terrain (GeoTIFF/ASC/CSV)...",
+   "rows": [
+    "plan.terrain-source-cache-coverage"
+   ]
+  },
+  "data.import_vector": {
+   "title": "Import Vector (GeoJSON)...",
+   "rows": [
+    "analyse.add-layer"
+   ]
+  },
+  "data.import_raster": {
+   "title": "Import Raster (GeoTIFF)...",
+   "rows": [
+    "plan.cad-image-overlay"
+   ]
+  },
+  "project.reveal": {
+   "title": "Open Project Folder",
+   "rows": [
+    "home.open-project-folder"
+   ]
+  },
+  "mission.plan": {
+   "title": "Plan Mission",
+   "rows": [
+    "plan.generate-plan"
+   ]
+  },
+  "mission.settings": {
+   "title": "Mission Settings...",
+   "rows": [
+    "plan.mission-settings-menu"
+   ]
+  },
+  "mission.clear_aoi": {
+   "title": "Clear Area of Interest",
+   "rows": [
+    "plan.clear-area-clear-no-fly"
+   ]
+  },
+  "mission.clear_nofly": {
+   "title": "Clear No-Fly Zones",
+   "rows": [
+    "plan.clear-area-clear-no-fly"
+   ]
+  },
+  "mission.save": {
+   "title": "Save Mission Version",
+   "rows": [
+    "plan.save-version"
+   ]
+  },
+  "mission.history": {
+   "title": "Mission History...",
+   "rows": [
+    "plan.history-and-restore"
+   ]
+  },
+  "mission.export_all": {
+   "title": "Export All Formats",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=qgc_plan}": {
+   "title": "Export QGroundControl .plan",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=qgc_wpl}": {
+   "title": "Export QGC WPL .waypoints",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=dji_wpml}": {
+   "title": "Export DJI WPML .kmz",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=litchi}": {
+   "title": "Export Litchi CSV",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=kml}": {
+   "title": "Export KML",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "mission.export{format=geojson}": {
+   "title": "Export GeoJSON",
+   "rows": [
+    "plan.export-6-formats"
+   ]
+  },
+  "fly.connect": {
+   "title": "Connect Vehicle...",
+   "rows": [
+    "fly.connect-driver-uri"
+   ]
+  },
+  "fly.disconnect": {
+   "title": "Disconnect",
+   "rows": [
+    "fly.disconnect-reconnect"
+   ]
+  },
+  "fly.upload": {
+   "title": "Upload Mission to Vehicle",
+   "rows": [
+    "plan.send-to-fly",
+    "fly.upload"
+   ]
+  },
+  "fly.command{command=arm}": {
+   "title": "Arm",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "fly.command{command=start}": {
+   "title": "Start Mission",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "fly.command{command=pause}": {
+   "title": "Pause",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "fly.command{command=resume}": {
+   "title": "Resume",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "fly.command{command=rth}": {
+   "title": "Return to Home",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "fly.command{command=abort}": {
+   "title": "Abort Mission",
+   "rows": [
+    "fly.arm-start-pause-resume-rth-abort"
+   ]
+  },
+  "analysis.pipeline": {
+   "title": "Run Full Pipeline",
+   "rows": [
+    "process.full-pipeline"
+   ]
+  },
+  "analysis.models": {
+   "title": "Model Manager",
+   "rows": [
+    "review.run-model-prelabel-grade-corrosion",
+    "settings.model-registry-verify"
+   ]
+  },
+  "recon.run{engine=colmap}": {
+   "title": "Run Reconstruction (COLMAP)",
+   "rows": [
+    "process.run-reconstruction-engine-profile-image-size-den"
+   ]
+  },
+  "recon.run{engine=custom}": {
+   "title": "Run Reconstruction (fallback engine)",
+   "rows": [
+    "process.run-reconstruction-engine-profile-image-size-den"
+   ]
+  },
+  "recon.settings": {
+   "title": "Reconstruction Settings...",
+   "rows": [
+    "process.reconstruction-settings"
+   ]
+  },
+  "recon.reveal": {
+   "title": "Open Output Folder",
+   "rows": [
+    "process.outputs-reveal-export"
+   ]
+  },
+  "report.generate": {
+   "title": "Generate Report...",
+   "rows": [
+    "report.generate-regenerate-type-title-author-org-client"
+   ]
+  },
+  "report.export{format=pdf}": {
+   "title": "Export Findings as PDF",
+   "rows": [
+    "report.findings-only-export"
+   ]
+  },
+  "report.export{format=docx}": {
+   "title": "Export Findings as Word",
+   "rows": [
+    "report.findings-only-export"
+   ]
+  },
+  "report.list": {
+   "title": "Generated Reports...",
+   "rows": [
+    "report.generated-reports-open"
+   ]
+  },
+  "report.pipeline": {
+   "title": "Pipeline Inspection Report...",
+   "rows": [
+    "report.pipeline-inspection-report"
+   ]
+  },
+  "report.finding": {
+   "title": "Record Finding...",
+   "rows": [
+    "review.record-finding"
+   ]
+  },
+  "report.review": {
+   "title": "Findings and Review...",
+   "rows": [
+    "review.review-queue-and-filters-all-label-runs-refused"
+   ]
+  },
+  "report.provenance": {
+   "title": "Verify Provenance",
+   "rows": [
+    "report.provenance"
+   ]
+  },
+  "report.audit_export": {
+   "title": "Export Audit Log (CSV)",
+   "rows": [
+    "report.audit-export"
+   ]
+  },
+  "report.notifications": {
+   "title": "Notifications...",
+   "rows": [
+    "home.notifications"
+   ]
+  },
+  "view.panel{panel=layers}": {
+   "title": "Layers Panel",
+   "rows": [
+    "analyse.layer-list-and-visibility"
+   ]
+  },
+  "view.panel{panel=mission}": {
+   "title": "Mission Panel",
+   "rows": [
+    "plan.view-mission-panel"
+   ]
+  },
+  "view.panel{panel=telemetry}": {
+   "title": "Telemetry Panel",
+   "rows": [
+    "fly.telemetry"
+   ]
+  },
+  "view.panel{panel=jobs}": {
+   "title": "Jobs Panel",
+   "rows": [
+    "process.job-list-status-cancel"
+   ]
+  },
+  "view.basemap{basemap=satellite}": {
+   "title": "Basemap: Satellite",
+   "rows": [
+    "plan.basemap-cache-view-cache-status"
+   ]
+  },
+  "view.basemap{basemap=street}": {
+   "title": "Basemap: Street",
+   "rows": [
+    "plan.basemap-cache-view-cache-status"
+   ]
+  },
+  "view.basemap{basemap=topo}": {
+   "title": "Basemap: Topographic",
+   "rows": [
+    "plan.basemap-cache-view-cache-status"
+   ]
+  },
+  "view.basemap{basemap=offline}": {
+   "title": "Basemap: Offline Cache",
+   "rows": [
+    "plan.basemap-cache-view-cache-status"
+   ]
+  },
+  "view.cache_tiles": {
+   "title": "Cache Visible Map for Offline Use",
+   "rows": [
+    "plan.basemap-cache-view-cache-status",
+    "settings.offline-basemap"
+   ]
+  },
+  "view.zoom_aoi": {
+   "title": "Zoom to Area of Interest",
+   "rows": [
+    "plan.zoom-to-area-mission"
+   ]
+  },
+  "view.zoom_mission": {
+   "title": "Zoom to Mission",
+   "rows": [
+    "plan.zoom-to-area-mission"
+   ]
+  },
+  "tools.measure{mode=distance}": {
+   "title": "Measure Distance",
+   "rows": [
+    "plan.measure-on-the-map"
+   ]
+  },
+  "tools.measure{mode=area}": {
+   "title": "Measure Area",
+   "rows": [
+    "plan.measure-on-the-map"
+   ]
+  },
+  "tools.capabilities": {
+   "title": "Environment Capabilities",
+   "rows": [
+    "shell.environment-capabilities",
+    "settings.about-environment-audit"
+   ]
+  },
+  "tools.audit": {
+   "title": "Audit Log",
+   "rows": [
+    "home.recent-activity-and-full-audit-log",
+    "settings.about-environment-audit"
+   ]
+  },
+  "help.about": {
+   "title": "About OpenDroneKit",
+   "rows": [
+    "shell.about",
+    "settings.about-environment-audit"
+   ]
+  },
+  "help.shortcuts": {
+   "title": "Keyboard Shortcuts",
+   "rows": [
+    "shell.keyboard-shortcuts"
+   ]
+  }
+ },
+ "actions": {
+  "New Project": [
+   "home.new-project"
+  ],
+  "Open": [
+   "home.open-project"
+  ],
+  "Import": [
+   "home.import-imagery"
+  ],
+  "Plan": [
+   "plan.generate-plan"
+  ],
+  "New Mission": [
+   "plan.generate-plan"
+  ],
+  "Save": [
+   "plan.save-version"
+  ],
+  "Export": [
+   "plan.export-6-formats"
+  ],
+  "Export Products": [
+   "process.outputs-reveal-export"
+  ],
+  "Simulate": [
+   "plan.simulate"
+  ],
+  "Validate": [
+   "plan.validate-site"
+  ],
+  "Process": [
+   "process.run-reconstruction-engine-profile-image-size-den"
+  ],
+  "Start": [
+   "process.full-pipeline"
+  ],
+  "Run AI": [
+   "process.full-pipeline"
+  ],
+  "Run Model": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "Prelabel": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "Grade Corrosion": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "Land Cover": [
+   "process.semantic-map-land-cover"
+  ],
+  "Label": [
+   "review.label-boxes"
+  ],
+  "Build Corpus": [
+   "review.build-corpus-train-deploy"
+  ],
+  "Train Model": [
+   "review.build-corpus-train-deploy"
+  ],
+  "Cancel": [
+   "process.job-list-status-cancel"
+  ],
+  "Volume": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Cut & Fill": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "Slope": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "Stockpile": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "Ponding": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "Select Area": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Select Line": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Connect": [
+   "fly.connect-driver-uri"
+  ],
+  "Disconnect": [
+   "fly.disconnect-reconnect"
+  ],
+  "Preflight": [
+   "fly.preflight-acknowledge-checks"
+  ],
+  "Confirm Checks": [
+   "fly.preflight-acknowledge-checks"
+  ],
+  "Capabilities": [
+   "shell.environment-capabilities"
+  ],
+  "Upload": [
+   "fly.upload"
+  ],
+  "Start_Flight": [
+   "fly.upload"
+  ],
+  "Start Mission": [
+   "fly.arm-start-pause-resume-rth-abort"
+  ],
+  "Pause": [
+   "fly.arm-start-pause-resume-rth-abort"
+  ],
+  "Resume": [
+   "fly.arm-start-pause-resume-rth-abort"
+  ],
+  "RTL": [
+   "fly.arm-start-pause-resume-rth-abort"
+  ],
+  "Land": [
+   "fly.land-manual-override-capture-now"
+  ],
+  "Abort": [
+   "fly.arm-start-pause-resume-rth-abort"
+  ],
+  "Manual Override": [
+   "fly.land-manual-override-capture-now"
+  ],
+  "Capture Now": [
+   "fly.land-manual-override-capture-now"
+  ],
+  "Load Flight": [
+   "fly.load-flight-resume-interrupted"
+  ],
+  "Compare": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "Compare Dates": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "Change": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "Add GCPs": [
+   "process.ground-control"
+  ],
+  "Mark GCP": [
+   "process.ground-control"
+  ],
+  "GCP Report": [
+   "process.ground-control"
+  ],
+  "Set CRS": [
+   "process.crs"
+  ],
+  "Map": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "RGB": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "Thermal": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "3D Thermal": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "Fused": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "Radiometric": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "Semantic": [
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "Point Cloud": [
+   "analyse.3d-mesh-point-cloud"
+  ],
+  "Textured Mesh": [
+   "analyse.3d-mesh-point-cloud"
+  ],
+  "Profile": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Measure": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Distance": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Area": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "Edit": [
+   "review.edit-box-reclassify"
+  ],
+  "Mark Corner": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "Close Boundary": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "Clear Corners": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "Compare Versions": [
+   "plan.compare-versions-specifications"
+  ],
+  "Measure in 3D": [
+   "analyse.measure-in-3d"
+  ],
+  "Repeat Survey": [
+   "plan.repeat-survey"
+  ],
+  "Import Boundary": [
+   "plan.import-boundary"
+  ],
+  "Cameras": [
+   "plan.camera-picker"
+  ],
+  "Payloads": [
+   "plan.payload-picker"
+  ],
+  "Cache Terrain": [
+   "plan.terrain-source-cache-coverage"
+  ],
+  "Linked Progress": [
+   "fly.linked-mission-progress"
+  ],
+  "Export Log": [
+   "fly.export-flight-log"
+  ],
+  "Check PPK": [
+   "process.geotag-ppk-check"
+  ],
+  "Size Job": [
+   "process.size-job-chunks-queue"
+  ],
+  "History": [
+   "plan.history-and-restore"
+  ],
+  "Tag": [
+   "review.tag-untag-tag-filter"
+  ],
+  "Add Marker": [
+   "plan.site-markers"
+  ],
+  "Semantic Map": [
+   "process.semantic-map-land-cover"
+  ],
+  "Survey Packs": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "Check Hazards": [
+   "plan.hazards"
+  ],
+  "Import CAD": [
+   "plan.cad-image-overlay"
+  ],
+  "Clear Alerts": [
+   "fly.alerts-and-clearing-them"
+  ],
+  "Save View": [
+   "analyse.saved-views"
+  ],
+  "Open View": [
+   "analyse.saved-views"
+  ],
+  "Clip": [
+   "analyse.clips"
+  ],
+  "Temperature Range": [
+   "analyse.thermal-palette-range"
+  ],
+  "Open in 3D": [
+   "review.open-in-3d"
+  ],
+  "Reset": [
+   "shell.collapse-side-panels"
+  ],
+  "Add Layer": [
+   "analyse.add-layer"
+  ],
+  "Verify Models": [
+   "settings.model-registry-verify"
+  ],
+  "Match Captures": [
+   "process.capture-qc-was-verification"
+  ],
+  "Coverage QA": [
+   "process.capture-qc-was-verification"
+  ],
+  "New Job": [
+   "process.run-reconstruction-engine-profile-image-size-den"
+  ],
+  "Add Aircraft": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "Add Battery": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "Log Battery Cycle": [
+   "fleet.log-battery-cycle"
+  ],
+  "Add Pilot": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "Log Maintenance": [
+   "fleet.log-maintenance"
+  ],
+  "Assign Mission": [
+   "fleet.assign-mission"
+  ],
+  "Remove Record": [
+   "fleet.remove-fleet-record"
+  ],
+  "Export Fleet": [
+   "fleet.export-fleet-register"
+  ],
+  "Share": [
+   "home.share-read-only-link",
+   "report.share-revoke"
+  ],
+  "Revoke Links": [
+   "home.revoke-links"
+  ],
+  "Add Webhook": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "New Key": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "Copy cURL": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "Send Request": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "New Report": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Generate": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Generate Report": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Export Report": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Export PDF": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Export Word": [
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "Open Report": [
+   "report.generated-reports-open"
+  ],
+  "Inspection Report": [
+   "report.pipeline-inspection-report"
+  ],
+  "Annotate": [
+   "analyse.annotate-model"
+  ],
+  "Record Finding": [
+   "review.record-finding"
+  ],
+  "Accept": [
+   "process.accept-flag-capture-request-reflight"
+  ],
+  "Reject": [
+   "review.accept-reject-flag"
+  ],
+  "Flag": [
+   "process.accept-flag-capture-request-reflight"
+  ],
+  "Install Plugin": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "Sync": [
+   "home.sync-a-refresh-in-reality"
+  ],
+  "Request Reflight": [
+   "process.accept-flag-capture-request-reflight"
+  ],
+  "Save Template": [
+   "report.report-types-templates-save-template"
+  ]
+ },
+ "api": {
+  "bind_window": [],
+  "capabilities": [
+   "shell.about",
+   "shell.environment-capabilities",
+   "home.system-status",
+   "settings.about-environment-audit"
+  ],
+  "rest_endpoints": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "rest_request": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "model_status": [
+   "review.run-model-prelabel-grade-corrosion",
+   "review.installed-models-detectors",
+   "review.thermal-inventory-module-anomaly-summary",
+   "settings.model-registry-verify"
+  ],
+  "verify_models": [
+   "home.system-status",
+   "review.installed-models-detectors",
+   "settings.model-registry-verify"
+  ],
+  "get_project": [
+   "home.open-project-folder",
+   "home.project-summary-tiles",
+   "settings.storage"
+  ],
+  "list_projects": [
+   "shell.command-palette",
+   "shell.project-switcher",
+   "home.open-project",
+   "home.sync-a-refresh-in-reality"
+  ],
+  "create_project": [
+   "home.new-project"
+  ],
+  "set_active_project": [
+   "shell.project-switcher",
+   "home.new-project",
+   "home.open-project"
+  ],
+  "audit_log": [
+   "home.recent-activity-and-full-audit-log",
+   "fly.event-log",
+   "analyse.twin-scene-timeline-history",
+   "settings.about-environment-audit"
+  ],
+  "set_aoi": [
+   "plan.draw-area-of-interest",
+   "plan.edit-vertices-delete",
+   "plan.clear-area-clear-no-fly"
+  ],
+  "set_no_fly_zones": [
+   "plan.no-fly-zone",
+   "plan.clear-area-clear-no-fly"
+  ],
+  "measure_geometry": [
+   "plan.measure-on-the-map",
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "set_terrain_source": [
+   "plan.terrain-source-cache-coverage"
+  ],
+  "mark_boundary_corner": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "clear_boundary_marks": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "boundary_from_marks": [
+   "plan.fly-to-draw-boundary"
+  ],
+  "search_places": [
+   "shell.place-and-address-search"
+  ],
+  "set_geocoding_provider": [
+   "shell.geocoding-provider"
+  ],
+  "basemap_cache_status": [
+   "plan.basemap-cache-view-cache-status",
+   "settings.offline-basemap"
+  ],
+  "cache_basemap_area": [
+   "plan.basemap-cache-view-cache-status",
+   "settings.offline-basemap"
+  ],
+  "get_state": [
+   "shell.bridge-network-state",
+   "home.open-project-folder",
+   "home.project-summary-tiles",
+   "home.exports-card",
+   "plan.save-version",
+   "process.outputs-reveal-export",
+   "settings.storage"
+  ],
+  "list_layers": [
+   "shell.cursor-lat-lon-crs-scale",
+   "home.project-summary-tiles",
+   "home.reconstruction-card",
+   "process.outputs-reveal-export",
+   "analyse.layer-list-and-visibility",
+   "analyse.twin-scene-timeline-history"
+  ],
+  "set_layer_visible": [
+   "analyse.layer-list-and-visibility"
+  ],
+  "set_layer_opacity": [
+   "analyse.layer-opacity-remove-zoom-to"
+  ],
+  "remove_layer": [
+   "analyse.layer-opacity-remove-zoom-to"
+  ],
+  "add_layer_from_file": [
+   "plan.cad-image-overlay",
+   "analyse.add-layer"
+  ],
+  "read_vector_layer": [
+   "analyse.attribute-table"
+  ],
+  "raster_preview": [
+   "process.preview-ortho-dsm-hillshade",
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "mission_templates": [
+   "plan.template-list"
+  ],
+  "cache_terrain": [
+   "plan.terrain-source-cache-coverage"
+  ],
+  "terrain_coverage": [
+   "plan.terrain-source-cache-coverage"
+  ],
+  "describe_terrain_cache": [
+   "plan.terrain-source-cache-coverage"
+  ],
+  "repeat_mission": [
+   "plan.repeat-survey"
+  ],
+  "compare_survey_specifications": [
+   "plan.compare-versions-specifications"
+  ],
+  "import_gcps": [
+   "process.ground-control"
+  ],
+  "list_gcps": [
+   "process.ground-control"
+  ],
+  "mark_gcp": [
+   "process.ground-control"
+  ],
+  "gcp_accuracy_report": [
+   "process.ground-control",
+   "process.capture-qc-was-verification"
+  ],
+  "camera_capabilities": [
+   "plan.camera-picker"
+  ],
+  "camera_command": [
+   "fly.land-manual-override-capture-now"
+  ],
+  "match_captures": [
+   "process.capture-qc-was-verification"
+  ],
+  "check_coverage": [
+   "process.capture-qc-was-verification"
+  ],
+  "coverage_qa_report": [
+   "process.capture-qc-was-verification"
+  ],
+  "capture_report": [
+   "process.input-summary",
+   "process.capture-qc-was-verification"
+  ],
+  "request_reflight": [
+   "process.accept-flag-capture-request-reflight"
+  ],
+  "check_interrupted_flight": [
+   "fly.load-flight-resume-interrupted"
+  ],
+  "discard_interrupted_flight": [
+   "fly.load-flight-resume-interrupted"
+  ],
+  "control_state": [
+   "fly.mode-control-state"
+  ],
+  "take_manual_control": [
+   "fly.land-manual-override-capture-now"
+  ],
+  "verify_site": [
+   "plan.validate-site"
+  ],
+  "export_flight_log": [
+   "fly.export-flight-log"
+  ],
+  "plan_battery_segments": [
+   "plan.battery-segments"
+  ],
+  "resume_from_images": [
+   "fly.load-flight-resume-interrupted"
+  ],
+  "linked_mission_progress": [
+   "fly.linked-mission-progress"
+  ],
+  "list_cameras": [
+   "plan.camera-picker"
+  ],
+  "describe_camera": [
+   "plan.camera-picker"
+  ],
+  "add_camera": [
+   "plan.camera-picker"
+  ],
+  "altitude_for_gsd": [
+   "plan.two-way-gsd-altitude"
+  ],
+  "measure_on_raster": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "import_cad_overlay": [
+   "plan.cad-image-overlay"
+  ],
+  "place_image_overlay": [
+   "plan.cad-image-overlay"
+  ],
+  "list_cad_overlays": [
+   "plan.cad-image-overlay"
+  ],
+  "tag_annotations": [
+   "review.tag-untag-tag-filter"
+  ],
+  "untag_annotations": [
+   "review.tag-untag-tag-filter"
+  ],
+  "list_annotation_tags": [
+   "home.project-tags",
+   "review.tag-untag-tag-filter"
+  ],
+  "find_annotations": [
+   "analyse.findings-on-the-model",
+   "review.review-queue-and-filters-all-label-runs-refused",
+   "review.thermal-inventory-module-anomaly-summary",
+   "report.included-findings"
+  ],
+  "model_scene": [
+   "analyse.3d-mesh-point-cloud",
+   "analyse.rgb-thermal-fused-3d-thermal-radiometric-semanti"
+  ],
+  "measure_on_model": [
+   "analyse.measure-in-3d"
+  ],
+  "annotate_model": [
+   "analyse.annotate-model"
+  ],
+  "list_views": [
+   "analyse.saved-views"
+  ],
+  "save_view": [
+   "analyse.saved-views"
+  ],
+  "open_view": [
+   "analyse.saved-views"
+  ],
+  "set_default_view": [
+   "analyse.saved-views"
+  ],
+  "remove_view": [
+   "analyse.saved-views"
+  ],
+  "list_clips": [
+   "analyse.clips"
+  ],
+  "add_polygon_clip": [
+   "analyse.clips"
+  ],
+  "add_plane_clip": [
+   "analyse.clips"
+  ],
+  "set_clip_visible": [
+   "analyse.clips"
+  ],
+  "remove_clip": [
+   "analyse.clips"
+  ],
+  "export_clipped_model": [
+   "analyse.clips"
+  ],
+  "plan_pylon_mission": [
+   "plan.pylon-thermal-multispectral-linked"
+  ],
+  "plan_thermal_survey": [
+   "plan.pylon-thermal-multispectral-linked"
+  ],
+  "plan_multispectral_survey": [
+   "plan.pylon-thermal-multispectral-linked"
+  ],
+  "plan_complex_facade": [
+   "plan.multi-facade-irregular-facade"
+  ],
+  "size_reconstruction_job": [
+   "process.size-job-chunks-queue"
+  ],
+  "plan_job_chunks": [
+   "process.size-job-chunks-queue"
+  ],
+  "check_spatial_reference": [
+   "process.crs"
+  ],
+  "build_asset_inventory": [
+   "review.asset-inventory"
+  ],
+  "processing_queue_report": [
+   "process.size-job-chunks-queue"
+  ],
+  "build_training_corpus": [
+   "review.build-corpus-train-deploy"
+  ],
+  "save_label_boxes": [
+   "review.label-boxes"
+  ],
+  "list_label_boxes": [
+   "review.label-boxes"
+  ],
+  "build_detection_corpus": [
+   "review.build-corpus-train-deploy"
+  ],
+  "list_training_artifacts": [
+   "review.build-corpus-train-deploy"
+  ],
+  "train_custom_model": [
+   "review.build-corpus-train-deploy"
+  ],
+  "deploy_custom_model": [
+   "review.build-corpus-train-deploy"
+  ],
+  "list_dataset_images": [
+   "home.dataset-list-and-selection",
+   "home.project-summary-tiles",
+   "process.input-summary",
+   "process.capture-qc-was-verification",
+   "review.label-boxes"
+  ],
+  "image_preview": [
+   "process.ground-control",
+   "review.label-boxes"
+  ],
+  "add_aircraft": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "add_battery": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "log_battery_cycle": [
+   "fleet.log-battery-cycle"
+  ],
+  "add_pilot": [
+   "fleet.add-aircraft-battery-pilot"
+  ],
+  "log_maintenance": [
+   "fleet.log-maintenance"
+  ],
+  "assign_mission_to_aircraft": [
+   "fleet.assign-mission"
+  ],
+  "fleet_status": [
+   "home.fleet-summary",
+   "fleet.advisories"
+  ],
+  "list_fleet": [
+   "fleet.aircraft-batteries-pilots-lists"
+  ],
+  "remove_fleet_record": [
+   "fleet.remove-fleet-record"
+  ],
+  "export_fleet": [
+   "fleet.export-fleet-register"
+  ],
+  "create_share_link": [
+   "home.share-read-only-link",
+   "report.share-revoke"
+  ],
+  "list_share_links": [
+   "home.revoke-links",
+   "report.share-revoke"
+  ],
+  "revoke_share_link": [
+   "home.revoke-links",
+   "report.share-revoke"
+  ],
+  "add_webhook": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "list_webhooks": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "issue_api_token": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "report_types": [
+   "report.report-types-templates-save-template"
+  ],
+  "report_readiness": [
+   "home.report-card",
+   "report.generate-regenerate-type-title-author-org-client",
+   "report.readiness"
+  ],
+  "generate_report": [
+   "report.generate-regenerate-type-title-author-org-client",
+   "report.branding"
+  ],
+  "list_reports": [
+   "home.report-card",
+   "report.generated-reports-open"
+  ],
+  "pipeline_reports": [
+   "report.pipeline-inspection-report"
+  ],
+  "read_pipeline_report": [
+   "report.pipeline-inspection-report"
+  ],
+  "open_report": [
+   "report.generated-reports-open"
+  ],
+  "save_report_template": [
+   "report.report-types-templates-save-template"
+  ],
+  "report_templates": [
+   "report.report-types-templates-save-template"
+  ],
+  "record_finding": [
+   "analyse.select-distance-area-volume-profile-annotate",
+   "review.record-finding"
+  ],
+  "verify_provenance": [
+   "report.provenance"
+  ],
+  "record_provenance": [
+   "report.provenance"
+  ],
+  "export_audit_log": [
+   "report.audit-export"
+  ],
+  "thermal_palettes": [
+   "analyse.thermal-palette-range"
+  ],
+  "scale_thermal": [
+   "analyse.thermal-palette-range"
+  ],
+  "marker_kinds": [
+   "plan.site-markers"
+  ],
+  "list_site_markers": [
+   "plan.site-markers"
+  ],
+  "add_site_marker": [
+   "plan.place-home",
+   "plan.site-markers"
+  ],
+  "remove_site_marker": [
+   "plan.site-markers"
+  ],
+  "check_hazards": [
+   "plan.hazards"
+  ],
+  "list_notifications": [
+   "home.notifications",
+   "fly.alerts-and-clearing-them"
+  ],
+  "mark_notification_read": [
+   "home.notifications"
+  ],
+  "mark_all_notifications_read": [
+   "home.notifications",
+   "fly.alerts-and-clearing-them"
+  ],
+  "clear_notifications": [
+   "home.notifications"
+  ],
+  "export_report": [
+   "report.findings-only-export"
+  ],
+  "report_formats": [
+   "report.findings-only-export"
+  ],
+  "review_finding": [
+   "process.accept-flag-capture-request-reflight",
+   "review.accept-reject-flag",
+   "review.edit-box-reclassify"
+  ],
+  "list_plugins": [
+   "settings.integrations-not-drawn-rest-endpoints-send-reque"
+  ],
+  "asset_taxonomy": [
+   "review.defect-taxonomy"
+  ],
+  "reconstruction_capabilities": [
+   "process.engine-capabilities",
+   "settings.processing-defaults"
+  ],
+  "find_ponding": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "compare_surveys": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "get_project_crs": [
+   "shell.cursor-lat-lon-crs-scale",
+   "process.crs",
+   "settings.units-crs"
+  ],
+  "set_project_crs": [
+   "process.crs",
+   "settings.units-crs"
+  ],
+  "project_surfaces": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "measure_volume": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "measure_stockpile": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "elevation_profile": [
+   "analyse.select-distance-area-volume-profile-annotate"
+  ],
+  "measure_drawn": [
+   "plan.measure-on-the-map",
+   "analyse.select-distance-area-volume-profile-annotate",
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "list_measurements": [
+   "home.measurements-card",
+   "analyse.measurement-history-and-details"
+  ],
+  "delete_measurement": [
+   "analyse.measurement-history-and-details"
+  ],
+  "compare_survey_volumes": [
+   "analyse.compare-dates-surface-compare"
+  ],
+  "plan_irregular_facade": [
+   "plan.multi-facade-irregular-facade"
+  ],
+  "demo_workflow": [
+   "home.load-demo-workflow"
+  ],
+  "measure_slope": [
+   "analyse.stockpile-cut-fill-slope-ponding"
+  ],
+  "check_ppk_inputs": [
+   "process.geotag-ppk-check"
+  ],
+  "model_mesh_scene": [
+   "analyse.3d-mesh-point-cloud"
+  ],
+  "pick_model_point": [
+   "analyse.measure-in-3d"
+  ],
+  "measure_in_model": [
+   "analyse.measure-in-3d"
+  ],
+  "semantic_map": [
+   "process.semantic-map-land-cover"
+  ],
+  "india_land_gis": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_design_progress": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_canopy_cover": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_vegetation_indices": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_stress_zones": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_plant_count": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_road_condition": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_corridor_inspection": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_solar_inventory": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_module_temperatures": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_anomaly_baseline": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "india_find_anomalies": [
+   "analyse.survey-packs-13-india-packs"
+  ],
+  "import_boundary": [
+   "plan.import-boundary"
+  ],
+  "mission_estimates": [
+   "plan.estimates",
+   "process.capture-qc-was-verification"
+  ],
+  "plan_linked_mission": [
+   "plan.pylon-thermal-multispectral-linked"
+  ],
+  "plan_mission": [
+   "plan.pylon-thermal-multispectral-linked",
+   "plan.parameters-altitude-gsd-overlaps-speed-gimbal-li",
+   "plan.advanced-dwell-min-max-altitude-rth-altitude-win",
+   "plan.template-specific-inputs-thermal-camera-and-gsd-",
+   "plan.route-line-interest-region",
+   "plan.generate-plan",
+   "plan.mission-settings-menu"
+  ],
+  "list_payloads": [
+   "plan.payload-picker"
+  ],
+  "describe_payload": [
+   "plan.payload-picker"
+  ],
+  "add_payload": [
+   "plan.payload-picker"
+  ],
+  "mission_geojson": [
+   "plan.simulate"
+  ],
+  "export_mission": [
+   "plan.export-6-formats",
+   "fleet.fleet-toolbar-export"
+  ],
+  "save_mission": [
+   "plan.save-version"
+  ],
+  "list_mission_versions": [
+   "plan.history-and-restore",
+   "fly.mission-queue",
+   "analyse.twin-scene-timeline-history"
+  ],
+  "mission_version_history": [
+   "plan.history-and-restore"
+  ],
+  "diff_mission_versions": [
+   "plan.compare-versions-specifications"
+  ],
+  "restore_mission_version": [
+   "plan.history-and-restore"
+  ],
+  "connect_vehicle": [
+   "fly.connect-driver-uri"
+  ],
+  "disconnect_vehicle": [
+   "fly.disconnect-reconnect"
+  ],
+  "telemetry": [
+   "shell.vehicle-chip",
+   "fly.mode-control-state",
+   "fly.telemetry",
+   "fly.mission-progress"
+  ],
+  "upload_mission": [
+   "plan.send-to-fly",
+   "fly.upload"
+  ],
+  "vehicle_command": [
+   "fly.arm-start-pause-resume-rth-abort",
+   "fly.land-manual-override-capture-now"
+  ],
+  "flight_session": [
+   "fly.session-status"
+  ],
+  "run_preflight": [
+   "fly.preflight-acknowledge-checks"
+  ],
+  "import_dataset": [
+   "home.import-imagery"
+  ],
+  "list_datasets": [
+   "home.dataset-list-and-selection",
+   "fly.load-flight-resume-interrupted",
+   "review.record-finding"
+  ],
+  "run_reconstruction": [
+   "process.run-reconstruction-engine-profile-image-size-den"
+  ],
+  "run_pipeline": [
+   "process.full-pipeline",
+   "review.run-ai-settings-structure-material-solar-metal-c"
+  ],
+  "prelabel_image": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "run_model": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "grade_corrosion": [
+   "review.run-model-prelabel-grade-corrosion"
+  ],
+  "run_landcover": [
+   "process.semantic-map-land-cover"
+  ],
+  "set_active_dataset": [
+   "home.import-imagery",
+   "home.dataset-list-and-selection",
+   "fly.load-flight-resume-interrupted"
+  ],
+  "job_status": [
+   "shell.running-jobs-indicator",
+   "process.job-list-status-cancel"
+  ],
+  "list_jobs": [
+   "shell.running-jobs-indicator",
+   "home.reconstruction-card",
+   "home.sync-a-refresh-in-reality",
+   "process.job-list-status-cancel",
+   "process.processing-log"
+  ],
+  "cancel_job": [
+   "process.job-list-status-cancel"
+  ],
+  "pick_folder": [
+   "home.new-project",
+   "home.import-imagery",
+   "fly.linked-mission-progress"
+  ],
+  "pick_file": [
+   "analyse.add-layer",
+   "review.record-finding",
+   "report.generate-regenerate-type-title-author-org-client"
+  ],
+  "open_path": [
+   "home.open-project-folder",
+   "plan.export-6-formats",
+   "process.outputs-reveal-export",
+   "fleet.export-fleet-register"
+  ]
+ },
+ "internal_api": {
+  "bind_window": "native window binding used by the shell at startup; not a user control"
+ },
+ "unreached_before_v1": [
+  "add_camera",
+  "add_payload",
+  "add_polygon_clip",
+  "altitude_for_gsd",
+  "build_asset_inventory",
+  "build_training_corpus",
+  "camera_capabilities",
+  "clear_notifications",
+  "compare_survey_specifications",
+  "delete_measurement",
+  "demo_workflow",
+  "describe_terrain_cache",
+  "discard_interrupted_flight",
+  "elevation_profile",
+  "flight_session",
+  "mark_notification_read",
+  "measure_on_raster",
+  "measure_slope",
+  "measure_stockpile",
+  "measure_volume",
+  "model_mesh_scene",
+  "pick_model_point",
+  "plan_complex_facade",
+  "plan_irregular_facade",
+  "plan_job_chunks",
+  "plan_linked_mission",
+  "plan_multispectral_survey",
+  "plan_pylon_mission",
+  "plan_thermal_survey",
+  "processing_queue_report",
+  "remove_site_marker",
+  "remove_view",
+  "report_formats",
+  "resume_from_images",
+  "set_geocoding_provider",
+  "untag_annotations"
+ ],
+ "unreached_note": "REBUILD_PLAN section 0 heads this list (38) but names 36 methods; these are the 36 named.",
+ "unbacked_design_elements": [
+  "Home: STORAGE disk used; Exports list.",
+  "Process: stage timeline with per-stage timings.",
+  "Analyse: Contours layer; \"Add to report\" (the report takes all measurements); cursor ELEV.",
+  "Review: Reclassify, unless `desktop_ops.review_finding` accepts it (verify).",
+  "Fleet: Edit aircraft; Log flight; EXIF flight record and capture timeline.",
+  "Report: page thumbnails and preview (needs a new Api method, e.g. `report_html(report_id)`, rendered in a sandboxed `iframe srcdoc`); add, reorder and edit sections.",
+  "Settings: Import weights; Model card; Change storage; Import .mbtiles / \"Use ortho only\".",
+  "Process: \"Get COLMAP for CUDA\" should be a documentation link, not an installer."
+ ]
+}

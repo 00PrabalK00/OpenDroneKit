@@ -1,0 +1,185 @@
+/* OpenDroneKit design system v1: tokens.
+ *
+ * Source: brand/ui-v1/DESIGN_SPEC.md (approved 2026-09-29) and the SysTokens board.
+ *   Desk  = direction A "Survey Instrument"  (the default, on :root)
+ *   Field = direction C "Field Daylight"     ([data-mode="field"] overrides)
+ *
+ * Every other stylesheet in css/odk reads these custom properties and never a raw
+ * colour, so switching mode is one attribute. The attribute works on any element,
+ * not only <html>: the component gallery renders a desk board and a field board on
+ * one page by setting data-mode on each board.
+ *
+ * Semantic names are shared between the modes. Where Field has no token of its own
+ * the mapping is written next to it (see "derived").
+ */
+
+:root,
+[data-mode="desk"] {
+  color-scheme: dark;
+
+  /* -- colour: surfaces ------------------------------------------------- */
+  --bg: #0E1116;            /* app canvas */
+  --surface-1: #11151B;     /* header, side panels, footer */
+  --surface-2: #151A21;     /* controls, hover row */
+  --surface-3: #18202B;     /* selected row */
+  --map-well: #0A0D11;
+  --overlay: rgba(14, 17, 22, 0.85); /* map furniture backing */
+
+  /* -- colour: lines ---------------------------------------------------- */
+  --line: #232A33;          /* 1px hairline */
+  --line-strong: #2E3743;   /* hover edge, chip outline, table head rule */
+
+  /* -- colour: text ----------------------------------------------------- */
+  --text: #E6EAF0;
+  --text-2: #B4BCC8;
+  --muted: #8A94A3;         /* labels; never smaller than 11px */
+
+  /* -- colour: action and selection ------------------------------------ */
+  --accent: #2F86FF;        /* primary action, selection, active tab, geometry */
+  --accent-hover: #6BA8FF;  /* links, hover */
+  --on-accent: #0E1116;
+  --action: var(--accent);          /* the one primary action */
+  --action-hover: var(--accent-hover);
+  --on-action: var(--on-accent);
+  --selection: var(--accent);
+  --on-selection: var(--on-accent);
+  --link: var(--accent);
+  --link-hover: var(--accent-hover);
+  --focus: var(--accent);
+
+  /* -- colour: status --------------------------------------------------- */
+  --ok: #4ADE80;
+  --warn: #F5A524;
+  --danger: #F06A6A;
+  --sim: #C084FC;           /* every simulated / demo value carries a tag in this */
+  --ok-edge: rgba(74, 222, 128, 0.5);
+  --warn-edge: rgba(245, 165, 36, 0.5);
+  --danger-edge: rgba(240, 106, 106, 0.5);
+  --danger-outline: rgba(240, 106, 106, 0.6);
+  --sim-fill: rgba(192, 132, 252, 0.12);
+  --sim-text: var(--sim);   /* desk: tinted fill, purple text */
+  --on-ok: var(--on-accent);
+  --on-danger: var(--on-accent);
+  --geometry-fill: rgba(47, 134, 255, 0.18);
+
+  /* -- elevation ramp: the only gradient in the system ------------------- */
+  --ramp-turbo: #30123b, #28bceb, #a4fc3c, #fb8022, #7a0403;
+
+  /* -- type ------------------------------------------------------------- */
+  --font-ui: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --fs-label: 11px;         /* mono, uppercase, +.12em */
+  --fs-small: 12px;
+  --fs-body: 13px;
+  --fs-title: 15px;
+  --fs-value: 20px;
+  --fs-hero: 30px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-strong: 600;
+  --ls-label: 0.12em;
+  --ls-hero: -0.02em;
+
+  /* -- space and shape -------------------------------------------------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --radius: 0;
+  --radius-chip: 2px;
+  --rule: 1px;              /* hairline */
+  --rule-strong: 1px;
+
+  /* -- sizes ------------------------------------------------------------ */
+  --control-h: 30px;        /* inputs, panel tabs, header search */
+  --button-h: 36px;
+  --row-h: 36px;
+  --icon-btn: 36px;
+  --chip-h: 22px;
+  --target-min: 30px;       /* smallest interactive control */
+
+  /* -- shell ------------------------------------------------------------ */
+  --header-h: 48px;
+  --left-w: 264px;
+  --inspector-w: 312px;
+  --footer-h: 28px;
+  --tabbar-h: 0px;          /* desk has no bottom tab bar */
+}
+
+[data-mode="field"] {
+  color-scheme: light;
+
+  /* Field Daylight: white, ink, safety yellow. */
+  --bg: #FFFFFF;
+  --surface-1: #FFFFFF;
+  --surface-2: #F4F4F4;     /* panel */
+  --surface-3: #F4F4F4;
+  --map-well: #0A0A0A;
+  --overlay: #FFFFFF;
+
+  --line: #0A0A0A;          /* rules are ink, 3-4px */
+  --line-strong: #0A0A0A;
+
+  --text: #0A0A0A;          /* ink */
+  --text-2: #0A0A0A;
+  --muted: #0A0A0A;         /* derived: Field has no grey text; labels are bold ink */
+
+  --accent: #0047B3;        /* selection */
+  --accent-hover: #0A0A0A;
+  --on-accent: #FFFFFF;
+  --action: #FFD400;        /* the one action per screen, ink text */
+  --action-hover: #FFD400;
+  --on-action: #0A0A0A;
+  --selection: #0047B3;
+  --on-selection: #FFFFFF;
+  --link: #0047B3;
+  --link-hover: #0A0A0A;
+  --focus: #0047B3;
+
+  --ok: #15803D;
+  --warn: #FFD400;          /* derived: Field has no amber; warnings use the action yellow as a fill with ink text */
+  --danger: #B91C1C;
+  --sim: #C084FC;           /* approved: fill #C084FC with ink text */
+  --ok-edge: #0A0A0A;
+  --warn-edge: #0A0A0A;
+  --danger-edge: #0A0A0A;
+  --danger-outline: #0A0A0A;
+  --sim-fill: #C084FC;
+  --sim-text: #0A0A0A;
+  --on-ok: #FFFFFF;
+  --on-danger: #FFFFFF;
+  --geometry-fill: rgba(255, 255, 255, 0.14);
+
+  --font-ui: "Atkinson Hyperlegible", system-ui, sans-serif;
+  --font-mono: "Atkinson Hyperlegible", system-ui, sans-serif; /* Field sets numbers in Atkinson too */
+  --fs-label: 16px;         /* bold uppercase */
+  --fs-small: 14px;         /* approved: small tags 14px bold */
+  --fs-body: 18px;          /* base */
+  --fs-title: 22px;
+  --fs-value: 44px;
+  --fs-hero: 64px;          /* numbers 48-64px bold */
+  --fw-regular: 400;
+  --fw-medium: 700;
+  --fw-strong: 700;
+  --ls-label: 0.04em;
+  --ls-hero: 0;
+
+  --radius: 0;
+  --radius-chip: 0;
+  --rule: 3px;
+  --rule-strong: 4px;
+
+  --control-h: 64px;
+  --button-h: 64px;
+  --row-h: 64px;
+  --icon-btn: 64px;
+  --chip-h: 40px;
+  --target-min: 64px;       /* every touch target >= 64px */
+
+  --header-h: 72px;
+  --left-w: 404px;          /* Field side panel (SysFieldPlan: 1180 - 776 map) */
+  --inspector-w: 0px;
+  --footer-h: 0px;
+  --tabbar-h: 88px;
+}
