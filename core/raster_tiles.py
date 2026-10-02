@@ -102,13 +102,25 @@ def register(path: str | Path) -> dict[str, Any]:
         token = _BY_PATH.get(key)
         if token is not None:
             entry = _BY_TOKEN[token]
-            return {"token": token, "url": f"/raster-tiles/{token}/{{z}}/{{x}}/{{y}}.png", **entry.info}
+            return _answer(token, entry.info, entry.stretch)
     info, stretch = _describe(key)
     with _LOCK:
         token = _BY_PATH.get(key) or secrets.token_urlsafe(12)
         _BY_PATH[key] = token
         _BY_TOKEN[token] = _Registered(key, info, stretch)
-    return {"token": token, "url": f"/raster-tiles/{token}/{{z}}/{{x}}/{{y}}.png", **info}
+    return _answer(token, info, stretch)
+
+
+def _answer(token: str, info: dict[str, Any], stretch: tuple[float, float] | None) -> dict[str, Any]:
+    """What `register` hands the map.
+
+    `value_range` is the [low, high] a single-band raster's tiles are coloured with --
+    the turbo ramp runs from low to high -- so a legend drawn from it says exactly what
+    each colour on the map means. None for an RGB raster, which is drawn as its own
+    colours.
+    """
+    return {"token": token, "url": f"/raster-tiles/{token}/{{z}}/{{x}}/{{y}}.png", **info,
+            "value_range": [stretch[0], stretch[1]] if stretch else None}
 
 
 def render_tile(token: str, z: int, x: int, y: int) -> bytes | None:

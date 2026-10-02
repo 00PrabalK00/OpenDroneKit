@@ -8,20 +8,20 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 
 | Measure | Count |
 |---|---:|
-| Rows | 178 |
+| Rows | 181 |
 | Native menu items covered | 66 |
-| Cockpit ACTIONS keys covered | 129 |
-| Api methods covered (plus 1 internal) | 213 |
+| Cockpit ACTIONS keys covered | 132 |
+| Api methods covered (plus 1 internal) | 217 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
-| Placement: artboard (drawn in an approved artboard) | 102 |
-| Placement: proposed (placed with an approved component pattern, not drawn) | 64 |
+| Placement: artboard (drawn in an approved artboard) | 104 |
+| Placement: proposed (placed with an approved component pattern, not drawn) | 65 |
 | Placement: artboard+proposed (partly drawn, partly proposed) | 5 |
 | Placement: gap (the design shows it but the Api cannot back it yet (owner decision 2026-09-29: build the backend for real)) | 3 |
 | Placement: none (no new control: unchanged, or not carried with the reason stated in new_home) | 4 |
 
 Columns: **Menu** native menu ids (payload variants in braces); **Actions** cockpit `ACTIONS` keys; **Api** methods, ★ = reached by neither old UI before v1; **Placement** as defined above.
 
-## Global shell (every workspace) (20)
+## Global shell (every workspace) (21)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
@@ -45,6 +45,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `shell.field-mode-toggle` | Field mode toggle | `view.field_mode` | — | — | Header "Field mode" / "Desk mode"; Settings › Appearance; **new menu id `view.field_mode`** | artboard |
 | `shell.settings` | Settings | `view.settings` | — | — | Header gear button | artboard |
 | `shell.exit` | Exit | — | — | — | Unchanged | none |
+| `shell.map-crs-chip` | Map CRS chip (copies the WKT) <sup>U00</sup> | — | — | `get_project_crs`, `describe_crs` | Map furniture, top left of every map: EPSG and short name; a click copies PROJ's WKT | artboard |
 
 ## Home (20)
 
@@ -158,7 +159,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `process.outputs-reveal-export` | Outputs, reveal, export | `recon.reveal` | `Export Products` | `list_layers`, `get_state`, `open_path` | OUTPUTS + "Export outputs" + "Reveal output folder" | artboard |
 | `process.stage-timeline` | Stage timeline | — | — | — | STAGE TIMELINE | artboard · unbacked |
 
-## Analyse (20)
+## Analyse (21)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
@@ -182,8 +183,9 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `analyse.twin-scene-timeline-history` | Twin scene, timeline, history | — | — | `list_layers`, `list_mission_versions`, `audit_log` | 3D inspector tabs | proposed |
 | `analyse.findings-on-the-model` | Findings on the model | — | — | `find_annotations` | 3D inspector tab | proposed |
 | `analyse.contours-layer` | Contours layer | — | — | — | ANALYSIS "Contours · 2 m" | artboard · unbacked |
+| `analyse.deep-zoom-project-rasters` | Project rasters at full resolution (deep zoom to z24) <sup>U00</sup> | — | — | `raster_tiles` | Every map (js/odk/map/furniture.js on mapview.showProject): rasters drawn from /raster-tiles to their native zoom; resolution chip; elevation legend from value_range | artboard |
 
-## Review (15)
+## Review (16)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
@@ -202,6 +204,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `review.thermal-inventory-module-anomaly-summary` | Thermal inventory, module, anomaly summary | — | — | `find_annotations`, `model_status` | Queue filter "Thermal" + inspector thermal fields | proposed |
 | `review.asset-inventory` | Asset inventory | — | — | `build_asset_inventory` ★ | Review overflow › "Build asset inventory" | proposed |
 | `review.open-in-3d` | Open in 3D | — | `Open in 3D` | — | Finding inspector link → Analyse 3D | proposed |
+| `review.measure-on-a-photograph` | Distance, area and crack length on a photograph <sup>U00</sup> | — | `Photo Distance`, `Photo Area`, `Crack Length` | `measure_on_image`, `measure_crack_on_image` | Image viewer (js/odk/imageview.js) in Review: clicks through pickPixel in source pixels | proposed |
 
 ## Fleet (10)
 

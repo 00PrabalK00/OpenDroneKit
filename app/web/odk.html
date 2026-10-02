@@ -14,6 +14,12 @@
   <link rel="stylesheet" href="css/odk/components.css" />
   <link rel="stylesheet" href="css/odk/desk.css" />
   <link rel="stylesheet" href="css/odk/field.css" />
+  <!-- The map (U3): MapLibre, vendored, and js/basemap-depth.js, which js/workspace/mapview.js
+       reads when it is imported, so both load before any module runs. -->
+  <link rel="stylesheet" href="vendor/maplibre/maplibre-gl.css" />
+  <link rel="stylesheet" href="css/odk/map.css" />
+  <script src="vendor/maplibre/maplibre-gl.js"></script>
+  <script src="js/basemap-depth.js"></script>
 </head>
 <body>
   <div id="odk-root"></div>

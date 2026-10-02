@@ -46,6 +46,7 @@ app/web/css/odk/components.css        buttons, inputs, chips, tags, toast, tabs,
                                       stats, popover, map furniture (desk geometry)
 app/web/css/odk/desk.css              frame grid 48 / 264 / 1fr / 312 / 28, collapsible panels
 app/web/css/odk/field.css             field layout and component overrides (72 / 88 / 64 px, 3-4 px rules)
+app/web/css/odk/map.css               map furniture placement, scale bar, Layers popover, image viewer (U3)
 app/web/vendor/fonts/                 IBM Plex Sans 400/500/600, Plex Mono 400/500,
                                       Atkinson Hyperlegible 400/700 + OFL texts + SOURCES.txt
 app/web/js/odk/main.js                boot: mode, gallery or frame
@@ -56,7 +57,7 @@ app/web/js/odk/frame.js               header, tabs, search, field toggle, footer
 app/web/js/odk/palette.js             command palette incl. search_places (U2)
 app/web/js/odk/menu.js                window.odk.onMenu: every menu id -> action or handler (U2)
 app/web/js/odk/registry.js            core ACTIONS + screens/*/actions.js, refuses duplicates (U2)
-app/web/js/odk/map/                   furniture.js, theme.js (U3)
+app/web/js/odk/map/                   furniture.js, theme.js, actions.js (U3)
 app/web/js/odk/imageview.js           image-space viewer, keeps img.canvas-product (U3)
 app/web/js/odk/screens/index.js       screen table, old-id aliases, loadAll()
 app/web/js/odk/screens/<ws>/          surface.js, model.js, desk.js, actions.js
@@ -165,6 +166,27 @@ Analyse, Review, Fleet, Report; Settings is a header icon button. Field tabs: Pl
 Process, Analyse, Report; Home, Review, Fleet and Settings are reached by switching back
 to Desk.
 
+## Map module (U3)
+
+`js/odk/map/` extends `js/workspace/mapview.js`; it does not fork it. `odk.html` loads
+`vendor/maplibre/maplibre-gl.js` and `js/basemap-depth.js` as classic scripts before any
+module, because mapview reads `window.ODKBasemapDepth` when it is imported.
+
+| Export | Contract |
+|---|---|
+| `mountProjectMap(container, opts)` (furniture.js) | mapview's `mountMap` with `controls: false`, the project drawn by `showProject`, the furniture and the mode's paint. Starts on the offline tile cache; online basemaps are opt-ins labelled NETWORK. Resolves `{map, furniture}` or null. |
+| `mountMapFurniture(map, host, {ask, run, onToggle3D, onCursor, notify, fitOnLoad})` | CRS chip (project EPSG from `get_project_crs`, else the rasters' shared EPSG; a click copies `describe_crs().wkt`), resolution chip (`raster_tiles().native_resolution_m`), zoom / fit / Layers / 3D stack, north arrow (turns with bearing, click = north up), true scale bar + `1 : N at 100%` (96 dpi), elevation legend from `raster_tiles().value_range` of the visible DSM, geometry key of what is on the map, Field base switch and cursor box. `run(key, payload)` is the shell's verb runner; the popover passes `{layer}` / `{view}`. |
+| `applyTheme(map, mode)`, `bindTheme(map)`, `setLayersVisible(map, ids, on)` (theme.js) | Desk / Field paint for every `odk-*` layer by role; each line gets a `<id>-casing` layer directly under it (Field: 8 px ink under a 4 px stroke). Follows `[data-mode]` and style changes; idempotent. |
+| `ACTIONS` (map/actions.js) | `Remove Layer` (`remove_layer`, file kept) and `Cache Basemap View` (`cache_basemap_area`), merged by `registry.js` as source `map`. |
+| `mountImageView(container, {ask, notify})`, `imageViewProvider()` (imageview.js) | `img.canvas-product` + an SVG overlay whose viewBox is the source window, so marks and `pickPixel()` answers are source-frame pixels (the cockpit's mapping); loupe while picking; `show(name, crop)`, `display(preview)`, `setMarks`, `setPath`. `imageViewProvider()` is the `shell.provide("imageView", ...)` builder. |
+
+Additive mapview hooks: `mountMap({controls, onNotice, mapOptions})`, `setBasemap(key,
+{keepLayers})` (swaps the basemap under the project's layers), `currentBasemapKey()`,
+`basemapCatalogue()`, `vectorLayerIds(map, id)`, and `showProject` recording
+`map._odkProjectLayers` / `_odkProjectBounds` / `_odkProjectListed` and dispatching a
+bubbling `odk:project` event. Backend: `Api.describe_crs(epsg)`; `raster_tiles` answers
+carry `value_range` (the stretch the tiles are coloured with).
+
 ## surface.js schema
 
 ```js
@@ -226,17 +248,20 @@ These carry the project's no-fabrication rule into the interface.
    such as `[battery %]` renders "not reported".
 4. **Unbacked design elements** (inventory rows marked `unbacked`) ship only with their
    backend (owner decision 2026-09-29), never as a fake.
-5. **Offline.** No `http(s)://` in `odk.html`, `css/odk` or `js/odk` except the opt-in
-   basemap table U3 will add; no `fonts.googleapis`; no `/_blob/`; every `@font-face`
+5. **Offline.** No `http(s)://` in `odk.html`, `css/odk` or `js/odk` (the opt-in online
+   basemaps stay in `js/workspace/mapview.js`'s table); no `fonts.googleapis`; no `/_blob/`; every `@font-face`
    resolves to a file under `vendor/fonts`.
 
-## Guards added in U00 / U1 / U2
+## Guards added in U00 / U1 / U2 / U3
 
 | Test | Guards |
 |---|---|
 | `tests/test_ui_v1_inventory.py` | Every native menu item, every cockpit `ACTIONS` key and every public `Api` method has an inventory row; every row has a new home; `INVENTORY.md` is generated from the JSON; every screen stub exists; `UI_PAGES` maps `odk` without changing the default. |
 | `tests/test_ui_v1_gallery.py` | `odk.html?gallery` renders every component in desk and field mode; field targets are at least 64 px; text tokens meet 4.5:1; all fonts load from `vendor/fonts`; no request leaves 127.0.0.1; every screen module imports; the blank frame opens. |
 | `tests/test_ui_v1_shell.py` (U2) | The shell contract against the real Api in headless Edge/Chromium: every new and old id opens, `runAction` never throws, the footer's CRS / jobs / vehicle / network come from the Api, the palette lists every ACTIONS key and searches places, Field mode geometry and 64 px targets, collapse persists, the demo banner; writes desk and Field screenshots at 1440x900 and 1180x820 to `$ODK_UI_SHOTS`. |
+| `tests/test_ui_v1_map.py` (U3) | On the full-resolution Aukerman survey (`ODK_AUKERMAN_FULLRES`) against the real Api: the ortho is drawn from its own z22 tiles at z21-22 and is sharper than the preview; no Esri placeholder at z21 (network permitting); the scale bar matches MapLibre's metres per pixel within 2 % at four zooms; the CRS chip shows EPSG:32617 and copies PROJ's WKT; the north arrow turns and resets; Layers visibility / opacity / remove reach the Api and the map; the legend is the DSM's `value_range`; Field casing 8 px under 4 px is rendered; desk and Field screenshots to `$ODK_U3_SCREENS`. |
+| `tests/test_ui_v1_overlays_reach_the_map.py` (U3 port) | Import CAD and Add Marker (core verbs) draw on the v1 map; the marker is where the map was clicked; Overlays rows hide an overlay and its casing; desk and Field paint. |
+| `tests/test_ui_v1_imageview.py` (U3) | A real mouse click on `img.canvas-product` is the right source pixel, whole frame and close-up; marks land on their pixels; the letterbox is no point; the shell provider draws a fetched preview. |
 | `tests/test_menu_coverage.py` (U2 port) | `js/odk/menu.js` names every native menu id, and every item pressed in `odk.html` against the real Api is handled with a visible effect. |
 
 ## Baseline

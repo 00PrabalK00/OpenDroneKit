@@ -1,0 +1,205 @@
+/* Map furniture placement and the pieces components.css does not draw (U3).
+ *
+ * components.css (U1) owns the chip, icon stack, north and legend look; this file
+ * places them on a live map, adds the artboard scale bar (SysAnalyse / SysFieldAnalyse),
+ * the Layers popover body and the image-space viewer. Tokens only, both modes.
+ */
+
+/* -- the map well ------------------------------------------------------------- */
+.odk-map { position: relative; overflow: hidden; background: var(--map-well); min-height: 0; }
+.odk-map .maplibregl-canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.odk-map .maplibregl-ctrl-attrib, .odk-map .maplibregl-ctrl-logo { display: none; }
+
+.odk-mapf { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+.odk-mapf > * { position: absolute; pointer-events: auto; display: flex; }
+.odk-mapf-tl { left: var(--sp-4); top: var(--sp-4); gap: var(--sp-1); align-items: flex-start; flex-wrap: wrap; max-width: calc(100% - 120px); }
+.odk-mapf-tr { right: var(--sp-4); top: var(--sp-4); flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
+.odk-mapf-bl { left: var(--sp-5); bottom: var(--sp-5); align-items: flex-end; gap: var(--sp-2); }
+.odk-mapf-br { right: var(--sp-5); bottom: var(--sp-4); flex-direction: column; align-items: flex-end; gap: var(--sp-2); }
+.odk-mapf [hidden] { display: none !important; }
+
+/* chips: CRS (a button: copies the WKT) and the product's resolution */
+.odk-mapf .odk-map-chip {
+  height: auto; padding: var(--sp-1) var(--sp-2); line-height: 16px;
+  background: var(--overlay); border-color: var(--line);
+}
+.odk-mapf .odk-map-chip:is(:hover, :focus-visible) { border-color: var(--line-strong); }
+.odk-mapf .odk-map-chip[data-copied] { color: var(--ok); border-color: var(--ok-edge); }
+.odk-mapf-info { cursor: default; color: var(--text-2); }
+.odk-mapf-notice { color: var(--warn); border-color: var(--warn-edge); cursor: default; }
+
+/* zoom / tool stack: 36px buttons, 1px gaps, one outline (SysAnalyse) */
+.odk-mapf .odk-map-stack { border: 1px solid var(--line); }
+.odk-mapf .odk-map-stack .odk-icon-btn { width: var(--icon-btn); height: var(--icon-btn); }
+.odk-mapf-3d { font-family: var(--font-mono); font-size: var(--fs-label); font-weight: var(--fw-medium); }
+.odk-mapf .odk-north {
+  width: 38px; height: 48px; padding: 0; border: 1px solid var(--line); background: var(--surface-2);
+  cursor: pointer;
+}
+.odk-mapf .odk-north:hover { border-color: var(--line-strong); }
+.odk-mapf .odk-north svg { transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* scale bar: labels over a two-part bar, ratio under (SysAnalyse) */
+.odk-mapf-scale {
+  flex-direction: column; gap: var(--sp-1);
+  font-family: var(--font-mono); font-size: var(--fs-label); line-height: 14px; color: var(--text-2);
+  text-shadow: 0 0 3px var(--map-well), 0 0 1px var(--map-well);
+}
+.odk-mapf-scale-labels { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.odk-mapf-scale-bar { display: flex; height: 6px; border: 1px solid var(--text); box-shadow: 0 0 0 1px rgba(10, 13, 17, 0.6); }
+.odk-mapf-scale-bar > span { flex: 1 1 50%; }
+.odk-mapf-scale-bar > span:first-child { background: var(--text); }
+.odk-mapf-scale-ratio { color: var(--muted); font-variant-numeric: tabular-nums; }
+.odk-mapf-cursor { display: none; }
+
+/* legend panel: elevation ramp from the DSM's own range, then the geometry key */
+.odk-mapf-legend {
+  width: 272px; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3);
+  background: var(--surface-1); border: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted);
+}
+.odk-mapf-legend-head { display: flex; justify-content: space-between; gap: var(--sp-2); }
+.odk-mapf-legend-head > :first-child { letter-spacing: var(--ls-label); text-transform: uppercase; }
+.odk-mapf-legend-head > :last-child { color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-mapf-ramp { height: 8px; background: linear-gradient(90deg, var(--ramp-turbo)); }
+.odk-mapf-ticks { display: flex; justify-content: space-between; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.odk-mapf-legend .odk-geom-key { padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.odk-mapf-legend .odk-geom-key:first-child { padding-top: 0; border-top: 0; }
+.odk-mapf-legend .odk-geom-item { font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-2); }
+.odk-geom-swatch--aoi { height: 10px; background: rgba(47, 134, 255, 0.10); border: 2px solid var(--accent); }
+.odk-geom-swatch--nofly { height: 10px; background: rgba(240, 106, 106, 0.16); border: 1.5px solid var(--danger); }
+.odk-geom-swatch--waypoint { width: 6px; height: 6px; margin: 0 9px; border-radius: 50%; background: var(--accent); }
+.odk-geom-swatch--marker { width: 10px; height: 10px; margin: 0 7px; border-radius: 50%; background: var(--warn); }
+.odk-geom-swatch--cad { height: 0; border-top: 1px solid var(--text-2); }
+.odk-geom-swatch--vector { height: 0; border-top: 1.5px solid var(--accent-hover); }
+.odk-geom-swatch--vector-point { width: 7px; height: 7px; margin: 0 8.5px; border-radius: 50%; background: var(--accent-hover); box-shadow: 0 0 0 1px var(--map-well); }
+.odk-geom-swatch--flight { background: var(--text); height: 1.5px; }
+.odk-geom-swatch--vertex { border: 2px solid var(--accent); background: var(--text); border-radius: 0; }
+
+/* -- Layers popover ---------------------------------------------------------- */
+.odk-popover.odk-mapf-pop { width: 340px; max-width: calc(100vw - 32px); max-height: calc(100vh - 96px); overflow: auto; }
+.odk-mapf-pop .odk-popover-body { padding: 0; }
+.odk-mapf-group { display: flex; flex-direction: column; padding: var(--sp-2) 0; border-bottom: 1px solid var(--line); }
+.odk-mapf-group:last-child { border-bottom: 0; }
+.odk-mapf-group > .odk-label { padding: var(--sp-1) var(--sp-3) var(--sp-2); }
+.odk-mapf-row {
+  min-height: var(--row-h); display: flex; align-items: center; gap: var(--sp-2);
+  padding: 0 var(--sp-3); font-size: var(--fs-body); color: var(--text); cursor: pointer;
+}
+.odk-mapf-row:hover { background: var(--surface-2); }
+.odk-mapf-row input[type="radio"], .odk-mapf-row input[type="checkbox"] { margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.odk-mapf-row-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.odk-mapf-row-note { font-family: var(--font-mono); font-size: var(--fs-label); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.odk-mapf-net {
+  height: 18px; display: inline-flex; align-items: center; padding: 0 6px; border: 1px solid var(--line-strong);
+  border-radius: var(--radius-chip); font-family: var(--font-mono); font-size: var(--fs-label); letter-spacing: var(--ls-label); color: var(--text-2);
+}
+.odk-mapf-layer { display: flex; flex-direction: column; border-bottom: 1px solid var(--line); }
+.odk-mapf-layer:last-child { border-bottom: 0; }
+.odk-mapf-layer .odk-mapf-row { padding-right: var(--sp-1); }
+.odk-mapf-opacity { display: flex; align-items: center; gap: var(--sp-2); padding: 0 var(--sp-3) var(--sp-2) 36px; }
+.odk-mapf-opacity input[type="range"] { flex: 1 1 auto; min-width: 0; height: 18px; margin: 0; accent-color: var(--accent); }
+.odk-mapf-opacity output { width: 36px; text-align: right; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.odk-mapf-remove.odk-icon-btn { width: 28px; height: 28px; background: transparent; color: var(--muted); }
+.odk-mapf-remove.odk-icon-btn:hover { color: var(--danger); background: var(--surface-2); box-shadow: none; }
+.odk-mapf-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: var(--sp-2) var(--sp-3); }
+.odk-mapf-foot .odk-mapf-row-note { white-space: normal; }
+.odk-mapf-empty { padding: var(--sp-1) var(--sp-3) var(--sp-2); font-size: var(--fs-small); color: var(--muted); }
+
+/* -- Field Daylight: white boxes, 3px ink rules, 64px targets ------------------ */
+[data-mode="field"] .odk-mapf-tl { flex-direction: column; gap: var(--sp-2); }
+[data-mode="field"] .odk-mapf-bl { left: var(--sp-4); bottom: var(--sp-4); align-items: stretch; }
+[data-mode="field"] .odk-mapf .odk-map-chip {
+  height: auto; min-height: 0; padding: var(--sp-1) var(--sp-2); background: var(--bg); color: var(--text);
+  border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: var(--fs-label); font-weight: 700; line-height: 20px;
+}
+.odk-mapf-crs-label { cursor: default; }
+[data-mode="field"] .odk-mapf .odk-map-chip[data-copied] { background: var(--ok); color: var(--on-ok); }
+[data-mode="field"] .odk-mapf-info { display: none; }
+[data-mode="field"] .odk-mapf-notice { background: var(--action) !important; }
+[data-mode="field"] .odk-mapf .odk-map-stack { border: 0; }
+[data-mode="field"] .odk-mapf .odk-icon-btn svg { width: 28px; height: 28px; stroke-width: 2.8; }
+[data-mode="field"] .odk-mapf .odk-north {
+  width: 64px; height: 64px; background: var(--bg); color: var(--text); border: var(--rule) solid var(--line);
+  font-family: var(--font-ui); font-size: var(--fs-small); font-weight: 700;
+}
+[data-mode="field"] .odk-mapf-3d { font-family: var(--font-ui); font-size: var(--fs-label); font-weight: 700; }
+[data-mode="field"] .odk-mapf-scale {
+  flex-direction: row; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-3);
+  background: var(--bg); border: var(--rule) solid var(--line); text-shadow: none;
+  font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700; line-height: 1; color: var(--text);
+}
+[data-mode="field"] .odk-mapf-scale-labels > :not(:last-child) { display: none; }
+[data-mode="field"] .odk-mapf-scale-labels { order: 2; }
+[data-mode="field"] .odk-mapf-scale-bar { order: 1; height: 10px; border: var(--rule) solid var(--line); border-top: 0; box-shadow: none; }
+[data-mode="field"] .odk-mapf-scale-bar > span:first-child { background: transparent; }
+[data-mode="field"] .odk-mapf-scale-ratio { display: none; }
+[data-mode="field"] .odk-mapf-cursor {
+  display: flex; align-items: center; padding: var(--sp-2) var(--sp-3); background: var(--bg); border: var(--rule) solid var(--line);
+  font-family: var(--font-ui); font-size: var(--fs-body); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+[data-mode="field"] .odk-mapf-legend {
+  width: 300px; padding: var(--sp-3); background: var(--bg); border: var(--rule) solid var(--line);
+  font-family: var(--font-ui); font-size: var(--fs-label); font-weight: 700; color: var(--text);
+}
+[data-mode="field"] .odk-mapf-legend-head > :last-child, [data-mode="field"] .odk-mapf-ticks { color: var(--text); }
+[data-mode="field"] .odk-mapf-ramp { height: 16px; outline: 2px solid var(--line); }
+[data-mode="field"] .odk-mapf-legend .odk-geom-key { display: none; }
+[data-mode="field"] .odk-mapf-base { display: flex; border: var(--rule) solid var(--line); background: var(--bg); }
+[data-mode="field"] .odk-mapf-base button {
+  height: 64px; min-width: 64px; padding: 0 20px; border: 0; background: var(--bg); color: var(--text);
+  font-size: var(--fs-body); font-weight: 700;
+}
+[data-mode="field"] .odk-mapf-base button + button { border-left: var(--rule) solid var(--line); }
+[data-mode="field"] .odk-mapf-base button[aria-pressed="true"] { background: var(--selection); color: var(--on-selection); }
+.odk-mapf-base { display: none; }
+
+/* -- image-space viewer (Review, GCP marking) ---------------------------------- */
+.odk-imageview-host { position: absolute; inset: 0; display: flex; }
+.odk-imageview-host > .odk-imageview { flex: 1 1 auto; }
+.odk-imageview [hidden] { display: none !important; }
+.odk-imageview { position: relative; width: 100%; height: 100%; overflow: hidden; background: var(--map-well); min-height: 0; }
+.odk-imageview img.canvas-product {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block;
+  user-select: none; -webkit-user-drag: none;
+}
+.odk-imageview[data-picking] img.canvas-product { cursor: crosshair; }
+.odk-imageview-overlay { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.odk-imageview-mark circle { fill: var(--text); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.odk-imageview-mark--ok circle { stroke: var(--ok); }
+.odk-imageview-mark--warn circle { stroke: var(--warn); }
+.odk-imageview-mark--danger circle { stroke: var(--danger); }
+.odk-imageview-mark text {
+  font-family: var(--font-mono); fill: var(--text);
+  paint-order: stroke; stroke: var(--map-well); stroke-width: 3px; stroke-linejoin: round;
+}
+.odk-imageview-path { fill: var(--geometry-fill); stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.odk-imageview-head { position: absolute; left: var(--sp-4); top: var(--sp-4); display: flex; gap: var(--sp-1); z-index: 2; }
+.odk-imageview-head .odk-map-chip { cursor: default; background: var(--overlay); border-color: var(--line); padding: var(--sp-1) var(--sp-2); height: auto; line-height: 16px; }
+.odk-imageview-hint {
+  position: absolute; left: 50%; bottom: var(--sp-4); transform: translateX(-50%); z-index: 2;
+  padding: var(--sp-2) var(--sp-3); background: var(--surface-2); border: 1px solid var(--line-strong);
+  font-size: var(--fs-small); color: var(--text); white-space: nowrap;
+}
+.odk-imageview-loupe {
+  position: absolute; width: 144px; height: 144px; z-index: 3; pointer-events: none;
+  border: 1px solid var(--line-strong); background: var(--map-well); image-rendering: pixelated;
+}
+.odk-imageview-loupe::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 15px; height: 15px; transform: translate(-50%, -50%);
+  background:
+    linear-gradient(var(--accent), var(--accent)) center / 1px 100% no-repeat,
+    linear-gradient(var(--accent), var(--accent)) center / 100% 1px no-repeat;
+}
+.odk-imageview-empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: var(--fs-body); color: var(--muted);
+}
+[data-mode="field"] .odk-imageview-head .odk-map-chip { background: var(--bg); color: var(--text); border: var(--rule) solid var(--line); font-family: var(--font-ui); font-size: var(--fs-label); font-weight: 700; }
+[data-mode="field"] .odk-imageview-hint { background: var(--bg); color: var(--text); border: var(--rule) solid var(--line); font-size: var(--fs-body); font-weight: 700; }
+[data-mode="field"] .odk-imageview-mark circle { stroke: var(--text); stroke-width: 3; fill: var(--action); }
+[data-mode="field"] .odk-imageview-loupe { border: var(--rule) solid var(--line); width: 176px; height: 176px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .odk-mapf .odk-north svg { transition: none; }
+}

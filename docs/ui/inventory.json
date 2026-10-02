@@ -3550,6 +3550,63 @@
    "placement_note": "P",
    "unbacked": false,
    "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
+  },
+  {
+   "id": "analyse.deep-zoom-project-rasters",
+   "workspace": "analyse",
+   "feature": "Project rasters at full resolution (deep zoom to z24)",
+   "sources": "Ck/Cl map: raster tiles cut from the GeoTIFF (ship/fix-all)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "raster_tiles"
+   ],
+   "star_methods": [],
+   "new_home": "Every map (js/odk/map/furniture.js on mapview.showProject): rasters drawn from /raster-tiles to their native zoom; resolution chip; elevation legend from value_range",
+   "placement": "artboard",
+   "placement_note": "A (map furniture: resolution chip, elevation legend)",
+   "unbacked": false,
+   "origin": "U3 map module"
+  },
+  {
+   "id": "shell.map-crs-chip",
+   "workspace": "shell",
+   "feature": "Map CRS chip (copies the WKT)",
+   "sources": "— (new; design system v1 map furniture)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "get_project_crs",
+    "describe_crs"
+   ],
+   "star_methods": [],
+   "new_home": "Map furniture, top left of every map: EPSG and short name; a click copies PROJ's WKT",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U3 map module"
+  },
+  {
+   "id": "review.measure-on-a-photograph",
+   "workspace": "review",
+   "feature": "Distance, area and crack length on a photograph",
+   "sources": "Ck Measurements tools t9-t11 (ship/fix-all)",
+   "menu": [],
+   "actions": [
+    "Photo Distance",
+    "Photo Area",
+    "Crack Length"
+   ],
+   "api": [
+    "measure_on_image",
+    "measure_crack_on_image"
+   ],
+   "star_methods": [],
+   "new_home": "Image viewer (js/odk/imageview.js) in Review: clicks through pickPixel in source pixels",
+   "placement": "proposed",
+   "placement_note": "P (tool row over the image viewer)",
+   "unbacked": false,
+   "origin": "U3 map module"
   }
  ],
  "menu": {
@@ -4344,6 +4401,15 @@
   ],
   "Save Template": [
    "report.report-types-templates-save-template"
+  ],
+  "Photo Distance": [
+   "review.measure-on-a-photograph"
+  ],
+  "Photo Area": [
+   "review.measure-on-a-photograph"
+  ],
+  "Crack Length": [
+   "review.measure-on-a-photograph"
   ]
  },
  "api": {
@@ -4856,7 +4922,8 @@
   "get_project_crs": [
    "shell.cursor-lat-lon-crs-scale",
    "process.crs",
-   "settings.units-crs"
+   "settings.units-crs",
+   "shell.map-crs-chip"
   ],
   "set_project_crs": [
    "process.crs",
@@ -5088,6 +5155,18 @@
    "plan.export-6-formats",
    "process.outputs-reveal-export",
    "fleet.export-fleet-register"
+  ],
+  "raster_tiles": [
+   "analyse.deep-zoom-project-rasters"
+  ],
+  "describe_crs": [
+   "shell.map-crs-chip"
+  ],
+  "measure_on_image": [
+   "review.measure-on-a-photograph"
+  ],
+  "measure_crack_on_image": [
+   "review.measure-on-a-photograph"
   ]
  },
  "internal_api": {

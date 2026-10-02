@@ -79,6 +79,14 @@ export function shownVectors() {
   return shown;
 }
 
+/** The MapLibre layer ids that draw a pinned vector (CAD overlay, site markers...), for
+    a control that shows or hides it. Only the ids present on `map` are returned. */
+export function vectorLayerIds(map, id) {
+  const source = sourceId(id);
+  return [`${source}-fill`, `${source}-line`, `${source}-point`]
+    .filter((layer) => map && map.getLayer && map.getLayer(layer));
+}
+
 async function loadProjectOverlays(map) {
   const overlays = await tryCall("list_cad_overlays");
   for (const overlay of (overlays && overlays.overlays) || []) {
@@ -151,11 +159,28 @@ function liveMaps() {
   return [...mounted];
 }
 
-/** Switch every map on screen (and every map mounted later) to this basemap. */
-export function setBasemap(key) {
+/* Swap only the basemap source of a loaded map, under everything else. setStyle()
+   replaces the whole style, which drops the project's rasters and geometry with it. */
+function replaceBasemapSource(map, key) {
+  const spec = styleFor(key);
+  if (map.getLayer("basemap")) map.removeLayer("basemap");
+  if (map.getSource("basemap")) map.removeSource("basemap");
+  map.addSource("basemap", spec.sources.basemap);
+  const above = ((map.getStyle() || {}).layers || []).find((layer) => layer.id !== "bg");
+  map.addLayer({ id: "basemap", type: "raster", source: "basemap" }, above ? above.id : undefined);
+}
+
+/** Switch every map on screen (and every map mounted later) to this basemap.
+    `keepLayers` swaps the basemap under a loaded map's own layers instead of
+    replacing its style (the v1 Layers popover). */
+export function setBasemap(key, { keepLayers = false } = {}) {
   if (!BASEMAP_TILES[key]) return false;
   currentBasemap = key;
   for (const map of liveMaps()) {
+    if (keepLayers && mapReady(map)) {
+      replaceBasemapSource(map, key);
+      continue;
+    }
     map.setStyle(styleFor(key));
     // A new style drops every added source; the overlays and markers go back on top.
     drawPinned(map);
@@ -165,6 +190,22 @@ export function setBasemap(key) {
 
 export function basemapNames() {
   return Object.keys(BASEMAP_TILES);
+}
+
+/** The basemap every map is drawing (a key of basemapNames()). */
+export function currentBasemapKey() {
+  return currentBasemap;
+}
+
+/** Each basemap with what a chooser needs to say about it: whether it leaves this
+    machine (`network`), its attribution, and the deepest level the source declares. */
+export function basemapCatalogue() {
+  return Object.entries(BASEMAP_TILES).map(([key, spec]) => ({
+    key, attribution: spec.attribution, maxzoom: spec.maxzoom,
+    network: !spec.tiles.every((t) => t.startsWith(TILE_ORIGIN)),
+    // Fetched through js/basemap-depth.js, so capped at the imagery that exists here.
+    depthTracked: spec.tiles.some((t) => t.startsWith("esri://")),
+  }));
 }
 
 /** The area shown by the map currently on screen, or null when none is. */
@@ -206,6 +247,13 @@ export function mountMap(container, {
   zoom = 15,
   offline = false,
   onReady,
+  // The v1 interface (js/odk/map) draws its own furniture: scale, north, zoom stack and
+  // cursor readout. `controls: false` leaves MapLibre's out, and `onNotice` receives
+  // the offline / no-tiles notices instead of a chip appended to the container.
+  controls = true,
+  onNotice = null,
+  // Extra MapLibre Map options (e.g. canvasContextAttributes), merged last.
+  mapOptions = {},
 } = {}) {
   if (!mapAvailable()) {
     container.appendChild(el("div", { class: "canvas-overlay bl" }, [
@@ -229,6 +277,7 @@ export function mountMap(container, {
       // sharp to their own native zoom.
       maxZoom: 24,
       attributionControl: false,
+      ...mapOptions,
     });
   } catch (error) {
     // A map that cannot construct must not take the workspace down with it: the panels
@@ -242,8 +291,10 @@ export function mountMap(container, {
   // Clicks become vertices while a measurement tool is armed; otherwise they are ignored.
   attachDrawing(map);
 
-  map.addControl(new window.maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
-  map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");
+  if (controls) {
+    map.addControl(new window.maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new window.maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");
+  }
 
   // Tile errors are reported once, not per tile: a site with no connectivity would
   // otherwise fill the console with hundreds of identical failures and bury anything
@@ -277,6 +328,11 @@ export function mountMap(container, {
       map.setStyle(styleFor("offline"));
       drawPinned(map);
     }
+    if (onNotice) {
+      onNotice({ code: fallBack ? "offline-fallback" : "tiles-unavailable",
+                 basemap: fallBack ? "offline" : (offline ? null : currentBasemap) });
+      return;
+    }
     container.appendChild(el("div", { class: "canvas-overlay bl" }, [
       el("span", { class: "chip warn", text: fallBack
         ? "no network — showing the offline tile cache"
@@ -284,6 +340,9 @@ export function mountMap(container, {
     ]));
   });
 
+  // The style takes sources from "style.load". "load" also waits for the first basemap
+  // tiles, so a tile request that never answers would keep the project off the map.
+  map.once("style.load", () => { map._odkReady = true; });
   map.on("load", () => {
     map._odkReady = true;
     const placeholder = container.querySelector(".placeholder");
@@ -293,7 +352,8 @@ export function mountMap(container, {
   });
 
   // A live coordinate readout, because a survey interface that cannot tell you where
-  // the cursor is has left something out.
+  // the cursor is has left something out. (The v1 furniture has its own.)
+  if (!controls) return map;
   const readout = el("div", { class: "canvas-overlay br", html: "—" });
   container.appendChild(readout);
   map.on("mousemove", (event) => {
@@ -311,7 +371,7 @@ export function showMission(map, { line = [], captures = [] } = {}) {
 
   if (line.length > 1) {
     const id = "odk-mission-line";
-    if (map.getSource(id)) map.removeLayer(id), map.removeSource(id);
+    if (map.getSource(id)) removeLayersOn(map, id), map.removeSource(id);
     map.addSource(id, {
       type: "geojson",
       data: { type: "Feature", geometry: { type: "LineString", coordinates: line } },
@@ -324,7 +384,7 @@ export function showMission(map, { line = [], captures = [] } = {}) {
 
   if (captures.length) {
     const id = "odk-captures";
-    if (map.getSource(id)) map.removeLayer(id), map.removeSource(id);
+    if (map.getSource(id)) removeLayersOn(map, id), map.removeSource(id);
     map.addSource(id, {
       type: "geojson",
       data: {
@@ -364,9 +424,21 @@ export function showMission(map, { line = [], captures = [] } = {}) {
 
 const PROJECT_IDS = [];
 
+/* Every layer drawing from `source`, removed so the source itself can be. Other modules
+   stack layers on these sources (js/odk/map/theme.js puts a casing under each line),
+   and MapLibre refuses to remove a source a layer still uses. */
+function removeLayersOn(map, source) {
+  for (const layer of [...(((map.getStyle() || {}).layers) || [])]) {
+    if (layer.source === source && map.getLayer(layer.id)) map.removeLayer(layer.id);
+  }
+}
+
 function clearProject(map) {
   for (const id of PROJECT_IDS.splice(0)) {
     if (map.getLayer(id)) map.removeLayer(id);
+  }
+  for (const layer of [...(((map.getStyle() || {}).layers) || [])]) {
+    if (String(layer.source || "").startsWith("odk-p-")) removeLayersOn(map, layer.source);
   }
   const sources = Object.keys((map.getStyle() || {}).sources || {});
   for (const id of sources) if (id.startsWith("odk-p-")) map.removeSource(id);
@@ -420,6 +492,9 @@ export async function showProject(map, ask) {
   clearProject(map);
   const bounds = [Infinity, Infinity, -Infinity, -Infinity];
   let placed = 0;
+  // What went on the map for each project layer, read by js/odk/map/furniture.js (the
+  // Layers popover, the elevation legend, the resolution chip).
+  const drawn = [];
 
   // Rasters first so every vector sits on top of them.
   const layers = ((listed && listed.layers) || []).filter((l) => l.visible !== false);
@@ -437,6 +512,7 @@ export async function showProject(map, ask) {
         const [w, s, e, n] = tiles.bounds;
         extend(bounds, [[w, n], [e, n], [e, s], [w, s]]);
       }
+      drawn.push({ layer, mapLayers: [id], source: "tiles", tiles });
       placed += 1;
       continue;
     }
@@ -446,6 +522,7 @@ export async function showProject(map, ask) {
     addLayer(map, { id, type: "raster", source: id,
                     paint: { "raster-opacity": layer.opacity ?? 0.9 } });
     extend(bounds, preview.coordinates);
+    drawn.push({ layer, mapLayers: [id], source: "preview", tiles: null });
     placed += 1;
   }
   for (const layer of layers.filter((l) => l.kind === "vector")) {
@@ -462,6 +539,7 @@ export async function showProject(map, ask) {
                     filter: ["==", ["geometry-type"], "Point"],
                     paint: { "circle-radius": 3, "circle-color": "#a78bfa" } });
     geometriesOf(read.geojson).forEach((g) => extend(bounds, g.coordinates));
+    drawn.push({ layer, mapLayers: [`${id}-fill`, `${id}-line`, `${id}-pt`], source: "geojson", tiles: null });
     placed += 1;
   }
 
@@ -515,11 +593,20 @@ export async function showProject(map, ask) {
   }
 
   // Drawing in progress stays above everything the project holds.
-  for (const id of ["odk-draw-fill", "odk-draw-line", "odk-draw-points"]) {
+  for (const id of ["odk-draw-fill", "odk-draw-line", "odk-draw-points", "odk-draw-vertex"]) {
     if (map.getLayer(id)) map.moveLayer(id);
   }
   map._odkPlaced = placed;
-  return placed && Number.isFinite(bounds[0]) ? bounds : null;
+  const extent = placed && Number.isFinite(bounds[0]) ? bounds : null;
+  map._odkProjectLayers = drawn;
+  map._odkProjectBounds = extent;
+  // Hidden layers are not drawn, but a Layers control still lists them.
+  map._odkProjectListed = (listed && listed.layers) || [];
+  const container = map.getContainer && map.getContainer();
+  if (container && typeof CustomEvent === "function") {
+    container.dispatchEvent(new CustomEvent("odk:project", { bubbles: true, detail: { layers: drawn, bounds: extent } }));
+  }
+  return extent;
 }
 
 /** Fit a map to [west, south, east, north], keeping a point from zooming to the tiles. */

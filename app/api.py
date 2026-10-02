@@ -3955,6 +3955,31 @@ class Api:
         return ok(epsg=int(epsg), name=CRS.from_epsg(int(epsg)).name)
 
     @guard
+    def describe_crs(self, epsg: int) -> dict[str, Any]:
+        """Name, short label, units and WKT of a CRS, from PROJ.
+
+        The map's CRS chip shows the project's EPSG and copies its WKT, the text a GIS
+        needs to place the products; the page cannot ask PROJ itself.
+        """
+        from pyproj import CRS
+        from pyproj.exceptions import CRSError
+
+        try:
+            crs = CRS.from_epsg(int(epsg))
+        except (CRSError, ValueError, TypeError) as exc:
+            return fail(f"EPSG:{epsg} is not a coordinate reference system PROJ knows ({exc}).")
+        zone = crs.utm_zone
+        axis = crs.axis_info[0] if crs.axis_info else None
+        return ok(
+            epsg=int(epsg),
+            name=crs.name,
+            short=f"UTM {zone}" if zone else crs.name,
+            projected=bool(crs.is_projected),
+            units=axis.unit_name if axis else None,
+            wkt=crs.to_wkt(pretty=True),
+        )
+
+    @guard
     def set_project_crs(self, epsg: int | None = None) -> dict[str, Any]:
         """Choose the projected CRS reconstructions are written in; None = automatic.
 
