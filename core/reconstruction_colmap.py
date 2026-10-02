@@ -687,6 +687,12 @@ class ColmapReconstructor:
         self.warnings: list[str] = []
         self._cloud_is_dense = False
         self._should_cancel: Callable[[], bool] | None = None
+        # Multiband orthomosaic: registered image name -> float band stack (bands, H, W)
+        # in the same pixel frame as that image (core.multispectral writes these). When
+        # set, every band is orthorectified with the solved poses onto the ortho grid.
+        self.band_sources: dict[str, str] = {}
+        self.band_names: list[str] = []
+        self.band_orthomosaic_path: str | None = None
 
     # -- helpers ---------------------------------------------------------
 
@@ -1491,6 +1497,7 @@ class ColmapReconstructor:
         anchor: geo.GeoAnchor,
         progress: Callable[[int, str], None],
         max_dimension: int = 8192,
+        band_sources: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Orthorectify the source photos at their own resolution onto a sparse-cloud surface.
 
@@ -1538,6 +1545,9 @@ class ColmapReconstructor:
         surface = LinearNDInterpolator(np.column_stack([east, north]), up)
         rotation = anchor.rotation_matrix
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        bands: np.ndarray | None = None
+        if band_sources:
+            from .multispectral import read_reflectance_stack
         best = np.full((height, width), -np.inf, dtype=np.float32)
         rows_per_chunk = max(1, 2_000_000 // max(width, 1))
 
@@ -1548,12 +1558,27 @@ class ColmapReconstructor:
             extrinsic = _cam_from_world_matrix(image)
             if camera is None or extrinsic is None:
                 continue
-            source = cv2.imread(str(image_dir / _image_name(image)), cv2.IMREAD_COLOR)
+            stack = None
+            if band_sources:
+                stack_path = band_sources.get(_image_name(image))
+                if not stack_path:
+                    continue
+                stack = read_reflectance_stack(stack_path)
+                if bands is None:
+                    bands = np.full((stack.shape[0], height, width), np.nan, dtype=np.float32)
+                source = np.zeros(stack.shape[1:] + (3,), dtype=np.uint8)  # geometry only
+            else:
+                source = cv2.imread(str(image_dir / _image_name(image)), cv2.IMREAD_COLOR)
             if source is None:
                 continue
             cam_w = int(getattr(camera, "width", source.shape[1]) or source.shape[1])
             cam_h = int(getattr(camera, "height", source.shape[0]) or source.shape[0])
             if (cam_w, cam_h) != (source.shape[1], source.shape[0]):
+                if stack is not None:
+                    # Band stacks are sampled in their own pixel frame; measured
+                    # reflectance is never resampled to fit a mismatched camera.
+                    self._warn(f"Band stack for {_image_name(image)} does not match its camera size; skipped.")
+                    continue
                 source = cv2.resize(source, (cam_w, cam_h), interpolation=cv2.INTER_AREA)
             k_matrix = _camera_matrix(camera)
             principal = k_matrix[:2, 2]
@@ -1592,11 +1617,18 @@ class ColmapReconstructor:
                     continue
                 rr, cc, px, py = rr[inside], cc[inside], px[inside], py[inside]
                 score = (1.0 - np.hypot(px - principal[0], py - principal[1]) / half_diag).astype(np.float32)
+                if stack is not None:
+                    samples = stack[:, py.astype(np.int64), px.astype(np.int64)]
+                    usable = np.all(np.isfinite(samples), axis=0)
+                    score = np.where(usable, score, -np.inf).astype(np.float32)
                 better = score > best[rr, cc]
                 if not better.any():
                     continue
                 rr, cc = rr[better], cc[better]
-                canvas[rr, cc] = source[py[better].astype(np.int64), px[better].astype(np.int64)][:, ::-1]
+                if stack is not None:
+                    bands[:, rr, cc] = samples[:, better]
+                else:
+                    canvas[rr, cc] = source[py[better].astype(np.int64), px[better].astype(np.int64)][:, ::-1]
                 best[rr, cc] = score[better]
 
         filled = np.isfinite(best)
@@ -1604,6 +1636,7 @@ class ColmapReconstructor:
             return None
         return {
             "ortho": canvas,
+            "bands": bands,
             "valid": filled,
             "west": west,
             "north": north_max,
@@ -2040,12 +2073,61 @@ class ColmapReconstructor:
         elif anchor is not None:
             self._warn("rasterio is not installed, so no GeoTIFF was written. Only PNG previews exist.")
 
+        if self.band_sources:
+            self._write_band_orthomosaic(out_dir, world_points, registered, camera_map, image_dir, anchor,
+                                         progress, artifacts)
+
         if anchor is not None:
             track = self._camera_track_geojson(registered, fixes, anchor)
             if track is not None:
                 artifacts["camera_track"] = geo.write_geojson(out_dir / "camera_track.geojson", track)
 
         return artifacts
+
+    def _write_band_orthomosaic(
+        self, out_dir: Path, world_points: np.ndarray, registered: Sequence[Any], camera_map: dict[int, Any],
+        image_dir: Path, anchor: geo.GeoAnchor | None, progress: Callable[[int, str], None],
+        artifacts: dict[str, Any],
+    ) -> None:
+        """Orthorectify every band of the supplied float stacks with the solved poses.
+
+        Same geometry as the RGB orthomosaic on the interpolated surface: each output cell
+        takes its values from the view whose image centre is nearest, and all bands come
+        from that one view, so band ratios (NDVI) never mix observations.
+        """
+        self.band_orthomosaic_path = None
+        if anchor is None:
+            self._warn("No band orthomosaic: the run is not georeferenced.")
+            return
+        if not geo.geo_capabilities()["rasterio"]:
+            self._warn("No band orthomosaic: rasterio is not installed.")
+            return
+        fine = self._orthophoto_on_interpolated_surface(
+            world_points, registered, camera_map, image_dir, anchor, progress, band_sources=self.band_sources)
+        if fine is None or fine.get("bands") is None:
+            self._warn("No band orthomosaic: no registered view had a band stack.")
+            return
+        path = geo.write_geotiff(
+            out_dir / "orthomosaic_bands.tif", fine["bands"].astype(np.float32), nodata=float("nan"),
+            epsg=anchor.epsg, west=fine["west"], north=fine["north"], pixel_size=fine["pixel_size"], cog=False,
+        )
+        try:
+            import rasterio
+
+            with rasterio.open(path, "r+") as dst:
+                dst.update_tags(
+                    ODK_QUANTITY="surface_reflectance",
+                    ODK_BANDS=",".join(self.band_names),
+                    ODK_SURFACE="interpolated between triangulated points (not a measured DSM)",
+                )
+                for index, name in enumerate(self.band_names[: dst.count], start=1):
+                    dst.set_band_description(index, name)
+                    dst.update_tags(index, BAND=name)
+        except Exception as exc:  # noqa: BLE001
+            self._warn(f"Band names could not be written into the band orthomosaic: {exc}")
+        self.band_orthomosaic_path = str(path)
+        artifacts["orthomosaic_bands"] = str(path)
+        artifacts["orthomosaic_bands_gsd_m"] = fine["pixel_size"]
 
     def _build_mesh(self, out_dir: Path, points: np.ndarray, colors: np.ndarray) -> dict[str, str]:
         """Poisson surface reconstruction. Skipped with a warning when Open3D is absent."""

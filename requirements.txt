@@ -24,6 +24,9 @@ httpx>=0.27
 
 # Geospatial
 rasterio>=1.3
+# Decodes compressed / 12-bit packed TIFFs (MicaSense RedEdge-P band images) for tifffile.
+tifffile>=2023.1
+imagecodecs>=2024.1
 pyproj>=3.6
 
 # Photogrammetry

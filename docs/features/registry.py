@@ -819,6 +819,55 @@ PROCESSING = [
       "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run. "
       "Reconstructions run from the app and every report file now record provenance; "
       "Api.verify_provenance / record_provenance and Reports > Verify Provenance expose it."),
+    F("pr.multispectral.reflectance", "Multispectral radiometric calibration", "workers", "Processing",
+      "MicaSense band TIFFs (incl. 12-bit packed RedEdge-P) decoded, grouped into captures and "
+      "converted to surface reflectance from the camera's own radiometric model plus either the "
+      "DLS2 sun-sensor irradiance or a calibration-panel capture whose albedo the camera read from "
+      "the panel QR code; the panel reading checked against its albedo.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestReading", "tests/test_multispectral_real_data.py::TestPanelCalibration"],
+      "core/multispectral.py. Measured 2026-10-02 on MicaSense's MIT sample panel capture "
+      "(RedEdge-P, panel RP06-2051037-OB, albedo 0.485-0.488): DLS-derived panel reflectance "
+      "error blue -17.7 %, green -4.4 %, red +6.2 %, NIR +0.6 %, red edge +11.2 %, pan +14.1 % "
+      "(mean |error| 9.0 %). Altum sample: +39 % to +75 %, with the DLS reading 34 % less direct "
+      "sun at the panel than 2 min later in flight, so prefer the panel there; Altum green has no "
+      "panel reading and is left uncalibrated rather than given a typical albedo. Altum LWIR "
+      "decoded from centi-kelvin (8.1-43.2 C). Multisensor NDVI now uses reflectance for MicaSense "
+      "bands and labels any other input 'uncalibrated_dn_ratio'."),
+    F("pr.multispectral.alignment", "Multispectral band alignment", "workers", "Processing",
+      "Bands undistorted with their own XMP lens models and registered to the rig reference band, "
+      "with a measured per-band registration figure.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestAlignment"],
+      "Initial homography from the factory rig rotations (Camera:RigRelatives), refined by pyramid "
+      "ECC on gradient images and kept only when it agrees with the reference band better than the "
+      "rig model. Buergewald (24 captures): gradient correlation with green, median/min: blue "
+      "0.89/0.78, red 0.57/0.45, NIR 0.50/0.19, red edge 0.70/0.51."),
+    F("pr.multispectral.orthomosaic", "Multiband reflectance orthomosaic", "workers", "Processing",
+      "Per-band surface-reflectance orthomosaic, georeferenced, from the same solved camera poses "
+      "for every band so band ratios never mix views.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestBandOrthomosaic"],
+      "COLMAP solves poses on geotagged reflectance composites; ColmapReconstructor.band_sources "
+      "then orthorectifies each float band stack onto the ortho grid (orthomosaic_bands.tif, "
+      "float32, NaN nodata, band names + ODK_QUANTITY tags). Buergewald: 24/24 registered, "
+      "0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632, 0.0625 m/px, 5 bands. Sparse surface "
+      "only (no dense MVS in this run). Tools: tools/run_multispectral.py."),
+    F("pr.multispectral.app", "Multispectral processing from the app", "workers", "Processing",
+      "MicaSense captures turned into reflectance, a band orthomosaic and vegetation indices from "
+      "the application (Api job and cockpit action), not only from a CLI, with the result on the map.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestApplicationPath",
+       "tests/test_multispectral_real_data.py::TestPanelCheckScope"],
+      "Api.process_multispectral (background job) and Survey Packs > 'Multispectral to reflectance "
+      "(MicaSense)' run core.multispectral.run_survey_report, the same chain as "
+      "tools/run_multispectral.py. Measured 2026-10-02 through the Api on Buergewald (24 captures, "
+      "DLS): 24/24 registered, 0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632; NDVI mean "
+      "0.568, NDRE 0.234, GNDVI 0.538; layers Reflectance bands/NDVI/NDRE/GNDVI registered. "
+      "Buergewald's DLS reflectance is UNVALIDATED: the dataset has no panel of its own. The REDEDGE-P "
+      "panel (camera PR01-2145021-MS, another flight; DLS panel mean |error| 9.0 %) checks the DLS "
+      "model on that camera only; the survey is PR03-2117081-MS. panel_check_scope compares camera "
+      "serial and FlightId, the report marks such a check applies_to_survey=false and states "
+      "survey_reflectance_validation=unvalidated. With fewer than 3 captures the orthomosaic is "
+      "skipped and the report says so; reflectance stacks are still produced. The report also gives the share of pixels with "
+      "reflectance above 1 (NIR 1.4 %, other bands 0 %): uneven DLS calibration or glints, masked "
+      "by the index pack's valid_max=1.0."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1333,13 +1382,25 @@ INDIA_FIRST = [
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
       "India pack: Agriculture",
       "Crop, soil, unwanted vegetation and water masks with canopy cover and bare/missing regions.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster",
+                      "tests/test_india_agriculture_pack.py::test_index_cover_classes_feed_canopy_cover_and_need_a_scope",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_canopy_from_a_calibrated_index_then_plant_separability",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "Also from a calibrated NDVI (classify_index_cover, Api.india_index_cover, cockpit Canopy cover): "
+      "canopy / sparse / bare cut points measured per survey by 3-class multi-Otsu, scope UNVALIDATED. "
+      "Real data: Buergewald RedEdge-P DLS NDVI cuts 0.430 / 0.708, canopy cover 35.8% of 793.3 m2 "
+      "(canopy 284.0 m2, sparse 209.5 m2, bare 299.8 m2). Consistency only, no ground truth: a visible-band "
+      "excess-green split (no NIR) agrees on 89.9% of 149,460 canopy/bare px; 99.9% of bare px are not green, "
+      "79.3% of canopy px are green."),
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
       "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable",
-                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration"],
-      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_agriculture_pack_runs_on_the_orthomosaic"],
+      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. "
+      "Real data: Buergewald RedEdge-P DLS reflectance orthomosaic, 203,091 valid px: NDVI mean 0.565 "
+      "(-0.06..0.98), NDRE mean 0.233, GNDVI mean 0.536."),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
@@ -1347,7 +1408,13 @@ INDIA_FIRST = [
     F("pack.agriculture.count", "Plant and tree counting", "vision",
       "India pack: Agriculture",
       "Geolocated plant/tree counts with missing and health categories only where validated.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health",
+                      "tests/test_india_agriculture_pack.py::test_plant_count_from_canopy_refuses_merged_rows_and_counts_separate_plants",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "count_plants_from_canopy (Api.india_plant_count_from_canopy, cockpit Plant count) measures separability "
+      "before counting. Real data: Buergewald RedEdge-P at 6.25 cm, max plant footprint 0.25 m2: 80.4% of "
+      "284.0 m2 canopy lies in 28 merged patches (largest 167.0 m2), so the result is not_applicable "
+      "with no count. No plant count is claimed for that survey."),
 
     # Roads, power and rail
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
