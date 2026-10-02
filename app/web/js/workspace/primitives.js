@@ -165,6 +165,25 @@ export function properties(spec) {
   return el("table", { class: "props", "data-rows": "properties" }, [body]);
 }
 
+/**
+ * What every form field holds right now, by key.
+ *
+ * A form is drawn again whenever its panel is (a workspace switch, a tab change), and
+ * each redraw used to put the spec's default back in the input: the panel showed
+ * "60 m" while Plan sent the 80 m typed a minute earlier. The shell reads its settings
+ * from this same object, so what a field shows and what an action sends cannot part.
+ */
+export const FORM_VALUES = {};
+
+/** The value each field of a spec shows before anyone edits it. */
+export function formDefaults(spec) {
+  const out = {};
+  for (const item of spec || []) {
+    if (item.key) out[item.key] = item.value ?? "";
+  }
+  return out;
+}
+
 export function fields(spec, onChange) {
   const wrap = el("div");
   for (const item of spec) {
@@ -174,11 +193,17 @@ export function fields(spec, onChange) {
       }, [el("span", { class: "k", text: item.group })]));
       continue;
     }
+    const current = item.key in FORM_VALUES ? FORM_VALUES[item.key] : item.value;
     const input = item.options
       ? el("select", {}, item.options.map((o) =>
-          el("option", { value: o, text: o, ...(o === item.value ? { selected: "" } : {}) })))
-      : el("input", { type: item.type || "text", value: item.value ?? "" });
-    input.addEventListener("change", () => onChange && onChange(item.key, input.value));
+          el("option", { value: o, text: o, ...(String(o) === String(current) ? { selected: "" } : {}) })))
+      : el("input", { type: item.type || "text", value: current ?? "" });
+    if (item.key) input.dataset.key = item.key;
+    if (item.hint) input.title = item.hint;
+    input.addEventListener("change", () => {
+      FORM_VALUES[item.key] = input.value;
+      if (onChange) onChange(item.key, input.value);
+    });
     wrap.appendChild(el("div", { class: "field" }, [
       el("label", { text: item.label }),
       input,

@@ -324,6 +324,70 @@ const NEEDS_DATASET = new Set(["Process", "New Job", "Start", "Run AI", "Match C
  * what is missing. `confirm` marks the ones that start real work or touch an aircraft --
  * a misclick on Abort should not be the same gesture as a misclick on Pan.
  */
+/* The saved mission an action is about. Version numbers count per mission name, so
+   "v2" means nothing until the mission is known. One mission: it, without asking.
+   Several: the operator picks. Returns "" when nothing is saved (the Api then answers
+   for every mission), or null when the operator cancels. */
+async function chooseMission(ctx, title) {
+  const listed = await call("list_mission_versions");
+  const names = [...new Set(((listed && listed.versions) || [])
+    .map((v) => v.mission_name || "mission"))];
+  if (names.length <= 1) return names[0] || "";
+  const picked = await ctx.choose(title, names);
+  return picked == null ? null : picked;
+}
+
+/** A history row as a chooser option: the version, its template, and what changed. */
+function versionOption(h) {
+  const changes = (h.changes || []).join("; ");
+  return {
+    label: `v${h.version_num}${h.template ? ` · ${h.template}` : ""}`
+      + (h.waypoints ? ` · ${h.waypoints} wps` : ""),
+    value: String(h.version_num),
+    hint: [h.created_at && String(h.created_at).slice(0, 16).replace("T", " "), changes]
+      .filter(Boolean).join(" — "),
+  };
+}
+
+/* What Repeat Survey can repeat. A repeat is of a SAVED survey -- the one that was
+   flown and needs flying again -- and it always repeated whatever was planned on
+   screen instead. Saved versions are offered newest first, the plan on screen last. */
+function repeatSources(listed, state) {
+  const versions = ((listed && listed.versions) || []).slice()
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || ""))
+      || (b.version_num || 0) - (a.version_num || 0));
+  const options = versions.map((v) => ({
+    label: `${v.mission_name || "mission"} v${v.version_num}`,
+    value: JSON.stringify([v.mission_name || "", v.version_num]),
+    hint: [v.template, v.created_at && String(v.created_at).slice(0, 10)].filter(Boolean).join(" \u00b7 "),
+  }));
+  if (state && state.has_mission) {
+    options.push({ label: "The mission planned on screen", value: "current", hint: "not saved" });
+  }
+  return options;
+}
+
+/* The modes mission.repeat accepts. This offered "same-camera" and "same-terrain", which
+   it refuses as unknown, so two of three rows could only fail. "exact" keeps the lines,
+   altitudes and capture points, which is what makes two surveys comparable; a new camera
+   (altitude re-solved to hold the GSD), a new terrain model or a redrawn boundary are
+   real reasons to re-solve part of it, and each says what it changed. */
+function repeatModes(state) {
+  const terrain = (state && state.terrain_source) || "";
+  const aoi = (state && state.aoi) || [];
+  return [
+    { label: "exact", value: "exact", hint: "same lines, altitudes and capture points" },
+    { label: "exact, with a different camera", value: "camera",
+      hint: "altitude re-solved to hold the ground resolution" },
+    { label: "updated terrain", value: "updated_terrain",
+      hint: terrain ? `altitudes re-derived from ${terrain.split(/[\/]/).pop()}`
+        : "needs a terrain source (File > Import Terrain)" },
+    { label: "modified boundary", value: "modified_boundary",
+      hint: aoi.length >= 3 ? "clipped to the area of interest drawn now"
+        : "needs an area of interest drawn on the map" },
+  ];
+}
+
 export const ACTIONS = {
   /* -- projects and data ------------------------------------------------- */
   "New Project": {
@@ -1231,25 +1295,31 @@ export const ACTIONS = {
   "Compare Versions": {
     describe: "What changed between two saved versions of this mission.",
     async run(ctx) {
-      const listed = await tryCall("mission_version_history");
+      /* call(), not tryCall(): mission_version_history raised a TypeError once two
+         versions existed, tryCall turned it into null, and this said "Two saved
+         versions are needed" over three saved versions. A failure is now a failure. */
+      const mission = await chooseMission(ctx, "Compare which mission?");
+      if (mission === null) return { skipped: "No mission chosen." };
+      const listed = await call("mission_version_history", mission);
       const history = (listed && listed.history) || [];
       if (history.length < 2) {
-        return { skipped: "Two saved versions are needed to compare. Save again first." };
+        return { skipped: `"${mission || "mission"}" has ${history.length} saved version(s); `
+          + "two are needed to compare. Save again first." };
       }
-      const labels = history.map((h) => `v${h.version_num}`);
-      const from = await ctx.choose("Compare from", labels);
-      if (!from) return { skipped: "No version chosen." };
-      const to = await ctx.choose("Compare to", labels.filter((l) => l !== from));
-      if (!to) return { skipped: "No second version chosen." };
-      const result = await call("diff_mission_versions",
-        Number(from.slice(1)), Number(to.slice(1)));
+      const options = history.map(versionOption);
+      const from = await ctx.choose("Compare from", options);
+      if (from == null) return { skipped: "No version chosen." };
+      const to = await ctx.choose("Compare to", options.filter((o) => o.value !== from));
+      if (to == null) return { skipped: "No second version chosen." };
+      const result = await call("diff_mission_versions", Number(from), Number(to), mission);
       const diff = result.diff || {};
-      const changes = diff.changes || diff.fields || [];
+      /* The Api answers {summary: [...], significant, other, identical}. This read
+         diff.changes / diff.fields, which do not exist, so every pair of versions was
+         reported "identical". */
+      const lines = diff.summary || [];
       return {
-        message: changes.length
-          ? `${from} to ${to}: ${changes.length} change(s). `
-            + changes.slice(0, 4).map((c) => (typeof c === "string" ? c : c.field || "")).join(", ")
-          : `${from} and ${to} are identical.`,
+        message: diff.identical ? `${mission} v${from} and v${to} are identical.`
+          : `${mission} v${from} to v${to}: ${lines.join(" ")}`,
       };
     },
   },
@@ -1292,17 +1362,35 @@ export const ACTIONS = {
   "Repeat Survey": {
     describe: "Fly a saved mission again, so two surveys are comparable.",
     async run(ctx) {
-      const mode = await ctx.choose("Repeat as",
-        ["exact", "same-camera", "same-terrain"]);
+      // A saved survey (newest first) or the plan on screen; see repeatSources.
+      const state = await tryCall("get_state");
+      const options = repeatSources(await tryCall("list_mission_versions"), state);
+      if (!options.length) return { skipped: "Nothing to repeat: plan a mission, or save one, first." };
+      const source = await ctx.choose("Repeat which survey?", options);
+      if (source == null) return { skipped: "No survey chosen." };
+      const [name, version] = source === "current" ? ["", null] : JSON.parse(source);
+      const mode = await ctx.choose("Repeat as", repeatModes(state));
       if (!mode) return { skipped: "No mode chosen." };
-      /* "exact" is the one that makes two surveys comparable: same lines, same
-         altitudes, same capture points. The others re-solve part of the plan and are
-         offered because a changed camera or a new terrain model is a real reason to. */
-      const result = await call("repeat_mission", null, mode === "exact" ? "exact" : mode);
+      let camera = "";
+      if (mode === "camera") {
+        const cams = await call("list_cameras");
+        camera = await ctx.choose("Repeat with which camera?",
+          (cams.cameras || []).map((c) => ({ label: c.name || c.key, value: c.key || c.name })));
+        if (!camera) return { skipped: "No camera chosen." };
+      }
+      const result = await call("repeat_mission", version, mode === "camera" ? "exact" : mode,
+        camera, mode === "updated_terrain" ? (state && state.terrain_source) || "" : "", name);
       const repeat = result.repeat || {};
+      const what = version == null ? "the planned mission" : `${name || "mission"} v${version}`;
+      /* The Api answers capture_count, altitude_m, camera, achieved_gsd_cm, changes,
+         comparability and warnings. This read repeat.name and repeat.differences, which
+         it never sends, so every repeat said only "Repeat prepared." */
+      const gsd = repeat.achieved_gsd_cm != null ? `, GSD ${Number(repeat.achieved_gsd_cm).toFixed(2)} cm` : "";
       return {
-        message: `Repeat prepared${repeat.name ? ` as "${repeat.name}"` : ""}`
-          + (repeat.differences ? `; ${repeat.differences} difference(s) from the original.` : "."),
+        message: `Repeat of ${what} (${repeat.mode || mode}): ${repeat.capture_count ?? 0} capture point(s)`
+          + ` at ${repeat.altitude_m ?? "?"} m with ${repeat.camera || "the original camera"}${gsd}; `
+          + `${repeat.comparability || "comparability not stated"}. `
+          + [...(repeat.changes || []), ...(repeat.warnings || [])].join(" "),
         refresh: true,
       };
     },
@@ -1324,17 +1412,27 @@ export const ACTIONS = {
       const listed = await tryCall("list_cameras");
       const cameras = (listed && listed.cameras) || [];
       if (!cameras.length) return { skipped: "No camera profiles available." };
-      const pick = await ctx.choose("Camera", cameras.map((c) => c.name || c.key || String(c)));
+      /* The choice is the profile KEY; the name is only its label. Passing the name
+         made describe_camera fall back to the generic placeholder for every camera, and
+         the toast printed that placeholder GSD under the real camera's name. */
+      const pick = await ctx.choose("Camera", cameras.map((c) => ({
+        label: c.name || c.key, value: c.key || c.name,
+        hint: c.key && c.name ? c.key : "",
+      })));
       if (!pick) return { skipped: "No camera chosen." };
       const altitude = await ctx.prompt("At what altitude (m)?", "60");
+      if (altitude === null) return { skipped: "No altitude given." };
       const described = await call("describe_camera", pick, Number(altitude || 60));
       const cam = described.camera || {};
+      const fp = Array.isArray(cam.footprint_m)
+        ? `${cam.footprint_m[0]} x ${cam.footprint_m[1]} m` : cam.footprint_m;
       /* GSD is the number that decides whether the survey can see the defect, so it
-         leads. */
+         leads. A placeholder profile says so instead of passing as the camera's own. */
       return {
-        message: `${pick} at ${altitude} m: `
+        message: `${cam.name || pick} at ${altitude || 60} m: `
           + (cam.gsd_cm !== undefined ? `GSD ${Number(cam.gsd_cm).toFixed(2)} cm` : "GSD not reported")
-          + (cam.footprint_m ? `, footprint ${cam.footprint_m}` : ""),
+          + (fp ? `, footprint ${fp}` : "")
+          + (cam.known === false ? `. ${cam.warning || "Placeholder sensor geometry, not this camera's."}` : ""),
       };
     },
   },
@@ -1448,19 +1546,22 @@ export const ACTIONS = {
   History: {
     describe: "Every saved version of this mission, and what changed.",
     async run(ctx) {
-      const listed = await tryCall("mission_version_history");
+      const mission = await chooseMission(ctx, "History of which mission?");
+      if (mission === null) return { skipped: "No mission chosen." };
+      // call(): a failed read is an error to show, not "no saved versions".
+      const listed = await call("mission_version_history", mission);
       const history = (listed && listed.history) || [];
       if (!history.length) return { skipped: "This mission has no saved versions yet." };
-      const labels = history.map((h) =>
-        `v${h.version_num}${h.summary ? ` \u2014 ${h.summary}` : ""}`);
-      const pick = await ctx.choose("Restore which version?", labels);
-      if (!pick) return { skipped: "No version chosen." };
-      const version = history[labels.indexOf(pick)].version_num;
+      /* Each row says what changed from the version before it (the Api's `changes`);
+         the label read h.summary, which the Api never sends, so every row was "v1". */
+      const pick = await ctx.choose(`Restore which version of ${mission}?`,
+        history.slice().reverse().map(versionOption));
+      if (pick == null) return { skipped: "No version chosen." };
       /* Restoring saves the old plan as a NEW version rather than rewinding, so the
          history stays a record of what happened rather than of what is current. */
-      const result = await call("restore_mission_version", version);
+      const result = await call("restore_mission_version", Number(pick), mission);
       return {
-        message: `Restored v${version} as v${result.version?.version_num ?? "?"}.`,
+        message: `Restored ${mission} v${pick} as v${result.version?.version_num ?? "?"}.`,
         refresh: true,
       };
     },
@@ -1522,10 +1623,19 @@ export const ACTIONS = {
         if (!lon || !lat) return { skipped: "A marker needs a longitude and a latitude." };
         point = [Number(lon), Number(lat)];
       }
-      const result = await call("add_site_marker", name, kind, [point]);
+      /* The hazard check measures the route against each marker's radius; a marker
+         made here always had radius 0, so "5 m inside the mast's radius" could never
+         be said of one. Asked for, with 0 meaning "just this point". */
+      const radiusText = await ctx.prompt("Radius around it (m, 0 for a point)", "0");
+      if (radiusText === null || radiusText === undefined) return { skipped: "No radius given." };
+      const radius = Number(String(radiusText).trim() || 0);
+      if (!Number.isFinite(radius) || radius < 0) {
+        return { skipped: `"${radiusText}" is not a radius in metres.` };
+      }
+      const result = await call("add_site_marker", name, kind, [point], "", radius);
       /* It answers with the whole marker list, not the one just added. */
       const total = (result.markers || []).length;
-      return { message: `Added ${kind} "${name}". ${total} marker(s) on this site.`
+      return { message: `Added ${kind} "${name}"${radius ? ` (radius ${radius} m)` : ""}. ${total} marker(s) on this site.`
                  + (result.warning ? ` ${result.warning}` : ""),
                refresh: true };
     },

@@ -191,8 +191,13 @@ The status bar's connection chip reports the real state of the bridge. With a pr
 attached it reads **connected — N project(s)**, next to the version from the package; in
 demo mode (`?demo=1`) it reads **demo mode**; with no bridge at all it reads **not
 connected to a project**, and every panel says "Not connected" instead of drawing
-anything. The project name, CRS, clock and storage location in the frame come from the
-application too.
+anything. The project name, clock and storage location in the frame come from the
+application too. The status bar names two coordinate systems: the map's, which is always
+WGS84 (**map EPSG:4326**) because MapLibre draws in longitude and latitude, and the
+project's, which is the CRS of the project's own layers -- a UTM DSM makes it read
+**project EPSG:32617** -- preferring a projected CRS over plain longitude/latitude. A
+project with no layer that names a CRS reads **project CRS not known yet** rather than
+borrowing the map's.
 
 Toolbar actions call the `Api` (`js/workspace/actions.js`). An action whose prerequisite
 is absent -- no open project, no selected dataset, no bridge -- refuses before the call
@@ -203,9 +208,13 @@ every toolbar button in every workspace and fails if any action is unaccounted f
 Map canvases mount MapLibre (`js/workspace/mapview.js`). The Textured Mesh and Point
 Cloud views, and the Digital Twin canvas, mount the WebGL viewer
 (`js/workspace/viewer3d.js`). Raster views draw the project's own products, or name the
-one that has not been produced yet. A few canvas regions are still labelled frames with
-no data source behind them: Flight's **Telemetry Charts** and **Camera**, Thermal's
-**Thermal Histogram**, and the Developers **API console**. They show their title and a
+one that has not been produced yet. Mission Planning's **Simulation Timeline** is drawn
+from the planned route: altitude over flight time, the plan's average speed, a scrubber
+and Play, with a marker on the mission map at the scrubbed point; before a plan exists
+it says to plan one. A few canvas regions are still labelled frames with no data source
+behind them: Flight's **Telemetry Charts** and **Camera**, Thermal's **Thermal
+Histogram**, the Developers **API console**, and the Settings canvas (**Select a
+section.**), whose sections are the panels beside it. They show their title and a
 one-line description, never numbers.
 
 ## Extending it

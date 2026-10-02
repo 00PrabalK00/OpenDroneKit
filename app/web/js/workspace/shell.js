@@ -7,7 +7,7 @@
  */
 
 import { Dock } from "./dock.js";
-import { el, selection } from "./primitives.js";
+import { el, FORM_VALUES, selection } from "./primitives.js";
 import {
   WORKSPACES, WORKSPACE_BY_ID, auditLine, missionFormValues, setMissionFormValue,
 } from "./workspaces.js";
@@ -96,6 +96,8 @@ const MISSION_OPTION_KEYS = {
   speed: "speed_m_s",
   standoff: "standoff_m",
   rth: "rth_altitude_m",
+  // The camera the lines are sized for; plan_mission reads it as `camera`.
+  camera: "camera",
   // Mission-type inputs, already named as plan_mission reads them.
   thermal_camera: "thermal_camera",
   target_gsd_cm: "target_gsd_cm",
@@ -189,6 +191,9 @@ const MISSION_TEMPLATES = {
 export class Shell {
   constructor(root) {
     this.root = root;
+    // The same object the forms draw from (primitives.FORM_VALUES), so a field and the
+    // action that reads it never hold two different values.
+    this.settings = FORM_VALUES;
     this.workspaceId = localStorage.getItem(LAST_WORKSPACE) || "home";
     if (!WORKSPACE_BY_ID[this.workspaceId]) this.workspaceId = "home";
     // Three states rather than two, because "no projects" and "no connection" are
@@ -543,25 +548,27 @@ export class Shell {
           + "Copy cURL and Send Request act on this one.", "ok");
         return;
       }
-      case "template": {
-        // Picking a type in the Mission Types list sets the form's Type, so Plan plans
-        // it and the Mission tab shows it. It used to print the name and do nothing.
-        const label = String(value.label || name);
-        this.settings = this.settings || {};
-        this.settings.type = label;
-        setMissionFormValue("type", label);
-        this.dock.render(WORKSPACE_BY_ID[this.workspaceId]);
-        this.toast(`Mission type: ${label}. Plan uses it.`, "ok");
-        return;
-      }
       case "setting": {
         // Kept, so Plan uses what the operator typed. Without this the field updated
         // its own input and the planner ran on defaults -- the worst kind of broken,
         // because the screen agreed with the user and the output did not.
-        this.settings = this.settings || {};
         this.settings[value.key] = value.value;
+        // The Camera, Payload and Safety tabs describe these fields; read them again.
+        if (["camera", "alt", "payload_key", "rth"].includes(value.key)) {
+          window.dispatchEvent(new Event("odk:refresh"));
+        }
         // The label, not the raw value: the API token field must not be echoed.
         this.toast(value.label || `${value.key} = ${value.value}`, "ok");
+        return;
+      }
+      case "template": {
+        /* Picking a mission type in the Mission Types list printed its name and left
+           the form's Type -- which is what Plan sends -- as it was. It now sets Type, and
+           the form is redrawn to show it. */
+        const label = String(value.label || name);
+        setMissionFormValue("type", label);
+        if (this.workspaceId === "planning") this.dock.render(WORKSPACE_BY_ID.planning);
+        this.toast(`Mission type: ${label}. Plan uses it.`, "ok");
         return;
       }
       default:
@@ -725,6 +732,7 @@ export class Shell {
        pipeline, Mission History ran Simulate, Environment Capabilities ran Preflight. */
     const toWorkspace = {
       "mission.plan": "planning",
+      "mission.export": "planning",
       "mission.settings": "planning",
       "mission.history": "planning",
       "fly.connect": "flight",
@@ -746,7 +754,7 @@ export class Shell {
       "data.import_vector": "Add Layer",
       "mission.plan": "Plan",
       "mission.save": "Save",
-      "mission.export": "Export",
+      // mission.export (one format) is handled below: the generic Export verb wrote all six.
       "mission.export_all": "Export",
       "mission.history": "History",
       "recon.run": "Process",
@@ -819,11 +827,49 @@ export class Shell {
       case "recon.settings":
         this.toast("Reconstruction settings are the Processing Settings panel here; Process uses them.", "ok");
         return;
+      case "mission.export": {
+        /* Mission > Export DJI WPML .kmz (and .plan, .waypoints, Litchi, KML, GeoJSON)
+           went to the generic Export verb, which ignores the format and wrote all six
+           formats every time. The default window exports the one asked for; so does this. */
+        const format = String(payload.format || "");
+        if (!format) { await this.runAction("Export"); return; }
+        const result = await call("export_mission", [format]);
+        const written = Object.entries((result && result.written) || {});
+        const failed = written.filter(([, v]) => String(v).startsWith("failed"));
+        const files = written.filter(([, v]) => !String(v).startsWith("failed")).map(([, v]) => v);
+        if (!files.length) {
+          this.toast(`Export ${format}: ${failed.map(([, v]) => v).join("; ") || "nothing was written."}`, "error");
+          return;
+        }
+        this.toast(`Exported ${format}: ${files.join(", ")}`
+          + (failed.length ? `; ${failed.map(([k, v]) => `${k} ${v}`).join("; ")}` : ""), failed.length ? "warn" : "ok");
+        return;
+      }
       case "data.import_terrain": {
+        /* The one menu item that could end in silence: cancelling the chooser returned
+           without a word, and a chosen DEM was accepted without saying whether it
+           covers the area about to be flown -- which set_terrain_source already works
+           out. Every outcome is now said, and Mission Planning is opened so the
+           terrain chip on its map shows what Plan will use. */
+        this.open("planning");
         const file = await call("pick_file", ["tif", "tiff", "asc", "csv"]);
-        if (!file || !file.path) return;
-        await call("set_terrain_source", file.path);
-        this.toast(`Terrain source: ${file.path}`, "ok");
+        if (!file || !file.path) {
+          this.toast("Import Terrain: no file chosen; the terrain source is unchanged.", "warn");
+          return;
+        }
+        const result = await call("set_terrain_source", file.path);
+        const coverage = result && result.coverage;
+        window.dispatchEvent(new Event("odk:refresh"));
+        if (!coverage) {
+          this.toast(`Terrain source: ${result.path}. Draw the area of interest to check `
+            + "that it covers the site; Plan will follow it.", "ok");
+        } else if (coverage.covered) {
+          this.toast(`Terrain source: ${result.path}. ${coverage.detail || "It covers the area."} `
+            + "Replan to fly it at height above ground.", "ok");
+        } else {
+          this.toast(`Terrain source: ${result.path}, but ${coverage.detail || "it does not cover the area of interest."}`,
+            "warn");
+        }
         return;
       }
       case "fly.connect":
@@ -1349,7 +1395,13 @@ export class Shell {
         // form read Stand-off 12, Altitude 60 and RTH 90 while the planner used its own
         // 8, 55 and 80, so a facade was flown 4 m closer than the screen said. What is
         // on the form now goes, edited or not; an edit (this.settings) is on top.
-        const raw = { ...missionFormValues(), ...(this.settings || {}) };
+        // And not only the EDITED fields. Plan sent only what had been changed, so with
+        // the form untouched it sent plan_mission({}) and got the planner's own defaults
+        // -- a 55 m grid -- under a panel reading "3D modelling, 60 m, 80/70 %, 8 m/s".
+        // It now starts from what the panel shows (the form specs' values) and overlays
+        // what was typed. Only the mission and aircraft fields: the report and processing
+        // forms share the settings store and are not planning inputs.
+        const raw = missionFormValues();
         const numeric = {};
         for (const [key, value] of Object.entries(raw)) {
           const asNumber = Number(value);
@@ -1368,6 +1420,7 @@ export class Shell {
         // ignores it is indistinguishable from wiring it.
         for (const [key, value] of Object.entries(numeric)) {
           if (key === "type") continue;
+          if (value === "") continue;
           if (key in MISSION_OPTION_KEYS) continue;
           if (MISSION_FIELDS_NOT_PLANNED.has(key)) continue;
           if (!(key in options)) options[key] = value;
@@ -1585,13 +1638,20 @@ export class Shell {
     // The map is drawn in WGS84 longitude/latitude, which is what the cursor readout
     // reports. The project's own CRS, when it has one, is a different thing and is named
     // beside it rather than conflated with it.
-    const layerCrs = ((this.state && this.state.layers) || [])
-      .map((l) => l.crs_epsg).find((epsg) => epsg && Number(epsg) !== 4326);
+    //
+    // The project's CRS is the one its own data is in: the first registered layer that
+    // names one, preferring a projected CRS over plain lon/lat. get_state's
+    // display_epsg is NOT that -- it is the readout setting, always 4326 -- and taking
+    // it first made every project read "project EPSG:4326", including one whose DSM is
+    // in UTM 17N and an empty one with no CRS at all.
+    const layerCrsList = ((this.state && this.state.layers) || [])
+      .map((l) => l.crs_epsg).filter((epsg) => epsg);
+    const layerCrs = layerCrsList.find((epsg) => Number(epsg) !== 4326) || layerCrsList[0];
     const projectCrs = this.mode === "demo" ? DATA.project.epsg
-      : (project && project.epsg) || (this.state && this.state.epsg) || layerCrs;
+      : (project && project.epsg) || layerCrs;
     this.crsText.textContent = projectCrs
       ? `map EPSG:4326 · project ${String(projectCrs).startsWith("EPSG") ? projectCrs : `EPSG:${projectCrs}`}`
-      : "map EPSG:4326";
+      : live ? "map EPSG:4326 · project CRS not known yet" : "map EPSG:4326";
   }
 
   /** Ask the application what is open, so prerequisites are real rather than assumed. */
@@ -1872,9 +1932,13 @@ export class Shell {
       // Only then, though. This used to show the epoch in every mode, so a connected
       // operator saw a clock stopped at 00:00:00 over their own project: a frozen reading
       // presented as the time, the same fault pointing the other way.
+      //
+      // And not before the bridge connects: the header read "no bridge ... 00:00:00 UTC"
+      // for the first seconds of every launch, the demo's value outside demo mode. Until
+      // the application answers there is no reading, and the clock says so.
       this.clock.textContent = this.mode === "connected"
         ? `${new Date().toISOString().slice(11, 19)} UTC`
-        : `${DEMO.CLOCK} UTC`;
+        : this.mode === "demo" ? `${DEMO.CLOCK} UTC` : "--:--:-- UTC";
       // The aircraft indicator follows the link, so a lost link shows up in the frame
       // on every screen, not only on the Flight workspace.
       ticks += 1;
