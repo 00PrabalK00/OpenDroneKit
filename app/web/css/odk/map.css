@@ -7,6 +7,9 @@
 
 /* -- the map well ------------------------------------------------------------- */
 .odk-map { position: relative; overflow: hidden; background: var(--map-well); min-height: 0; }
+/* Mounted straight into the frame's canvas region, the map keeps the frame's placement
+   (desk.css: absolute, inset 0); `relative` there collapses the region to 0 px tall. */
+.odk-map.odk-frame-canvas { position: absolute; inset: 0; }
 .odk-map .maplibregl-canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .odk-map .maplibregl-ctrl-attrib, .odk-map .maplibregl-ctrl-logo { display: none; }
 
