@@ -5676,10 +5676,23 @@ class Api:
         # Fence and rally, when the plan has them and the driver can carry them. The
         # docstring always promised these; the call never made them.
         problems: list[str] = []
-        for key, entries, method in (("fence", fence, "upload_geofence"),
-                                     ("rally", rally, "upload_rally_points")):
+        for key, entries, method, clear in (
+                ("fence", fence, "upload_geofence", "clear_geofence"),
+                ("rally", rally, "upload_rally_points", "clear_rally_points")):
             if not entries:
-                report[key] = None
+                # Nothing to send is not "leave whatever is there". A fence or rally list
+                # from an earlier mission stayed on the vehicle, and ArduCopter's RTL flew
+                # to a stale rally point 50 m from home (SITL). The vehicle's list is
+                # cleared so it matches this plan.
+                cleaner = getattr(client, clear, None)
+                if cleaner is None:
+                    report[key] = None
+                    continue
+                result = run(clear, cleaner)
+                report[key] = _command_payload(result, 0)
+                if not report[key]["success"]:
+                    problems.append(f"{key}: could not clear the vehicle's old {key}: "
+                                    f"{report[key]['message']}")
                 continue
             sender = getattr(client, method, None)
             if sender is None:

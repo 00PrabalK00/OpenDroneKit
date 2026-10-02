@@ -965,6 +965,37 @@ class MissionPlannerDroneClient:
         """Read the flight plan stored on the vehicle, without its home slot."""
         return _without_home_slot(self._download_list(MAV_MISSION_TYPE_MISSION, timeout_s))
 
+    def _clear_list(self, mission_type: int, name: str, timeout_s: float = 5.0) -> CommandResult:
+        """MISSION_CLEAR_ALL for one list, confirmed by the vehicle's MISSION_ACK."""
+        try:
+            conn = self._ensure()
+        except AppError as exc:
+            return CommandResult(False, name, exc.user_message)
+        if not self._transfer_lock.acquire(timeout=timeout_s):
+            return CommandResult(False, name, "Another mission transfer is already in progress.")
+        try:
+            self._drain_protocol_queue()
+            conn.mav.mission_clear_all_send(conn.target_system, conn.target_component,
+                                            mission_type)
+            ack = self._await_protocol({"MISSION_ACK"}, timeout=timeout_s)
+            if ack is None:
+                return CommandResult(False, name, "The vehicle did not confirm the clear.")
+            result = int(getattr(ack, "type", 1))
+            if result != MAV_MISSION_ACCEPTED:
+                return CommandResult(False, name, "Vehicle refused to clear: "
+                                     f"{_MISSION_RESULT_TEXT.get(result, f'result {result}')}.")
+            return CommandResult(True, name, "Cleared on the vehicle.")
+        finally:
+            self._transfer_lock.release()
+
+    def clear_geofence(self) -> CommandResult:
+        """Remove every fence item from the vehicle (MAV_MISSION_TYPE_FENCE)."""
+        return self._clear_list(MAV_MISSION_TYPE_FENCE, "clear_geofence")
+
+    def clear_rally_points(self) -> CommandResult:
+        """Remove every rally point from the vehicle (MAV_MISSION_TYPE_RALLY)."""
+        return self._clear_list(MAV_MISSION_TYPE_RALLY, "clear_rally_points")
+
     def download_geofence(self, timeout_s: float = 20.0) -> list[dict[str, Any]]:
         """Read the fence polygons stored on the vehicle (MAV_MISSION_TYPE_FENCE)."""
         return self._download_list(MAV_MISSION_TYPE_FENCE, timeout_s)

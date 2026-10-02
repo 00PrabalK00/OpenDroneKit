@@ -208,6 +208,10 @@ class FakeVehicle:
                     elif command == MAV_CMD_NAV_LAND:
                         self.custom_mode = COPTER_MODES["LAND"]
                 self._ack(command, accepted)
+            elif kind == "MISSION_CLEAR_ALL":
+                mission_type = int(getattr(msg, "mission_type", 0))
+                self.stored[mission_type] = []
+                self.conn.mav.mission_ack_send(255, 0, 0, mission_type)
             elif kind == "MISSION_REQUEST_LIST":
                 mission_type = int(getattr(msg, "mission_type", 0))
                 self.conn.mav.mission_count_send(255, 0, len(self.stored[mission_type]), mission_type)
