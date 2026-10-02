@@ -85,8 +85,8 @@ def test_template_flies_to_completion_with_its_captures(tmp_path, sitl_connectio
         time.sleep(1.0)
 
         # Vehicle sequence numbers run one ahead of the plan's: seq 0 is ArduPilot's home.
-        # ArduPilot reports MISSION_ITEM_REACHED for waypoints, not for the takeoff or
-        # the closing RTL; those are judged by the climb and the landing at home.
+        # ArduPilot sends no MISSION_ITEM_REACHED for the takeoff, and the closing RTL
+        # ends in a landing, so those two are judged by the landing at home instead.
         nav_seqs = {int(i["seq"]) + 1 for i in items if int(i["command"]) in NAV_COMMANDS
                     and int(i["command"]) not in (20, 22)}
         reached = {int(e.data["seq"]) for e in sitl_trace.messages("MISSION_ITEM_REACHED", mark)}
@@ -136,6 +136,56 @@ def test_template_flies_to_completion_with_its_captures(tmp_path, sitl_connectio
         assert record["landed_from_home_m"] < 5.0, record["landed_from_home_m"]
     finally:
         (evidence_dir("flights") / f"{template}.json").write_text(
+            json.dumps(record, indent=1, default=str), encoding="utf-8")
+        try:
+            settle_on_ground(api)
+        finally:
+            api.disconnect_vehicle()
+
+
+def test_distance_triggered_capture_fires_at_the_planned_spacing(tmp_path, sitl_connection,
+                                                                 sitl_observer, sitl_trace):
+    """A continuous-capture plan: DO_SET_CAM_TRIGG_DIST on, flown, then off.
+
+    No built-in template asks for distance triggering yet, so the plan is given to the
+    Api directly -- the same path an imported or saved continuous-capture plan takes.
+    """
+    from ._support import offset_lonlat
+
+    api = make_api(tmp_path)
+    home = connect_api(api, sitl_connection)
+    spacing = 6.0
+    route = [offset_lonlat(0.0, 0.0), offset_lonlat(0.0, 42.0), offset_lonlat(30.0, 42.0)]
+    poses = [{"lon": lon, "lat": lat, "alt_m": 20.0, "yaw_deg": 0.0, "gimbal_pitch_deg": -90.0,
+              "dwell_s": 0.0, "trigger": False} for lon, lat in route]
+    api._session.mission_plan_dict = {
+        "template": "waypoints", "altitude_m": 20.0, "cruise_speed_m_s": 5.0,
+        "flight_recipe": {"world_poses": poses,
+                          "capture": {"continuous_capture": True, "capture_spacing_m": spacing}},
+        "safety_constraints": {"rth_altitude_m": 25.0},
+    }
+    record: dict = {"spacing_m": spacing}
+    try:
+        assert api.upload_mission()["ok"]
+        assert api.vehicle_command("loiter")["ok"]
+        fresh_battery(sitl_observer)
+        mark = sitl_trace.mark()
+        started = api.vehicle_command("start", override_preflight=True)
+        assert started["ok"], started
+        wait_telemetry(api, "mission and landing", lambda t: not t["armed"], 600.0)
+        reached = sitl_trace.messages("MISSION_ITEM_REACHED", mark)
+        shots = [(e.data["lat"] / 1e7, e.data["lng"] / 1e7) for e in sitl_trace.messages("CAMERA_FEEDBACK", mark)]
+        gaps = [distance_m(a[0], a[1], b[0], b[1]) for a, b in zip(shots, shots[1:])]
+        # Triggering starts on the leg after the takeoff and stops at the last waypoint.
+        on_route = [s for s in shots if distance_m(s[0], s[1], home["home_lat"], home["home_lon"]) < 60.0]
+        record.update(shots=len(shots), gaps_m=[round(g, 2) for g in gaps],
+                      reached=[e.data["seq"] for e in reached])
+        expected = int((42.0 + 30.0) / spacing)
+        assert abs(len(on_route) - expected) <= 2, (len(on_route), expected, record)
+        inner = gaps[1:-1]
+        assert inner and all(abs(g - spacing) < 1.5 for g in inner), record
+    finally:
+        (evidence_dir("flights") / "distance_trigger.json").write_text(
             json.dumps(record, indent=1, default=str), encoding="utf-8")
         try:
             settle_on_ground(api)
