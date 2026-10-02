@@ -24,6 +24,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MODELS_DIR = REPO_ROOT / "models"
 REGISTRY_PATH = MODELS_DIR / "model_registry.json"
 
+
+def weights_file(relative: str) -> Path:
+    """Where a registered weights file really is: beside the registry, or under
+    ODK_MODEL_WEIGHTS_DIR -- the same two places the application looks
+    (core.models.resolve_model_path). Checking only the checkout's models/ folder
+    skipped these tests on a machine whose weights live on another drive."""
+    from core.models import extra_weights_root
+
+    local = MODELS_DIR / relative
+    extra = extra_weights_root()
+    if not local.is_file() and extra is not None and (extra / relative).is_file():
+        return extra / relative
+    return local
+
 # Rows in docs/features/registry.py that assert a trained model exists, mapped to the
 # registry keys that make them true.
 SOLAR_MODELS = ("solar_cell_defect_detector", "solar_thermal_anomaly_classifier")
@@ -56,7 +70,7 @@ def weights_present(registry: dict, key: str) -> bool:
     guarantee, and where the file exists it still runs.
     """
     entry = registry.get(key) or {}
-    return bool(entry.get("path")) and (MODELS_DIR / entry["path"]).is_file()
+    return bool(entry.get("path")) and weights_file(entry["path"]).is_file()
 
 
 def requires_weights(registry: dict, key: str) -> None:
@@ -75,7 +89,7 @@ class TestTheWeightsAreReallyThere:
     @pytest.mark.parametrize("key", SOLAR_MODELS + RAIL_MODELS + CRACK_MODELS + CORROSION_MODELS)
     def test_the_weights_file_exists(self, registry, key) -> None:
         requires_weights(registry, key)
-        weights = MODELS_DIR / registry[key]["path"]
+        weights = weights_file(registry[key]["path"])
         assert weights.is_file()
         assert weights.stat().st_size > 0
 
@@ -91,7 +105,7 @@ class TestTheWeightsAreReallyThere:
         recorded = entry.get("sha256")
         assert recorded, f"{key} has no sha256, so its metrics belong to no particular file"
         requires_weights(registry, key)
-        actual = hashlib.sha256((MODELS_DIR / entry["path"]).read_bytes()).hexdigest()
+        actual = hashlib.sha256(weights_file(entry["path"]).read_bytes()).hexdigest()
         assert actual == recorded, (
             f"{key} on disk does not match its recorded digest; the published metrics "
             "describe a file that is no longer installed"

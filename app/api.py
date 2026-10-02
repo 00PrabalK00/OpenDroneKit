@@ -732,6 +732,27 @@ class Api:
         return ok(geojson=json.loads(Path(layer.path).read_text(encoding="utf-8")))
 
     @guard
+    def raster_tiles(self, layer_id: str) -> dict[str, Any]:
+        """A tile URL template for a raster layer, for full-resolution deep zoom.
+
+        `raster_preview` is one PNG no wider than 1024 px, which for a centimetre-scale
+        orthomosaic is ten times coarser than the survey: zooming in only enlarged the
+        preview. The template is served by the same loopback server as the page
+        (`/raster-tiles/<token>/{z}/{x}/{y}.png`), cut from the GeoTIFF on request, and
+        `maxzoom` is the survey's native zoom so the map enlarges real pixels past it.
+        """
+        from core import raster_tiles
+
+        layer = self._session.layers.get(layer_id)
+        if layer is None or not layer.path:
+            return fail(f"Unknown layer: {layer_id}")
+        if layer.kind == "vector":
+            return fail("Layer is not a raster layer.")
+        if not layer.crs_epsg:
+            return fail("Raster has no CRS, so it cannot be placed on the map.")
+        return ok(**raster_tiles.register(layer.path))
+
+    @guard
     def raster_preview(self, layer_id: str, max_size: int = 1024) -> dict[str, Any]:
         """Render a raster layer to a PNG data URI with its geographic bounds.
 

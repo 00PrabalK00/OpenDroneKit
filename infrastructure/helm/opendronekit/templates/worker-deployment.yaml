@@ -39,7 +39,7 @@ spec:
               valueFrom:
                 secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_SECRET_KEY}
             - name: ODK_S3_ENDPOINT
-              value: {{ .Values.storage.endpoint | quote }}
+              value: {{ include "odk.s3Endpoint" . | quote }}
             - name: ODK_S3_BUCKET
               value: {{ .Values.storage.bucket | quote }}
             - name: ODK_LOG_LEVEL

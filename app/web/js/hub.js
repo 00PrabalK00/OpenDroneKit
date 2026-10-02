@@ -481,8 +481,15 @@
     offline: { kind: 'xyz', name: 'Offline cache', url: '/tiles/{z}/{x}/{y}.png', maxzoom: 20, attribution: 'Locally cached tiles' }
   };
 
+  /* Esri answers levels it has no imagery for with a grey "Map data not yet available"
+     tile; js/basemap-depth.js keeps it off the map (see js/map.js). */
+  const DEPTH = window.ODKBasemapDepth || null;
+  const ESRI_PROTOCOL = Boolean(DEPTH && DEPTH.registerProtocol(window.maplibregl));
+
   function styleForProvider(provider) {
-    return { version: 8, sources: { base: ODKHubViewers.mapLibreRasterSource(provider) }, layers: [
+    const base = ODKHubViewers.mapLibreRasterSource(provider);
+    if (ESRI_PROTOCOL && DEPTH.serviceRoot(base.tiles[0])) base.tiles = base.tiles.map(DEPTH.esriUrl);
+    return { version: 8, sources: { base }, layers: [
       { id: 'background', type: 'background', paint: { 'background-color': '#071018' } },
       { id: 'base', type: 'raster', source: 'base' }
     ] };
@@ -494,6 +501,12 @@
       container: 'hub-map', style: styleForProvider(STANDARD_PROVIDERS.street), center: [77.59, 12.97], zoom: 5
     });
     state.layerMap.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right');
+    if (DEPTH) {
+      DEPTH.track(state.layerMap, () => {
+        const provider = STANDARD_PROVIDERS[($('#hub-basemap') || {}).value] || null;
+        return provider ? provider.maxzoom : null;
+      }, { sourceId: 'base' });
+    }
     state.layerMap.on('style.load', mountCustomProviders);
   }
 

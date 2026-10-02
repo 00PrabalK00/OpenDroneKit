@@ -115,10 +115,19 @@ const OFFLINE_STYLE = {
    was blank even on a machine whose cache covered the site. */
 const TILE_ORIGIN = typeof location !== "undefined" && /^https?:$/.test(location.protocol)
   ? location.origin : "http://127.0.0.1:8000";
+/* Esri answers a level it has no imagery at with a grey "Map data not yet available"
+   picture (HTTP 200), and how deep it goes changes from place to place -- z19 at the
+   Aukerman site. js/basemap-depth.js fetches Esri tiles through an esri:// protocol
+   that turns that answer into "no tile here", and caps the source at the deepest level
+   the service lists for the view, so zooming in enlarges the last real tile. `maxzoom`
+   on those two is the ceiling the service could ever reach, not a promise. */
+const DEPTH = typeof window !== "undefined" ? window.ODKBasemapDepth || null : null;
+const ESRI_PROTOCOL = Boolean(DEPTH && typeof window !== "undefined" && DEPTH.registerProtocol(window.maplibregl));
+const esri = (url) => (ESRI_PROTOCOL ? DEPTH.esriUrl(url) : url);
 const BASEMAP_TILES = {
-  satellite: { tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"], maxzoom: 19, attribution: "Esri World Imagery" },
+  satellite: { tiles: [esri("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}")], maxzoom: 23, attribution: "Esri World Imagery" },
   street: { tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], maxzoom: 19, attribution: "OpenStreetMap contributors" },
-  topo: { tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"], maxzoom: 19, attribution: "Esri, USGS, NOAA" },
+  topo: { tiles: [esri("https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}")], maxzoom: 19, attribution: "Esri, USGS, NOAA" },
   offline: { tiles: [`${TILE_ORIGIN}/tiles/{z}/{x}/{y}.png?provider=satellite`], maxzoom: 20, attribution: "Locally cached tiles" },
 };
 let currentBasemap = "satellite";
@@ -215,6 +224,10 @@ export function mountMap(container, {
       style: offline ? OFFLINE_STYLE : styleFor(currentBasemap),
       center: centre,
       zoom,
+      // Deep enough for a centimetre survey (z22 is ~3 cm per screen pixel at mid
+      // latitudes). Past a basemap's real depth it is enlarged; project rasters stay
+      // sharp to their own native zoom.
+      maxZoom: 24,
       attributionControl: false,
     });
   } catch (error) {
@@ -245,7 +258,17 @@ export function mountMap(container, {
   map.on("sourcedata", (event) => {
     if (event && event.sourceId === "basemap" && event.tile && event.tile.state === "loaded") tileLoaded = true;
   });
+  // The basemap's real depth for the view on screen (see js/basemap-depth.js).
+  if (DEPTH) {
+    DEPTH.track(map, () => {
+      if (offline || currentBasemap === "offline") return null;
+      const spec = BASEMAP_TILES[currentBasemap];
+      return spec ? spec.maxzoom : null;
+    });
+  }
   map.on("error", (event) => {
+    // A level with no imagery is coverage, not a lost connection.
+    if (DEPTH && DEPTH.isNoImagery(event)) return;
     const message = String(event?.error?.message || "");
     if (!/tile|fetch|network|Failed/i.test(message) || reportedOffline) return;
     reportedOffline = true;
@@ -364,6 +387,16 @@ function extend(bounds, coordinates) {
   walk(coordinates);
 }
 
+/* A project raster served as tiles. No layer maxzoom: it stays drawn at every zoom,
+ * and past `maxzoom` (the survey's native zoom) MapLibre enlarges the deepest tile. */
+function rasterTileSource(tiles) {
+  const url = /^https?:/.test(tiles.url) ? tiles.url : `${location.origin}${tiles.url}`;
+  const source = { type: "raster", tiles: [url], tileSize: tiles.tile_size || 256,
+                   minzoom: tiles.minzoom || 0, maxzoom: tiles.maxzoom ?? 22 };
+  if (Array.isArray(tiles.bounds) && tiles.bounds.length === 4) source.bounds = tiles.bounds;
+  return source;
+}
+
 function geometriesOf(geojson) {
   if (!geojson) return [];
   if (geojson.type === "FeatureCollection") return (geojson.features || []).map((f) => f.geometry).filter(Boolean);
@@ -391,9 +424,24 @@ export async function showProject(map, ask) {
   // Rasters first so every vector sits on top of them.
   const layers = ((listed && listed.layers) || []).filter((l) => l.visible !== false);
   for (const layer of layers.filter((l) => l.kind !== "vector")) {
+    const id = `odk-p-raster-${placed}`;
+    // Tiles cut from the GeoTIFF itself (Api.raster_tiles), so zooming in on a
+    // centimetre survey shows its own pixels; the single 1024 px preview only got
+    // bigger. The preview stays the fallback for a page with no server behind it.
+    const tiles = /^https?:$/.test(location.protocol) ? await ask("raster_tiles", layer.id) : null;
+    if (tiles && typeof tiles.url === "string" && tiles.url.includes("{z}")) {
+      map.addSource(id, rasterTileSource(tiles));
+      addLayer(map, { id, type: "raster", source: id,
+                      paint: { "raster-opacity": layer.opacity ?? 0.9, "raster-fade-duration": 0 } });
+      if (Array.isArray(tiles.bounds) && tiles.bounds.length === 4) {
+        const [w, s, e, n] = tiles.bounds;
+        extend(bounds, [[w, n], [e, n], [e, s], [w, s]]);
+      }
+      placed += 1;
+      continue;
+    }
     const preview = await ask("raster_preview", layer.id);
     if (!preview || !preview.data_uri || !preview.coordinates) continue;
-    const id = `odk-p-raster-${placed}`;
     map.addSource(id, { type: "image", url: preview.data_uri, coordinates: preview.coordinates });
     addLayer(map, { id, type: "raster", source: id,
                     paint: { "raster-opacity": layer.opacity ?? 0.9 } });

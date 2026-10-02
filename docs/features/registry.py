@@ -1737,7 +1737,7 @@ PLATFORM = [
       "gets 404 rather than 403, and nobody may grant a role above their own.",
       "implemented", ["tests/test_api.py::TestAuthorization"]),
     F("inf.docker", "Docker deployment", "infra", "Deployment",
-      "docker compose up brings PostGIS, MinIO, the API and a worker online, with "
+      "docker compose up brings PostGIS, a SeaweedFS S3 gateway, the API and a worker online, with "
       "healthchecks so the API waits for a database that actually accepts connections, "
       "and no credential committed to the repository.",
       "implemented", ["tests/test_compose.py",
@@ -1745,7 +1745,7 @@ PLATFORM = [
       "Definition verified as data; booting the stack needs a Docker daemon. The API "
       "enqueues processing jobs to the Celery worker and leaves AI jobs to the ai-worker "
       "service, both sharing the api_storage volume. Uploads are written to that volume, "
-      "not to MinIO, whatever ODK_STORAGE_BACKEND says."),
+      "not to the object store, whatever ODK_STORAGE_BACKEND says."),
     F("inf.k8s", "Kubernetes and Helm", "infra", "Deployment",
       "Helm chart deploys the API, workers and PostGIS to a cluster, using the same "
       "images the compose stack runs.",

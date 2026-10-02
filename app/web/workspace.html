@@ -14,6 +14,9 @@
   <!-- Loaded before the shell so a workspace can mount a map on first render. Not a
        module: the vendored build attaches maplibregl to window. -->
   <script src="vendor/maplibre/maplibre-gl.js"></script>
+  <!-- How deep the Esri basemaps really go at the place on screen (no placeholder
+       "Map data not yet available" tiles). Shared with the classic window. -->
+  <script src="js/basemap-depth.js"></script>
   <!-- The box-labelling canvas. A classic script that attaches ODKLabelBox to window,
        used by the Label action in AI Inspection; it was written and tested and no page
        loaded it. -->

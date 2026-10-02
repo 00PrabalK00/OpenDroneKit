@@ -188,8 +188,11 @@ def test_the_projects_orthomosaic_is_shown_from_disk_with_no_network(tmp_path, t
         """)
     assert result["note"].startswith("No basemap: the offline tile cache is empty"), result
     assert result["note"].endswith("The project's orthomosaic is drawn from disk."), result
-    previews = cockpit.called("raster_preview")
-    assert previews and all(call["ok"] for call in previews), previews
+    # Drawn from disk: as tiles cut from the GeoTIFF (tests/test_deep_zoom.py), served
+    # by the same loopback server, with no network at all.
+    tiles = cockpit.called("raster_tiles")
+    assert tiles and all(call["ok"] for call in tiles), tiles
+    assert cockpit.raster_tiles and {code for _, code in cockpit.raster_tiles} == {200}, cockpit.raster_tiles
 
 
 def test_the_desktop_server_answers_a_burst_of_tile_requests(tile_cache, monkeypatch) -> None:

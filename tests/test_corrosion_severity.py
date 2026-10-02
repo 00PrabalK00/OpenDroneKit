@@ -59,8 +59,12 @@ def metrics() -> dict:
 
 
 def weights_installed(entry: dict) -> bool:
-    # Weights are gitignored, so a fresh clone has the registry and not the file.
-    return bool(entry.get("path")) and (MODELS_DIR / entry["path"]).is_file()
+    # Weights are gitignored, so a fresh clone has the registry and not the file. They
+    # may also live under ODK_MODEL_WEIGHTS_DIR, where the application finds them too.
+    from core.models import resolve_model_path
+
+    path = resolve_model_path(KEY) if entry.get("path") else None
+    return bool(path) and path.is_file()
 
 
 class TestTheScaleIsOrdinalAndSaysSo:
@@ -193,11 +197,14 @@ class TestAgainstTheInstalledModel:
             pytest.skip(f"{KEY} weights are not on this machine (gitignored)")
         import cv2
 
-        images = sorted(
-            (REPO_ROOT / "training/data/prepared/corrosion_seg/val/images").glob("*")
-        )
+        import os
+
+        # training/data here, or where ODK_TRAINING_DATA_DIR points (another checkout's
+        # training/data), as the other real-model tests read it.
+        data = Path(os.environ.get("ODK_TRAINING_DATA_DIR", "").strip() or REPO_ROOT / "training" / "data")
+        images = sorted((data / "prepared/corrosion_seg/val/images").glob("*"))
         if not images:
-            pytest.skip("the prepared corrosion corpus is not on this machine")
+            pytest.skip("the prepared corrosion corpus is not on this machine (set ODK_TRAINING_DATA_DIR)")
 
         result = grade_corrosion_severity(cv2.imread(str(images[0])))
         assert result.labels == entry["labels"]

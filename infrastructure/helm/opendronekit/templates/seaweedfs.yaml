@@ -1,0 +1,114 @@
+{{- if .Values.seaweedfs.enabled }}
+{{- include "odk.requireSecrets" . -}}
+# S3-compatible object storage: a SeaweedFS server with its S3 gateway on 8333. Its only
+# identity is the ODK_S3_ACCESS_KEY / ODK_S3_SECRET_KEY pair the API and worker use,
+# written into the gateway's config at start from the Secret, never into this chart.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "odk.fullname" . }}-seaweedfs
+  labels: {{- include "odk.labels" . | nindent 4 }}
+spec:
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: 8333
+  selector:
+    app.kubernetes.io/name: {{ include "odk.name" . }}
+    app.kubernetes.io/component: seaweedfs
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "odk.fullname" . }}-seaweedfs
+  labels: {{- include "odk.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "odk.fullname" . }}-seaweedfs
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "odk.name" . }}
+      app.kubernetes.io/component: seaweedfs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "odk.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: seaweedfs
+    spec:
+      containers:
+        - name: seaweedfs
+          image: {{ .Values.seaweedfs.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /etc/seaweedfs
+              umask 077
+              printf '{"identities":[{"name":"opendronekit","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}\n' "$ODK_S3_ACCESS_KEY" "$ODK_S3_SECRET_KEY" > /etc/seaweedfs/s3.json
+              chown seaweed:seaweed /etc/seaweedfs/s3.json
+              exec /entrypoint.sh server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+          ports:
+            - containerPort: 8333
+          env:
+            - name: ODK_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_ACCESS_KEY}
+            - name: ODK_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_SECRET_KEY}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8333
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  # Uploaded survey data lives here: a claim, never an ephemeral volume.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.seaweedfs.storage }}
+---
+# Creates the bucket after install/upgrade. Signed with the same keys the API uses, so a
+# credential mismatch fails here, loudly, instead of on the first upload. 409
+# BucketAlreadyOwnedByYou (a later upgrade) is success.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "odk.fullname" . }}-bucket
+  labels: {{- include "odk.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: bucket
+          image: {{ .Values.seaweedfs.image | quote }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              for attempt in $(seq 1 60); do
+                code=$(curl -s -o /tmp/answer -w '%{http_code}' --aws-sigv4 'aws:amz:us-east-1:s3' --user "$ODK_S3_ACCESS_KEY:$ODK_S3_SECRET_KEY" -X PUT "{{ include "odk.s3Endpoint" . }}/{{ .Values.storage.bucket }}") || code=000
+                if [ "$code" = 200 ] || grep -q BucketAlreadyOwnedByYou /tmp/answer 2>/dev/null; then echo 'bucket ready'; exit 0; fi
+                sleep 5
+              done
+              echo "bucket creation failed: HTTP $code"; cat /tmp/answer; exit 1
+          env:
+            - name: ODK_S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_ACCESS_KEY}
+            - name: ODK_S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: {name: {{ include "odk.secretName" . }}, key: ODK_S3_SECRET_KEY}
+{{- end }}
