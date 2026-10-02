@@ -1855,9 +1855,86 @@ PLATFORM = [
       "503 on failure. Trace export remains best-effort structured-log shipping."),
     F("sdk.plugin_system", "Plugin system", "plugins", "SDK",
       "Documented plugin points for drones, cameras, payloads, mission types, engines, "
-      "models, exporters, report templates and map providers.",
+      "models, exporters, report templates, report sections and map providers.",
       "implemented", ["tests/test_sdk.py::TestPluginSystem"],
-      "Versioned direct, manifest and opt-in entry-point registration cover all nine documented plugin kinds."),
+      "Versioned direct, manifest and opt-in entry-point registration cover all ten documented "
+      "plugin kinds (report_section added in plugin API 1.1). Discovery, isolation, the "
+      "per-kind contracts and the listing have their own rows: plugins.*."),
+    F("sdk.python_api", "Public Python SDK (opendronekit)", "sdk", "SDK",
+      "A versioned, type-hinted `opendronekit` package covers project create/open, mission "
+      "plan + export, dataset import, reconstruction, detection, measurement and reports "
+      "through the application's own API; every refusal raises Refused with the "
+      "application's reason, never an empty success.",
+      "verified", ["tests/test_opendronekit_sdk.py",
+                   "tests/test_sdk_docs.py::test_the_quickstart_runs"],
+      "Workspace holds an in-process app.api.Api bound to its own project store, so a "
+      "script and the desktop app refuse the same things. __version__ 1.0.0, py.typed. "
+      "Reconstruction on real photographs is exercised by the Aukerman tutorial row "
+      "(doc.tutorials). detect_cracks keeps model and heuristic masks in separate folders."),
+    F("plugins.discovery", "Plugin discovery, manifest and API-level check", "plugins", "SDK",
+      "Installed packages are discovered through the `opendronekit.plugins` entry-point "
+      "group; each resolves to a manifest (name, version, api_version, plugins); a plugin "
+      "is accepted only for the same major and a minor not newer than the host's level.",
+      "verified", ["tests/test_plugin_api.py::TestApiVersion",
+                   "tests/test_plugin_api.py::TestManifest",
+                   "tests/test_example_plugins.py::TestInstalledEditable"],
+      "PLUGIN_API_LEVEL 1.1. The example packages are pip-installed with -e and found "
+      "through importlib.metadata, not registered by hand."),
+    F("plugins.isolation", "A broken plugin is reported and skipped", "plugins", "SDK",
+      "An import error, incompatible level, duplicate name or bad manifest is listed as a "
+      "failure with its stage and reason and the other plugins load; a plugin that raises "
+      "or returns output outside its contract fails only that call with PluginError.",
+      "verified", ["tests/test_plugin_api.py::TestFailureIsolation",
+                   "tests/test_plugin_api.py::TestContracts"],
+      "Failure isolation, not a security sandbox: plugin code runs in-process with the "
+      "application's permissions; docs/plugins.md says so."),
+    F("plugins.kinds", "Mission-template, detector, exporter and report-section plugins",
+      "plugins", "SDK",
+      "The four host-called kinds work end to end with checked output: a template must "
+      "hand the built-in planner a built-in template; a detector must name its weights' "
+      "sha256 and box inside the image; an exporter's files are checked on disk; a report "
+      "section that fails is left out with a visible note, never filled in.",
+      "verified", ["tests/test_plugin_api.py::TestContracts",
+                   "tests/test_example_plugins.py::TestStripTemplate",
+                   "tests/test_example_plugins.py::TestCsvExporterAndReportSection",
+                   "tests/test_opendronekit_sdk.py::TestDetection::"
+                   "test_a_detector_plugin_runs_through_the_project"],
+      "examples/plugins/odk-strip-template (mission template) and odk-csv-exporter "
+      "(exporter + report section) are installable packages."),
+    F("plugins.listing", "Plugins listed in Environment Capabilities", "plugins", "SDK",
+      "capabilities()['plugins'] and list_plugins report the API level, each loaded plugin "
+      "(kind, name, version, package) and each failure with its reason, from the real host.",
+      "verified", ["tests/test_plugin_api.py::TestTheApplicationListsPlugins"],
+      "Before this list_plugins built an empty registry and always answered 'none'. The "
+      "desktop UI's Environment Capabilities dialog (app/web) does not render the plugins "
+      "key yet; the Plugins panel reads list_plugins. Rendering it in that dialog belongs "
+      "to the UI rebuild."),
+    F("doc.sdk", "SDK and plugin documentation", "sdk", "Docs",
+      "docs/sdk (quickstart + API reference generated from the docstrings), docs/plugins.md; "
+      "the reference is current, every public name is documented, the quickstart and the "
+      "guide's example run.",
+      "verified", ["tests/test_sdk_docs.py"],
+      "tools/gen_sdk_reference.py --check fails the suite when a public signature or "
+      "docstring changes without regenerating docs/sdk/reference.md."),
+    F("doc.tutorials", "Tutorials on open sample data", "sdk", "Docs",
+      "Three tutorials whose code runs as written: Aukerman end to end (mission, COLMAP "
+      "reconstruction, measurement on the orthomosaic, report), crack detection on an "
+      "RDD2022 photograph compared with its annotation, and a custom plugin installed with "
+      "pip -e.",
+      "verified", ["tests/test_tutorials.py"],
+      "The test runs each tutorial's code on the reference copies, checked against the "
+      "pinned hashes. Tutorial 1 checks a 0.0004 deg distance measured on the orthomosaic "
+      "against its ellipsoidal length (3%) and the area (5%). It skips when COLMAP or the "
+      "reference data is absent, which leaves the row at implemented there."),
+    F("data.sample_fetch", "Sample-dataset fetch script with pinned hashes", "infra", "Docs",
+      "tools/fetch_sample_data.py fetches the open datasets from their publishers only, "
+      "checks every file against a pinned sha256 (deleting mismatches), never downloads "
+      "access-restricted or proprietary items, and re-cuts subsets of huge archives with "
+      "HTTP range reads.",
+      "verified", ["tests/test_fetch_sample_data.py"],
+      "Real-network checks (one file per upstream, one member per remote archive) run with "
+      "ODK_NETWORK_TESTS=1. Restricted: University of Guam thermal sets (access request), "
+      "DJI Thermal SDK (DJI licence)."),
     F("sdk.libraries", "Developer SDK", "sdk", "SDK",
       "Libraries for mission generation, drone adapters, telemetry and job APIs.",
       "implemented", ["tests/test_sdk.py::TestDeveloperLibraries",
