@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a capability, a mission template, an export format, a detector or a UI change.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        OpenDroneKit refuses rather than fabricates, and a feature counts as done only when tests prove it.
+        The best requests say what problem you have and how you would know the answer is right.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How would we know it works?
+      description: The acceptance criteria a test could check. For anything that produces a number, what is it measured against, and what should happen when the inputs cannot support it?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you be willing to contribute it?
+      options:
+        - "Yes, I'd like to open a pull request"
+        - "Maybe, with guidance"
+        - "No"
+    validations:
+      required: true
