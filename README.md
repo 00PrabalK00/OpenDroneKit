@@ -207,3 +207,7 @@ Measurements and volumes need the georeferenced rasters, so they are only produc
 by the COLMAP engine. When they are absent the report states that rather than
 printing zeros — a defect area in square metres means nothing unless something
 actually measured it.
+
+## License
+
+OpenDroneKit is released under the [MIT License](LICENSE). Trained model weights and third-party datasets keep their own licences, recorded alongside them (see "Model assets and licensing" above).
