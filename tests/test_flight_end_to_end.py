@@ -99,6 +99,48 @@ class TestConnecting:
         assert telemetry["link_quality_pct"] == pytest.approx(100.0)
 
 
+class TestHomeIsAskedFor:
+    """A real ArduPilot SITL run never reported home_set, with an RTK fix and 10 satellites.
+
+    ArduPilot does not stream HOME_POSITION: it sends it once when home is set, normally
+    before the ground station connects, and afterwards only on request. The bridge never
+    asked, so the "Home Position" preflight check could not pass on a real autopilot.
+    The fake here behaves like ArduPilot and answers only when asked.
+    """
+
+    def test_home_is_requested_and_reported_once_it_arrives(self, api, vehicles):
+        vehicle, uri = vehicles(stream_home=False)
+        result = api.connect_vehicle(uri, "mavlink")
+        assert result["vehicle"]["connected"] is True, result
+
+        deadline = time.monotonic() + 5.0
+        telemetry: dict = {}
+        while time.monotonic() < deadline:
+            telemetry = api.telemetry()["telemetry"]
+            if telemetry.get("home_set"):
+                break
+            time.sleep(0.1)
+        assert telemetry.get("home_set") is True, telemetry
+        assert (512, 242.0) in vehicle.home_requests, vehicle.home_requests
+        # Housekeeping requests are not operator commands.
+        assert not any(c[0] in (410, 512) for c in vehicle.commands), vehicle.commands
+
+    def test_home_is_asked_for_again_until_the_vehicle_has_one(self, api, vehicles):
+        """Before its first fix the vehicle has no home and ignores the request."""
+        vehicle, uri = vehicles(stream_home=False)
+        vehicle.home_known = False
+        api.connect_vehicle(uri, "mavlink")
+        time.sleep(4.5)
+        assert len(vehicle.home_requests) >= 3, vehicle.home_requests
+        assert api.telemetry()["telemetry"].get("home_set") is False
+
+        vehicle.home_known = True
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not api.telemetry()["telemetry"].get("home_set"):
+            time.sleep(0.1)
+        assert api.telemetry()["telemetry"].get("home_set") is True
+
+
 class TestUnreportedIsNotZero:
     def test_a_battery_the_vehicle_cannot_measure_is_absent_not_empty(self, api, vehicles):
         """SYS_STATUS battery_remaining = -1 was clamped to 0 %: an empty battery on

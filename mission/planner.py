@@ -2321,6 +2321,12 @@ def _constraints_from_dict(
             except Exception:
                 continue
     rth_alt = float(data.get("rth_altitude_m", max(max_alt + 10.0, default_altitude_m + 20.0)))
+    if "max_altitude_m" not in data and "max_alt_m" not in data:
+        # The default RTH sits 10 m above the default ceiling, and preflight blocks any
+        # plan whose RTH exceeds its ceiling -- so every plan made on defaults was one
+        # its own checklist refused (found by a real ArduPilot SITL run). With no
+        # ceiling given, the ceiling is raised to admit the RTH climb.
+        max_alt = max(max_alt, rth_alt)
     return MissionConstraints(
         geofence=geofence,
         min_altitude_m=max(5.0, min_alt),

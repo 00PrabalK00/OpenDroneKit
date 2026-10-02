@@ -9,6 +9,8 @@ It is not an autopilot. It does not fly, it has no pre-arm checks and it models 
 physics. What it does do, each behaviour switchable:
 
   * streams HEARTBEAT, SYS_STATUS, GPS_RAW_INT, GLOBAL_POSITION_INT and HOME_POSITION,
+    or -- with stream_home=False, as ArduPilot does -- sends HOME_POSITION only when
+    asked (MAV_CMD_REQUEST_MESSAGE 242 or MAV_CMD_GET_HOME_POSITION),
   * runs the request-driven mission protocol for mission, fence and rally lists, and
     can reject an upload with MISSION_ACK type 1 (generic error),
   * answers SET_MODE by changing mode, or ignores it the way an autopilot refusing a
@@ -38,6 +40,9 @@ MAV_CMD_NAV_RETURN_TO_LAUNCH = 20
 MAV_CMD_NAV_LAND = 21
 MAV_CMD_MISSION_START = 300
 MAV_CMD_COMPONENT_ARM_DISARM = 400
+MAV_CMD_GET_HOME_POSITION = 410
+MAV_CMD_REQUEST_MESSAGE = 512
+MAVLINK_MSG_ID_HOME_POSITION = 242
 
 
 def free_udp_port() -> int:
@@ -58,6 +63,7 @@ class FakeVehicle:
         command_ack: str | None = "accept",   # "accept" | "deny" | None (never acks)
         battery_remaining: int = 77,
         send_camera_information: bool = False,
+        stream_home: bool = True,
         lat: float = 41.3042,
         lon: float = -81.7505,
     ):
@@ -70,6 +76,12 @@ class FakeVehicle:
         self.command_ack = command_ack
         self.battery_remaining = battery_remaining
         self.send_camera_information = send_camera_information
+        self.stream_home = stream_home
+        # HOME_POSITION requests received, as (command, param1). Kept apart from
+        # `commands`, which records what the operator asked the vehicle to do.
+        self.home_requests: list[tuple[int, float]] = []
+        # False models an autopilot before its first fix: no home to report yet.
+        self.home_known = True
         self.stored: dict[int, list[Any]] = {0: [], 1: [], 2: []}
         self.commands: list[tuple[int, float, float]] = []
         self.mode_requests: list[int] = []
@@ -132,8 +144,8 @@ class FakeVehicle:
                                    int(self.lon * 1e7), 250000, 120, 65535, 0, 0, 11)
                 m.global_position_int_send(0, int(self.lat * 1e7), int(self.lon * 1e7),
                                            250000, 12000, 100, 0, 0, 9000)
-                m.home_position_send(int(self.lat * 1e7), int(self.lon * 1e7), 238000,
-                                     0, 0, 0, [1, 0, 0, 0], 0, 0, 0)
+                if self.stream_home:
+                    self._send_home()
                 if self.send_camera_information:
                     m.camera_information_send(0, b"FakeCam".ljust(32, b"\0"),
                                               b"Model-1".ljust(32, b"\0"), 1, 8.8, 13.2, 8.8,
@@ -141,6 +153,10 @@ class FakeVehicle:
             except OSError:
                 pass
             time.sleep(0.2)
+
+    def _send_home(self) -> None:
+        self.conn.mav.home_position_send(int(self.lat * 1e7), int(self.lon * 1e7), 238000,
+                                         0, 0, 0, [1, 0, 0, 0], 0, 0, 0)
 
     # -- receive -----------------------------------------------------------------
 
@@ -166,6 +182,14 @@ class FakeVehicle:
                 self.mode_requests.append(int(msg.custom_mode))
                 if self.accept_modes:
                     self.custom_mode = int(msg.custom_mode)
+            elif kind == "COMMAND_LONG" and (
+                    int(msg.command) == MAV_CMD_GET_HOME_POSITION
+                    or (int(msg.command) == MAV_CMD_REQUEST_MESSAGE
+                        and int(msg.param1) == MAVLINK_MSG_ID_HOME_POSITION)):
+                self.home_requests.append((int(msg.command), float(msg.param1)))
+                if self.home_known:
+                    self._send_home()
+                self.conn.mav.command_ack_send(int(msg.command), 0)
             elif kind == "COMMAND_LONG":
                 command = int(msg.command)
                 self.commands.append((command, float(msg.param1), float(msg.param2)))

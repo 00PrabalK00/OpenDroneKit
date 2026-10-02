@@ -75,6 +75,15 @@ MAV_RESULT_NAMES = {
 _BATTERY_REMAINING_UNKNOWN = -1
 _VOLTAGE_UNKNOWN = 0xFFFF
 
+# HOME_POSITION is not part of any ArduPilot telemetry stream. The autopilot sends it
+# once, when home is set -- normally on the first GPS fix, long before a ground station
+# connects -- and afterwards only when asked. A GCS that never asks never learns home,
+# and the preflight "Home Position" check can never pass.
+MAVLINK_MSG_ID_HOME_POSITION = 242
+MAV_CMD_GET_HOME_POSITION = 410     # deprecated, still answered by older firmware
+MAV_CMD_REQUEST_MESSAGE = 512
+HOME_REQUEST_INTERVAL_S = 2.0
+
 _MISSION_RESULT_TEXT = {
     0: "accepted",
     1: "generic error",
@@ -363,6 +372,8 @@ class MissionPlannerDroneClient:
         # that arrived -- because RADIO_STATUS exists only on SiK-style radios. A USB or
         # UDP link has none, and reporting 0 % for it said the link was dead.
         self._link_window: tuple[float, int, int] | None = None
+        # monotonic time of the last HOME_POSITION request; asked again until it arrives.
+        self._last_home_request = 0.0
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -396,6 +407,7 @@ class MissionPlannerDroneClient:
                 )
             self._connected = True
             self._uri = connection_uri
+            self._request_home_position()
             self._start_listener()
         except AppError:
             raise
@@ -441,6 +453,9 @@ class MissionPlannerDroneClient:
                 msg = self._conn.recv_match(blocking=True, timeout=1.0)
                 if msg is not None:
                     self._absorb_message(msg)
+                if (not self._latest_telemetry.home_set
+                        and time.monotonic() - self._last_home_request >= HOME_REQUEST_INTERVAL_S):
+                    self._request_home_position()
                 # Telemetry arrives far faster than any UI needs it, so subscribers
                 # get a snapshot at a fixed rate rather than one event per message.
                 now = time.monotonic()
@@ -537,6 +552,29 @@ class MissionPlannerDroneClient:
                     "remnoise": int(getattr(msg, "remnoise", 0) or 0),
                 }
             self._update_link_quality(tel)
+
+    def _request_home_position(self) -> None:
+        """Ask the vehicle for HOME_POSITION (fire and forget; the listener parses it).
+
+        MAV_CMD_REQUEST_MESSAGE is the current way; MAV_CMD_GET_HOME_POSITION is kept
+        for firmware that predates it. Until home is set the vehicle has nothing to
+        send, so the listener repeats the request until a HOME_POSITION arrives.
+        The ACKs are ignored here: _command_long only accepts an ack for its own
+        command, so they cannot be mistaken for the answer to an operator command.
+        """
+        self._last_home_request = time.monotonic()
+        conn = self._conn
+        if conn is None:
+            return
+        try:
+            conn.mav.command_long_send(conn.target_system, conn.target_component,
+                                       MAV_CMD_REQUEST_MESSAGE, 0,
+                                       MAVLINK_MSG_ID_HOME_POSITION, 0, 0, 0, 0, 0, 0)
+            conn.mav.command_long_send(conn.target_system, conn.target_component,
+                                       MAV_CMD_GET_HOME_POSITION, 0, 0, 0, 0, 0, 0, 0, 0)
+        except Exception:
+            # A failed send is retried on the next interval; the link layer reports loss.
+            pass
 
     def _update_link_quality(self, tel: DroneTelemetry, window_s: float = 2.0) -> None:
         """Percentage of MAVLink packets that arrived, over the last couple of seconds.
