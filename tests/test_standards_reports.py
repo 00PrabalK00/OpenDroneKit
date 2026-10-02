@@ -327,3 +327,52 @@ class TestBridgeAndRoofOnRealImagery:
                                            inputs=collected["inputs"])
         assert report["completeness"]["provided_items"] == 2  # date and method; rest MISSING
         assert rs.verify_report(report["output_dir"])["ok"]
+
+
+class TestDocsAndExamples:
+    def test_report_standards_doc_cites_every_template_source(self):
+        doc = (REPO / "docs" / "REPORT_STANDARDS.md").read_text(encoding="utf-8")
+        for template in TEMPLATES.values():
+            assert f"`{template.key}`" in doc
+            for source in template.sources:
+                assert source.url in doc, f"{template.key}: {source.url} not cited"
+        # The doc may only claim structure, never certification.
+        assert "structured following" in doc.lower()
+        for line in doc.splitlines():
+            # SNBI item B.IE.04 is the inspector's title, not a claim about the report.
+            line = line.replace("Nationally Certified Bridge Inspector", "")
+            if CLAIMS.search(line):
+                assert re.search(r"\bnot\b|\bno claim\b|never", line, re.IGNORECASE), line
+
+    def test_examples_tool_writes_a_verifiable_tower_report_with_everything_missing(self, tmp_path):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "standards_examples", REPO / "tools" / "standards_examples.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.main(["--testdata", str(tmp_path), "--out", str(tmp_path / "out"),
+                            "--only", "tower"]) == 0
+        summary = json.loads((tmp_path / "out" / "examples_summary.json").read_text(encoding="utf-8"))
+        assert summary["tower"]["provided"] == 0
+        assert summary["tower"]["checks"] == {"guys": MISSING}
+        assert rs.verify_report(summary["tower"]["pdf_path"])["ok"]
+
+    def test_examples_tool_on_real_data_produces_one_signed_report_per_template(self, tmp_path):
+        import importlib.util
+
+        _need(THEDPV_SESSION, "THED-PV frames")
+        _need(BRIDGE / "B1_Wide", "bridge imagery")
+        _need(FACADE / "W_subset", "building imagery")
+        spec = importlib.util.spec_from_file_location(
+            "standards_examples", REPO / "tools" / "standards_examples.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.main(["--testdata", str(TESTDATA), "--out", str(tmp_path / "out")]) == 0
+        summary = json.loads((tmp_path / "out" / "examples_summary.json").read_text(encoding="utf-8"))
+        assert set(summary) == {"iec", "bridge", "roof", "tower"}
+        assert summary["iec"]["checks"]["irradiance"] == "PASS"
+        assert summary["iec"]["checks"]["netd"] == MISSING
+        for name, entry in summary.items():
+            assert entry["provided"] < entry["required"], name  # nothing filled by default
+            assert rs.verify_report(entry["pdf_path"])["ok"], name
