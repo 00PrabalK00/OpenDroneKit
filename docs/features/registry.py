@@ -1662,6 +1662,84 @@ PLATFORM = [
       "section selection, severity ordering and whether unreviewed findings appear.",
       "implemented", ["tests/test_report_formats.py::TestTemplates",
                       "tests/test_report_formats.py::TestFindingOrder"]),
+    F("rp.standards.templates", "Standards-structured report templates", "hub", "Reporting",
+      "Four templates laid out after public sources -- IEC TS 62446-3 clause 8 (PV "
+      "thermography), FHWA SNBI/NBIS element-level bridge inspection, InterNACHI SOP 3.1 "
+      "roof, ANSI/TIA-222-H Annex J.1 telecom tower -- each citing its sources. Every "
+      "required item without a supplied, sourced value prints MISSING (never a default), a "
+      "check on a MISSING input is MISSING, and no report claims compliance or "
+      "certification. The stated limits are checked where values exist: irradiance >= "
+      "600 W/m2, wind <= 4 Bft, cloud <= 2 okta, IR >= 320x240, NETD <= 0.1 K, <= 3 cm/px, "
+      "two position identifications per abnormality, CS1-CS4 summing to B.E.03, SNBI "
+      "rating codes.",
+      "implemented", ["tests/test_standards_reports.py::TestTemplates",
+                      "tests/test_standards_reports.py::TestNoDefaults",
+                      "tests/test_standards_reports.py::TestIecChecks",
+                      "tests/test_standards_reports.py::TestBridgeAndTowerChecks"],
+      "core/standards_reports.py; sources and clause map in docs/REPORT_STANDARDS.md."),
+    F("rp.standards.iec62446_3", "PV thermography report structured following IEC TS 62446-3",
+      "hub", "Reporting",
+      "From real radiometric frames: camera make/model/serial/lens, IR resolution and "
+      "spectral band read from the files; air temperature, wind and in-plane irradiance "
+      "from the site logger row nearest the frames (refused beyond 5 minutes); per-module "
+      "temperature and ΔT to the frame's regular-spot reference from the decoded "
+      "temperatures. Emissivity, Trefl, cloud, location, personnel and CoA stay MISSING "
+      "when the files do not record them.",
+      "implemented", ["tests/test_standards_reports.py::TestIecOnRealThermalFrames",
+                      "tests/test_standards_reports.py::TestEnvironmentLogger"],
+      "THED-PV (FLIR Duo Pro R TLinear, CC BY 4.0), measured 2026-10-02: logger row "
+      "12:02 gives G_POA_2 921 W/m2, TAA 24.2 C, WV_2m 3.2 m/s (Bft 2) -> irradiance and "
+      "wind PASS; frame 120227_869 module medians 48.85/44.05 C, ΔT +/-2.40 K. Needs "
+      "ODK_TESTDATA_DIR; skips without it."),
+    F("rp.standards.real_imagery", "Bridge and roof standards reports from real UAV imagery",
+      "hub", "Reporting",
+      "Bridge: inspection equipment (B.IE.12) from EXIF; condition ratings, element "
+      "states, bridge number and B.L.05/06 stay MISSING (photo GPS is reported as an "
+      "observation, not as the agency's location). Roof: date and method from EXIF and "
+      "the DJI gimbal pitch (near-nadir vs oblique count); every SOP 3.1 item MISSING.",
+      "implemented", ["tests/test_standards_reports.py::TestBridgeAndRoofOnRealImagery"],
+      "Boga Cayi bridge (DJI H20T, 81 frames) and FH Hagenberg building (DJI M30T, 60 "
+      "frames). No open telecom-tower dataset is available, so that template is only "
+      "exercised with every item MISSING."),
+    F("rp.signing.manifest", "SHA-256 input manifest embedded in signed reports", "hub",
+      "Reporting",
+      "Every input file (images, rasters, logger data, outlines) is hashed into a manifest "
+      "printed in the PDF and embedded as an attachment, with every model digest (hashed "
+      "file, or the digest a pipeline run recorded, labelled as such). A missing input or a "
+      "model with no digest is refused. The Ed25519 key is created on first use in "
+      "<data root>/keys and its private half never appears in a report.",
+      "implemented", ["tests/test_report_signing.py::TestKey",
+                      "tests/test_report_signing.py::TestManifest"],
+      "core/report_signing.py."),
+    F("rp.signing.verify", "Verify a signed report's signature, bytes, manifest and inputs",
+      "hub", "Reporting",
+      "verify_report / python -m core.report_signing verify detect: a changed byte in the "
+      "signed PDF, anything appended after signing, an edited HTML copy, a manifest that is "
+      "not the signed one, an input whose hash changed (inputs not present here are a "
+      "warning; --inputs-root finds moved ones by name), and a valid signature by a key "
+      "this installation does not trust (including a strip-and-re-sign forgery).",
+      "implemented", ["tests/test_report_signing.py::TestVerify",
+                      "tests/test_report_signing.py::TestCommandLine"]),
+    F("rp.standards.api", "Standards reports and verification in the desktop Api", "hub",
+      "Reporting",
+      "Api.standards_templates / standards_facts / save_standards_facts (named, known "
+      "items only) / standards_report_readiness / generate_standards_report / "
+      "list_standards_reports / verify_report / report_signing_key / trust_report_key on "
+      "the open project: dataset images and recorded model digests go into the manifest, "
+      "inspector values are sourced 'entered by <who>'.",
+      "implemented", ["tests/test_standards_reports_api.py"],
+      "Backend only: the UI hooks are listed in docs/REPORT_STANDARDS.md for the ui/v1 "
+      "rebuild."),
+    F("rp.standards.examples", "Example standards reports from real open data, sources cited",
+      "hub", "Reporting",
+      "tools/standards_examples.py writes one signed report per template from odk-testdata "
+      "(THED-PV for IEC TS 62446-3, Boga Cayi bridge for SNBI, FH Hagenberg building for the "
+      "roof) and a telecom-tower report with every item MISSING, because no open tower data "
+      "exists. Each verifies. docs/REPORT_STANDARDS.md cites every template's public sources "
+      "and claims structure, never certification.",
+      "implemented", ["tests/test_standards_reports.py::TestDocsAndExamples"],
+      "Real-data example needs ODK_TESTDATA_DIR; outputs in "
+      "odk-testdata/_outputs/standards_reports/reports."),
     F("sh.links", "Shareable project links", "hub", "Sharing",
       "A high-entropy link opens one project read-only with no account. Only the token "
       "hash is stored, and the response states plainly that it grants no write access.",
