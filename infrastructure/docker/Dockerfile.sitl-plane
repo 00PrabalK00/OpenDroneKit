@@ -1,0 +1,92 @@
+# ArduPlane SITL plus the project's test dependencies: the fixed-wing counterpart of
+# Dockerfile.sitl, so the flight code can be checked against a real ArduPlane rather
+# than only ArduCopter.
+#
+# Everything except the ArduPilot tag and the waf target is the same as Dockerfile.sitl,
+# deliberately: the two images differ only in which vehicle they build, so a result that
+# differs between them is a vehicle difference and not an environment one. The comments
+# explaining each workaround live in Dockerfile.sitl.
+#
+# Pinned to Plane-4.5.7, the ArduPlane release of the same 4.5 line as Copter-4.5.7.
+# The Dockerfile copies nothing from the build context, so build it with an empty one:
+#   docker build -t opendronekit-sitl-plane:local - < infrastructure/docker/Dockerfile.sitl-plane
+FROM ubuntu:22.04
+
+# PATH includes /home/sitl/.local/bin because pip --user puts mavproxy.py there and
+# it is not on the default PATH. sim_vehicle.py started the autopilot cleanly and
+# then died with "No such file or directory: mavproxy.py", which read as a SITL
+# failure when SITL itself was working.
+# USER is set because ArduPilot's prereq script runs `usermod -a -G dialout $USER`,
+# and a container has no USER in its environment: the call degrades to usermod printing
+# its usage and exiting 2, which surfaces as an unexplained build failure.
+ENV USER=sitl     DEBIAN_FRONTEND=noninteractive \
+    ARDUPILOT_HOME=/opt/ardupilot \
+    PATH="/opt/ardupilot/Tools/autotest:/home/sitl/.local/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    SITL_RITW_TERMINAL=nohup
+
+# ArduPilot starts the autopilot through Tools/autotest/run_in_terminal_window.sh, which
+# walks a list of terminal emulators -- xterm, konsole, osascript, tmux -- each needing a
+# DISPLAY or TTY the container does not have. With nothing matching it falls through and
+# SITL exits 1 before EKF readiness, which reads as a simulator crash rather than a
+# missing terminal.
+#
+# That script checks SITL_RITW_TERMINAL first: when set it writes the command to a
+# temporary script and runs it with whatever this names. nohup is already installed and
+# means exactly "run this detached", so the autopilot starts headless without patching
+# ArduPilot or tools/sitl/launch.py.
+
+# ArduPilot's own prerequisites plus what the repo's tests import. python3-wxgtk and the
+# GUI stack are deliberately omitted: MAVProxy pulls them for its map window, which
+# nothing here uses and which needs an X server the container will not have.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates sudo lsb-release tzdata \
+        python3 python3-pip python3-dev python3-setuptools \
+        build-essential ccache g++ gawk make wget \
+        libtool libxml2-dev libxslt1-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# A non-root user because ArduPilot's setup scripts refuse to run as root, and because
+# a simulator that can write anywhere in the image is a poor default.
+# dialout exists on desktop Ubuntu but not in the minimal image, and the prereq script
+# assumes it when granting serial access.
+RUN groupadd -f dialout     && useradd -ms /bin/bash -G dialout sitl && echo "sitl ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+USER sitl
+WORKDIR /home/sitl
+
+# Pinned to a release tag rather than tracking master. A simulator whose behaviour moves
+# under the tests turns a red run into an unanswerable question.
+ARG ARDUPILOT_REF=Plane-4.5.7
+RUN sudo git clone --depth 1 --branch ${ARDUPILOT_REF} \
+        https://github.com/ArduPilot/ardupilot.git ${ARDUPILOT_HOME} \
+    && sudo chown -R sitl:sitl ${ARDUPILOT_HOME}
+
+WORKDIR ${ARDUPILOT_HOME}
+RUN git submodule update --init --recursive --depth 1
+
+# SKIP_AP_GIT_CHECK because the shallow clone above has no full history for the script
+# to inspect; the checkout is already pinned by tag.
+RUN SKIP_AP_EXT_ENV=1 SKIP_AP_GRAPHIC_ENV=1 SKIP_AP_COV_ENV=1 SKIP_AP_GIT_CHECK=1 \
+    Tools/environment_install/install-prereqs-ubuntu.sh -y
+
+# WAF_JOBS bounds the compile's parallelism: an unbounded build on a shared host can
+# exhaust memory and fail with an unexplained compiler kill.
+ARG WAF_JOBS=6
+RUN ./waf configure --board sitl && ./waf plane -j ${WAF_JOBS}
+
+# Test-side dependencies. pymavlink and MAVProxy come from ArduPilot's own install, but
+# the repo's tests need pytest and the client stack too.
+# opencv-python-headless, not opencv-python: core/detection.py imports cv2 at module
+# scope, so collecting the SITL tests imports it even though no test decodes an image,
+# and the GUI build needs an X server this container will never have. Headless is the
+# same cv2 without the highgui window code.
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && python3 -m pip install --no-cache-dir \
+        pytest pymavlink MAVProxy pyyaml numpy opencv-python-headless
+
+WORKDIR /workspace
+# The repository is bind-mounted at run time rather than copied in, so a test run always
+# exercises the working tree rather than a stale snapshot baked at build time.
+# ODK_SITL_VEHICLE tells tools/sitl/launch.py which vehicle this image carries.
+ENV ODK_SITL_VEHICLE=ArduPlane
+CMD ["python3", "-m", "pytest", "-m", "sitl", "tests/sitl/test_plane_missions.py", "-v"]

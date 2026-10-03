@@ -15,12 +15,16 @@ from tools.sitl.launch import ArduPilotSITL, SITLStartupError, SITLUnavailable
 # mission storage -- so camera and gimbal items have something real to act on. Set
 # ODK_SITL_PARAM_FILES to override (an empty value means ArduPilot's stock defaults).
 SURVEY_PARAMS = Path(__file__).resolve().parents[2] / "tools" / "sitl" / "params" / "survey_copter.parm"
+# The same survey payload on the fixed-wing SITL (ODK_SITL_VEHICLE=ArduPlane).
+SURVEY_PLANE_PARAMS = SURVEY_PARAMS.with_name("survey_plane.parm")
 
 
 def _session_param_files() -> list[Path]:
     configured = os.environ.get("ODK_SITL_PARAM_FILES")
     if configured is None:
-        return [SURVEY_PARAMS]
+        from tools.sitl.launch import sitl_vehicle
+
+        return [SURVEY_PLANE_PARAMS if sitl_vehicle() == "ArduPlane" else SURVEY_PARAMS]
     return [Path(p) for p in configured.split(os.pathsep) if p.strip()]
 
 
@@ -36,6 +40,11 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers",
         "sitl: requires an explicitly selected, real ArduPilot SITL integration run",
+    )
+    config.addinivalue_line(
+        "markers",
+        "sitl_plane: needs the ArduPlane SITL image (ODK_SITL_VEHICLE=ArduPlane); "
+        "selected with -m sitl like every SITL test",
     )
 
 

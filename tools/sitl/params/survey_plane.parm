@@ -1,0 +1,11 @@
+# A survey fixed-wing, as opposed to ArduPilot's bare SITL plane: the same camera
+# trigger, servo gimbal and SD mission storage as survey_copter.parm, so a mission's
+# camera and gimbal items have something real to act on (CAMERA_FEEDBACK is the
+# evidence). Servos 9 and 10 are free on the SITL plane, whose surfaces use 1-4.
+CAM1_TYPE 1
+SERVO9_FUNCTION 10
+MNT1_TYPE 1
+SERVO10_FUNCTION 7
+MNT1_PITCH_MIN -90
+MNT1_PITCH_MAX 30
+BRD_SD_MISSION 256

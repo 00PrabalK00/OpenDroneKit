@@ -1,8 +1,9 @@
-"""Lifecycle-managed ArduPilot Copter SITL launcher for integration tests.
+"""Lifecycle-managed ArduPilot SITL launcher for integration tests.
 
 The launcher uses ``sim_vehicle.py`` rather than a protocol stub. It starts
-ArduCopter plus MAVProxy, exposes independent client and observer streams, and
-does not return until ArduPilot reports a usable EKF and 3D GPS fix.
+ArduCopter (or ArduPlane, see ``ODK_SITL_VEHICLE``) plus MAVProxy, exposes independent
+client and observer streams, and does not return until ArduPilot reports a usable EKF
+and 3D GPS fix.
 """
 
 from __future__ import annotations
@@ -125,12 +126,29 @@ def _free_udp_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# sim_vehicle.py vehicle -> the frame it is flown as. ArduCopter is the default because it
+# is what the survey templates were written for; ArduPlane is the fixed-wing image
+# (infrastructure/docker/Dockerfile.sitl-plane), which builds only the plane binary.
+SITL_FRAMES = {"ArduCopter": "quad", "ArduPlane": "plane"}
+
+
+def sitl_vehicle() -> str:
+    """The vehicle this environment simulates: ODK_SITL_VEHICLE, else ArduCopter."""
+    configured = os.environ.get("ODK_SITL_VEHICLE", "").strip() or "ArduCopter"
+    for name in SITL_FRAMES:
+        if name.lower() == configured.lower():
+            return name
+    raise SITLUnavailable(
+        f"ODK_SITL_VEHICLE={configured!r} is not one of {', '.join(SITL_FRAMES)}."
+    )
+
+
 def _truthy_environment(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ArduPilotSITL:
-    """Start one isolated ArduCopter SITL and tear down its process tree.
+    """Start one isolated ArduPilot SITL (Copter or Plane) and tear down its process tree.
 
     ``start()`` returns the URI for OpenDroneKit's production client. The observer
     URI receives the same autopilot traffic independently, so tests can verify
@@ -146,8 +164,12 @@ class ArduPilotSITL:
         speedup: int | None = None,
         rebuild: bool | None = None,
         param_files: Sequence[str | Path] | None = None,
+        vehicle: str | None = None,
     ) -> None:
         self._configured_command = command
+        self.vehicle = vehicle or sitl_vehicle()
+        if self.vehicle not in SITL_FRAMES:
+            raise SITLUnavailable(f"Unknown SITL vehicle {self.vehicle!r}.")
         # Vehicle configuration loaded over ArduPilot's SITL defaults at boot, e.g. a
         # camera trigger or SD-card mission storage. Some of these (CAM1_TYPE,
         # BRD_SD_MISSION) only take effect at boot, so they cannot be set afterwards.
@@ -187,8 +209,8 @@ class ArduPilotSITL:
         base, source_root = discover_sim_vehicle(self._configured_command)
         command = [
             *base,
-            "-v", "ArduCopter",
-            "-f", "quad",
+            "-v", self.vehicle,
+            "-f", SITL_FRAMES[self.vehicle],
             "-I", str(self.instance),
             "-w",
             "-l",
@@ -413,7 +435,8 @@ class ArduPilotSITL:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Launch an EKF-ready ArduCopter SITL instance.")
+    parser = argparse.ArgumentParser(description="Launch an EKF-ready ArduPilot SITL instance "
+                                                 "(ODK_SITL_VEHICLE: ArduCopter or ArduPlane).")
     parser.add_argument(
         "--check",
         action="store_true",
