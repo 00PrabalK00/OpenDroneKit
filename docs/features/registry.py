@@ -732,6 +732,59 @@ PROCESSING = [
       "Aukerman frames gave 672,441 fused points and a 0.32 m/px DSM "
       "(docs/INSTALLATION.md). tests/test_dense_mvs_runs.py runs it for real only "
       "when ODK_DENSE_COLMAP names a working build, so it stays implemented here."),
+    F("pr.dense.binary_config", "Dense binaries configured in Settings, tested not assumed",
+      "workers", "Processing",
+      "The COLMAP binary and OpenMVS folder are settings (env vars win) shown with their "
+      "source under Environment Capabilities; a configured path that does not exist is "
+      "reported and never replaced by another binary; a saved binary is re-probed; "
+      "crash exit codes and a toolkit newer than the driver are named with the fix.",
+      "verified", ["tests/test_dense_engines.py::TestColmapBinaryComesFromSettings",
+                   "tests/test_dense_engines.py::TestCrashesAreExplained",
+                   "tests/test_dense_engines.py::TestOpenMVSDiscovery",
+                   "tests/test_dense_engines.py::TestTheDesktopApi"],
+      "docs/DENSE_GPU.md. On the RTX 5060 (driver 592.15, CUDA 13.1) a fresh probe of "
+      "COLMAP 4.2.1 (CUDA 13.2) reports 0xC0000409 plus the driver/toolkit cause; "
+      "COLMAP 4.0.4 (CUDA 12.9, carries sm_120) passes."),
+    F("pr.dense.fallback", "Unavailable dense engine keeps the run sparse and says so",
+      "workers", "Processing",
+      "Choosing COLMAP or OpenMVS when that engine cannot run (not configured, probe "
+      "failed, undistortion or a step failed) yields a 'Dense MVS skipped/failed' "
+      "warning, zero dense points and sparse-derived products -- never another "
+      "engine's output under its name, never synthetic density.",
+      "verified", ["tests/test_dense_engines.py::TestTheEngineStaysSparseWhenDenseCannotRun",
+                   "tests/test_dense_engines.py::TestOpenMVSProbeFallsBackToTheCpu",
+                   "tests/test_dense_engines.py::TestEngineChoice",
+                   "tests/test_dense_engines.py::TestMeshingCannotCostTheDenseCloud",
+                   "tests/test_honesty.py::TestNoSyntheticDensification"]),
+    F("pr.dense.openmvs", "OpenMVS dense engine with textured mesh", "workers", "Processing",
+      "OpenMVS densifies the undistorted COLMAP workspace (GPU if its build runs on this "
+      "card, else CPU, decided by a synthetic-plane probe), meshes and textures it; the "
+      "products come from OpenMVS's own cloud, the textured OBJ is reported only when "
+      "written, and tower mode (synthetic points) is disabled. A mesh that crashes is "
+      "retried with merged points; if meshing still fails the dense cloud is kept and "
+      "only the textured OBJ is missing, with a warning.",
+      "implemented", ["tests/test_dense_engines.py::TestOpenMVSCommands",
+                      "tests/test_dense_engines.py::TestTheOpenMVSEngineRuns",
+                      "tests/test_dense_engines.py::test_a_ply_with_view_lists_is_read_exactly",
+                      "tests/test_dense_engines.py::TestMeshingCannotCostTheDenseCloud",
+                      "tests/test_dense_engines_integration.py::test_openmvs_is_reported_available",
+                      "tests/test_dense_engines_integration.py::test_openmvs_products_come_from_its_own_cloud",
+                      "tests/test_dense_engines_integration.py::test_openmvs_writes_a_textured_mesh",
+                      "tests/test_dense_engines_integration.py::test_the_densify_command_disabled_tower_mode"],
+      "The integration tests run only when ODK_OPENMVS_DIR names an extracted release, so "
+      "on a machine without it this row stays implemented. OpenMVS 2.4.0's CUDA archive "
+      "has no sm_120 kernels ('named symbol not found' on the RTX 5060); its CPU path "
+      "is used. OPENMVS_NOTE"),
+    F("pr.dense.blackwell", "Dense MVS on RTX 50-series (sm_120)", "workers", "Processing",
+      "A prebuilt COLMAP runs patch-match on the Blackwell GPU and a full survey produces "
+      "a fused dense cloud and a DSM finer than the sparse one.",
+      "implemented", ["tests/test_dense_engines_integration.py::test_the_dense_colmap_build_passes_the_probe",
+                      "tests/test_dense_mvs_runs.py"],
+      "Gated on ODK_DENSE_COLMAP. Measured on the RTX 5060 with the official COLMAP 4.0.4 "
+      "CUDA archive (CUDA 12.9, sm_120 code): all 77 Aukerman frames fused to 5,321,100 "
+      "points; DSM 0.138 m/px (2647x1971, 1.75 M measured cells) against 1.61 m/px "
+      "(12,069 cells) for the same survey sparse; geo RMSE 1.12 m. "
+      "docs/DENSE_GPU.md, odk-testdata/_outputs/dense-gpu/aukerman_colmap/summary.json"),
     F("pr.mesh", "Surface mesh", "workers", "Processing",
       "Poisson surface reconstruction with density trimming (untextured, and named "
       "mesh_obj_path rather than textured); the dependency-free engine drapes its "

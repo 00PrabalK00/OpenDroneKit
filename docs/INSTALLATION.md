@@ -143,6 +143,10 @@ scene with the COLMAP that will be used, not from the binary existing.
 
 ### Dense reconstruction on RTX 50-series
 
+The full write-up -- binaries tested with their sha256, the `colmap_binary` /
+`openmvs_dir` / `dense_engine` settings, the OpenMVS engine, and the 77-image
+Aukerman dense run -- is [docs/DENSE_GPU.md](DENSE_GPU.md).
+
 **Symptom.** Dense MVS reports "no" with `the provided PTX was compiled with an
 unsupported toolchain`, and reconstructions warn "Dense MVS skipped" and build their
 products from the sparse cloud.
