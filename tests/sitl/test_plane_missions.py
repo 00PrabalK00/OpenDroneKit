@@ -71,6 +71,9 @@ AIRSPEED_TOL_M_S = 2.0
 # The shutter fires on reaching the waypoint, and ArduPlane "reaches" a straight-ahead
 # waypoint when it passes it, within about one second's flight (~18 m).
 CAPTURE_POSITION_TOL_M = 25.0
+# A nadir photograph taken in a bank looks sideways: at 80 m, 5 degrees moves the
+# footprint ~7 m. Every photo is to be taken with the wings level to within this.
+PHOTO_BANK_TOL_DEG = 5.0
 # Touchdown and roll-out: ArduPlane flares and rolls on along the landing heading.
 TOUCHDOWN_TOL_M = 60.0
 FLIGHT_TIMEOUT_S = 900.0
@@ -133,7 +136,8 @@ def _passes(items: list[dict], viewpoints: list[dict]) -> list[list[dict]]:
 # with what the vehicle can hold rather than with fields it has nowhere to keep:
 # * the frame is stored only for commands that carry a location (stored_in_location);
 #   a do-command reads back frame 0 whatever was sent;
-# * NAV_WAYPOINT keeps param1 (hold) and packs param2/3 into p1; param4 is not kept;
+# * NAV_WAYPOINT on ArduPlane packs param2 (acceptance radius) and param3 (pass-by) into
+#   p1; there is no room left for param1 (hold), and param4 is not kept;
 # * NAV_LOITER_TO_ALT keeps |param2| (radius, sign = direction) and param4 > 0 (exit
 #   tangent); param1 "heading required" is not stored because ArduPlane always requires
 #   it (Plane::verify_loiter_to_alt's secondary goal is verify_loiter_heading);
@@ -142,7 +146,7 @@ def _passes(items: list[dict], viewpoints: list[dict]) -> list[list[dict]]:
 # * DO_LAND_START keeps only its location.
 LOCATION_COMMANDS = {NAV_WAYPOINT, NAV_LAND, NAV_TAKEOFF, NAV_LOITER_TO_ALT, DO_LAND_START}
 STORED_PARAMS = {
-    NAV_WAYPOINT: ("param1", "param2", "param3"),
+    NAV_WAYPOINT: ("param2", "param3"),
     NAV_TAKEOFF: ("param1",),
     NAV_LOITER_TO_ALT: ("param2", "param4"),
     NAV_LAND: ("param1", "param4"),
@@ -301,9 +305,13 @@ def _flight_report(api, trace: MavlinkTrace, since: float, items_sent: list[dict
         if nearest > CAPTURE_POSITION_TOL_M:
             photo_misses.append({"lat": p[0], "lon": p[1], "nearest_capture_m": round(nearest, 1),
                                  "alt_rel_m": fb.get("alt_rel")})
+    rolls = [round(float(fb.get("roll", 0.0)), 1) for fb in feedback]
     report.update({
         "planned_captures": len(captures), "photos": len(feedback),
         "photos_away_from_a_capture_point": photo_misses,
+        # CAMERA_FEEDBACK's roll: the bank the aircraft was in when the shutter fired.
+        "max_photo_bank_deg": max((abs(r) for r in rolls), default=None),
+        "photos_banked_over_tol": [(i, r) for i, r in enumerate(rolls) if abs(r) > PHOTO_BANK_TOL_DEG],
     })
     last = positions[-1][1] if positions else None
     if last is not None:
@@ -323,6 +331,7 @@ def _assert_flown_as_planned(report: dict) -> None:
         assert abs(p["median_airspeed_m_s"] - PLAN_OPTIONS["speed_m_s"]) <= AIRSPEED_TOL_M_S, p
     assert report["photos"] == report["planned_captures"], (report["photos"], report["planned_captures"])
     assert not report["photos_away_from_a_capture_point"], report["photos_away_from_a_capture_point"][:5]
+    assert not report["photos_banked_over_tol"], report["photos_banked_over_tol"][:10]
     assert report["stopped_at_m_from_landing_point"] <= TOUCHDOWN_TOL_M, report
     assert report["stopped_alt_rel_m"] < 2.0, report
 

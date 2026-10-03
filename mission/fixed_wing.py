@@ -12,9 +12,10 @@ This module supplies the three things a plane needs:
 * Pass ordering: the straight passes of a grid or corridor are flown in an order in
   which consecutive passes are at least one turn diameter apart, so every turn between
   them is a turn the aircraft can make (a "skip" or racetrack pattern).
-* Lead-in and lead-out: each pass is extended at both ends (three turn radii before,
-  one after) with points that do not trigger the camera, so the aircraft is out of its
-  turn and on the line before the first photograph.
+* Lead-in and lead-out: each pass is extended at both ends (five turn radii before,
+  one after, flown to) with points that do not trigger the camera, so the aircraft is
+  out of its turn, level and on the line for the first photograph and still level for
+  the last.
 * A landing sequence: DO_LAND_START, a descending loiter on the approach centreline,
   and NAV_LAND at the landing point -- the pattern QGroundControl and Mission Planner
   generate for ArduPlane. The same DO_LAND_START is what an ArduPlane RTL or a GCS
@@ -36,12 +37,21 @@ VEHICLE_CLASSES = (MULTIROTOR, FIXED_WING)
 # ArduPlane's WP_LOITER_RAD default. A plane at a 22 m/s cruise and a 45 degree bank
 # turns on a ~50 m radius; the default leaves margin for wind.
 DEFAULT_TURN_RADIUS_M = 60.0
-# How far before a pass its lead-in point sits, in turn radii. One radius was not enough:
-# ArduPlane comes out of the turn up to ~65 m off the line and its L1 controller needs
-# well over 100 m to converge, so the first photographs of every pass were 30-68 m from
-# where they were planned (Plane-4.5.7 SITL, 60 m radius). The lead-out stays at one
-# radius: the turn starts after it.
-LEAD_IN_RADII = 3.0
+# How far before a pass its lead-in point sits, in turn radii. ArduPlane comes out of
+# the turn between passes up to ~65 m off the next line and its L1 controller takes a
+# few hundred metres to settle on it. At one radius the first photographs of every pass
+# were 30-68 m from where they were planned; at three they were on position (within
+# 6.5 m) but the first six of each pass were taken in a 5-12 degree bank, tilting a
+# nadir footprint 7-17 m sideways at 80 m (Plane-4.5.7 SITL, 60 m radius). Five radii
+# (300 m) is where the bank had settled below 2 degrees in those flights.
+LEAD_IN_RADII = 5.0
+# The lead-out: one radius past the last capture, flown to rather than cut. ArduPlane
+# accepts a waypoint before a large turn up to WP_RADIUS (90 m) early, so it began the
+# turn before the last capture point and shot it in a 12-23 degree bank; the lead-out
+# carries an explicit 1 m acceptance radius (NAV_WAYPOINT param2) so the turn starts
+# after it. The fence is widened by a turn radius to contain that turn.
+LEAD_OUT_RADII = 1.0
+LEAD_OUT_ACCEPTANCE_M = 1.0
 
 # Final approach: the descending loiter ends this high, this far from touchdown.
 DEFAULT_APPROACH_ALTITUDE_M = 30.0
@@ -87,6 +97,36 @@ def _passes(poses: Sequence[Any]) -> list[list[Any]]:
 
 def _xy(pose: Any) -> np.ndarray:
     return np.array([float(pose.x_m), float(pose.y_m)], dtype=np.float64)
+
+
+def _straighten(run: list[Any]) -> tuple[list[Any], float]:
+    """Put every point of a pass on one straight line; returns the run and the largest move.
+
+    The planner pulls a pass's corner point a few metres inside the area to keep it in
+    the fence (a grid row ending on a field corner came back 6 m short and 4.5 m to the
+    side). A multirotor flies that kink; a plane banks for it, and ArduPlane shot the
+    last photo of such passes in a 12-23 degree bank (Plane-4.5.7 SITL). The line is the
+    median direction of the pass's legs through the median offset of its points, so
+    one displaced point cannot tilt it.
+    """
+    if len(run) < 3:
+        return run, 0.0
+    pts = np.array([_xy(p) for p in run])
+    legs = np.diff(pts, axis=0)
+    norms = np.linalg.norm(legs, axis=1)
+    units = legs[norms > 1e-6] / norms[norms > 1e-6, None]
+    if len(units) == 0:
+        return run, 0.0
+    units = np.array([u if float(u @ units[0]) >= 0.0 else -u for u in units])
+    direction = np.median(units, axis=0)
+    direction /= max(1e-9, float(np.linalg.norm(direction)))
+    normal = np.array([-direction[1], direction[0]])
+    offsets = pts @ normal
+    line = float(np.median(offsets))
+    moved = offsets - line
+    straight = [replace(p, x_m=float(xy[0]), y_m=float(xy[1]))
+                for p, xy in zip(run, pts - moved[:, None] * normal)]
+    return straight, float(np.max(np.abs(moved)))
 
 
 def _bearing(a: np.ndarray, b: np.ndarray) -> float:
@@ -159,11 +199,16 @@ def arrange_passes(poses: Sequence[Any], turn_radius_m: float) -> tuple[list[Any
     """
     radius = float(max(0.0, turn_radius_m))
     report: dict[str, Any] = {"turn_radius_m": radius, "passes": 0, "tight_turns": 0,
-                              "min_turn_spacing_m": None}
+                              "min_turn_spacing_m": None, "passes_straightened": 0,
+                              "max_straighten_m": 0.0}
     if radius <= 0.0 or not poses:
         return list(poses), report
     groups: list[list[list[Any]]] = []
     for run in _passes(poses):
+        run, moved = _straighten(run)
+        if moved > 0.05:
+            report["passes_straightened"] += 1
+            report["max_straighten_m"] = round(max(report["max_straighten_m"], moved), 2)
         if groups and groups[-1][0][0].primitive == run[0].primitive:
             groups[-1].append(run)
         else:
@@ -203,7 +248,7 @@ def arrange_passes(poses: Sequence[Any], turn_radius_m: float) -> tuple[list[Any
             yaw = _bearing(first, last)
             run = [replace(p, yaw_deg=yaw) for p in run]
             lead_in = first - direction * LEAD_IN_RADII * radius
-            lead_out = last + direction * radius
+            lead_out = last + direction * LEAD_OUT_RADII * radius
             out.append(replace(run[0], x_m=float(lead_in[0]), y_m=float(lead_in[1]),
                                trigger=False, dwell_s=0.0, primitive=f"{run[0].primitive}"))
             out.extend(run)

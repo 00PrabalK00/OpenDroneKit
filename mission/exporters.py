@@ -245,6 +245,8 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
     along each pass and off in the turns, and it ends in a landing sequence rather than
     RETURN_TO_LAUNCH -- which on ArduPlane circles home at ALT_HOLD_RTL and never lands.
     """
+    from mission.fixed_wing import LEAD_OUT_ACCEPTANCE_M
+
     px4 = str(autopilot or "").lower() == "px4"
     plan = _plan_dict(mission)
     fixed_wing = plan_vehicle_class(plan) == "fixed_wing"
@@ -383,9 +385,16 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
                        else f"hold {hold_s:.0f} s (planned {dwell:g} s)"),
             )
         else:
+            # A plane's lead-out (the non-capturing point after a pass) is flown to, not
+            # cut: ArduPlane takes NAV_WAYPOINT param2 as the acceptance radius, and
+            # otherwise accepts a waypoint before a big turn up to WP_RADIUS early --
+            # turning, and banking, over the pass's last capture point.
+            lead_out = (fixed_wing and not pose["trigger"] and index > 0
+                        and bool(viewpoints[index - 1]["trigger"]))
             add(
                 MAV_CMD_NAV_WAYPOINT,
                 param1=0.0,
+                param2=LEAD_OUT_ACCEPTANCE_M if lead_out else 0.0,
                 param4=pose["yaw_deg"] if pose["yaw_locked"] else float("nan"),
                 latitude=pose["lat"],
                 longitude=pose["lon"],
@@ -553,6 +562,9 @@ def fence_rings(
         if landing:
             points += landing_outline(landing)
         geofence = convex_hull(points)
+        # Turns are flown beyond the lead-out points: one turn radius of room.
+        meta = (plan.get("flight_recipe") or {}).get("metadata") or {}
+        inclusion_margin_m += float(meta.get("fixed_wing_turn_radius_m") or 0.0)
     if len(geofence) >= 3:
         rings.append((True, _offset_ring_outward(geofence, inclusion_margin_m)))
     exclusions = (

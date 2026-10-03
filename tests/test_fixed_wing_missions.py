@@ -69,7 +69,25 @@ def test_grid_for_a_plane_has_lead_points_and_wide_turns():
     assert leads == 2 * report["passes"]
 
 
-def test_lead_in_is_three_turn_radii_before_the_first_capture():
+def test_every_pass_is_one_straight_line_from_lead_in_to_lead_out():
+    # The planner pulls corner points inside the area; a plane would bank for the kink.
+    vps = exporters._viewpoints(_plan())
+    k = math.cos(math.radians(LAT0)) * 111_320.0
+    pts = [((v["lon"] - LON0) * k, (v["lat"] - LAT0) * 110_540.0, v["trigger"]) for v in vps]
+    passes, run = [], []
+    for x, y, trig in pts:
+        run.append((x, y))
+        if not trig and len(run) > 1:  # a lead-out closes the pass
+            passes.append(run)
+            run = []
+    for run in passes:
+        (ax, ay), (bx, by) = run[0], run[-1]
+        length = math.hypot(bx - ax, by - ay)
+        worst = max(abs((x - ax) * (by - ay) - (y - ay) * (bx - ax)) / length for x, y in run)
+        assert worst < 0.05, worst
+
+
+def test_lead_in_is_five_turn_radii_before_the_first_capture():
     plan = _plan()
     vps = exporters._viewpoints(plan)
     lead, first = vps[0], vps[1]
@@ -79,7 +97,8 @@ def test_lead_in_is_three_turn_radii_before_the_first_capture():
 
 
 def test_fixed_wing_items_take_off_fly_airspeed_and_land():
-    items = [i.to_dict() for i in exporters.build_mission_items(_plan())]
+    plan = _plan()
+    items = [i.to_dict() for i in exporters.build_mission_items(plan)]
     cmds = [i["command"] for i in items]
     assert cmds[0] == 22 and items[0]["param1"] == 15.0
     assert cmds[-3:] == [189, 31, 21]
@@ -89,6 +108,10 @@ def test_fixed_wing_items_take_off_fly_airspeed_and_land():
     loiter = items[-2]
     assert loiter["alt"] == 30.0 and loiter["param2"] == 60.0 and loiter["param4"] == 1.0
     assert math.isnan(items[-1]["param4"])
+    # Lead-outs (the point after each pass) are flown to: a 1 m acceptance radius.
+    waypoints = [i for i in items if i["command"] == 16]
+    passes = plan["flight_recipe"]["metadata"]["fixed_wing"]["passes"]
+    assert sum(1 for w in waypoints if w["param2"] == 1.0) == passes
 
 
 def test_a_plane_mission_without_a_landing_is_refused():
