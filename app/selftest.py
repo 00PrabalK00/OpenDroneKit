@@ -25,19 +25,35 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _progress(message: str) -> None:
+    """One line per check on stderr, so a slow first start shows where it is.
+
+    The JSON report goes to stdout at the end; on a cold machine (antivirus scanning a
+    freshly installed 1.2 GB tree) the imports alone can take many minutes, and a caller
+    with a deadline needs to know which check it was in.
+    """
+    try:
+        print(f"[self-test] {message}", file=sys.stderr, flush=True)
+    except (OSError, ValueError, AttributeError):  # pythonw: no stderr
+        pass
+
+
 def _check(name: str, fn: Callable[[], Any], results: list[dict[str, Any]],
            required: bool = True) -> Any:
     started = time.perf_counter()
+    _progress(f"{name} ...")
     try:
         value = fn()
         results.append({"check": name, "ok": True, "required": required,
                         "detail": value, "seconds": round(time.perf_counter() - started, 2)})
+        _progress(f"{name}: ok ({results[-1]['seconds']} s)")
         return value
     except BaseException as exc:  # noqa: BLE001 - the report is the point
         results.append({"check": name, "ok": False, "required": required,
                         "error": f"{type(exc).__name__}: {exc}",
                         "trace": traceback.format_exc(limit=3),
                         "seconds": round(time.perf_counter() - started, 2)})
+        _progress(f"{name}: FAILED ({results[-1]['seconds']} s) {results[-1]['error'][:200]}")
         return None
 
 

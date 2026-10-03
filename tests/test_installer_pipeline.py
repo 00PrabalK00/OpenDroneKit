@@ -335,3 +335,45 @@ class TestSelfTest:
         names = {c["check"] for c in report["checks"]}
         assert {"import webview", "construct Api", "api.capabilities",
                 "api.check_for_update (opt-in off, no network)"} <= names
+
+    def test_each_check_reports_progress_on_stderr(self, capsys):
+        from app.selftest import _check
+
+        results: list = []
+        _check("quick", lambda: 1, results)
+        _check("broken", lambda: 1 / 0, results)
+        err = capsys.readouterr().err.splitlines()
+        assert err[:2] == ["[self-test] quick ...", f"[self-test] quick: ok ({results[0]['seconds']} s)"]
+        assert err[2] == "[self-test] broken ..."
+        assert err[3].startswith("[self-test] broken: FAILED") and "ZeroDivisionError" in err[3]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the smoke script drives a Windows installer")
+class TestSmokeScript:
+    """A slow first start must end as a recorded failure, never a crash that skips the uninstall."""
+
+    def test_a_run_past_its_deadline_is_killed_and_reported(self, tmp_path):
+        from tools.installer import smoke_install
+
+        code, seconds = smoke_install.run_logged(
+            [sys.executable, "-c", "import sys,time; print('started', file=sys.stderr, flush=True); time.sleep(60)"],
+            tmp_path, None, tmp_path / "out.txt", tmp_path / "err.txt", timeout=5)
+        assert code is None and seconds < 50
+        assert "started" in (tmp_path / "err.txt").read_text(encoding="utf-8")
+
+    def test_the_uninstall_runs_even_when_the_checks_raise(self, tmp_path, monkeypatch):
+        from tools.installer import smoke_install
+
+        calls: list = []
+        monkeypatch.setattr(smoke_install, "run_installed_checks",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(smoke_install, "uninstall", lambda *a, **k: calls.append("uninstall"))
+        monkeypatch.setattr(smoke_install, "uninstall_entry", lambda app_id: {"DisplayName": "x"})
+        monkeypatch.setattr(smoke_install, "known_folder", lambda name: tmp_path / name)
+        work = tmp_path / "work"
+        (work / "install").mkdir(parents=True)
+        (work / "install" / "launch.py").write_text("", encoding="utf-8")
+        (work / "install.log").write_text("Installation process succeeded", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="boom"):
+            smoke_install.main(["--installer", str(tmp_path / "setup.exe"), "--work", str(work), "--resume"])
+        assert calls == ["uninstall"]

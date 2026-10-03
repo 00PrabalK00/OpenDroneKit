@@ -74,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--resume", action="store_true",
                         help="keep an install a previous (interrupted) run left in <work>/install "
                              "and continue from the checks; the report says so")
+    parser.add_argument("--selftest-timeout", type=int, default=5400,
+                        help="seconds the installed self-test may take. A first start on a busy "
+                             "machine is slow (antivirus scans the fresh 1.2 GB tree on first "
+                             "load, then the manifest re-hashes it); a run that exceeds this is "
+                             "recorded as a failed step and the uninstall still runs")
     args = parser.parse_args(argv)
 
     here = Path(__file__).resolve().parent
@@ -117,29 +122,70 @@ def main(argv: list[str] | None = None) -> int:
     step("desktop shortcut", desktop.is_file(), path=str(desktop))
 
     env = clean_env(userdata, args.weights)
-    t0 = time.time()
-    test = subprocess.run([str(target / "runtime" / "python.exe"), str(target / "launch.py"), "--self-test"],
-                          cwd=str(target / "odk"), env=env, capture_output=True, text=True,
-                          encoding="utf-8", timeout=1800)
-    (work / "selftest.json").write_text(test.stdout, encoding="utf-8")
-    (work / "selftest.stderr.txt").write_text(test.stderr, encoding="utf-8")
     try:
-        selftest = json.loads(test.stdout)
+        run_installed_checks(target, work, env, args.selftest_timeout, step, report)
+    finally:
+        # Whatever happened above, the machine is left without the test install.
+        uninstall(target, work, app_id, step)
+
+    report["ok"] = all(s["ok"] for s in report["steps"])
+    (work / "smoke-report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    print(f"[smoke] {'ALL PASSED' if report['ok'] else 'FAILED'}; report: {work / 'smoke-report.json'}")
+    return 0 if report["ok"] else 1
+
+
+def run_logged(cmd: list[str], cwd: Path, env: dict[str, str], stdout: Path, stderr: Path,
+               timeout: int) -> tuple[int | None, float]:
+    """Run with output streamed to files (readable while it runs); None return code on timeout."""
+    t0 = time.time()
+    with open(stdout, "w", encoding="utf-8") as out, open(stderr, "w", encoding="utf-8") as err:
+        proc = subprocess.Popen(cmd, cwd=str(cwd), env=env, stdout=out, stderr=err)
+        try:
+            code: int | None = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            code = None
+    return code, round(time.time() - t0, 1)
+
+
+def run_installed_checks(target: Path, work: Path, env: dict[str, str], timeout: int,
+                         step, report: dict) -> None:
+    python, launcher = str(target / "runtime" / "python.exe"), str(target / "launch.py")
+    code, seconds = run_logged([python, launcher, "--self-test"], target / "odk", env,
+                               work / "selftest.json", work / "selftest.stderr.txt", timeout)
+    text = (work / "selftest.json").read_text(encoding="utf-8")
+    try:
+        selftest = json.loads(text) if text.strip() else {"ok": False, "checks": []}
     except ValueError:
         selftest = {"ok": False, "checks": []}
-    summary = [{"check": c["check"], "ok": c["ok"], **({"error": c["error"]} if not c["ok"] else {})}
+    summary = [{"check": c["check"], "ok": c["ok"], "seconds": c.get("seconds"),
+                **({"error": c["error"]} if not c["ok"] else {})}
                for c in selftest.get("checks", [])]
-    step("installed app self-test (scrubbed env)", test.returncode == 0 and selftest.get("ok"),
-         returncode=test.returncode, seconds=round(time.time() - t0, 1), checks=summary)
+    detail: dict = {"returncode": code, "seconds": seconds, "checks": summary}
+    if code is None:
+        progress = (work / "selftest.stderr.txt").read_text(encoding="utf-8").splitlines()
+        detail["timed_out_after"] = timeout
+        detail["last_progress"] = progress[-3:]
+    step("installed app self-test (scrubbed env)", code == 0 and bool(selftest.get("ok")), **detail)
     report["selftest"] = selftest
 
-    dl = subprocess.run([str(target / "runtime" / "python.exe"), str(target / "launch.py"),
-                         "--download-models", "--list"], cwd=str(target / "odk"), env=env,
-                        capture_output=True, text=True, encoding="utf-8", timeout=600)
-    (work / "download-models.txt").write_text(dl.stdout + dl.stderr, encoding="utf-8")
-    step("first-run model downloader (--list)", dl.returncode == 0, output=dl.stdout.splitlines()[:20])
+    code, seconds = run_logged([python, launcher, "--download-models", "--list"], target / "odk",
+                               env, work / "download-models.txt",
+                               work / "download-models.stderr.txt", 1800)
+    out = (work / "download-models.txt").read_text(encoding="utf-8")
+    step("first-run model downloader (--list)", code == 0, returncode=code, seconds=seconds,
+         output=out.splitlines()[:20])
+
+
+def uninstall(target: Path, work: Path, app_id: str, step) -> None:
+    programs = known_folder("Programs") / APP
+    desktop = known_folder("Desktop") / f"{APP}.lnk"
 
     uninstaller = target / "unins000.exe"
+    if not uninstaller.is_file():
+        step("silent uninstall removes everything", False, error=f"{uninstaller} not found")
+        return
     t0 = time.time()
     proc = subprocess.run([str(uninstaller), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
                            f"/LOG={work / 'uninstall.log'}"])
@@ -151,11 +197,6 @@ def main(argv: list[str] | None = None) -> int:
          and uninstall_entry(app_id) is None and not desktop.exists() and not programs.exists(),
          returncode=proc.returncode, seconds=round(time.time() - t0, 1), leftovers=leftovers[:20],
          desktop_shortcut_left=desktop.exists(), start_menu_left=programs.exists())
-
-    report["ok"] = all(s["ok"] for s in report["steps"])
-    (work / "smoke-report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
-    print(f"[smoke] {'ALL PASSED' if report['ok'] else 'FAILED'}; report: {work / 'smoke-report.json'}")
-    return 0 if report["ok"] else 1
 
 
 if __name__ == "__main__":
