@@ -195,6 +195,35 @@ def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> li
     return added
 
 
+
+def _run_observations(run: Path) -> dict[str, Any] | None:
+    """The tie points of a COLMAP run's model, so singly marked control can be placed.
+
+    None when the run kept no COLMAP model or pycolmap is unavailable; the report then
+    places only points marked in two or more images.
+    """
+    sparse = run / "colmap" / "sparse"
+    if not sparse.is_dir():
+        return None
+    try:
+        import pycolmap  # type: ignore
+
+        from core.reconstruction_colmap import image_observations
+    except ImportError:
+        return None
+    best = None
+    for folder in sparse.iterdir():
+        if not (folder / "images.bin").is_file() and not (folder / "images.txt").is_file():
+            continue
+        try:
+            model = pycolmap.Reconstruction(str(folder))
+        except Exception:  # noqa: BLE001 - an unreadable model is skipped
+            continue
+        # The engine maps from the largest model; the same rule finds it again.
+        if best is None or model.num_reg_images() > best.num_reg_images():
+            best = model
+    return image_observations(best) if best is not None else None
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -965,7 +994,7 @@ class Api:
         Written into the project folder with every mark made on them. They used to live
         only in memory, so an afternoon of marking targets was lost on restart.
         """
-        from core.gcp import GcpError, read_gcp_file, save_control
+        from core.gcp import GcpError, add_mark, read_gcp_file, save_control
 
         try:
             points = read_gcp_file(path, default_epsg=epsg)
@@ -973,14 +1002,22 @@ class Api:
             return fail(str(exc))
 
         # Re-importing the same file keeps the marks already made on points it still has.
+        # A file that carries marks of its own (ODM's gcp_list.txt) adds them; where both
+        # mark the same image, the file's pixel wins. Overwriting the file's marks with
+        # the project's -- or with none -- threw the observations away on import.
         previous = {p.name: p for p in self._control_points()}
         for point in points:
             if point.name in previous:
-                point.marks = previous[point.name].marks
+                from_file = list(point.marks)
+                point.marks = list(previous[point.name].marks)
+                for mark in from_file:
+                    add_mark(point, mark.image, mark.pixel_x, mark.pixel_y,
+                             mark.image_width, mark.image_height)
         self._session.ground_control = points
         saved = save_control(self._session.project_root(), points)
         self._session.audit("gcps_imported", {"path": str(path), "count": len(points)})
-        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved))
+        return ok(points=[p.to_dict() for p in points], count=len(points), path=str(saved),
+                  marks=sum(len(p.marks) for p in points))
 
     @guard
     def list_gcps(self) -> dict[str, Any]:
@@ -1055,16 +1092,19 @@ class Api:
             anchor = geo.GeoAnchor(**_json.loads(anchor_path.read_text(encoding="utf-8")))
             poses = poses_from_records(
                 _json.loads(poses_path.read_text(encoding="utf-8")).get("cameras", []))
-            fitted = anchor.method == "ground_control"
+            # A shift onto control is fitted to these points too, so its residuals
+            # here flatter it; the run's leave-one-out check is carried across below.
+            fitted = anchor.method in ("ground_control", "camera_gps_shifted_to_control")
             try:
                 report = check_against_anchor(points, poses, anchor,
-                                              role="fit" if fitted else "check")
+                                              role="fit" if fitted else "check",
+                                              observations=_run_observations(run))
             except GcpError as exc:
                 return fail(str(exc))
             report["georeferenced_by"] = anchor.method
             report["reconstruction"] = str(run)
             usable = sum(1 for p in points if p.is_usable)
-            if not fitted and usable >= 3:
+            if anchor.method != "ground_control" and usable >= 3:
                 report["warnings"].append(
                     f"{usable} control points are now marked well enough to georeference "
                     "the model; run Process again to fit it to them."
@@ -2201,6 +2241,89 @@ class Api:
         self._session.audit("pylon_planned", {"elements": len(elements)})
         summary_plan = {k: v for k, v in plan.items() if k != "plans"}
         return ok(plan=summary_plan, **adopted)
+
+    @guard
+    def plan_facade_from_reconstruction(self, reconstruction_dir: str = "",
+                                        image_dir: str = "", camera: str = "",
+                                        standoff_m: float | None = None,
+                                        bottom_m: float | None = None,
+                                        top_m: float | None = None,
+                                        depth_m: float = 5.0,
+                                        options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Measure the facade in a georeferenced reconstruction and plan a mission on it.
+
+        core/facade_survey.py measured the wall and planned on it, and only tests could
+        call it. The wall comes from the project's reconstruction (or the folder given):
+        its ground line, its height band above take-off from the frames' DJI
+        RelativeAltitude, its flatness and sparse coverage, and the stand-off it was
+        flown at, which is the default stand-off of the new plan. The camera defaults to
+        the one the frames' EXIF identifies; if they do not identify exactly one profile
+        the plan is refused with the reason rather than planned on a fallback camera.
+        """
+        import numpy as np
+
+        from core.facade_survey import (FacadeError, camera_from_exif, facade_from_run,
+                                        plan_facade_mission, waypoint_offsets_from_wall)
+        from mission.cameras import UnknownCamera, require
+
+        run = Path(reconstruction_dir) if reconstruction_dir else (
+            self._session.project_root() / "reconstruction")
+        if not (run / "colmap" / "sparse").is_dir():
+            return fail(f"No reconstruction at {run}: run Process on the facade survey "
+                        "first, then the wall can be measured from it.")
+        images = image_dir or self._session.active_dataset_dir or ""
+        if not images or not Path(images).is_dir():
+            return fail("The survey's image folder is needed to read the take-off height "
+                        "from its frames; select the dataset or give image_dir.")
+        try:
+            wall = facade_from_run(run, images)
+        except FacadeError as exc:
+            return fail(str(exc))
+        except ImportError as exc:
+            return fail(f"Reading the COLMAP model needs pycolmap: {exc}")
+
+        camera_note = "chosen by the operator"
+        if not camera:
+            frames = sorted(p for p in Path(images).iterdir()
+                            if p.suffix.lower() in (".jpg", ".jpeg", ".tif", ".tiff"))
+            camera, camera_note = camera_from_exif(frames)
+            if not camera:
+                return fail(camera_note + " Give the camera that will fly the mission.",
+                            wall=wall.to_dict())
+        try:
+            require(camera)
+        except UnknownCamera as exc:
+            return fail(str(exc), wall=wall.to_dict())
+        try:
+            plan, polygon = plan_facade_mission(wall, standoff_m=standoff_m, depth_m=depth_m,
+                                                camera=camera, bottom_m=bottom_m, top_m=top_m)
+        except FacadeError as exc:
+            return fail(str(exc), wall=wall.to_dict())
+
+        offsets = waypoint_offsets_from_wall(plan, wall)
+        warnings: list[str] = []
+        if len(offsets) and float(offsets.min()) <= 0.5:
+            warnings.append(f"A planned waypoint is {float(offsets.min()):.2f} m from the "
+                            "measured wall line; check the plan before flying it.")
+        facade = {
+            "wall": wall.to_dict(),
+            "reconstruction": str(run),
+            "camera": camera,
+            "camera_source": camera_note,
+            "waypoint_standoff_m": {"min": round(float(offsets.min()), 3),
+                                    "median": round(float(np.median(offsets)), 3),
+                                    "max": round(float(offsets.max()), 3)} if len(offsets) else {},
+            "footprint_lonlat": polygon,
+            "notes": [wall.coverage_note,
+                      "Heights are above the take-off point of the survey the wall was "
+                      "measured from; fly from the same take-off point or adjust them."],
+        }
+        adopted = self._adopt_plan(plan, "facade_from_model", warnings,
+                                   extra={"facade_from_model": facade}, options=options)
+        self._session.audit("facade_from_model_planned",
+                            {"reconstruction": str(run), "camera": camera,
+                             "waypoints": len(plan.waypoints)})
+        return ok(facade=facade, **adopted)
 
     @guard
     def plan_thermal_survey(self, thermal_camera: str, target_gsd_cm: float,
@@ -5035,6 +5158,35 @@ class Api:
         return self._pack("canopy", lambda out: analyse_canopy_cover(raster, classes, out))
 
     @guard
+    def india_index_cover(self, index_raster: str, validation_scope: str,
+                          bare_below: float | None = None,
+                          canopy_from: float | None = None) -> dict[str, Any]:
+        """Canopy / sparse / bare cover classes from a calibrated NDVI, then canopy cover.
+
+        With no cut points they are measured from this survey's index histogram
+        (three-class multi-Otsu); the scope says how far the classes were checked.
+        """
+        from core.india_agriculture import analyse_canopy_cover, classify_index_cover
+
+        thresholds = None
+        if bare_below is not None or canopy_from is not None:
+            if bare_below is None or canopy_from is None:
+                return fail("Give both cut points (bare below, canopy from) or neither.")
+            thresholds = (float(bare_below), float(canopy_from))
+
+        def run(out: Path):
+            cover = classify_index_cover(index_raster, out, validation_scope=str(validation_scope),
+                                         thresholds=thresholds)
+            classes, schema = cover.artifact_paths
+            canopy = analyse_canopy_cover(classes, schema, out)
+            summary = json.loads(Path(canopy.summary_path).read_text(encoding="utf-8"))
+            summary["index_cover"] = json.loads(Path(cover.summary_path).read_text(encoding="utf-8"))
+            Path(canopy.summary_path).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+            return type(canopy)(canopy.summary_path, (*cover.artifact_paths, *canopy.artifact_paths))
+
+        return self._pack("index_cover", run)
+
+    @guard
     def india_vegetation_indices(self, multispectral_raster: str,
                                  calibrations: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """NDVI/NDRE/GNDVI from explicitly calibrated reflectance bands only.
@@ -5052,6 +5204,56 @@ class Api:
             return fail(f"Calibration not usable: {exc}")
         return self._pack("vegetation_indices", lambda out: compute_vegetation_indices(
             multispectral_raster, parsed, out))
+
+    @guard
+    def process_multispectral(self, images_folder: str, panel_folder: str = "",
+                              calibration: str = "dls", reconstruct: bool = True) -> dict[str, Any]:
+        """MicaSense band TIFFs -> reflectance -> band orthomosaic -> NDVI/NDRE/GNDVI (background job).
+
+        Captures are grouped by CaptureId, calibrated with the DLS2 sun sensor
+        (``dls``) or the panel capture in ``panel_folder`` (``panel``; albedo from
+        the panel's QR record), aligned band to band, orthorectified per band on
+        poses solved by the COLMAP engine, and the vegetation indices are computed
+        on the result. A panel folder given with DLS calibration is used as an
+        independent check: the DLS reflectance of the panel against its albedo.
+        """
+        from datetime import datetime, timezone
+
+        from core import multispectral as ms
+
+        if not images_folder or not Path(images_folder).is_dir():
+            return fail("Choose the folder holding the MicaSense band TIFFs (IMG_xxxx_N.tif).")
+        if calibration not in ("dls", "panel"):
+            return fail("Calibration must be 'dls' (sun sensor) or 'panel' (calibration panel capture).")
+        if panel_folder and not Path(panel_folder).is_dir():
+            return fail(f"Panel folder not found: {panel_folder}")
+        if calibration == "panel" and not panel_folder:
+            return fail("Panel calibration needs the folder holding the calibration-panel capture.")
+        captures = ms.group_captures(images_folder)
+        if not captures:
+            return fail(f"No MicaSense band TIFFs with a CaptureId were found in {images_folder}.")
+        output = (self._session.project_root() / "multispectral"
+                  / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S"))
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], **_: Any) -> dict[str, Any]:
+            report = ms.run_survey_report(images_folder, output, panel=panel_folder,
+                                          calibration=calibration, reconstruct=bool(reconstruct),
+                                          progress=progress)
+            layers = []
+            ortho = (report.get("survey", {}).get("orthomosaic") or {})
+            if ortho.get("reflectance_bands"):
+                layers.append(session.register_raster_layer(
+                    ortho["reflectance_bands"], name="Reflectance bands")["id"])
+            for name, entry in ((report.get("vegetation_indices") or {}).get("indices") or {}).items():
+                if isinstance(entry, dict) and entry.get("path") and Path(entry["path"]).is_file():
+                    layers.append(session.register_raster_layer(entry["path"], name=name)["id"])
+            session.audit("multispectral_processed", {"report": report["report_path"]})
+            report["layer_ids"] = layers
+            return report
+
+        return ok(job_id=self._jobs.submit("multispectral", work), capture_count=len(captures),
+                  output_dir=str(output))
 
     @guard
     def india_stress_zones(self, index_raster: str, severe_below: float, moderate_below: float,
@@ -5073,6 +5275,25 @@ class Api:
         return self._pack("plant_count", lambda out: count_plant_instances(
             instance_raster, out, validation_scope=str(validation_scope),
             instance_encoding=str(instance_encoding)))
+
+    @guard
+    def india_plant_count_from_canopy(self, class_raster: str, schema: str, validation_scope: str,
+                                      max_plant_area_m2: float,
+                                      min_plant_area_m2: float = 0.01) -> dict[str, Any]:
+        """Count canopy patches as plants only when the canopy separates into plants.
+
+        The share of canopy in patches larger than one plant is measured first; when
+        most of it is merged (closed rows), the answer is not_applicable with no count.
+        """
+        from core.india_agriculture import count_plants_from_canopy
+
+        try:
+            raster, classes = self._semantic_inputs(class_raster, schema)
+        except ValueError as exc:
+            return fail(str(exc))
+        return self._pack("plant_count", lambda out: count_plants_from_canopy(
+            raster, classes, out, validation_scope=str(validation_scope),
+            max_plant_area_m2=float(max_plant_area_m2), min_plant_area_m2=float(min_plant_area_m2)))
 
     @guard
     def india_road_condition(self, road_centerline_geojson: str, defect_findings_geojson: str,
@@ -5437,7 +5658,23 @@ class Api:
         ]
 
     def _plan_special(self, template: str, opts: dict[str, Any]) -> dict[str, Any]:
-        """pylon_inspection / thermal / multispectral, reached with the same form."""
+        """pylon_inspection / thermal / multispectral / facade_from_model, one form."""
+        if template == "facade_from_model":
+            def number(value: Any) -> float | None:
+                return None if value in (None, "") else float(value)
+
+            return self.plan_facade_from_reconstruction(
+                reconstruction_dir=str(opts.get("reconstruction_dir") or ""),
+                image_dir=str(opts.get("image_dir") or ""),
+                camera=str(opts.get("camera") or ""),
+                # The form's general Stand-off defaults to 12 m; this mission's default
+                # is the stand-off the survey was measured to have been flown at, so
+                # only its own field overrides it.
+                standoff_m=number(opts.get("model_standoff_m")),
+                bottom_m=number(opts.get("facade_bottom_altitude_m")),
+                top_m=number(opts.get("facade_top_altitude_m")),
+                options=opts,
+            )
         if template == "pylon_inspection":
             center = opts.get("pylon_center_lonlat") or opts.get("center_lonlat")
             if not center:

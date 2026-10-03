@@ -89,7 +89,14 @@ class TestTheActionCodesAreLitchis:
         captures = [f for f in planned["geojson"]["features"]
                     if f["properties"].get("role") == "waypoint" and f["properties"].get("trigger")]
         assert captures
-        assert sum((TAKE_PHOTO, "0") in actions(r) for r in rows) == len(captures)
+        # The planner flies a grid with distance-triggered capture, so Litchi shoots by
+        # photo_distinterval "from this waypoint to the next" (flylitchi.com/help): every
+        # capture point is either photographed there or inside an interval segment.
+        assert len(rows) == len(captures)
+        interval = [float(r["photo_distinterval"]) > 0.0 for r in rows]
+        assert any(interval)
+        for i, row in enumerate(rows):
+            assert (TAKE_PHOTO, "0") in actions(row) or interval[i] or (i > 0 and interval[i - 1])
         assert not any(a == TILT_CAMERA for r in rows for a, _ in actions(r))
 
 

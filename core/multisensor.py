@@ -577,6 +577,47 @@ def _serialize_timeline_entry(entry: dict) -> dict:
         }
     return out
 
+def _frame_ndvi(red_path: str, nir_path: str) -> tuple[np.ndarray | None, str, str]:
+    """NDVI for one frame, from calibrated reflectance whenever the files allow it.
+
+    MicaSense band TIFFs carry their radiometric model and DLS irradiance, so they are
+    converted to surface reflectance and co-registered (core.multispectral). Any other
+    image is a ratio of raw counts: still returned, but labelled uncalibrated.
+    """
+    try:
+        from . import multispectral as ms
+
+        red_band = ms.read_band_metadata(red_path)
+        nir_band = ms.read_band_metadata(nir_path)
+        capture = ms.Capture(red_band.capture_id, {"red": red_band, "nir": nir_band})
+        aligned = ms.align_capture(capture, ms.dls_calibration(capture), reference="red")
+        red = aligned.reflectance[aligned.band_keys.index("red")]
+        nir = aligned.reflectance[aligned.band_keys.index("nir")]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            ndvi = (nir - red) / (nir + red)
+        ndvi[~np.isfinite(ndvi)] = np.nan
+        return np.clip(ndvi, -1.0, 1.0), "surface_reflectance", "MicaSense radiance + DLS2 irradiance, bands co-registered"
+    except Exception as exc:  # noqa: BLE001 - fall back to the labelled DN ratio
+        reason = str(exc)
+    red = cv2.imread(red_path, cv2.IMREAD_UNCHANGED)
+    nir = cv2.imread(nir_path, cv2.IMREAD_UNCHANGED)
+    if red is None or nir is None:
+        return None, "", ""
+    if red.ndim == 3:
+        red = cv2.cvtColor(red, cv2.COLOR_BGR2GRAY)
+    if nir.ndim == 3:
+        nir = cv2.cvtColor(nir, cv2.COLOR_BGR2GRAY)
+    if red.shape != nir.shape:
+        nir = cv2.resize(nir, (red.shape[1], red.shape[0]), interpolation=cv2.INTER_LINEAR)
+    red_f = red.astype(np.float32)
+    nir_f = nir.astype(np.float32)
+    ndvi = (nir_f - red_f) / np.maximum(nir_f + red_f, 1e-6)
+    return ndvi, "uncalibrated_dn_ratio", (
+        "Raw sensor counts, not reflectance: not comparable between flights or sensors "
+        f"({reason})"
+    )
+
+
 class MultiSensorProcessor:
     """Validate and fuse a capture bundle into aligned per-frame records."""
 
@@ -945,24 +986,11 @@ class MultiSensorProcessor:
             if not red_path or not nir_path:
                 continue
 
-            red = cv2.imread(red_path, cv2.IMREAD_UNCHANGED)
-            nir = cv2.imread(nir_path, cv2.IMREAD_UNCHANGED)
-            if red is None or nir is None:
+            ndvi, basis, basis_note = _frame_ndvi(red_path, nir_path)
+            if ndvi is None:
                 continue
-            if red.ndim == 3:
-                red = cv2.cvtColor(red, cv2.COLOR_BGR2GRAY)
-            if nir.ndim == 3:
-                nir = cv2.cvtColor(nir, cv2.COLOR_BGR2GRAY)
 
-            if red.shape != nir.shape:
-                nir = cv2.resize(nir, (red.shape[1], red.shape[0]), interpolation=cv2.INTER_LINEAR)
-
-            red_f = red.astype(np.float32)
-            nir_f = nir.astype(np.float32)
-            denom = np.maximum(nir_f + red_f, 1e-6)
-            ndvi = (nir_f - red_f) / denom
-
-            ndvi_u8 = np.clip((ndvi + 1.0) * 127.5, 0, 255).astype(np.uint8)
+            ndvi_u8 = np.clip((np.nan_to_num(ndvi, nan=-1.0) + 1.0) * 127.5, 0, 255).astype(np.uint8)
             ndvi_col = cv2.applyColorMap(ndvi_u8, cv2.COLORMAP_VIRIDIS)
             out_path = output_dir / f"ndvi_{idx:05d}.png"
             cv2.imwrite(str(out_path), ndvi_col)
@@ -973,9 +1001,11 @@ class MultiSensorProcessor:
                     "timestamp_ms": float(row.get("timestamp_ms", 0.0)),
                     "red_path": red_path,
                     "nir_path": nir_path,
-                    "ndvi_mean": float(np.mean(ndvi)),
-                    "ndvi_min": float(np.min(ndvi)),
-                    "ndvi_max": float(np.max(ndvi)),
+                    "ndvi_basis": basis,
+                    "ndvi_basis_note": basis_note,
+                    "ndvi_mean": float(np.nanmean(ndvi)),
+                    "ndvi_min": float(np.nanmin(ndvi)),
+                    "ndvi_max": float(np.nanmax(ndvi)),
                     "preview_path": str(out_path),
                 }
             )
@@ -985,6 +1015,13 @@ class MultiSensorProcessor:
             "ndvi_previews": preview_paths,
             "ndvi_frames": ndvi_rows,
             "ndvi_mean_global": float(np.mean([r["ndvi_mean"] for r in ndvi_rows])) if ndvi_rows else None,
+            # "surface_reflectance" only when every frame was radiometrically calibrated;
+            # otherwise the NDVI is a ratio of raw sensor counts and is labelled as such.
+            "ndvi_basis": (
+                "surface_reflectance"
+                if ndvi_rows and all(r["ndvi_basis"] == "surface_reflectance" for r in ndvi_rows)
+                else ("uncalibrated_dn_ratio" if ndvi_rows else None)
+            ),
         }
 
     def process(

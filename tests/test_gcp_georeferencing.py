@@ -220,13 +220,33 @@ class TestFittingTheModelToTheControl:
         assert "leave_one_out" not in solution.report
         assert any("no independent check" in w for w in solution.report["warnings"])
 
-    def test_thinly_marked_control_leaves_the_gps_fit_and_is_reported_as_a_check(self):
+    def test_thinly_marked_control_checks_the_gps_fit_then_corrects_its_position(self):
+        """Too few marks for a 7-parameter fit, enough to say the GPS fit is 2 m east.
+
+        The geotag fit is checked against the control first (that check is kept as
+        camera_gps_check), then translated and scaled onto it, keeping the geotag
+        orientation; the leave-one-out residuals are the independent figure.
+        """
         biased = geo.GeoAnchor(**anchor_dict(bias_east=2.0))
         solution = solve_with_control(self.points(marks=2), poses_from_records(camera_records()),
                                       EPSG, biased)
+        report = solution.report
+        assert report["camera_gps_check"]["role"] == "check"
+        assert report["camera_gps_check"]["residuals"][0]["dx"] == pytest.approx(2.0, abs=1e-6)
+        assert any("three are needed" in w for w in report["warnings"])
+        assert report["georeferenced_by"] == "camera_gps_shifted_to_control"
+        assert solution.anchor.method == "camera_gps_shifted_to_control"
+        assert solution.anchor.rotation == biased.rotation
+        assert report["leave_one_out"]["rmse_m"] == pytest.approx(0.0, abs=1e-6)
+        assert report["shift_m"][0] == pytest.approx(-2.0, abs=1e-6)
+
+    def test_thinly_marked_control_without_a_correction_to_make_is_a_check(self):
+        exact = geo.GeoAnchor(**anchor_dict())
+        solution = solve_with_control(self.points(marks=2), poses_from_records(camera_records()),
+                                      EPSG, exact)
         assert solution.anchor is None
         assert solution.report["role"] == "check"
-        assert solution.report["residuals"][0]["dx"] == pytest.approx(2.0, abs=1e-6)
+        assert solution.report["georeferenced_by"] == "camera_gps"
         assert any("three are needed" in w for w in solution.report["warnings"])
 
 

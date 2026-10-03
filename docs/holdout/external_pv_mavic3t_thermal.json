@@ -1,0 +1,100 @@
+{
+  "evaluation": "solar thermal (Mavic 3T PV panels) through the shipped solar models",
+  "measured_utc": "2026-10-02T07:14:06Z",
+  "dataset": {
+    "folder": "thermal_pv_panel_detection_mavic3t",
+    "source": "https://doi.org/10.5281/zenodo.16420123 (CC BY 4.0)",
+    "frames": 353,
+    "frames_greyscale_by_app_test": 353,
+    "panel_boxes_scored": 26666,
+    "panel_box_px_median_wh": [
+      56.0,
+      37.0
+    ],
+    "labels": "PV panel boxes only (class 0). NO defect/anomaly labels, and the images are Roboflow exports with the radiometric payload stripped."
+  },
+  "panel_detection": {
+    "measured": false,
+    "why": "No shipped model localises PV panels or modules in a thermal frame. solar_defect_detector and solar_pv_multidefect_detector are awaiting weights; solar_module_segformer_b2 exists only as an unregistered training run whose validation IoU stayed near 0.0007. Panel-box precision/recall/mAP cannot be reported. Training a thermal panel localiser on this dataset is roadmap item 5.",
+    "whole_frame_handling": {
+      "refused": 353,
+      "auto:refused": 353
+    },
+    "whole_frame_refusal_reasons": {
+      "solar_thermal_anomaly_classifier classifies ONE module per image (trained on 24x40 px crops)": 353
+    }
+  },
+  "thermal_anomaly_classifier_on_labelled_panels": {
+    "model": {
+      "model_key": "solar_thermal_anomaly_classifier",
+      "file": "solar_thermal_anomaly_cls.onnx",
+      "sha256_measured": "38cd9c0912447347c499efe9419561edf100eb8f293c6dc38b15000c07537e84",
+      "sha256_registered": "6933a09abff99bf8d4e2619a50a64498432d2877b9abd55ccab7a87ac357fd42",
+      "sha256_matches_registry": false
+    },
+    "identity_warning": "The file loaded does not carry the registry's sha256, so the registry's validation figures (balanced accuracy 0.724) do NOT describe it, and these outputs describe that file only. Re-run with the registered file before quoting them for the registered model.",
+    "accuracy": null,
+    "accuracy_why_none": "The dataset has no anomaly labels, so no accuracy, precision or recall can be computed. What follows is what the model SAID, not whether it was right.",
+    "top_class_counts": {
+      "Vegetation": 12863,
+      "Shadowing": 8579,
+      "No-Anomaly": 2615,
+      "Cell-Multi": 833,
+      "Offline-Module": 671,
+      "Cell": 290,
+      "Diode": 257,
+      "Hot-Spot-Multi": 175,
+      "Cracking": 173,
+      "Soiling": 114,
+      "Hot-Spot": 91,
+      "Diode-Multi": 5
+    },
+    "top_class_share": {
+      "Vegetation": 0.4824,
+      "Shadowing": 0.3217,
+      "No-Anomaly": 0.0981,
+      "Cell-Multi": 0.0312,
+      "Offline-Module": 0.0252,
+      "Cell": 0.0109,
+      "Diode": 0.0096,
+      "Hot-Spot-Multi": 0.0066,
+      "Cracking": 0.0065,
+      "Soiling": 0.0043,
+      "Hot-Spot": 0.0034,
+      "Diode-Multi": 0.0002
+    },
+    "top_class_counts_rotated_to_portrait": {
+      "Shadowing": 9950,
+      "Vegetation": 8888,
+      "No-Anomaly": 4434,
+      "Offline-Module": 2416,
+      "Cracking": 304,
+      "Cell": 209,
+      "Hot-Spot": 150,
+      "Hot-Spot-Multi": 100,
+      "Diode": 89,
+      "Cell-Multi": 58,
+      "Soiling": 48,
+      "Diode-Multi": 20
+    },
+    "orientation_agreement": 0.5512,
+    "median_no_anomaly_probability": 0.0271,
+    "refusals": {},
+    "domain_gap": "Trained on 24x40 px (portrait) single-module crops from Raptor Maps InfraredSolarModules. These are Mavic 3T module boxes of median 56x37 px (landscape), cut from palette-rendered frames whose radiometric data was stripped, from a different camera and site. The 'rotated_to_portrait' run turns each crop to the training orientation; the agreement between the two runs measures how stable the answer is to a change that should not matter.",
+    "contact_sheets": {
+      "Vegetation": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Vegetation.jpg",
+      "Cell-Multi": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Cell-Multi.jpg",
+      "Offline-Module": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Offline-Module.jpg",
+      "Shadowing": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Shadowing.jpg",
+      "Hot-Spot-Multi": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Hot-Spot-Multi.jpg",
+      "No-Anomaly": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_No-Anomaly.jpg",
+      "Hot-Spot": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Hot-Spot.jpg",
+      "Diode": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Diode.jpg",
+      "Soiling": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Soiling.jpg",
+      "Cell": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Cell.jpg",
+      "Diode-Multi": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Diode-Multi.jpg",
+      "Cracking": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t\\panels_predicted_Cracking.jpg"
+    }
+  },
+  "artifacts": "E:\\Shit was cluittering\\Projects\\odk-testdata\\_outputs\\detectors\\pv_mavic3t"
+}

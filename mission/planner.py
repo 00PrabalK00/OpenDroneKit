@@ -3569,7 +3569,14 @@ class MissionPlanner:
 
         camera_name = str(camera or recipe_obj.metadata.get("camera") or "custom").lower()
         mean_alt = float(np.mean([p["alt_m"] for p in world_poses])) if world_poses else self._default_recipe_altitude(recipe_obj)
-        gsd_cm = _estimate_gsd_cm(mean_alt, camera_name)
+        # A facade is photographed across the stand-off, not down from the altitude: the
+        # NVS Hagenberg facade plan (wall 33.6 m away, waypoints 6-12.5 m up) quoted
+        # 0.34 cm from the mean altitude where the wall is imaged at 1.22 cm.
+        gsd_distance = mean_alt
+        standoff_m = float(recipe_obj.metadata.get("facade_standoff_m") or 0.0)
+        if "facade" in _normalize_template(recipe_obj.template) and standoff_m > 0.0:
+            gsd_distance = standoff_m
+        gsd_cm = _estimate_gsd_cm(gsd_distance, camera_name)
         mapping_config = self._mapping_capture_config(
             recipe_obj=recipe_obj,
             speed_m_s=speed,

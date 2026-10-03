@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from core.annotations import validate_annotation
 from core.detection import detect_structural_defects
-from core.models import model_status
+from core.models import get_model_spec, model_status
 
 from ..audit import record
 from ..db import dumps_geometry, get_db, loads_geometry
@@ -239,7 +239,12 @@ async def create_prelabels(
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=f"Could not retain source image: {exc}") from exc
 
-    result = detect_structural_defects(array, model_key=model_key, use_model=True)
+    # Pre-labels are reviewed before they reach a report, so they use the registry's
+    # pre-label threshold (measured on held-out data) where it declares one.
+    spec = get_model_spec(model_key)
+    threshold = spec.prelabel_score_threshold if spec is not None else None
+    result = detect_structural_defects(
+        array, model_key=model_key, use_model=True, score_threshold=threshold)
     if not result.model_used.startswith("onnx:") or not result.model_key or not result.model_sha256:
         raise HTTPException(
             status_code=503,
@@ -300,6 +305,9 @@ async def create_prelabels(
         "model": {
             "model_key": result.model_key, "model_sha256": result.model_sha256,
             "model_used": result.model_used,
+            "score_threshold": (
+                float(threshold) if threshold is not None
+                else float(spec.score_threshold) if spec is not None else None),
         },
         "prelabels": [_out(row).model_dump(mode="json") for row in created],
         "finding_count": len(created),

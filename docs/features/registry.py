@@ -135,6 +135,32 @@ MISSION_PLANNING = [
                       "tests/test_standoff.py::TestAgainstARealPlan::test_facade_inspection_is_not_silently_a_nadir_grid",
                       "tests/test_mission_exports_carry_the_plan.py::TestFacadeGeometry"],
       "Was silently aliased to grid; the alias and the geofence clipping are fixed."),
+    F("mp.type.facade_from_model", "Facade measured from its reconstruction",
+      "core", "Mission types",
+      "A facade's ground line, height band, flatness, sparse coverage and the stand-off "
+      "it was flown at are measured from a georeferenced reconstruction, and a facade "
+      "mission is planned on that wall: every waypoint on the camera side at the "
+      "measured stand-off, the GSD taken across the stand-off with the real camera.",
+      "implemented", ["tests/test_facade_survey.py",
+                      "tests/test_real_recon_datasets.py::test_the_hagenberg_facade_is_measured_and_a_mission_planned_on_it"],
+      "core/facade_survey.py, reached from the Mission form's 'Facade from model' type "
+      "(plan_mission template facade_from_model -> Api.plan_facade_from_reconstruction); "
+      "the camera is identified from the frames' EXIF (Model M30T, 4.4 mm, 4000 px -> "
+      "m30t_wide) and an unidentified one is refused, not defaulted. Through the Api on "
+      "the saved full-run model: 12 waypoints, all 33.60 m off the wall, 1.22 cm GSD, "
+      "exported to QGC/WPL/DJI WPML/Litchi/KML/GeoJSON and saved as a version. NVS Hagenberg (Praschl & Schedl 2025, CC BY 4.0), 60 DJI "
+      "M30T wide frames, full resolution: wall 62.0 m long, 2.9-12.5 m above take-off "
+      "(from DJI RelativeAltitude), normal (0.05, -1.00) towards the camera track, "
+      "4,216 of 36,503 tie points on it, flatness 0.14 m RMS, 52 per cent of 0.5 m "
+      "cells holding a sparse point; cameras 31.2-35.9 m off the wall (median 33.6). "
+      "Planned with the M30T wide profile: 12 waypoints in two rows at 6.25 and 12.51 "
+      "m, all 33.6 m off the wall, 1.22 cm GSD. That GSD used to be taken from the mean "
+      "waypoint altitude (0.34 cm), and storage sized from a fallback camera; both "
+      "fixed. These 60 frames hold no roof passes, so roof reconstruction is not "
+      "measured here. Dense MVS (a CUDA 12.8 COLMAP build) is a separate item; this "
+      "is the sparse model. The test (CPU SIFT, 1600 px) measured 60/60 at 1.31 px, wall "
+      "59.4 m, 3.3-12.7 m, 4,049 of 32,357 points, 0.14 m flat, stand-off median "
+      "32.9 m, 12 waypoints at 1.20 cm."),
     F("mp.type.multi_facade", "Multi-facade missions", "core", "Mission types",
       "One pass per building face with per-face stand-off, altitude band and spacing; "
       "capture points sit outside the footprint with the camera facing the wall, and "
@@ -662,7 +688,12 @@ PROCESSING = [
       "a dependency-free incremental SfM (SIFT, PnP registration, SciPy bundle "
       "adjustment, EXIF intrinsics, no distortion model) that registered 15/15 "
       "Aukerman frames at 0.59 px and 1.96 m geo RMSE; it refuses imagery it cannot "
-      "register instead of laying frames out at an assumed overlap."),
+      "register instead of laying frames out at an assumed overlap. Oblique and facade "
+      "imagery (ODK_TESTDATA_DIR, GPU SIFT, 2000 px): ODM sheffield_cross 172/172 "
+      "oblique frames at 1.19 px; NVS Hagenberg M30T facade 60/60 at 1.32 px, geotag "
+      "fit 0.084 m RMSE. Spatial matching above 60 geotagged frames: bellus 106/122 "
+      "against 40/122 with sequential pairing. A fragment model holding only frames the "
+      "main model already has is no longer reported as a split survey."),
     F("pr.georeference", "Georeferencing", "workers", "Processing",
       "RANSAC Helmert similarity between camera centres and geotags, into an auto-selected UTM zone.",
       "verified", ["tests/test_geo.py::TestUmeyamaSimilarity", "tests/test_geo.py::TestUtmZoneSelection"]),
@@ -734,7 +765,12 @@ PROCESSING = [
                       "tests/test_gcp.py::TestResiduals",
                       "tests/test_gcp.py::TestAccuracyReport",
                       "tests/test_gcp.py::TestReportOutput",
-                      "tests/test_gcp_georeferencing.py"],
+                      "tests/test_gcp_georeferencing.py",
+                      "tests/test_odm_gcp_format.py",
+                      "tests/test_real_recon_datasets.py::test_bellus_control_file_is_read_with_its_marks",
+                      "tests/test_real_recon_datasets.py::test_sheffield_control_file_with_a_proj_header_is_read_with_its_marks",
+                      "tests/test_real_recon_datasets.py::test_sheffield_oblique_survey_is_fitted_to_its_control",
+                      "tests/test_real_recon_datasets.py::test_bellus_single_marks_are_placed_on_the_model_and_check_the_gps_fit"],
       "core/gcp.py; Api.import_gcps, list_gcps, mark_gcp, gcp_accuracy_report; cockpit "
       "Add GCPs, Mark GCP (a click on the photograph, then on a close-up), GCP Report. "
       "Points and marks are kept in the project's gcps.json. Each point is located in the "
@@ -745,7 +781,24 @@ PROCESSING = [
       "geotag fit. The real-imagery test (COLMAP on eight Aukerman frames, marks taken "
       "from COLMAP's own tie-point observations, survey coordinates offset from the GPS "
       "fit by a known amount) skips without the gitignored imagery; the custom engine "
-      "ignores control and says so."),
+      "ignores control and says so. "
+      "ODM control files (gcp_list.txt / gcp_file.txt: 'WGS84 UTM 17N', EPSG: or PROJ-"
+      "string header, one row per observation) are read with their marks. Measured on "
+      "the open ODM datasets via ODK_TESTDATA_DIR (tools/run_gcp_reconstruction.py, "
+      "outputs on E:): sheffield_cross (172 oblique Phantom 3 frames, 5 GCPs x 5 marks) "
+      "registered 172/172 at 1.19 px with 111,701 tie points; fitted to the control, "
+      "fit RMSE 0.469 m (h 0.465, v 0.059), leave-one-out 0.714 m, every mark "
+      "reprojecting within 3.7 px; GCP05 (0.83 m) is flagged. bellus (122 Canon S110 "
+      "frames, 4 GCPs marked once each) registered 106/122 at 1.32 px; single marks are "
+      "placed on the tie-point surface. Against the geotags alone they sit 31.6 m low "
+      "(RMSE 31.90 m, h 4.20 m), which the report names as a vertical-datum offset; the "
+      "geotag fit is then corrected onto the control keeping its orientation (scale "
+      "x1.0418, shift +1.41/+0.09/+31.60 m), leave-one-out RMSE 1.57 m (h 0.55, v 1.47) "
+      "against 5.47 m for a translation alone and 4.51 m for a free similarity. Not "
+      "survey grade, and reported as such. The tests run CPU SIFT at 1600 px on "
+      "subsets: sheffield DJI_0060-0090 31/31 at 0.98 px, fit 0.467 m, leave-one-out "
+      "0.708 m, marks within 2.24 px RMS; bellus IMG_1334-1386 38/53 at 1.22 px, geotag "
+      "check 31.61 m (v 31.20), corrected scale x1.0530, leave-one-out 2.31 m (h 0.44)."),
     F("pr.rtk_ppk", "RTK and PPK", "workers", "Processing",
       "RTK/PPK metadata and RINEX base station data with timestamp alignment: camera "
       "events read from the aircraft's own event file with corrections in the units "
@@ -819,6 +872,55 @@ PROCESSING = [
       "core/provenance.py; sha256 sidecars, verified end to end on a real COLMAP run. "
       "Reconstructions run from the app and every report file now record provenance; "
       "Api.verify_provenance / record_provenance and Reports > Verify Provenance expose it."),
+    F("pr.multispectral.reflectance", "Multispectral radiometric calibration", "workers", "Processing",
+      "MicaSense band TIFFs (incl. 12-bit packed RedEdge-P) decoded, grouped into captures and "
+      "converted to surface reflectance from the camera's own radiometric model plus either the "
+      "DLS2 sun-sensor irradiance or a calibration-panel capture whose albedo the camera read from "
+      "the panel QR code; the panel reading checked against its albedo.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestReading", "tests/test_multispectral_real_data.py::TestPanelCalibration"],
+      "core/multispectral.py. Measured 2026-10-02 on MicaSense's MIT sample panel capture "
+      "(RedEdge-P, panel RP06-2051037-OB, albedo 0.485-0.488): DLS-derived panel reflectance "
+      "error blue -17.7 %, green -4.4 %, red +6.2 %, NIR +0.6 %, red edge +11.2 %, pan +14.1 % "
+      "(mean |error| 9.0 %). Altum sample: +39 % to +75 %, with the DLS reading 34 % less direct "
+      "sun at the panel than 2 min later in flight, so prefer the panel there; Altum green has no "
+      "panel reading and is left uncalibrated rather than given a typical albedo. Altum LWIR "
+      "decoded from centi-kelvin (8.1-43.2 C). Multisensor NDVI now uses reflectance for MicaSense "
+      "bands and labels any other input 'uncalibrated_dn_ratio'."),
+    F("pr.multispectral.alignment", "Multispectral band alignment", "workers", "Processing",
+      "Bands undistorted with their own XMP lens models and registered to the rig reference band, "
+      "with a measured per-band registration figure.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestAlignment"],
+      "Initial homography from the factory rig rotations (Camera:RigRelatives), refined by pyramid "
+      "ECC on gradient images and kept only when it agrees with the reference band better than the "
+      "rig model. Buergewald (24 captures): gradient correlation with green, median/min: blue "
+      "0.89/0.78, red 0.57/0.45, NIR 0.50/0.19, red edge 0.70/0.51."),
+    F("pr.multispectral.orthomosaic", "Multiband reflectance orthomosaic", "workers", "Processing",
+      "Per-band surface-reflectance orthomosaic, georeferenced, from the same solved camera poses "
+      "for every band so band ratios never mix views.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestBandOrthomosaic"],
+      "COLMAP solves poses on geotagged reflectance composites; ColmapReconstructor.band_sources "
+      "then orthorectifies each float band stack onto the ortho grid (orthomosaic_bands.tif, "
+      "float32, NaN nodata, band names + ODK_QUANTITY tags). Buergewald: 24/24 registered, "
+      "0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632, 0.0625 m/px, 5 bands. Sparse surface "
+      "only (no dense MVS in this run). Tools: tools/run_multispectral.py."),
+    F("pr.multispectral.app", "Multispectral processing from the app", "workers", "Processing",
+      "MicaSense captures turned into reflectance, a band orthomosaic and vegetation indices from "
+      "the application (Api job and cockpit action), not only from a CLI, with the result on the map.",
+      "implemented", ["tests/test_multispectral_real_data.py::TestApplicationPath",
+       "tests/test_multispectral_real_data.py::TestPanelCheckScope"],
+      "Api.process_multispectral (background job) and Survey Packs > 'Multispectral to reflectance "
+      "(MicaSense)' run core.multispectral.run_survey_report, the same chain as "
+      "tools/run_multispectral.py. Measured 2026-10-02 through the Api on Buergewald (24 captures, "
+      "DLS): 24/24 registered, 0.41 px reprojection, 0.75 m geotag RMSE, EPSG:32632; NDVI mean "
+      "0.568, NDRE 0.234, GNDVI 0.538; layers Reflectance bands/NDVI/NDRE/GNDVI registered. "
+      "Buergewald's DLS reflectance is UNVALIDATED: the dataset has no panel of its own. The REDEDGE-P "
+      "panel (camera PR01-2145021-MS, another flight; DLS panel mean |error| 9.0 %) checks the DLS "
+      "model on that camera only; the survey is PR03-2117081-MS. panel_check_scope compares camera "
+      "serial and FlightId, the report marks such a check applies_to_survey=false and states "
+      "survey_reflectance_validation=unvalidated. With fewer than 3 captures the orthomosaic is "
+      "skipped and the report says so; reflectance stacks are still produced. The report also gives the share of pixels with "
+      "reflectance above 1 (NIR 1.4 %, other bands 0 %): uneven DLS calibration or glints, masked "
+      "by the index pack's valid_max=1.0."),
 ]
 
 # ---------------------------------------------------------------------------
@@ -859,7 +961,12 @@ VISION = [
       "sweep on the validation split. Held-out test split: IoU 0.637, precision 0.811, "
       "recall 0.748, against IoU 0.607 and precision 0.664 at the previous 0.25 "
       "threshold. B2 reached test-split IoU 0.515; the heuristic reaches 0.045. The "
-      "threshold gained +0.030 IoU and +0.147 precision for no retraining."),
+      "threshold gained +0.030 IoU and +0.147 precision for no retraining. "
+      "OUT OF DOMAIN (ai.external_measurement): on RDD2022 asphalt it finds 0.58 of "
+      "longitudinal and 0.22 of alligator crack boxes. On unlabelled H20T bridge frames at "
+      "50 m its output is UNVALIDATED: tiled at native resolution it paints 14k-61k "
+      "pixels per frame, but by eye these sit on kerb, barrier and lane edges and a "
+      "water/sand boundary, not on visible cracks -- treat them as false positives."),
     F("ai.spalling", "Spalling detection", "vision", "AI",
       "Trained detector for spallation with published validation metrics, used in "
       "preference to the heuristic, and reporting an empty result as an empty result "
@@ -867,7 +974,9 @@ VISION = [
       "implemented", ["tests/test_honesty.py::TestFindingNothingIsAnAnswer"],
       "YOLO11x on CODEBRIM, installed as structural_multiclass_detector: "
       "mAP50 0.417, mAP50-95 0.201; Spallation 0.306, ExposedBars 0.330, "
-      "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124."),
+      "CorrosionStain 0.254, Efflorescence 0.193, Crack 0.124. Through the app's decoder "
+      "on the held-out test split: defect mAP50 0.304 (Spallation 0.374), up from 0.182 "
+      "before the letterbox/per-class-NMS fix (docs/holdout/structural_det_app_decoder.json)."),
     F("ai.corrosion", "Corrosion detection", "vision", "AI",
       "Trained model for corrosion with published validation metrics, reporting a "
       "severity grade it measured or refusing to report one at all.",
@@ -936,6 +1045,47 @@ VISION = [
       "row, the report and the finished-job message). Run AI runs it on steel / tower / "
       "pipeline assets or when Metal detection is on. The old texture-discontinuity rule "
       "survives only as metal_texture_heuristic for the classical modes, which label it."),
+    F("ai.external_measurement", "Detectors measured on external open data", "vision", "AI",
+      "The shipped detectors are run through the app's own code on openly licensed external "
+      "datasets the models never saw, and the measured figures are published with the model "
+      "digests and dataset provenance -- including where nothing can be measured and why.",
+      "implemented",
+      ["tests/test_external_detector_eval.py::TestAveragePrecisionArithmetic",
+       "tests/test_external_detector_eval.py::TestRddConversion",
+       "tests/test_external_detector_eval.py::TestYoloDecoder",
+       "tests/test_external_detector_eval.py::TestPublishedEvidence",
+       "tests/test_external_detector_eval.py::TestTheRoadRowsReproduce",
+       "tests/test_external_detector_eval.py::TestSoundConcreteIsNotADefect"],
+      "tools/eval_external_detectors.py; results in docs/holdout/external_*.json. Data from "
+      "ODK_TESTDATA_DIR (odk-testdata, each set with PROVENANCE.md); the tests skip without it. "
+      "ROAD (RDD2022 subset, CC BY 4.0, 200 images: 120 China_Drone UAV + 80 India; 86 D00, "
+      "63 D10, 41 D20, 35 D40 boxes): THERE IS NO ROAD-DAMAGE MODEL. The closest shipped "
+      "models, measured: structural detector Crack class AP50 D00 0.080, D10 0.059, D20 "
+      "0.012 (mAP50 over the crack types 0.050; all cracks merged AP50 0.105, AP30 0.268); at "
+      "the 0.25 operating point precision 0.316 / recall 0.063 on 190 crack boxes. Potholes "
+      "have no model (Spallation as a proxy: AP50 0.023, exploratory). crack_presence_classifier "
+      "tiles: precision 0.317, recall 0.177 (China_Drone 0.701 / 0.194, India 0.041 / 0.086). "
+      "crack_segmentation image level precision 0.778, recall 0.583, specificity 0.750; it "
+      "touches 0.581 of D00, 0.524 of D10, 0.220 of D20 boxes. These are not road detectors and "
+      "should not be presented as one; a road model is roadmap item 5. "
+      "SOLAR (Mavic 3T thermal PV, CC BY 4.0, 353 frames, 26,666 labelled panel boxes, no "
+      "defect labels, radiometry stripped): panel detection CANNOT be measured -- no shipped "
+      "model localises panels, and the app refuses all 353 whole frames. "
+      "solar_thermal_anomaly_classifier on the panel crops reads 48% Vegetation and 32% "
+      "Shadowing, with 55% agreement under a 90-degree rotation: a domain gap, not a usable "
+      "answer, and no accuracy is claimed. The file measured did not carry the registered "
+      "digest; the evidence says so. "
+      "BRIDGE (Boga Cayi H20T wide, CC BY 4.0, 81 frames, no defect labels): qualitative "
+      "only -- the structural detector fires on 38 frames letterboxed (52 stretched), "
+      "crack_presence flags 581 of 3,888 tiles, crack_segmentation paints 7 frames at "
+      "whole-frame 1024 px and 14k-61k pixels per frame when tiled at native resolution. "
+      "None of this is validated (no labels); reviewed by eye, the responses are mostly "
+      "kerb/barrier/lane edges, lane markings, pavers and water -- apparent false "
+      "positives, not cracks found. "
+      "INTEGRATION FIXES MEASURED on the CODEBRIM test split: the YOLO decoder now "
+      "letterboxes and uses per-class NMS as Ultralytics validates; defect-class mAP50 "
+      "rose from 0.182 to 0.304 (square) and from 0.176 to 0.338 (4:3 crops). CODEBRIM "
+      "'Background' boxes (sound concrete) are no longer counted as defects."),
     F("ai.water_ponding", "Water ponding detection", "vision", "AI",
       "Closed depressions measured from the DSM, reported as area, depth and volume "
       "with the survey's vertical accuracy carried through. Refuses without an accuracy "
@@ -1333,13 +1483,25 @@ INDIA_FIRST = [
     F("pack.agriculture.canopy", "Crop canopy segmentation", "vision",
       "India pack: Agriculture",
       "Crop, soil, unwanted vegetation and water masks with canopy cover and bare/missing regions.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_canopy_cover_uses_real_semantic_raster",
+                      "tests/test_india_agriculture_pack.py::test_index_cover_classes_feed_canopy_cover_and_need_a_scope",
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_canopy_from_a_calibrated_index_then_plant_separability",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "Also from a calibrated NDVI (classify_index_cover, Api.india_index_cover, cockpit Canopy cover): "
+      "canopy / sparse / bare cut points measured per survey by 3-class multi-Otsu, scope UNVALIDATED. "
+      "Real data: Buergewald RedEdge-P DLS NDVI cuts 0.430 / 0.708, canopy cover 35.8% of 793.3 m2 "
+      "(canopy 284.0 m2, sparse 209.5 m2, bare 299.8 m2). Consistency only, no ground truth: a visible-band "
+      "excess-green split (no NIR) agrees on 89.9% of 149,460 canopy/bare px; 99.9% of bare px are not green, "
+      "79.3% of canopy px are green."),
     F("pack.agriculture.indices", "Multispectral crop indices", "core",
       "India pack: Agriculture",
       "NDVI, NDRE and GNDVI from calibrated bands, reported as spectral indices rather than AI.",
       "implemented", ["tests/test_india_agriculture_pack.py::test_indices_use_calibrated_bands_and_mark_missing_band_unavailable",
-                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration"],
-      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
+                      "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_vegetation_indices_need_calibration",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_agriculture_pack_runs_on_the_orthomosaic"],
+      "Reached from the app: Api.india_vegetation_indices, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. "
+      "Real data: Buergewald RedEdge-P DLS reflectance orthomosaic, 203,091 valid px: NDVI mean 0.565 "
+      "(-0.06..0.98), NDRE mean 0.233, GNDVI mean 0.536."),
     F("pack.agriculture.stress", "Crop stress and anomaly map", "vision",
       "India pack: Agriculture",
       "Georeferenced stress/anomaly regions with the sensor, crop and validation scope stated.",
@@ -1347,7 +1509,13 @@ INDIA_FIRST = [
     F("pack.agriculture.count", "Plant and tree counting", "vision",
       "India pack: Agriculture",
       "Geolocated plant/tree counts with missing and health categories only where validated.",
-      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health"]),
+      "implemented", ["tests/test_india_agriculture_pack.py::test_plant_count_counts_connected_instances_without_inventing_missing_or_health",
+                      "tests/test_india_agriculture_pack.py::test_plant_count_from_canopy_refuses_merged_rows_and_counts_separate_plants",
+                      "tests/test_multispectral_real_data.py::TestBandOrthomosaic::test_canopy_cover_and_plant_separability_on_the_orthomosaic"],
+      "count_plants_from_canopy (Api.india_plant_count_from_canopy, cockpit Plant count) measures separability "
+      "before counting. Real data: Buergewald RedEdge-P at 6.25 cm, max plant footprint 0.25 m2: 80.4% of "
+      "284.0 m2 canopy lies in 28 merged patches (largest 167.0 m2), so the result is not_applicable "
+      "with no count. No plant count is claimed for that survey."),
 
     # Roads, power and rail
     F("pack.roads.condition", "Mapped road condition", "vision", "India pack: Roads",
@@ -1355,7 +1523,10 @@ INDIA_FIRST = [
       "counts, severity and surveyed distance.",
       "implemented", ["tests/test_india_assets_pack.py::test_road_condition_uses_explicit_centerline_for_metric_distance",
                       "tests/test_survey_packs_reach_the_app.py::TestEachPackThroughTheApi::test_road_condition"],
-      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree."),
+      "Reached from the app: Api.india_road_condition, cockpit Survey Packs (Measurements, Processing); outputs are written into the project and added to the layer tree. "
+      "NO ROAD-DAMAGE MODEL SHIPS: measured on RDD2022 (ai.external_measurement) the closest "
+      "models reach crack mAP50 0.050 and have no pothole class. A road detector trained on "
+      "RDD2022 is roadmap item 5."),
     F("pack.power.inspection", "Power-line asset inspection", "vision",
       "India pack: Power and rail",
       "Close-range, geolocated towers/poles, crossarms, insulators, conductors, "
@@ -1680,8 +1851,12 @@ PLATFORM = [
     F("ex.mission_formats", "Mission export formats", "core", "Export",
       "QGC .plan, QGC WPL, DJI WPML KMZ, Litchi CSV, KML and GeoJSON, each carrying the "
       "planned yaw, gimbal pitch, dwell and speed; WPL leaving sequence 0 for home; one "
-      "exclusion polygon per no-fly zone; Litchi split at its 99-waypoint limit.",
+      "exclusion polygon per no-fly zone; Litchi split at its 99-waypoint limit; each "
+      "file holding every element its published spec requires (Litchi action codes and "
+      "32 s stays, .plan firmwareType from the target autopilot defaulting to ArduPilot, "
+      "WPML executeHeightMode and the template/wayline required elements).",
       "verified", ["tests/test_exporters.py::test_every_registered_format_writes_a_file",
+                   "tests/test_mission_export_specs.py",
                    "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members",
                    "tests/test_mission_exports_carry_the_plan.py::TestFileStructure",
                    "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile",
@@ -1690,7 +1865,11 @@ PLATFORM = [
       "Verified by parsing the written files after planning through the Api. Loading "
       "into QGroundControl, Mission Planner, DJI Pilot 2 and Litchi themselves has not "
       "been done here; the DJI drone enum (77/0, payload 66, Mavic 3 Enterprise) and "
-      "Litchi altitudemode 0 follow the published format descriptions."),
+      "Litchi altitudemode 0 follow the published format descriptions. Spec sources: "
+      "litchiutilities.com/docs/litchiCsv.php and flylitchi.com/help; QGC plan format docs "
+      "plus QGC's own loader key checks; DJI Cloud-API WPML reference. An AMSL plan is "
+      "written absolute to DJI only when PROJ's EGM96 grid is installed; otherwise it "
+      "stays relative to the take-off point."),
     F("ex.model_formats", "3D export formats", "core", "Export",
       "OBJ, PLY, LAS/LAZ, GLB and GLTF.",
       "implemented", ["tests/test_model_formats.py::TestMeshFormats",
