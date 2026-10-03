@@ -1468,6 +1468,15 @@ class ColmapReconstructor:
             return empty
         if not gpu:
             self._warn("OpenMVS densified on the CPU: " + str(check.get("reason", "")))
+        if products.get("mesh_error"):
+            self._warn("OpenMVS textured mesh not produced: "
+                       f"{str(products['mesh_error']).rstrip('. ')}. The dense cloud and every "
+                       "product built from it are unaffected; no textured OBJ is reported.")
+        elif products.get("mesh_retries"):
+            self._warn("OpenMVS meshed the cloud with points merged within "
+                       f"{products.get('mesh_min_point_distance_px')} px after the default "
+                       f"spacing failed ({products['mesh_retries']}); the textured mesh is "
+                       "coarser, the dense cloud is unchanged.")
         self.dense_report.update(ran=True, gpu=gpu, max_image_size=self._dense_image_size(),
                                  tools_dir=str(Path(tools["DensifyPointCloud"]).parent),
                                  **products)

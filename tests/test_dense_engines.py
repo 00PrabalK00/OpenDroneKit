@@ -220,9 +220,12 @@ class TestOpenMVSProbeFallsBackToTheCpu:
 class _FakeOpenMVS:
     """Stands in for the four executables: records each call and writes its outputs."""
 
-    def __init__(self, fail_tool: str = ""):
+    def __init__(self, fail_tool: str = "", crash_mesh_without: str = ""):
         self.calls: list[list[str]] = []
         self.fail_tool = fail_tool
+        # ReconstructMesh crashes (0xC0000409, as on the 77-image Aukerman cloud) unless
+        # its command carries this argument.
+        self.crash_mesh_without = crash_mesh_without
 
     def __call__(self, command, cwd=None, **_kwargs):
         self.calls.append(list(command))
@@ -232,6 +235,9 @@ class _FakeOpenMVS:
             (folder / f"{tool}-1.log").write_text(
                 "10:00:00 [App     ] error: unable to open file 'x'\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 1, "", "")
+        if (tool == "ReconstructMesh" and self.crash_mesh_without
+                and self.crash_mesh_without not in command):
+            return subprocess.CompletedProcess(command, 0xC0000409, "", "")
         outputs = {
             "InterfaceCOLMAP": ["scene.mvs"],
             "DensifyPointCloud": ["scene_dense.mvs", "scene_dense.ply"],
@@ -278,6 +284,60 @@ class TestOpenMVSCommands:
                                         gpu=False, runner=runner)
         assert "DensifyPointCloud" in str(caught.value)
         assert "unable to open file" in str(caught.value)
+
+
+class TestMeshingCannotCostTheDenseCloud:
+    """The mesh is a visual model; a meshing failure must not discard the measurement."""
+
+    def test_a_crashed_mesh_is_retried_with_merged_points(self, tmp_path, fake_tools):
+        runner = _FakeOpenMVS(crash_mesh_without="--min-point-distance")
+        paths = openmvs.densify_and_texture(fake_tools, tmp_path / "dense", tmp_path / "out",
+                                            gpu=False, runner=runner)
+        meshes = [c for c in runner.calls if Path(c[0]).stem == "ReconstructMesh"]
+        assert len(meshes) == 2 and "--min-point-distance" not in meshes[0]
+        assert meshes[1][meshes[1].index("--min-point-distance") + 1] == "4"
+        assert paths["mesh_min_point_distance_px"] == "4"
+        assert "0xC0000409" in paths["mesh_retries"]
+        assert Path(paths["textured_obj"]).is_file() and "mesh_error" not in paths
+
+    def test_when_every_mesh_attempt_fails_the_cloud_is_kept(self, tmp_path, fake_tools):
+        runner = _FakeOpenMVS(fail_tool="ReconstructMesh")
+        paths = openmvs.densify_and_texture(fake_tools, tmp_path / "dense", tmp_path / "out",
+                                            gpu=False, runner=runner)
+        assert Path(paths["dense_cloud"]).is_file()
+        assert "textured_obj" not in paths and "texture_image" not in paths
+        assert "ReconstructMesh" in paths["mesh_error"]
+        assert [Path(c[0]).stem for c in runner.calls].count("TextureMesh") == 0
+
+    def test_a_texturing_failure_reports_no_obj(self, tmp_path, fake_tools):
+        runner = _FakeOpenMVS(fail_tool="TextureMesh")
+        paths = openmvs.densify_and_texture(fake_tools, tmp_path / "dense", tmp_path / "out",
+                                            gpu=False, runner=runner)
+        assert "textured_obj" not in paths and "TextureMesh" in paths["mesh_error"]
+
+    def test_the_engine_keeps_the_openmvs_cloud_and_says_the_mesh_failed(
+            self, config_dir, tmp_path, monkeypatch):
+        root = _openmvs_folder(tmp_path / "openmvs")
+        monkeypatch.setenv(openmvs.ENV_VAR, str(root))
+        monkeypatch.setattr(openmvs, "probe", lambda _t, **_k: {"ok": True, "gpu": False,
+                                                                 "reason": "CPU"})
+        cloud = tmp_path / "work" / "openmvs" / "scene_dense.ply"
+
+        def densify(tools, undistorted, out_dir, **kwargs):
+            out_dir.mkdir(parents=True, exist_ok=True)
+            _write_ply_with_lists(cloud, np.array([[0, 0, 1], [1, 0, 1], [0, 1, 1.5]], float))
+            return {"dense_cloud": str(cloud),
+                    "mesh_error": "OpenMVS could not mesh the dense cloud (crashed)"}
+
+        monkeypatch.setattr(openmvs, "densify_and_texture", densify)
+        engine = rc.ColmapReconstructor(dense=True, dense_engine="openmvs")
+        monkeypatch.setattr(engine, "_undistort_for_dense", lambda *a: "")
+        xyz, _ = engine._run_dense(tmp_path, tmp_path / "work", _Model(), _progress)
+        assert xyz.shape == (3, 3)
+        assert engine.dense_report["ran"] is True and "textured_obj" not in engine.dense_report
+        text = " ".join(engine.warnings)
+        assert "OpenMVS textured mesh not produced" in text
+        assert "Falling back to the sparse cloud" not in text
 
 
 # ---------------------------------------------------------------------------

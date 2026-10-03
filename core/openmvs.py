@@ -319,22 +319,63 @@ def densify_and_texture(tools: dict[str, str], undistorted: Path, out_dir: Path,
         raise OpenMVSFailed("OpenMVS DensifyPointCloud finished but wrote no point cloud.")
     if not texture:
         return paths
-    tick(68, "OpenMVS: meshing the dense cloud")
-    run_tool(tools, "ReconstructMesh",
-             ["-i", "scene_dense.mvs", "-p", "scene_dense.ply", "-o", "scene_dense_mesh.ply",
-              *device],
-             out_dir, runner=runner, timeout=timeout)
+    # The dense cloud is the measurement; the mesh is a visual model built from it.
+    # A meshing or texturing failure therefore costs the textured OBJ, not the cloud:
+    # it is reported in paths["mesh_error"] and the caller still builds every product
+    # from OpenMVS's own cloud.
+    try:
+        paths.update(_mesh_and_texture(tools, out_dir, device, tick, runner, timeout))
+    except OpenMVSFailed as exc:
+        paths["mesh_error"] = str(exc)
+    return paths
+
+
+# ReconstructMesh --min-point-distance attempts, in pixels. None is OpenMVS's default
+# (1.5). A 77-image, 14.7-million-point Aukerman cloud crashed the default Delaunay
+# graph-cut on a 16 GB laptop (0xC0000409 after weighting 41 M cells); 4 px merged it to
+# 6.5 M -> ~1 M mesh vertices and finished in 4 minutes at 2.4 GB. The cloud itself is
+# untouched; only the mesh is coarser, and the value used is reported.
+MESH_MIN_POINT_DISTANCES: tuple[float | None, ...] = (None, 4.0)
+
+
+def _mesh_and_texture(tools: dict[str, str], out_dir: Path, device: list[str],
+                      tick: Callable[[int, str], None],
+                      runner: Callable[..., subprocess.CompletedProcess] | None,
+                      timeout: float | None) -> dict[str, str]:
+    mesh = out_dir / "scene_dense_mesh.ply"
+    failures: list[str] = []
+    used: float | None = None
+    for distance in MESH_MIN_POINT_DISTANCES:
+        extra = [] if distance is None else ["--min-point-distance", f"{distance:g}"]
+        label = "default point spacing" if distance is None else f"points merged within {distance:g} px"
+        tick(68, f"OpenMVS: meshing the dense cloud ({label})")
+        try:
+            run_tool(tools, "ReconstructMesh",
+                     ["-i", "scene_dense.mvs", "-p", "scene_dense.ply", "-o", mesh.name,
+                      *extra, *device],
+                     out_dir, runner=runner, timeout=timeout)
+        except OpenMVSFailed as exc:
+            failures.append(f"{label}: {exc}")
+            continue
+        if mesh.is_file():
+            used = distance
+            break
+        failures.append(f"{label}: ReconstructMesh finished but wrote no mesh")
+    else:
+        raise OpenMVSFailed("OpenMVS could not mesh the dense cloud (" + "; ".join(failures) + ")")
     tick(70, "OpenMVS: texturing the mesh")
     run_tool(tools, "TextureMesh",
-             ["-i", "scene_dense.mvs", "-m", "scene_dense_mesh.ply",
+             ["-i", "scene_dense.mvs", "-m", mesh.name,
               "-o", "scene_dense_mesh_texture.obj", "--export-type", "obj",
               *device],
              out_dir, runner=runner, timeout=timeout)
     obj = out_dir / "scene_dense_mesh_texture.obj"
     if not obj.is_file():
         raise OpenMVSFailed("OpenMVS TextureMesh finished but wrote no OBJ.")
-    paths["mesh"] = str(out_dir / "scene_dense_mesh.ply")
-    paths["textured_obj"] = str(obj)
+    paths = {"mesh": str(mesh), "textured_obj": str(obj),
+             "mesh_min_point_distance_px": "default" if used is None else f"{used:g}"}
+    if failures:
+        paths["mesh_retries"] = "; ".join(failures)
     mtl = obj.with_suffix(".mtl")
     if mtl.is_file():
         paths["textured_mtl"] = str(mtl)
