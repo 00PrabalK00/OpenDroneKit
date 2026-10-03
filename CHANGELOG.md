@@ -71,7 +71,12 @@ is computed from passing tests, as before, and covers 180 specified capabilities
   (`--ui cockpit`); the redesigned interface is on `ui/v1` and comes later.
 - **The installer is unsigned.** Windows SmartScreen will warn; check the installer's
   SHA-256 against the release page before running it.
-- **Model metrics and weaknesses.** Nine models are installed; each registry entry
+- **Only two of the nine trained models have published weights**:
+  `crack_presence_classifier` and `solar_thermal_anomaly_classifier`. The other seven
+  are not distributed (their base models or training data are AGPL-3.0, non-commercial
+  or research-only; see `WEIGHTS_LICENSES.md`), and the detectors that need them say
+  they have no model. Weights are separate downloads, not in the installer.
+- **Model metrics and weaknesses.** Each of the nine trained models' registry entries
   states its measured metric and weak classes, and an empty result is not proof of
   absence. Among them: `structural_multiclass_detector` reaches mAP50 0.417, with Crack
   its weakest class at 0.124; `crack_segmentation` trades recall for precision at its
