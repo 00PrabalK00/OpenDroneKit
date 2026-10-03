@@ -666,12 +666,23 @@ export class Shell {
       }
       this.frame.setFooter("cursor", parts.join("   "), { tone: "live" });
     };
+    // Until the pointer has been over the map, the readout is the map's centre; a map
+    // that frames its project after it was bound (Home fits on the orthomosaic) would
+    // otherwise leave mapview's mount-time centre in the footer, a place it never showed.
+    let pointerSeen = false;
     map.on("mousemove", (e) => {
       if (this.boundMap !== map) return;
+      pointerSeen = true;
       cursor(e.lngLat.lng, e.lngLat.lat);
       this.sampleElevation(e.lngLat.lng, e.lngLat.lat);
     });
     map.on("move", () => { if (this.boundMap === map) scale(); });
+    map.on("moveend", () => {
+      if (this.boundMap !== map || pointerSeen) return;
+      const centre = map.getCenter();
+      cursor(centre.lng, centre.lat);
+      this.sampleElevation(centre.lng, centre.lat);
+    });
     const c = map.getCenter();
     cursor(c.lng, c.lat);
     this.sampleElevation(c.lng, c.lat);
