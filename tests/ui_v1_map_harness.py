@@ -18,11 +18,11 @@ from __future__ import annotations
 import base64
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
-from ui_live_bridge import BRIDGE_JS, Browser, _CONTENT_TYPES, chromium_path, free_port
+from ui_live_bridge import BRIDGE_JS, Browser, LoopbackServer, _CONTENT_TYPES, chromium_path, free_port
 
 WEB_ROOT = Path(__file__).resolve().parents[1] / "app" / "web"
 
@@ -131,7 +131,7 @@ class MapServer:
                         result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
                 return self._send(200, json.dumps(result, default=str).encode("utf-8"), "application/json")
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", free_port()), Handler)
+        self.httpd = LoopbackServer(("127.0.0.1", free_port()), Handler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"

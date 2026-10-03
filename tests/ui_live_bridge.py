@@ -69,6 +69,20 @@ _CONTENT_TYPES = {
 }
 
 
+class LoopbackServer(ThreadingHTTPServer):
+    """The loopback server with a listen backlog a browser cannot overrun.
+
+    socketserver's default backlog is 5. A screen that opens with a dozen panels asks
+    the Api a dozen times at once while the page is still importing its modules; on a
+    loaded machine the accept loop falls behind, Windows refuses the overflow, and the
+    browser reports a module it could not fetch. A desktop window has no such limit
+    (pywebview calls the Api in-process), so the harness should not invent one.
+    """
+
+    request_queue_size = 128
+    daemon_threads = True
+
+
 def free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -122,7 +136,7 @@ def serve(api: Any) -> tuple[ThreadingHTTPServer, str]:
                     result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             self._send(200, json.dumps(result, default=str).encode("utf-8"), "application/json")
 
-    server = ThreadingHTTPServer(("127.0.0.1", free_port()), Handler)
+    server = LoopbackServer(("127.0.0.1", free_port()), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}"
 
