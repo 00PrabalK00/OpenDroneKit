@@ -136,6 +136,21 @@ class TestVerification:
 
         assert verify_model_identity("det")["status"] == "verified"
 
+    def test_the_runner_refuses_a_tampered_file(self, registry):
+        """Reporting a mismatch is not enough: the runner must not answer with it."""
+        import numpy as np
+        from core.model_runner import ModelRunRefused, run_registered_model
+
+        old = registry.install("structural/detector.onnx", b"the measured model")
+        registry.write({"det": {"kind": "onnx_yolo", "path": "structural/detector.onnx",
+                                "labels": ["crack"], "sha256": old,
+                                "status": "installed"}})
+        models_module._DIGEST_CACHE.clear()
+        registry.install("structural/detector.onnx", b"a tampered model graph")
+
+        with pytest.raises(ModelRunRefused, match="not the file that was registered"):
+            run_registered_model(np.zeros((32, 32, 3), np.uint8), "det")
+
 
 class TestWholeRegistryReport:
     def test_bad_news_is_reported_first(self, registry):

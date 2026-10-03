@@ -37,7 +37,8 @@ from .detection import (
     grade_corrosion_severity,
     non_defect_labels,
 )
-from .models import get_model_spec, load_registry, model_identity, model_status
+from .models import (get_model_spec, load_registry, model_identity, model_status,
+                     verify_model_identity)
 
 
 class ModelRunRefused(ValueError):
@@ -83,6 +84,13 @@ def _installed(model_key: str) -> tuple[Any, Path, dict[str, Any]]:
     if not info.get("exists"):
         note = spec.status_note or "Its weights are not installed on this machine."
         raise ModelRunRefused(f"{model_key} cannot run: {note}")
+    # A file that is not the one the registry recorded (tampered, retrained, a companion
+    # missing) would answer under metrics measured on a different file. Refuse it rather
+    # than run it and stamp the result with an unvetted digest. Rows with no recorded
+    # digest ("unrecorded") still run; their results carry the digest that answered.
+    identity = verify_model_identity(model_key)
+    if identity.get("status") in ("mismatch", "missing"):
+        raise ModelRunRefused(f"{model_key} cannot run: {identity.get('detail', '')}")
     return spec, Path(str(info["path"])), _registry_row(model_key)
 
 
