@@ -387,17 +387,26 @@ class Api:
         pipeline runs, is it a trained model or a heuristic -- because one global count
         hid that solar and metal detection were heuristic on every machine.
         """
+        from core.detection import DETECTION_KINDS
         from core.model_runner import detector_backends
         from core.models import load_registry, model_status as status_for
 
-        keys = list((load_registry().get("models") or {}).keys())
+        registry_rows = load_registry().get("models") or {}
+        keys = list(registry_rows.keys())
         rows = []
         for key in keys:
             try:
                 info = status_for(key)
-                rows.append({"key": key, **(info if isinstance(info, dict) else {"status": str(info)})})
+                row = {"key": key, **(info if isinstance(info, dict) else {"status": str(info)})}
             except Exception as exc:  # noqa: BLE001
-                rows.append({"key": key, "exists": False, "error": str(exc)})
+                row = {"key": key, "exists": False, "error": str(exc)}
+            reg = registry_rows.get(key) if isinstance(registry_rows.get(key), dict) else {}
+            # The Prelabel menu filters on this rather than a hard-coded list of kinds, so
+            # a new detector kind appears there the day it is registered.
+            row["is_detector"] = str(reg.get("kind", "")) in DETECTION_KINDS
+            row["licence_use"] = str((reg.get("licence") or {}).get("use") or "")
+            row["output_semantics"] = str(reg.get("output_semantics") or "")
+            rows.append(row)
         available = sum(1 for r in rows if r.get("exists"))
         detectors = detector_backends()
         heuristic = [d["detector"] for d in detectors if d["backend"] == "heuristic"]
@@ -6843,6 +6852,79 @@ class Api:
         overlay_path = save_overlay(result, out_dir, path.stem)
         self._session.audit("model_run", {"model_key": model_key, "image": str(path)})
         return ok(**result.to_dict(), image=str(path), overlay_path=overlay_path,
+                  overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
+
+    @guard
+    def infrastructure_models(self) -> dict[str, Any]:
+        """The pretrained infrastructure detectors, whether each can run, and on what terms.
+
+        Road damage (RF-DETR, Apache-2.0), power line and tower masks (TTPLA YOLO11-seg,
+        AGPL-3.0) and power-line assets with condition (InsPLAD, CC BY-NC 3.0). Each row
+        says whether its file is installed and is the file the registry recorded, its
+        licence use and the metric on record with who measured it.
+        """
+        from core.models import get_model_spec, load_registry, verify_model_identity
+
+        registry = load_registry().get("models") or {}
+        out = []
+        for key in ("road_damage_rfdetr_small", "powerline_ttpla_yolo11s_seg",
+                    "powerline_insplad_detector", "powerline_insplad_detector_1280",
+                    "powerline_insplad_condition"):
+            row = registry.get(key)
+            if not isinstance(row, dict):
+                continue
+            check = verify_model_identity(key)
+            spec = get_model_spec(key)
+            out.append({
+                "key": key, "kind": row.get("kind"), "labels": list(spec.labels if spec else []),
+                "identity": check["status"], "can_run": check["status"] == "verified",
+                "detail": check.get("detail", ""),
+                "licence": row.get("licence") or {}, "metric": row.get("metric", "unmeasured"),
+                "result_note": row.get("result_note", ""),
+                "condition_model": row.get("condition_model", ""),
+            })
+        return ok(models=out)
+
+    @guard
+    def powerline_inspection(self, image_path: str,
+                             model_key: str = "powerline_insplad_detector",
+                             prelabel: bool = True) -> dict[str, Any]:
+        """Power-line assets and the condition of the defect-prone ones, for review.
+
+        Runs the InsPLAD detector, then the condition classifier on crops of the five
+        asset types it was trained on. With ``prelabel`` the detections become in-review
+        findings carrying both models' keys and digests; nothing reaches a report until
+        a person accepts it. Non-commercial weights: the result says so.
+        """
+        from core.detection import load_image
+        from core.model_runner import ModelRunRefused, run_registered_model, save_overlay
+        from core.models import get_model_spec
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        spec = get_model_spec(str(model_key))
+        try:
+            result = run_registered_model(
+                load_image(path), str(model_key),
+                score_threshold=spec.prelabel_score_threshold if spec else None)
+        except ModelRunRefused as exc:
+            return fail(str(exc))
+        if not result.output.get("condition_model") and "condition_refused" not in result.output:
+            return fail(f"{model_key} is not a two-stage power-line detector.")
+        findings: list[dict[str, Any]] = []
+        if prelabel:
+            from app import desktop_ops
+
+            findings = desktop_ops.findings_from_model_result(
+                self._session.project_root(), str(self._session.project_id()),
+                str(path.resolve()), result)
+            self._session.audit("prelabel_created", {"model_key": model_key,
+                                                     "count": len(findings)})
+        out_dir = self._session.project_root() / "analysis" / "models" / str(model_key)
+        overlay_path = save_overlay(result, out_dir, path.stem)
+        return ok(**result.to_dict(), image=str(path), findings=findings,
+                  count=len(findings), overlay_path=overlay_path,
                   overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
 
     @guard

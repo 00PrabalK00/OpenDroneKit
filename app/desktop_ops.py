@@ -785,8 +785,15 @@ def _is_model_output(model_used: str) -> bool:
 def findings_from_detections(project_root: str | Path, project_id: str, image_path: str,
                              *, model_used: str, model_key: str, model_sha256: str,
                              detections: list[dict[str, Any]],
-                             run_tag: str = "") -> list[dict[str, Any]]:
-    """Write one reviewable finding per model detection; refuse unattributable ones."""
+                             run_tag: str = "", tags: list[str] | None = None,
+                             note_suffix: str = "") -> list[dict[str, Any]]:
+    """Write one reviewable finding per model detection; refuse unattributable ones.
+
+    ``tags`` are added to every finding (licence use, "suggestion" for zero-shot
+    output); ``note_suffix`` is appended to every note (the model's scope caveat). A
+    detection may carry a ``condition`` from a second-stage classifier; it is written
+    into that finding's note and tags with its own probability and model digest.
+    """
     from core.annotations import create_annotation
 
     if not _is_model_output(model_used) or not model_key or not model_sha256:
@@ -803,15 +810,29 @@ def findings_from_detections(project_root: str | Path, project_id: str, image_pa
             continue
         geometry = {"type": "Polygon", "coordinates": [[
             [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]]}
-        tags = ["model-prelabel"] + ([run_tag] if run_tag else [])
+        finding_tags = (["model-prelabel"] + ([run_tag] if run_tag else [])
+                        + [str(t) for t in (tags or []) if t])
+        note = (f"Machine pre-label from {model_used}, awaiting review. Severity is a "
+                "review default, not an assessment.")
+        condition = hit.get("condition")
+        if isinstance(condition, dict) and condition.get("label"):
+            finding_tags.append(f"condition:{condition['label']}")
+            note += (f" Condition suggested by {condition.get('model_key', '')} "
+                     f"(sha256 {str(condition.get('model_sha256', ''))[:16]}...): "
+                     f"{condition['label']}, p={float(condition.get('probability', 0)):.3f} "
+                     "over this asset's valid conditions.")
+        if hit.get("mask_area_px") is not None:
+            note += (f" Model mask: {int(hit['mask_area_px'])} px in the image; the finding "
+                     "keeps the box.")
+        if note_suffix:
+            note += " " + note_suffix
         annotation = create_annotation(
             Path(project_root), str(project_id), "image", str(image_path), "rectangle",
             geometry, str(hit["label"]), "info", "in_review",
-            note=(f"Machine pre-label from {model_used}, awaiting review. Severity is a "
-                  "review default, not an assessment."),
+            note=note,
             include_in_report=False, created_by="model",
             model_used=model_used, model_key=model_key, model_sha256=model_sha256,
-            confidence=float(confidence), tags=tags,
+            confidence=float(confidence), tags=finding_tags,
         )
         created.append(annotation.to_dict())
     return created
@@ -866,13 +887,32 @@ def prelabel_image(project_root: str | Path, project_id: str, image_path: str,
                                       score_threshold=spec.prelabel_score_threshold)
     except ModelRunRefused as exc:
         raise ValueError(str(exc)) from exc
-    created = findings_from_detections(
-        project_root, project_id, str(target.resolve()),
-        model_used=result.model_used, model_key=result.model_key,
-        model_sha256=result.model_sha256, detections=result.output["detections"])
+    created = findings_from_model_result(project_root, project_id, str(target.resolve()),
+                                         result)
     return {"model_key": result.model_key, "model_sha256": result.model_sha256,
             "model_used": result.model_used, "findings": created,
-            "count": len(created), "scope": result.scope}
+            "count": len(created), "scope": result.scope,
+            "usage_note": result.output.get("usage_note", "")}
+
+
+def findings_from_model_result(project_root: str | Path, project_id: str, image_path: str,
+                               result: Any) -> list[dict[str, Any]]:
+    """In-review findings from a ModelRunResult, tagged with the row's licence use and
+    output semantics, with the row's result note (scope caveat) on every finding."""
+    from core.models import load_registry
+
+    row = (load_registry().get("models") or {}).get(result.model_key) or {}
+    tags = []
+    use = str((row.get("licence") or {}).get("use") or "")
+    if use:
+        tags.append(f"licence:{use}")
+    if str(row.get("output_semantics") or "") == "suggestion":
+        tags.append("suggestion")
+    return findings_from_detections(
+        project_root, project_id, image_path,
+        model_used=result.model_used, model_key=result.model_key,
+        model_sha256=result.model_sha256, detections=result.output["detections"],
+        tags=tags, note_suffix=str(row.get("result_note") or ""))
 
 
 # ------------------------------------------------------------------- plugins

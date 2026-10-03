@@ -25,7 +25,14 @@ _MODEL_NET_CACHE: dict[str, Any] = {}
 #: Registry kinds that are YOLO-layout ONNX detectors. The EL solar model was exported
 #: as "onnx_detection" and was rejected by an equality check against "onnx_yolo", so an
 #: installed, measured model silently fell back to the heuristic.
-DETECTION_KINDS = frozenset({"onnx_yolo", "onnx_detection"})
+YOLO_BOX_KINDS = frozenset({"onnx_yolo", "onnx_detection"})
+
+#: Every registry kind whose output is scored boxes, so every kind a pre-label accepts.
+#: ``onnx_detr`` (RF-DETR: sigmoid logits over queries, no NMS) and ``onnx_yolo_seg``
+#: (YOLO boxes plus instance masks) run through core/infrastructure_detectors.py. The
+#: structural and solar paths below call _run_onnx_yolo directly and so check
+#: YOLO_BOX_KINDS, never this wider set.
+DETECTION_KINDS = YOLO_BOX_KINDS | frozenset({"onnx_detr", "onnx_yolo_seg"})
 
 
 def _skeletonize_binary(binary_mask: np.ndarray) -> np.ndarray:
@@ -334,6 +341,35 @@ def _load_onnx_net(model_path: Path) -> Any | None:
     return net
 
 
+@dataclass(frozen=True)
+class Letterbox:
+    """An image fitted into a square input the way Ultralytics trains: aspect kept,
+    padded with grey 114. ``blob`` is NCHW RGB float32 in [0, 1]."""
+
+    blob: np.ndarray
+    size: int
+    gain: float
+    left: int
+    top: int
+    new_w: int
+    new_h: int
+
+
+def letterbox_image(image_bgr: np.ndarray, size: int) -> Letterbox:
+    h, w = image_bgr.shape[:2]
+    gain = min(size / float(h), size / float(w))
+    new_w, new_h = max(1, int(round(w * gain))), max(1, int(round(h * gain)))
+    pad_x, pad_y = (size - new_w) / 2.0, (size - new_h) / 2.0
+    resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((size, size, 3), 114, dtype=np.uint8)
+    top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
+    canvas[top:top + new_h, left:left + new_w] = resized
+    blob = cv2.dnn.blobFromImage(canvas, scalefactor=1.0 / 255.0, size=(size, size),
+                                 swapRB=True, crop=False)
+    return Letterbox(blob=blob, size=size, gain=gain, left=left, top=top,
+                     new_w=new_w, new_h=new_h)
+
+
 def _run_onnx_yolo(
     image_bgr: np.ndarray,
     model_path: Path,
@@ -361,17 +397,10 @@ def _run_onnx_yolo(
     size = int(max(64, input_size))
     h, w = image_bgr.shape[:2]
     if letterbox:
-        gain = min(size / float(h), size / float(w))
-        new_w, new_h = max(1, int(round(w * gain))), max(1, int(round(h * gain)))
-        pad_x, pad_y = (size - new_w) / 2.0, (size - new_h) / 2.0
-        resized = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        canvas = np.full((size, size, 3), 114, dtype=np.uint8)
-        top, left = int(round(pad_y - 0.1)), int(round(pad_x - 0.1))
-        canvas[top:top + new_h, left:left + new_w] = resized
-        blob = cv2.dnn.blobFromImage(canvas, scalefactor=1.0 / 255.0, size=(size, size),
-                                     swapRB=True, crop=False)
-        sx = sy = 1.0 / gain
-        off_x, off_y = float(left), float(top)
+        box = letterbox_image(image_bgr, size)
+        blob = box.blob
+        sx = sy = 1.0 / box.gain
+        off_x, off_y = float(box.left), float(box.top)
     else:
         blob = cv2.dnn.blobFromImage(
             image_bgr,
@@ -1057,7 +1086,7 @@ def detect_structural_defects(
     if use_model and model_available:
         spec = get_model_spec(model_key)
         path_str = str(model_info.get("path", ""))
-        if spec is not None and path_str and spec.kind in DETECTION_KINDS:
+        if spec is not None and path_str and spec.kind in YOLO_BOX_KINDS:
             try:
                 model_hits = _run_onnx_yolo(
                     image_bgr=image_bgr,
@@ -1395,7 +1424,7 @@ def detect_solar_defects(
             hits = [DefectHit(label=top, confidence=float(probabilities[top]),
                               bbox_xyxy=(0, 0, w, h), area_px=int(h * w))]
             mask_by_class = {top: np.full((h, w), 255, dtype=np.uint8)}
-    elif spec is not None and spec.kind in DETECTION_KINDS:
+    elif spec is not None and spec.kind in YOLO_BOX_KINDS:
         if _load_onnx_net(path) is None:
             return _solar_refusal(image_bgr, f"{chosen}: the graph at {path} would not load.",
                                   kind, chosen)

@@ -220,6 +220,11 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
     used = f"onnx:{path.name}"
     h, w = image_bgr.shape[:2]
 
+    if kind in ("onnx_detr", "onnx_yolo_seg") or row.get("condition_model") \
+            or kind == "onnx_condition_classifier":
+        return _run_infrastructure_model(image_bgr, model_key, kind, row, scope,
+                                         score_threshold)
+
     if kind in DETECTION_KINDS:
         hits = _run_onnx_yolo(
             image_bgr, path, spec.labels,
@@ -285,6 +290,76 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
         "rather than a single photograph; use the land-cover run for it."
         if kind == "onnx_shared_semantic" else
         f"{model_key} has kind {kind!r}, which has no runner in this build.")
+
+
+def _usage_note(row: dict[str, Any]) -> str:
+    """The licence-use and scope caveat a result must carry, from the registry row."""
+    parts = []
+    use = str(((row.get("licence") or {}).get("use")) or "")
+    if use:
+        parts.append(f"Weights licence use: {use}.")
+    note = str(row.get("result_note") or "")
+    if note:
+        parts.append(note)
+    return " ".join(parts)
+
+
+def _run_infrastructure_model(image_bgr: np.ndarray, model_key: str, kind: str,
+                              row: dict[str, Any], scope: str,
+                              score_threshold: float | None) -> ModelRunResult:
+    """RF-DETR, YOLO-seg and the two-stage power-line runner (core/infrastructure_
+    detectors.py, core/powerline.py). Each verifies the file's digest on load."""
+    from .infrastructure_detectors import (
+        load_model,
+        overlay_detections,
+        run_detr,
+        run_yolo_seg,
+    )
+
+    if kind == "onnx_condition_classifier":
+        raise ModelRunRefused(
+            f"{model_key} reads the condition of a component the detector "
+            f"{row.get('condition_of') or 'for it'} has already found; it is not run on a "
+            "whole photograph. Run the detector, which runs this as its second stage.")
+    note = _usage_note(row)
+    if row.get("condition_model"):
+        from .powerline import run_powerline
+
+        result = run_powerline(image_bgr, detector_key=model_key,
+                               condition_key=str(row["condition_model"]),
+                               score_threshold=score_threshold)
+        detections = result["detections"]
+        det = result["detector"]
+        return ModelRunResult(model_key, kind, det["model_used"], det["model_sha256"], scope, {
+            "detections": detections,
+            "detection_count": len(detections),
+            "non_defect_detections": [],
+            "confidence_kind": "detector_score",
+            "condition_model": result["condition_model"],
+            "condition_refused": result["condition_refused"],
+            "usage_note": note,
+        }, overlay_detections(image_bgr, detections))
+
+    model = load_model(model_key, expected_kinds={kind})
+    threshold = float(row.get("score_threshold", 0.25)
+                      if score_threshold is None else score_threshold)
+    if kind == "onnx_detr":
+        detections = run_detr(image_bgr, model, threshold)
+    else:
+        detections = run_yolo_seg(image_bgr, model, threshold,
+                                  float(row.get("iou_threshold", 0.45)))
+    output: dict[str, Any] = {
+        "detections": detections,
+        "detection_count": len(detections),
+        "non_defect_detections": [],
+        "confidence_kind": "detector_score",
+        "usage_note": note,
+    }
+    if kind == "onnx_yolo_seg":
+        output["mask_note"] = ("Instance masks are in image pixels (mask_polygons_px, "
+                               "mask_area_px); findings keep the box.")
+    return ModelRunResult(model_key, kind, model.model_used, model.sha256, scope, output,
+                          overlay_detections(image_bgr, detections))
 
 
 def detector_backends() -> list[dict[str, Any]]:
