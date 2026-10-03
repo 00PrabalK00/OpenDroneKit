@@ -93,6 +93,18 @@ class FakeVehicle:
         self._stop = threading.Event()
         self._silent = threading.Event()
         self._threads: list[threading.Thread] = []
+        # One sequence counter, two sending threads (the streams and the replies). An
+        # autopilot numbers its packets one at a time; without the lock two packets could
+        # share a number, which the ground station's link-quality meter counts as 255
+        # packets lost (pymavlink reads a repeated number as a full wrap of the counter).
+        send = self.conn.mav.send
+        send_lock = threading.Lock()
+
+        def locked_send(*args: Any, **kwargs: Any) -> Any:
+            with send_lock:
+                return send(*args, **kwargs)
+
+        self.conn.mav.send = locked_send
 
     # -- lifecycle -------------------------------------------------------------
 
