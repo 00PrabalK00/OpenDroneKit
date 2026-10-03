@@ -301,6 +301,9 @@ class TestThePalette:
           return { total: r.actionKeys().length, missing: r.actionKeys().filter((k) => !shown.has(k)) };
         })""")
         assert listed["total"] > 100 and listed["missing"] == [], listed
+        # Projects are read from list_projects when the palette opens; wait for that answer
+        # (it queues behind the opening screen's own reads in a browser).
+        browser.wait_for("[...document.querySelectorAll('.odk-palette-group')].some((g) => g.textContent === 'Projects')", 20)
         groups = browser.js("[...document.querySelectorAll('.odk-palette-group')].map((g) => g.textContent)")
         assert groups[:2] == ["Workspaces", "Projects"] and "Actions" in groups and "Shortcuts" in groups
 

@@ -13,8 +13,7 @@ export const PANELS = {
   status: ["project_storage", "get_state", "model_status"],
   header: ["get_project", "dataset_summary", "get_project_crs", "list_annotation_tags"],
   tiles: ["dataset_summary", "get_state", "list_mission_versions", "find_annotations", "pipeline_reports"],
-  map: ["reconstruction_summary"],
-  reconstruction: ["reconstruction_summary"],
+  reconstruction: ["reconstruction_summary"], // also titles the map card
   measurements: ["list_measurements"],
   report: ["list_reports", "report_files", "report_readiness"],
   activity: ["audit_log", "dataset_summary"],

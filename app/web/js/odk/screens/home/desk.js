@@ -106,7 +106,7 @@ function leftPanel({ shell, act, go }) {
   if (!M.PROJECT_ORDER[sort]) sort = "recent";
   let filter = "";
   let projects = [];
-  const list = el("div", { class: "odk-home-projects", role: "listbox", "aria-label": "Projects" });
+  const list = el("div", { class: "odk-home-projects", role: "list", "aria-label": "Projects" });
   const countNode = el("span", { class: "odk-label odk-home-count" });
 
   const draw = () => {
@@ -184,8 +184,8 @@ function projectRow(p, shell) {
   const facts = [photos !== null ? `${photos} photos` : "no photos", surveyed].filter(Boolean).join(" · ");
   const words = M.statusLine(p);
   const node = el("button", {
-    type: "button", role: "option", class: "odk-home-project", "data-control": `project:${p.id}`,
-    "aria-selected": p.active ? "true" : "false", title: p.root_dir || "",
+    type: "button", role: "listitem", class: "odk-home-project", "data-control": `project:${p.id}`,
+    ...(p.active ? { "aria-current": "true" } : {}), title: p.root_dir || "",
   }, [
     dot(p.processed ? "ok" : "idle"),
     el("span", { class: "odk-home-project-body" }, [
@@ -249,17 +249,8 @@ function mainPanel({ shell, act, go }) {
   });
 
   const mapHost = el("div", { class: "odk-home-map", "data-where": "home.map.canvas" });
-  const mapTitle = live({
-    calls: ["reconstruction_summary"],
-    empty: "",
-    isEmpty: () => false,
-    render: ([recon]) => {
-      const run = recon && (recon.runs || []).find((r) => r.orthomosaic);
-      const gsd = run ? M.fixed(run.ortho_gsd_m, 3) : null;
-      return el("span", { class: "odk-label odk-home-card-title",
-        text: gsd ? `Orthomosaic · ${gsd} m/px` : "Project map" });
-    },
-  });
+  // Titled from the same reconstruction_summary answer the reconstruction card reads.
+  const mapTitle = el("span", { class: "odk-label odk-home-card-title", text: "Project map" });
   const mapCard = el("section", { class: "odk-home-card odk-home-card--map", "aria-label": "Map", "data-where": "home.map" }, [
     el("header", { class: "odk-home-card-head" }, [mapTitle, go("analyse", "Open map", { variant: "ghost" })]),
     mapHost,
@@ -269,7 +260,12 @@ function mainPanel({ shell, act, go }) {
   const recon = live({
     calls: ["reconstruction_summary"],
     empty: "Could not read this project's reconstructions.",
-    render: ([summary]) => reconstructionCard({ summary, go }),
+    render: ([summary]) => {
+      const run = summary && (summary.runs || []).find((r) => r.orthomosaic);
+      const gsd = run ? M.fixed(run.ortho_gsd_m, 3) : null;
+      mapTitle.textContent = gsd ? `Orthomosaic · ${gsd} m/px` : "Project map";
+      return reconstructionCard({ summary, go });
+    },
   });
   const measures = live({
     calls: ["list_measurements"],
