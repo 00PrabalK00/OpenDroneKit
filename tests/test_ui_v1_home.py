@@ -401,6 +401,23 @@ class TestNotifications:
         assert not browser.js("!!document.querySelector('[data-control=\"tab:home\"] .odk-home-unread')")
 
 
+class TestLeavingHome:
+    def test_open_popovers_do_not_follow_into_the_next_screen(self, home) -> None:
+        """A key, the palette or the menu switches screens without a click outside."""
+        browser = boot(home)
+        home_pops = """[...document.querySelectorAll('.odk-popover')].filter((p) => !p.hidden
+            && (p.matches('[data-where="home.header.more"]') || p.querySelector('.odk-home-dataset'))).length"""
+        for leave in ("odkShell.open('plan')", "odkShell.setMode('field')"):
+            click(browser, "[data-control='datasets']")
+            click(browser, "[data-control='project-more']")
+            assert browser.js(home_pops) == 2
+            browser.js(f"{leave}.then(() => true)")
+            browser.wait_for(f"({home_pops}) === 0", 20)
+            browser.js("odkShell.setMode('desk').then(() => odkShell.open('home')).then(() => true)")
+            settle(browser)
+        assert browser.js("window.__errors") == []
+
+
 class TestScreenshots:
     def test_desk_and_field_window_sizes(self, home) -> None:
         browser = boot(home)

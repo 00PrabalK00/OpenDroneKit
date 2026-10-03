@@ -56,12 +56,30 @@ function withGlyph(node, name) {
 /* Popovers live on <body>; each re-read of a panel builds a new one, so the one it
    replaces is removed rather than left hidden behind it. */
 const POPOVERS = new Map();
-function replacePopover(name, pop) {
+const ANCHORS = new WeakMap();
+function replacePopover(name, pop, anchor) {
   const old = POPOVERS.get(name);
   if (old && old !== pop) { old.close(); old.node.remove(); }
   POPOVERS.set(name, pop);
+  if (anchor) ANCHORS.set(pop, anchor);
   return pop;
 }
+
+/* Being on <body>, they also outlive the screen. A switch that is not a click outside
+   them (a number key, the palette, the native menu, the Field toggle by key) left an
+   open one floating over the next screen. Both events fire after the new screen has
+   rendered, so a popover whose button is gone belongs to a Home that has gone. */
+function dropOrphanPopovers() {
+  for (const [name, pop] of POPOVERS) {
+    const anchor = ANCHORS.get(pop);
+    if (anchor && anchor.isConnected) continue;
+    pop.close();
+    pop.node.remove();
+    POPOVERS.delete(name);
+  }
+}
+window.addEventListener("odk:screen", dropOrphanPopovers);
+window.addEventListener("odk:mode", dropOrphanPopovers);
 
 const missing = (text = "not reported") => el("span", { class: "odk-home-missing", text });
 const label = (text) => el("span", { class: "odk-label", text });
@@ -363,7 +381,7 @@ function projectHeader({ shell, act, go, project, datasets, crs, tags }) {
     ],
   });
   pop.node.setAttribute("data-where", "home.header.more");
-  replacePopover("more", pop);
+  replacePopover("more", pop, more);
 
   const tagList = ((tags && tags.tags) || []).slice(0, LIMITS.tags);
   const tagRow = tagList.length ? el("div", { class: "odk-home-tags", "data-where": "home.header.tags" },
@@ -504,7 +522,7 @@ function datasetPopover(anchor, datasets, shell, act) {
   }
   body.appendChild(button({ label: "Import photos…", action: "Import", variant: "secondary",
     onClick: () => { pop.close(); shell.runAction("Import"); } }));
-  replacePopover("datasets", popover({ anchor, title: "Datasets", content: body }));
+  replacePopover("datasets", popover({ anchor, title: "Datasets", content: body }), anchor);
   const pop = POPOVERS.get("datasets");
 }
 
