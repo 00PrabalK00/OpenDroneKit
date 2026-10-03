@@ -6822,6 +6822,47 @@ class Api:
         return ok(**result)
 
     @guard
+    def suggest_objects(self, image_path: str, prompts: Any,
+                        model_key: str = "open_vocab_grounding_dino_tiny") -> dict[str, Any]:
+        """Text-prompted search ("insulator. bird nest."); boxes go to Review as suggestions.
+
+        Zero-shot: the findings are tagged ``suggestion``, stay in_review and out of every
+        report, and carry an uncalibrated score. A missing model refuses with the reason.
+        """
+        from app import desktop_ops
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = desktop_ops.suggest_objects(
+                self._session.project_root(), str(self._session.project_id()),
+                str(path), prompts, str(model_key))
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("suggestions_created", {"model_key": model_key,
+                                                    "count": result["count"]})
+        return ok(**result)
+
+    @guard
+    def describe_image(self, image_path: str, task: str = "<CAPTION>", text: str = "",
+                       model_key: str = "vision_language_florence2_base_ft") -> dict[str, Any]:
+        """Caption or OCR one image; stored as an unverified machine note (unmeasured)."""
+        from app import desktop_ops
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = desktop_ops.describe_image(
+                self._session.project_root(), str(self._session.project_id()),
+                str(path), str(task), str(text or ""), str(model_key))
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("image_described", {"model_key": model_key, "task": task})
+        return ok(**result)
+
+    @guard
     def run_model(self, model_key: str, image_path: str) -> dict[str, Any]:
         """Run any installed model on one image and show what it said.
 

@@ -785,8 +785,17 @@ def _is_model_output(model_used: str) -> bool:
 def findings_from_detections(project_root: str | Path, project_id: str, image_path: str,
                              *, model_used: str, model_key: str, model_sha256: str,
                              detections: list[dict[str, Any]],
-                             run_tag: str = "") -> list[dict[str, Any]]:
-    """Write one reviewable finding per model detection; refuse unattributable ones."""
+                             run_tag: str = "", tags: list[str] | None = None,
+                             note: str | None = None,
+                             unscored: bool = False) -> list[dict[str, Any]]:
+    """Write one reviewable finding per model detection; refuse unattributable ones.
+
+    ``tags`` replaces the default ``["model-prelabel"]`` (zero-shot suggestions pass
+    ``["suggestion", "zero-shot", <model key>]``) and ``note`` replaces the default
+    review note. ``unscored=True`` admits boxes from a model that emits no score at all
+    (Florence-2 phrase grounding): their confidence is stored as None, never invented.
+    Every finding stays in_review and out of reports either way.
+    """
     from core.annotations import create_annotation
 
     if not _is_model_output(model_used) or not model_key or not model_sha256:
@@ -796,22 +805,22 @@ def findings_from_detections(project_root: str | Path, project_id: str, image_pa
     created = []
     for hit in detections:
         confidence = hit.get("confidence")
-        if confidence is None:
+        if confidence is None and not unscored:
             raise ValueError("A model detection without a confidence cannot become a finding.")
         x1, y1, x2, y2 = (int(v) for v in hit["bbox_xyxy"])
         if x2 <= x1 or y2 <= y1:
             continue
         geometry = {"type": "Polygon", "coordinates": [[
             [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]]}
-        tags = ["model-prelabel"] + ([run_tag] if run_tag else [])
+        hit_tags = (list(tags) if tags else ["model-prelabel"]) + ([run_tag] if run_tag else [])
         annotation = create_annotation(
             Path(project_root), str(project_id), "image", str(image_path), "rectangle",
             geometry, str(hit["label"]), "info", "in_review",
-            note=(f"Machine pre-label from {model_used}, awaiting review. Severity is a "
-                  "review default, not an assessment."),
+            note=note or (f"Machine pre-label from {model_used}, awaiting review. Severity "
+                          "is a review default, not an assessment."),
             include_in_report=False, created_by="model",
             model_used=model_used, model_key=model_key, model_sha256=model_sha256,
-            confidence=float(confidence), tags=tags,
+            confidence=None if confidence is None else float(confidence), tags=hit_tags,
         )
         created.append(annotation.to_dict())
     return created
@@ -873,6 +882,127 @@ def prelabel_image(project_root: str | Path, project_id: str, image_path: str,
     return {"model_key": result.model_key, "model_sha256": result.model_sha256,
             "model_used": result.model_used, "findings": created,
             "count": len(created), "scope": result.scope}
+
+
+def _unscored_note(model_key: str) -> str:
+    from core.open_vocab import SUGGESTION_NOTE
+
+    return SUGGESTION_NOTE.format(model=model_key).replace(
+        "score is uncalibrated", "the model gives no score")
+
+
+def suggest_objects(project_root: str | Path, project_id: str, image_path: str,
+                    prompts: list[str] | str,
+                    model_key: str = "open_vocab_grounding_dino_tiny",
+                    box_threshold: float = 0.35, text_threshold: float = 0.25,
+                    tile: int | None = None) -> dict[str, Any]:
+    """Text-prompted search; every box becomes a zero-shot SUGGESTION in Review.
+
+    Nothing here is a detection a model was trained to make: the findings are tagged
+    ``suggestion`` and ``zero-shot``, stay in_review, are excluded from reports, and
+    their score is recorded as ``confidence_kind: zero_shot_score`` (uncalibrated).
+    """
+    from core.detection import load_image
+    from core.model_runner import ModelRunRefused
+    from core.models import get_model_spec
+    from core.open_vocab import SUGGESTION_NOTE, detect_by_text, normalise_prompts
+
+    spec = get_model_spec(model_key)
+    if spec is None:
+        raise ValueError(f"{model_key!r} is not in the model registry.")
+    target = Path(image_path)
+    if not target.is_file():
+        raise ValueError(f"No such image: {image_path}")
+    try:
+        if spec.kind == "onnx_open_vocab_detection":
+            result = detect_by_text(load_image(target), prompts, model_key,
+                                    box_threshold=box_threshold,
+                                    text_threshold=text_threshold, tile=tile)
+            detections, unscored = result["detections"], False
+            note = SUGGESTION_NOTE.format(model=model_key)
+        elif spec.kind == "onnx_vision_language":
+            from core.vision_language import florence
+
+            phrases = normalise_prompts(prompts)
+            if not phrases:
+                raise ModelRunRefused(f"{model_key} needs a text prompt: the phrases to locate.")
+            result = florence(load_image(target), "<CAPTION_TO_PHRASE_GROUNDING>",
+                              ". ".join(phrases), model_key=model_key)
+            detections = [{"label": r["label"], "confidence": None,
+                           "bbox_xyxy": [int(round(v)) for v in r["bbox"]]}
+                          for r in result["regions"]]
+            unscored, note = True, _unscored_note(model_key)
+        else:
+            raise ValueError(
+                f"{model_key} is a {spec.kind}; Suggest (text) needs an open-vocabulary "
+                "model (Grounding DINO or Florence-2).")
+    except ModelRunRefused as exc:
+        raise ValueError(str(exc)) from exc
+    created = findings_from_detections(
+        project_root, project_id, str(target.resolve()),
+        model_used=result["model_used"], model_key=result["model_key"],
+        model_sha256=result["model_sha256"], detections=detections,
+        tags=["suggestion", "zero-shot", model_key], note=note, unscored=unscored)
+    return {"model_key": result["model_key"], "model_sha256": result["model_sha256"],
+            "model_used": result["model_used"], "findings": created, "count": len(created),
+            "confidence_kind": "none" if unscored else "zero_shot_score",
+            "output_semantics": "suggestion", "note": note,
+            "message": f"{len(created)} suggestion(s) waiting for review"}
+
+
+def describe_image(project_root: str | Path, project_id: str, image_path: str,
+                   task: str = "<CAPTION>", text: str = "",
+                   model_key: str = "vision_language_florence2_base_ft") -> dict[str, Any]:
+    """Caption / OCR an image with Florence-2, stored as an UNVERIFIED machine note.
+
+    Text tasks become one image-level ``text`` annotation (created_by model, in_review,
+    out of reports, tagged ``machine-description`` and ``unverified``). Box tasks
+    (``<OD>``, ``<CAPTION_TO_PHRASE_GROUNDING>``) become unscored suggestions in Review.
+    Captions and OCR are unmeasured by OpenDroneKit; the result says so.
+    """
+    from core.annotations import create_annotation
+    from core.detection import load_image
+    from core.model_runner import ModelRunRefused
+    from core.vision_language import BOX_TASKS, florence
+
+    target = Path(image_path)
+    if not target.is_file():
+        raise ValueError(f"No such image: {image_path}")
+    image = load_image(target)
+    try:
+        result = florence(image, task, text, model_key=model_key)
+    except ModelRunRefused as exc:
+        raise ValueError(str(exc)) from exc
+    findings: list[dict[str, Any]] = []
+    note_annotation: dict[str, Any] | None = None
+    if task in BOX_TASKS:
+        findings = findings_from_detections(
+            project_root, project_id, str(target.resolve()),
+            model_used=result["model_used"], model_key=result["model_key"],
+            model_sha256=result["model_sha256"],
+            detections=[{"label": r["label"], "confidence": None,
+                         "bbox_xyxy": [int(round(v)) for v in r["bbox"]]}
+                        for r in result["regions"]],
+            tags=["suggestion", "zero-shot", model_key], note=_unscored_note(model_key),
+            unscored=True)
+    elif result["text"]:
+        h, w = image.shape[:2]
+        annotation = create_annotation(
+            Path(project_root), str(project_id), "image", str(target.resolve()), "text",
+            {"type": "Point", "coordinates": [w / 2.0, h / 2.0]},
+            "machine description (unverified)", "info", "in_review",
+            note=f"{result['note']} [{task}] {result['text']}",
+            include_in_report=False, created_by="model",
+            model_used=result["model_used"], model_key=result["model_key"],
+            model_sha256=result["model_sha256"], confidence=None,
+            tags=["machine-description", "unverified", model_key],
+        )
+        note_annotation = annotation.to_dict()
+    return {"task": task, "text": result["text"], "regions": result["regions"],
+            "model_key": result["model_key"], "model_sha256": result["model_sha256"],
+            "model_used": result["model_used"], "unverified": True, "metric": "unmeasured",
+            "note": result["note"], "annotation": note_annotation, "findings": findings,
+            "count": len(findings)}
 
 
 # ------------------------------------------------------------------- plugins
