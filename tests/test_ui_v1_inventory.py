@@ -145,6 +145,8 @@ class TestTheContractIsInPlace:
             text = path.read_text(encoding="utf-8")
             if "live(" in text:
                 continue  # owned by the workspace unit's live()-aware guard
+            if not re.search(r"\bel\(|createElement|innerHTML|textContent", text):
+                continue  # renders nothing (verbs, placements, form state): no value slot to fill
             digits = re.findall(r"\d", text)
             if digits:
                 offenders[str(path.relative_to(WEB))] = len(digits)

@@ -183,7 +183,7 @@ def test_overview_without_waypoint_features_reads_the_waypoint_list() -> None:
 
 def test_a_compass_line_bearing_is_flown_as_drawn(api) -> None:
     assert api.set_aoi(AOI)["ok"]
-    for bearing in (0.0, 30.0, 120.0):
+    for bearing in (0.0, 30.0, 75.0, 120.0):
         assert api.plan_mission({"template": "grid", "line_bearing_deg": bearing})["ok"]
         reported = api.mission_overview()["plan"]["line_bearing_deg"]
         assert min(abs(reported - bearing), 180 - abs(reported - bearing)) < 2.0, (bearing, reported)
@@ -203,3 +203,14 @@ def test_the_area_read_as_a_building_footprint(api) -> None:
     assert result["segment_count"] == len(result["segments"]) >= 3
     assert "occluded" in result["occlusion"]
     assert all(len(s["start_lonlat"]) == 2 for s in result["segments"])
+
+
+def test_the_line_bearing_holds_on_an_area_that_is_not_square(api) -> None:
+    # A rotated, irregular site: the planner's own frame follows the area, so a fixed
+    # conversion from bearing to its angle would be wrong here.
+    ring = [[-81.7535, 41.3046], [-81.7514, 41.3047], [-81.7506, 41.3039], [-81.7514, 41.3034], [-81.7532, 41.3035]]
+    assert api.set_aoi(ring)["ok"]
+    for bearing in (10.0, 40.0, 75.0, 150.0):
+        assert api.plan_mission({"template": "grid", "line_bearing_deg": bearing})["ok"]
+        reported = api.mission_overview()["plan"]["line_bearing_deg"]
+        assert abs(((reported - bearing) + 90) % 180 - 90) < 1.5, (bearing, reported)

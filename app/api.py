@@ -5535,6 +5535,26 @@ class Api:
         from mission.planner import MissionPlanner, _normalize_template
 
         opts = dict(options or {})
+        # The heading as a compass bearing of the survey lines (what a line drawn on the
+        # map measures). The planner's flight_direction_deg is measured in the area's own
+        # local frame, so the bearing it produces depends on the area: plan once, read
+        # the lines' bearing off the plan, and correct by the difference.
+        if self._given(opts, "line_bearing_deg") and not opts.get("_bearing_pass"):
+            from mission.overview import overview as describe_plan
+
+            wanted = float(opts.pop("line_bearing_deg")) % 180.0
+            direction = (90.0 - wanted) % 360.0
+            first = self.plan_mission({**opts, "flight_direction_deg": direction, "_bearing_pass": True})
+            if not first.get("ok"):
+                return first
+            measured = describe_plan(self._session.mission_plan_dict).get("line_bearing_deg")
+            if measured is None:
+                return first
+            delta = ((wanted - float(measured) + 90.0) % 180.0) - 90.0
+            if abs(delta) <= 0.5:
+                return first
+            return self.plan_mission({**opts, "flight_direction_deg": (direction - delta) % 360.0,
+                                      "_bearing_pass": True})
         requested = str(opts.get("template", "grid")).strip().lower()
         if requested in SPECIAL_MISSION_TYPES:
             return self._plan_special(requested, opts)
@@ -5582,10 +5602,6 @@ class Api:
         # and Advanced > Line heading). The planner always took it; nothing passed it on.
         if self._given(opts, "flight_direction_deg"):
             kwargs["flight_direction_deg"] = float(opts["flight_direction_deg"]) % 360.0
-        # The same heading as a compass bearing of the lines (what a map shows and what
-        # a line drawn on it measures). The planner's angle is from east, anticlockwise.
-        if self._given(opts, "line_bearing_deg"):
-            kwargs["flight_direction_deg"] = (90.0 - float(opts["line_bearing_deg"])) % 360.0
         if opts.get("camera"):
             kwargs["camera"] = str(opts["camera"])
         kwargs.update(self._terrain_kwargs(opts))

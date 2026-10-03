@@ -778,7 +778,8 @@
    "actions": [],
    "api": [
     "plan_complex_facade",
-    "plan_irregular_facade"
+    "plan_irregular_facade",
+    "facade_footprint"
    ],
    "star_methods": [
     "plan_complex_facade",
@@ -942,7 +943,8 @@
    "menu": [],
    "actions": [],
    "api": [
-    "set_aoi"
+    "set_aoi",
+    "aoi_from_images"
    ],
    "star_methods": [],
    "new_home": "Map tool \"Draw area\"",
@@ -1138,7 +1140,8 @@
    "menu": [],
    "actions": [],
    "api": [
-    "mission_estimates"
+    "mission_estimates",
+    "mission_overview"
    ],
    "star_methods": [],
    "new_home": "WAYPOINTS / DISTANCE / FLIGHT TIME strip + altitude profile",
@@ -1257,7 +1260,8 @@
    "api": [
     "list_mission_versions",
     "mission_version_history",
-    "restore_mission_version"
+    "restore_mission_version",
+    "load_mission_version"
    ],
    "star_methods": [],
    "new_home": "Version menu on MISSION name",
@@ -1374,7 +1378,8 @@
    ],
    "api": [
     "export_mission",
-    "open_path"
+    "open_path",
+    "list_mission_exports"
    ],
    "star_methods": [],
    "new_home": "EXPORT section: checkboxes + \"Export n formats\" + open folder",
@@ -3472,6 +3477,94 @@
    "origin": "U00 supplement: reachable today, not listed in REBUILD_PLAN section 1"
   },
   {
+   "id": "plan.waypoint-inspector",
+   "workspace": "plan",
+   "feature": "Waypoint card, START / END labels, altitude profile scrub",
+   "sources": "v1 (U5)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "mission_overview"
+   ],
+   "star_methods": [],
+   "new_home": "Map: hover or pick a capture point (card: position, altitude and reference, yaw and gimbal, footprint, distance along the route, ground when terrain is loaded); START / END labels; the altitude profile scrubs and Play Route moves along the route",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U5 Plan: backend built in this unit"
+  },
+  {
+   "id": "plan.photo-footprints",
+   "workspace": "plan",
+   "feature": "Photo footprints of the planned capture points",
+   "sources": "v1 (U5)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "mission_overview"
+   ],
+   "star_methods": [],
+   "new_home": "Mission bar \"Footprints\" toggle; each nadir capture point's planned ground footprint (camera profile at the planned height), the hovered one outlined",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U5 Plan: backend built in this unit"
+  },
+  {
+   "id": "plan.area-undo-redo",
+   "workspace": "plan",
+   "feature": "Undo / redo the area of interest",
+   "sources": "v1 (U5)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "set_aoi",
+    "mission_overview"
+   ],
+   "star_methods": [],
+   "new_home": "Mission bar undo / redo: every area change the Api reported is a step; undo puts the previous ring back through set_aoi",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U5 Plan: backend built in this unit"
+  },
+  {
+   "id": "plan.aoi-from-camera-hull",
+   "workspace": "plan",
+   "feature": "Area of interest from the camera positions; where the area came from",
+   "sources": "v1 (U5)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "aoi_from_images",
+    "mission_overview"
+   ],
+   "star_methods": [],
+   "new_home": "AREA OF INTEREST: SOURCE row (drawn / file / hull of N cameras / flown corners / edited / saved version); \"…\" menu > Outline the camera positions",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U5 Plan: backend built in this unit"
+  },
+  {
+   "id": "plan.line-heading",
+   "workspace": "plan",
+   "feature": "Line heading as a compass bearing",
+   "sources": "v1 (U5)",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "plan_mission",
+    "mission_overview"
+   ],
+   "star_methods": [],
+   "new_home": "Rotate flight lines tool (draw the heading) and Advanced > Line heading; the plan reports the lines' bearing back",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U5 Plan: backend built in this unit"
+  },
+  {
    "id": "report.pipeline-inspection-report",
    "workspace": "report",
    "feature": "Pipeline inspection report",
@@ -4482,7 +4575,8 @@
   "set_aoi": [
    "plan.draw-area-of-interest",
    "plan.edit-vertices-delete",
-   "plan.clear-area-clear-no-fly"
+   "plan.clear-area-clear-no-fly",
+   "plan.area-undo-redo"
   ],
   "set_no_fly_zones": [
    "plan.no-fly-zone",
@@ -5050,7 +5144,8 @@
    "plan.template-specific-inputs-thermal-camera-and-gsd-",
    "plan.route-line-interest-region",
    "plan.generate-plan",
-   "plan.mission-settings-menu"
+   "plan.mission-settings-menu",
+   "plan.line-heading"
   ],
   "list_payloads": [
    "plan.payload-picker"
@@ -5187,6 +5282,27 @@
   ],
   "sample_elevation": [
    "shell.footer-elevation"
+  ],
+  "facade_footprint": [
+   "plan.multi-facade-irregular-facade"
+  ],
+  "aoi_from_images": [
+   "plan.draw-area-of-interest",
+   "plan.aoi-from-camera-hull"
+  ],
+  "mission_overview": [
+   "plan.estimates",
+   "plan.waypoint-inspector",
+   "plan.photo-footprints",
+   "plan.area-undo-redo",
+   "plan.aoi-from-camera-hull",
+   "plan.line-heading"
+  ],
+  "load_mission_version": [
+   "plan.history-and-restore"
+  ],
+  "list_mission_exports": [
+   "plan.export-6-formats"
   ]
  },
  "internal_api": {

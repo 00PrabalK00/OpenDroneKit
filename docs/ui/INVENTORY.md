@@ -8,12 +8,12 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 
 | Measure | Count |
 |---|---:|
-| Rows | 182 |
+| Rows | 187 |
 | Native menu items covered | 66 |
 | Cockpit ACTIONS keys covered | 132 |
-| Api methods covered (plus 1 internal) | 218 |
+| Api methods covered (plus 1 internal) | 223 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
-| Placement: artboard (drawn in an approved artboard) | 105 |
+| Placement: artboard (drawn in an approved artboard) | 110 |
 | Placement: proposed (placed with an approved component pattern, not drawn) | 65 |
 | Placement: artboard+proposed (partly drawn, partly proposed) | 5 |
 | Placement: gap (the design shows it but the Api cannot back it yet (owner decision 2026-09-29: build the backend for real)) | 3 |
@@ -73,12 +73,12 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `home.fleet-summary` | Fleet summary | — | — | `fleet_status` | Moves to Fleet (not on the Home artboard) | artboard |
 | `home.load-demo-workflow` | Load demo workflow | — | — | `demo_workflow` ★ | Settings › About › "Load demo project" (output is marked synthetic) | proposed |
 
-## Plan (37)
+## Plan (42)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
 | `plan.template-list` | Template list | — | — | `mission_templates` | Left "MISSION TEMPLATES" grouped Area / Structure / Capture, with "Show n more" | artboard |
-| `plan.multi-facade-irregular-facade` | Multi-facade / irregular facade | — | — | `plan_complex_facade` ★, `plan_irregular_facade` ★ | "Multi-facade" template (drawn in the artboard list) | artboard |
+| `plan.multi-facade-irregular-facade` | Multi-facade / irregular facade | — | — | `plan_complex_facade` ★, `plan_irregular_facade` ★, `facade_footprint` | "Multi-facade" template (drawn in the artboard list) | artboard |
 | `plan.pylon-thermal-multispectral-linked` | Pylon, thermal, multispectral, linked | — | — | `plan_mission`, `plan_pylon_mission` ★, `plan_thermal_survey` ★, `plan_multispectral_survey` ★, `plan_linked_mission` ★ | Template entries; per-template inspector section | artboard+proposed |
 | `plan.parameters-altitude-gsd-overlaps-speed-gimbal-li` | Parameters: altitude, GSD, overlaps, speed, gimbal, line spacing, trigger | — | — | `plan_mission` | Inspector "PARAMETERS" | artboard |
 | `plan.advanced-dwell-min-max-altitude-rth-altitude-win` | Advanced: dwell, min/max altitude, RTH altitude, wind, stand-off, AGL/AMSL, line heading | — | — | `plan_mission` | Inspector "Advanced" disclosure; the "Rotate flight lines" tool sets heading | proposed |
@@ -86,7 +86,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `plan.two-way-gsd-altitude` | Two-way GSD ↔ altitude | — | — | `altitude_for_gsd` ★ | Editing GSD recomputes altitude | artboard |
 | `plan.camera-picker` | Camera picker | — | `Cameras` | `list_cameras`, `describe_camera`, `add_camera` ★, `camera_capabilities` ★ | "Camera: …" button opens a picker (describe, add custom, connected-camera capabilities) | artboard |
 | `plan.payload-picker` | Payload picker | — | `Payloads` | `list_payloads`, `describe_payload`, `add_payload` ★ | Camera picker › Payload tab | proposed |
-| `plan.draw-area-of-interest` | Draw area of interest | — | — | `set_aoi` | Map tool "Draw area" | artboard |
+| `plan.draw-area-of-interest` | Draw area of interest | — | — | `set_aoi`, `aoi_from_images` | Map tool "Draw area" | artboard |
 | `plan.edit-vertices-delete` | Edit vertices / delete | — | — | `set_aoi` | "Edit vertices" tool; Delete key | artboard |
 | `plan.no-fly-zone` | No-fly zone | — | — | `set_no_fly_zones` | Tool stack "More" › No-fly | proposed |
 | `plan.route-line-interest-region` | Route line / interest region | — | — | `plan_mission` | Tool stack "More" | proposed |
@@ -96,24 +96,29 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `plan.fly-to-draw-boundary` | Fly-to-draw boundary | — | `Mark Corner`, `Close Boundary`, `Clear Corners` | `mark_boundary_corner`, `boundary_from_marks`, `clear_boundary_marks` | AOI section › "Fly the corners…" (needs a vehicle); also Fly and Field Plan "Edit boundary" | proposed |
 | `plan.terrain-source-cache-coverage` | Terrain source, cache, coverage | `data.import_terrain` | `Cache Terrain` | `set_terrain_source`, `cache_terrain`, `terrain_coverage`, `describe_terrain_cache` ★ | SAFETY › "Terrain model" row with Load / Cache / details | artboard |
 | `plan.generate-plan` | Generate plan | `mission.plan` | `Plan`, `New Mission` | `plan_mission` | "Generate" in the inspector header; Ctrl P | proposed |
-| `plan.estimates` | Estimates | — | — | `mission_estimates` | WAYPOINTS / DISTANCE / FLIGHT TIME strip + altitude profile | artboard |
+| `plan.estimates` | Estimates | — | — | `mission_estimates`, `mission_overview` | WAYPOINTS / DISTANCE / FLIGHT TIME strip + altitude profile | artboard |
 | `plan.battery-segments` | Battery segments | — | — | `plan_battery_segments` | Inspector tab "Segments" | proposed |
 | `plan.validate-site` | Validate site | — | `Validate` | `verify_site` | SAFETY › "Check site" | proposed |
 | `plan.hazards` | Hazards | — | `Check Hazards` | `check_hazards` | SAFETY row "Obstacle clearance" | artboard |
 | `plan.simulate` | Simulate | — | `Simulate` | `mission_geojson` | Scrub or play on the altitude-profile strip | artboard |
 | `plan.save-version` | Save version | `mission.save` | `Save` | `get_state`, `save_mission` | MISSION header "Save version" | proposed |
-| `plan.history-and-restore` | History and restore | `mission.history` | `History` | `list_mission_versions`, `mission_version_history`, `restore_mission_version` | Version menu on MISSION name | proposed |
+| `plan.history-and-restore` | History and restore | `mission.history` | `History` | `list_mission_versions`, `mission_version_history`, `restore_mission_version`, `load_mission_version` | Version menu on MISSION name | proposed |
 | `plan.compare-versions-specifications` | Compare versions / specifications | — | `Compare Versions` | `diff_mission_versions`, `compare_survey_specifications` ★ | Version menu › Compare… | proposed |
 | `plan.repeat-survey` | Repeat survey | — | `Repeat Survey` | `repeat_mission` | Mission overflow | proposed |
 | `plan.site-markers` | Site markers | — | `Add Marker` | `marker_kinds`, `add_site_marker`, `list_site_markers`, `remove_site_marker` ★ | Map Layers popover "Site markers" + marker popup "Remove" | proposed |
 | `plan.cad-image-overlay` | CAD / image overlay | `data.import_raster` | `Import CAD` | `import_cad_overlay`, `place_image_overlay`, `add_layer_from_file`, `list_cad_overlays` | Map Layers popover "Add overlay…" | artboard |
-| `plan.export-6-formats` | Export (6 formats) | `mission.export_all`, `mission.export{format=qgc_plan}`, `mission.export{format=qgc_wpl}`, `mission.export{format=dji_wpml}`, `mission.export{format=litchi}`, `mission.export{format=kml}`, `mission.export{format=geojson}` | `Export` | `export_mission`, `open_path` | EXPORT section: checkboxes + "Export n formats" + open folder | artboard |
+| `plan.export-6-formats` | Export (6 formats) | `mission.export_all`, `mission.export{format=qgc_plan}`, `mission.export{format=qgc_wpl}`, `mission.export{format=dji_wpml}`, `mission.export{format=litchi}`, `mission.export{format=kml}`, `mission.export{format=geojson}` | `Export` | `export_mission`, `open_path`, `list_mission_exports` | EXPORT section: checkboxes + "Export n formats" + open folder | artboard |
 | `plan.send-to-fly` | Send to Fly | `fly.upload` | — | `upload_mission` | "Send to Fly" switches to Fly with Upload armed | artboard |
 | `plan.basemap-cache-view-cache-status` | Basemap, cache view, cache status | `view.basemap{basemap=satellite}`, `view.basemap{basemap=street}`, `view.basemap{basemap=topo}`, `view.basemap{basemap=offline}`, `view.cache_tiles` | — | `cache_basemap_area`, `basemap_cache_status` | Map Layers popover (every map) + Settings › Offline basemap | artboard+proposed |
 | `plan.zoom-to-area-mission` | Zoom to area / mission | `view.zoom_aoi`, `view.zoom_mission` | — | — | "Fit to area of interest" + palette | artboard |
 | `plan.measure-on-the-map` | Measure on the map | `tools.measure{mode=distance}`, `tools.measure{mode=area}` | — | `measure_drawn`, `measure_geometry` | "Measure distance" tool | artboard |
 | `plan.view-mission-panel` | View › Mission panel | `view.panel{panel=mission}` | — | — | Opens Plan | none |
 | `plan.mission-settings-menu` | Mission settings (menu) <sup>U00</sup> | `mission.settings` | — | `plan_mission` | Opens Plan and focuses the inspector "PARAMETERS" section | proposed |
+| `plan.waypoint-inspector` | Waypoint card, START / END labels, altitude profile scrub <sup>U00</sup> | — | — | `mission_overview` | Map: hover or pick a capture point (card: position, altitude and reference, yaw and gimbal, footprint, distance along the route, ground when terrain is loaded); START / END labels; the altitude profile scrubs and Play Route moves along the route | artboard |
+| `plan.photo-footprints` | Photo footprints of the planned capture points <sup>U00</sup> | — | — | `mission_overview` | Mission bar "Footprints" toggle; each nadir capture point's planned ground footprint (camera profile at the planned height), the hovered one outlined | artboard |
+| `plan.area-undo-redo` | Undo / redo the area of interest <sup>U00</sup> | — | — | `set_aoi`, `mission_overview` | Mission bar undo / redo: every area change the Api reported is a step; undo puts the previous ring back through set_aoi | artboard |
+| `plan.aoi-from-camera-hull` | Area of interest from the camera positions; where the area came from <sup>U00</sup> | — | — | `aoi_from_images`, `mission_overview` | AREA OF INTEREST: SOURCE row (drawn / file / hull of N cameras / flown corners / edited / saved version); "…" menu > Outline the camera positions | artboard |
+| `plan.line-heading` | Line heading as a compass bearing <sup>U00</sup> | — | — | `plan_mission`, `mission_overview` | Rotate flight lines tool (draw the heading) and Advanced > Line heading; the plan reports the lines' bearing back | artboard |
 
 ## Fly (18)
 
