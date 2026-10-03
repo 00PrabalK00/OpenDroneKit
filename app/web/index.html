@@ -176,6 +176,13 @@
           <button class="tool" id="btn-connect">Connect</button>
           <button class="tool" id="btn-preflight">Preflight</button>
           <button class="tool" id="btn-upload">Upload</button>
+          <!-- The Fly menu's mission commands, on the page: served to a browser (no
+               desktop shell, so no native menu) the classic window could upload a
+               mission and never start it. -->
+          <button class="tool" id="btn-fly-start" data-fly="start" title="Start the uploaded mission (held to the preflight checklist)">Start</button>
+          <button class="tool" id="btn-fly-pause" data-fly="pause" title="Hold position; the mission keeps its place">Pause</button>
+          <button class="tool" id="btn-fly-resume" data-fly="resume" title="Continue the mission from where it paused">Resume</button>
+          <button class="tool" id="btn-fly-rth" data-fly="rth" title="Return to home and land">RTH</button>
         </div>
       </div>
 

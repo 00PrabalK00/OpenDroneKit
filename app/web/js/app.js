@@ -477,6 +477,7 @@
       const result = await tryCall('telemetry');
       if (!result) return;
       const data = result.telemetry;
+      if (state.map && state.map.showVehicle) state.map.showVehicle(data);
       const grid = $('#telemetry-grid');
       const chip = $('#vehicle-chip');
       /* A lost link keeps its last values on screen -- where the aircraft was last
@@ -1324,6 +1325,33 @@
     if ($('#report-info')) await refreshReportInfo();
   }
 
+  /* The open project's area of interest, no-fly zones and planned mission, on the map.
+
+     The classic window drew none of them: a project opened with its survey area saved
+     (the Aukerman Park project, flown against ArduCopter SITL) showed a world map, and
+     Plan Mission answered "Draw an area of interest first" for an area the project
+     already had -- the cockpit, reading the same project, showed it. */
+  async function restoreProjectGeometry() {
+    const result = await tryCall('get_state');
+    if (!result || !state.map) return;
+    // Not awaited by start(): a map that never loads (no MapLibre, no WebGL) must not
+    // hold up the rest of the window, so this gives up after 30 s.
+    const ready = await new Promise((resolve) => {
+      const until = Date.now() + 30000;
+      const check = () => (state.ready ? resolve(true)
+        : Date.now() > until ? resolve(false) : setTimeout(check, 100));
+      check();
+    });
+    if (!ready) return;
+    const aoi = Array.isArray(result.aoi) && result.aoi.length >= 3 ? result.aoi : null;
+    state.map.loadGeometry({ aoi: aoi, nofly: result.no_fly || [] });
+    if (result.has_mission) {
+      const mission = await tryCall('mission_geojson');
+      if (mission && mission.geojson) state.map.setMission(mission.geojson);
+    }
+    if (aoi) state.map.fitToCoords(aoi);
+  }
+
   /* ---------- offline basemap ---------- */
 
   function chooseBasemap(key) {
@@ -1406,6 +1434,9 @@
     $('#mission-template').onchange = showTemplateOptions;
     $('#btn-connect').onclick = connectDialog;
     $('#btn-upload').onclick = menuHandlers['fly.upload'];
+    document.querySelectorAll('[data-fly]').forEach((button) => {
+      button.onclick = () => menuHandlers['fly.command']({ command: button.dataset.fly });
+    });
     $('#btn-preflight').onclick = () => switchTab('preflight');
     wireFleet();
     $('#btn-dataset').onclick = pickDataset;
@@ -1496,6 +1527,7 @@
     setTool('pan');
     ambientBase = statusSeq;
     await refreshProject();
+    restoreProjectGeometry();
     await loadMissionTemplates();
     await showCapabilities(false);
     await refreshLayers();

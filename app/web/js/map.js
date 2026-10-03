@@ -472,6 +472,62 @@
       this._setData('mission', this._missionData);
     }
 
+    /* The aircraft where it last reported itself, and the track flown while armed.
+       No map in the application showed the vehicle, so a survey was watched as a
+       readout of numbers (found flying ArduCopter SITL over Aukerman Park). Amber for a
+       simulated vehicle, grey for a link that went quiet, green for a live aircraft. */
+    showVehicle(t) {
+      t = t || {};
+      const map = this.map;
+      if (!map || !map.isStyleLoaded || !map.isStyleLoaded()) return;
+      const lat = Number(t.latitude), lon = Number(t.longitude);
+      const placed = (t.connected || t.link_lost) && Number.isFinite(lat) && Number.isFinite(lon)
+        && !(lat === 0 && lon === 0) && Number(t.gps_fix || 0) >= 2;
+      if (!t.connected && !t.link_lost) this._vehicleTrack = [];
+      const track = this._vehicleTrack || (this._vehicleTrack = []);
+      const ids = ['vehicle-track', 'vehicle-heading', 'vehicle'];
+      if (!placed) {
+        ids.forEach((id) => {
+          if (map.getLayer(id)) map.removeLayer(id);
+          if (map.getSource(id)) map.removeSource(id);
+        });
+        return;
+      }
+      const last = track[track.length - 1];
+      if (t.armed && (!last || Math.abs(last[0] - lon) + Math.abs(last[1] - lat) > 2e-6)) {
+        track.push([lon, lat]);
+        if (track.length > 20000) track.splice(0, track.length - 20000);
+      }
+      const tone = t.link_lost ? 'lost' : (t.is_simulated ? 'sim' : 'live');
+      const rad = (Number(t.heading_deg) || 0) * Math.PI / 180;
+      const tip = [lon + 18 * Math.sin(rad) / (111320 * Math.cos(lat * Math.PI / 180)),
+                   lat + 18 * Math.cos(rad) / 110540];
+      const colour = ['match', ['get', 'tone'], 'sim', '#f59e0b', 'lost', '#9ca3af', '#22c55e'];
+      const data = {
+        'vehicle-track': { type: 'Feature', properties: {}, geometry: { type: 'LineString',
+          coordinates: track.length > 1 ? track : [[lon, lat], [lon, lat]] } },
+        'vehicle-heading': { type: 'Feature', properties: { tone: tone }, geometry: {
+          type: 'LineString', coordinates: [[lon, lat], tip] } },
+        vehicle: { type: 'Feature', properties: { tone: tone },
+          geometry: { type: 'Point', coordinates: [lon, lat] } }
+      };
+      ids.forEach((id) => {
+        const source = map.getSource(id);
+        if (source) { source.setData(data[id]); map.moveLayer(id); return; }
+        map.addSource(id, { type: 'geojson', data: data[id] });
+        if (id === 'vehicle') {
+          map.addLayer({ id: id, type: 'circle', source: id, paint: {
+            'circle-radius': 7, 'circle-color': colour,
+            'circle-stroke-color': '#0d1015', 'circle-stroke-width': 2 } });
+        } else if (id === 'vehicle-heading') {
+          map.addLayer({ id: id, type: 'line', source: id, paint: { 'line-color': colour, 'line-width': 3 } });
+        } else {
+          map.addLayer({ id: id, type: 'line', source: id,
+            paint: { 'line-color': '#f8fafc', 'line-width': 2, 'line-opacity': 0.75 } });
+        }
+      });
+    }
+
     addRaster(id, dataUri, coordinates, opacity) {
       const entry = { dataUri: dataUri, coordinates: coordinates, opacity: opacity == null ? 1 : opacity };
       this.rasterLayers.set(id, entry);
@@ -556,6 +612,32 @@
       if (!bounds) return false;
       this.map.fitBounds(bounds, { padding: padding == null ? 60 : padding, duration: 600, maxZoom: 19 });
       return true;
+    }
+
+    /* Put geometry the project already has back on the map, as the shapes the
+       operator would have drawn. Added through the draw control's API, which fires no
+       draw.create, so loading it does not write it back to the project. */
+    loadGeometry(geometry) {
+      const rings = [];
+      const close = (ring) => {
+        const points = (ring || []).map((p) => [Number(p[0]), Number(p[1])]);
+        if (points.length < 3) return null;
+        const [a, b] = [points[0], points[points.length - 1]];
+        if (a[0] !== b[0] || a[1] !== b[1]) points.push(a.slice());
+        return points;
+      };
+      if (geometry && geometry.aoi) rings.push(['aoi', geometry.aoi]);
+      ((geometry && geometry.nofly) || []).forEach((ring) => rings.push(['nofly', ring]));
+      const drawn = this.draw.getAll().features.map((f) => f.properties.odkRole || 'aoi');
+      let added = 0;
+      rings.forEach(([role, ring]) => {
+        const closed = close(ring);
+        if (!closed || (role === 'aoi' && drawn.includes('aoi'))) return;
+        this.draw.add({ type: 'Feature', properties: { odkRole: role },
+          geometry: { type: 'Polygon', coordinates: [closed] } });
+        added += 1;
+      });
+      return added;
     }
 
     fitToCoords(coords, padding) {
