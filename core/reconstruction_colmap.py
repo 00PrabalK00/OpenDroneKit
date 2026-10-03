@@ -88,8 +88,19 @@ COLMAP_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 # Beyond this many images an exhaustive O(n^2) match becomes the dominant cost, so the
-# auto matcher switches to sequential + loop detection.
+# auto matcher switches to a cheaper pairing: spatial (GPS neighbours) when the frames
+# are geotagged, sequential + loop detection when they are not.
 EXHAUSTIVE_MATCH_LIMIT = 60
+
+# Share of frames that must carry a geotag before pairs are chosen by position.
+SPATIAL_MATCH_MIN_GPS_FRACTION = 0.8
+# Neighbours each image is matched against when pairing by position, and how far away
+# (metres, 3D) a neighbour may be. Capture order is the wrong proxy for overlap on a
+# lawnmower grid (the next strip is 15-20 frames away) and on an oblique orbit; position
+# is the right one. Measured on ODM's bellus survey (122 frames, grid): sequential
+# pairing registered 40/122 in two disconnected models.
+SPATIAL_MATCH_NEIGHBOURS = 30
+SPATIAL_MATCH_MAX_DISTANCE_M = 250.0
 
 
 def colmap_available() -> bool:
@@ -687,6 +698,12 @@ class ColmapReconstructor:
         self.warnings: list[str] = []
         self._cloud_is_dense = False
         self._should_cancel: Callable[[], bool] | None = None
+        # Multiband orthomosaic: registered image name -> float band stack (bands, H, W)
+        # in the same pixel frame as that image (core.multispectral writes these). When
+        # set, every band is orthorectified with the solved poses onto the ortho grid.
+        self.band_sources: dict[str, str] = {}
+        self.band_names: list[str] = []
+        self.band_orthomosaic_path: str | None = None
 
     # -- helpers ---------------------------------------------------------
 
@@ -813,9 +830,7 @@ class ColmapReconstructor:
             except TypeError:
                 pycolmap.extract_features(str(database_path), str(image_dir))  # type: ignore[union-attr]
 
-        matcher = str(self.settings.get("matcher", "auto"))
-        if matcher == "auto":
-            matcher = "exhaustive" if image_count <= EXHAUSTIVE_MATCH_LIMIT else "sequential"
+        matcher = self._choose_matcher(image_dir, image_count)
 
         progress(24, f"Matching features ({matcher})")
         self._run_matcher(matcher, database_path, device)
@@ -858,6 +873,12 @@ class ColmapReconstructor:
         # Multiple disconnected models mean the imagery split into separate clusters;
         # the largest is the usable one and the split is worth reporting.
         best = max(models, key=lambda model: len(_registered_images(model)))
+        best_names = {_image_name(image) for image in _registered_images(best)}
+        # The mapper can also leave a small model built only from images the largest one
+        # already holds (a re-seeded fragment: the NVS facade run left 3 of its 60
+        # frames in a second model). That is not a split of the survey.
+        models = [best] + [model for model in models if model is not best and
+                           {_image_name(i) for i in _registered_images(model)} - best_names]
         if len(models) > 1:
             self._warn(
                 f"COLMAP produced {len(models)} disconnected models; using the largest "
@@ -940,9 +961,7 @@ class ColmapReconstructor:
         if "num_threads" in extract_help:
             extract += [flag("num_threads"), str(self._worker_threads())]
 
-        matcher = str(self.settings.get("matcher", "auto"))
-        if matcher == "auto":
-            matcher = "exhaustive" if image_count <= EXHAUSTIVE_MATCH_LIMIT else "sequential"
+        matcher = self._choose_matcher(image_dir, image_count)
         match_help = options_of(f"{matcher}_matcher")
         if not match_help:
             return False
@@ -953,6 +972,20 @@ class ColmapReconstructor:
             "--database_path", str(database_path),
             match_gpu, "1",
         ]
+        # The pairing the CPU path configures in _pairing_options(), so the two paths
+        # pair the same images. The native call passed none of it, and a sequential
+        # match ran with the binary's default window instead of the profile's.
+        if matcher == "sequential" and "SequentialMatching.overlap" in match_help:
+            match += ["--SequentialMatching.overlap",
+                      str(int(self.settings.get("sequential_overlap", 12)))]
+        if matcher == "spatial":
+            for option, value in (
+                ("SpatialMatching.max_num_neighbors", SPATIAL_MATCH_NEIGHBOURS),
+                ("SpatialMatching.max_distance", SPATIAL_MATCH_MAX_DISTANCE_M),
+                ("SpatialMatching.ignore_z", 0),
+            ):
+                if option in match_help:
+                    match += [f"--{option}", str(value)]
 
         for step, command, percent, label in (
             (1, extract, 8, "Extracting SIFT features on the GPU"),
@@ -1047,8 +1080,41 @@ class ColmapReconstructor:
         except Exception:  # noqa: BLE001
             return None
 
+    def _choose_matcher(self, image_dir: Path, image_count: int) -> str:
+        """The profile's matcher, or for "auto" the pairing that suits this imagery.
+
+        Exhaustive up to EXHAUSTIVE_MATCH_LIMIT images. Above it, geotagged frames are
+        paired by position (spatial) and untagged ones by capture order (sequential).
+        """
+        matcher = str(self.settings.get("matcher", "auto"))
+        if matcher != "auto":
+            return matcher
+        if image_count <= EXHAUSTIVE_MATCH_LIMIT:
+            return "exhaustive"
+        paths: list[Path] = []
+        try:
+            paths = self._image_paths(image_dir)
+            tagged = len(geo.collect_gps_fixes(paths))
+        except Exception:  # noqa: BLE001 - unreadable EXIF just means no positions
+            tagged = 0
+        if paths and tagged >= SPATIAL_MATCH_MIN_GPS_FRACTION * len(paths):
+            return "spatial"
+        return "sequential"
+
     def _pairing_options(self, matcher: str) -> Any:
         """Pairing options; sequential matching needs an explicit overlap window."""
+        if matcher == "spatial":
+            factory = getattr(pycolmap, "SpatialPairingOptions", None)
+            if factory is None:
+                return None
+            try:
+                options = factory()
+                options.max_num_neighbors = SPATIAL_MATCH_NEIGHBOURS
+                options.max_distance = SPATIAL_MATCH_MAX_DISTANCE_M
+                options.ignore_z = False
+                return options
+            except Exception:  # noqa: BLE001
+                return None
         if matcher != "sequential":
             return None
         factory = getattr(pycolmap, "SequentialPairingOptions", None)
@@ -1076,7 +1142,8 @@ class ColmapReconstructor:
 
     def _run_matcher(self, matcher: str, database_path: Path, device: Any) -> None:
         """Run the chosen matcher, degrading keyword-by-keyword across API versions."""
-        name = "match_exhaustive" if matcher == "exhaustive" else "match_sequential"
+        name = {"exhaustive": "match_exhaustive", "spatial": "match_spatial"}.get(
+            matcher, "match_sequential")
         fn = getattr(pycolmap, name, None) or getattr(pycolmap, "match_exhaustive")  # type: ignore[union-attr]
 
         attempts: list[dict[str, Any]] = []
@@ -1491,6 +1558,7 @@ class ColmapReconstructor:
         anchor: geo.GeoAnchor,
         progress: Callable[[int, str], None],
         max_dimension: int = 8192,
+        band_sources: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Orthorectify the source photos at their own resolution onto a sparse-cloud surface.
 
@@ -1538,6 +1606,9 @@ class ColmapReconstructor:
         surface = LinearNDInterpolator(np.column_stack([east, north]), up)
         rotation = anchor.rotation_matrix
         canvas = np.zeros((height, width, 3), dtype=np.uint8)
+        bands: np.ndarray | None = None
+        if band_sources:
+            from .multispectral import read_reflectance_stack
         best = np.full((height, width), -np.inf, dtype=np.float32)
         rows_per_chunk = max(1, 2_000_000 // max(width, 1))
 
@@ -1548,12 +1619,27 @@ class ColmapReconstructor:
             extrinsic = _cam_from_world_matrix(image)
             if camera is None or extrinsic is None:
                 continue
-            source = cv2.imread(str(image_dir / _image_name(image)), cv2.IMREAD_COLOR)
+            stack = None
+            if band_sources:
+                stack_path = band_sources.get(_image_name(image))
+                if not stack_path:
+                    continue
+                stack = read_reflectance_stack(stack_path)
+                if bands is None:
+                    bands = np.full((stack.shape[0], height, width), np.nan, dtype=np.float32)
+                source = np.zeros(stack.shape[1:] + (3,), dtype=np.uint8)  # geometry only
+            else:
+                source = cv2.imread(str(image_dir / _image_name(image)), cv2.IMREAD_COLOR)
             if source is None:
                 continue
             cam_w = int(getattr(camera, "width", source.shape[1]) or source.shape[1])
             cam_h = int(getattr(camera, "height", source.shape[0]) or source.shape[0])
             if (cam_w, cam_h) != (source.shape[1], source.shape[0]):
+                if stack is not None:
+                    # Band stacks are sampled in their own pixel frame; measured
+                    # reflectance is never resampled to fit a mismatched camera.
+                    self._warn(f"Band stack for {_image_name(image)} does not match its camera size; skipped.")
+                    continue
                 source = cv2.resize(source, (cam_w, cam_h), interpolation=cv2.INTER_AREA)
             k_matrix = _camera_matrix(camera)
             principal = k_matrix[:2, 2]
@@ -1592,11 +1678,18 @@ class ColmapReconstructor:
                     continue
                 rr, cc, px, py = rr[inside], cc[inside], px[inside], py[inside]
                 score = (1.0 - np.hypot(px - principal[0], py - principal[1]) / half_diag).astype(np.float32)
+                if stack is not None:
+                    samples = stack[:, py.astype(np.int64), px.astype(np.int64)]
+                    usable = np.all(np.isfinite(samples), axis=0)
+                    score = np.where(usable, score, -np.inf).astype(np.float32)
                 better = score > best[rr, cc]
                 if not better.any():
                     continue
                 rr, cc = rr[better], cc[better]
-                canvas[rr, cc] = source[py[better].astype(np.int64), px[better].astype(np.int64)][:, ::-1]
+                if stack is not None:
+                    bands[:, rr, cc] = samples[:, better]
+                else:
+                    canvas[rr, cc] = source[py[better].astype(np.int64), px[better].astype(np.int64)][:, ::-1]
                 best[rr, cc] = score[better]
 
         filled = np.isfinite(best)
@@ -1604,6 +1697,7 @@ class ColmapReconstructor:
             return None
         return {
             "ortho": canvas,
+            "bands": bands,
             "valid": filled,
             "west": west,
             "north": north_max,
@@ -1895,7 +1989,8 @@ class ColmapReconstructor:
         epsg = (camera_anchor.epsg if camera_anchor is not None
                 else int(self.target_epsg or self.ground_control[0].epsg))
         try:
-            solution = gcp.solve_with_control(self.ground_control, poses, int(epsg), camera_anchor)
+            solution = gcp.solve_with_control(self.ground_control, poses, int(epsg), camera_anchor,
+                                              observations=image_observations(sparse, registered))
         except (gcp.GcpError, ValueError, np.linalg.LinAlgError) as exc:
             self._warn(f"Ground control was not used: {exc}")
             return camera_anchor
@@ -1910,6 +2005,17 @@ class ColmapReconstructor:
                    "not georeferenced.")
             )
             return camera_anchor
+        if solution.anchor.method == "camera_gps_shifted_to_control":
+            shift = solution.report.get("shift_m") or [0.0, 0.0, 0.0]
+            loo = (solution.report.get("leave_one_out") or {}).get("rmse_m")
+            self._warn(
+                "Ground control is too thinly marked for a full fit (fewer than three "
+                f"points in {gcp.MIN_IMAGE_MARKS} registered images), so the geotag "
+                f"georeferencing was corrected onto it (scale x{solution.report.get('scale_factor', 1.0)}, "
+                f"shift ({shift[0]:+.2f}, {shift[1]:+.2f}, {shift[2]:+.2f}) m); the "
+                f"orientation is still the geotags'. Leave-one-out check RMSE {loo} m "
+                "(gcp_report.json)."
+            )
         return solution.anchor
 
     def _write_products(
@@ -2040,12 +2146,61 @@ class ColmapReconstructor:
         elif anchor is not None:
             self._warn("rasterio is not installed, so no GeoTIFF was written. Only PNG previews exist.")
 
+        if self.band_sources:
+            self._write_band_orthomosaic(out_dir, world_points, registered, camera_map, image_dir, anchor,
+                                         progress, artifacts)
+
         if anchor is not None:
             track = self._camera_track_geojson(registered, fixes, anchor)
             if track is not None:
                 artifacts["camera_track"] = geo.write_geojson(out_dir / "camera_track.geojson", track)
 
         return artifacts
+
+    def _write_band_orthomosaic(
+        self, out_dir: Path, world_points: np.ndarray, registered: Sequence[Any], camera_map: dict[int, Any],
+        image_dir: Path, anchor: geo.GeoAnchor | None, progress: Callable[[int, str], None],
+        artifacts: dict[str, Any],
+    ) -> None:
+        """Orthorectify every band of the supplied float stacks with the solved poses.
+
+        Same geometry as the RGB orthomosaic on the interpolated surface: each output cell
+        takes its values from the view whose image centre is nearest, and all bands come
+        from that one view, so band ratios (NDVI) never mix observations.
+        """
+        self.band_orthomosaic_path = None
+        if anchor is None:
+            self._warn("No band orthomosaic: the run is not georeferenced.")
+            return
+        if not geo.geo_capabilities()["rasterio"]:
+            self._warn("No band orthomosaic: rasterio is not installed.")
+            return
+        fine = self._orthophoto_on_interpolated_surface(
+            world_points, registered, camera_map, image_dir, anchor, progress, band_sources=self.band_sources)
+        if fine is None or fine.get("bands") is None:
+            self._warn("No band orthomosaic: no registered view had a band stack.")
+            return
+        path = geo.write_geotiff(
+            out_dir / "orthomosaic_bands.tif", fine["bands"].astype(np.float32), nodata=float("nan"),
+            epsg=anchor.epsg, west=fine["west"], north=fine["north"], pixel_size=fine["pixel_size"], cog=False,
+        )
+        try:
+            import rasterio
+
+            with rasterio.open(path, "r+") as dst:
+                dst.update_tags(
+                    ODK_QUANTITY="surface_reflectance",
+                    ODK_BANDS=",".join(self.band_names),
+                    ODK_SURFACE="interpolated between triangulated points (not a measured DSM)",
+                )
+                for index, name in enumerate(self.band_names[: dst.count], start=1):
+                    dst.set_band_description(index, name)
+                    dst.update_tags(index, BAND=name)
+        except Exception as exc:  # noqa: BLE001
+            self._warn(f"Band names could not be written into the band orthomosaic: {exc}")
+        self.band_orthomosaic_path = str(path)
+        artifacts["orthomosaic_bands"] = str(path)
+        artifacts["orthomosaic_bands_gsd_m"] = fine["pixel_size"]
 
     def _build_mesh(self, out_dir: Path, points: np.ndarray, colors: np.ndarray) -> dict[str, str]:
         """Poisson surface reconstruction. Skipped with a warning when Open3D is absent."""
@@ -2133,6 +2288,39 @@ def _project_to_image(camera: Any, cam_points: np.ndarray, k_matrix: np.ndarray)
             pass
     projected = cam_points @ k_matrix.T
     return projected[:, :2] / projected[:, 2:3]
+
+
+def image_observations(reconstruction: Any, registered: Sequence[Any] | None = None
+                       ) -> dict[str, Any]:
+    """Each registered image's triangulated keypoints and their model positions.
+
+    Used to place a control point marked in a single photograph on the model surface
+    (core.gcp.locate_in_model). Images whose observations cannot be read are left out.
+    """
+    from core.gcp import ImageObservations
+
+    points3d = getattr(reconstruction, "points3D", None)
+    out: dict[str, Any] = {}
+    for image in (registered if registered is not None else _registered_images(reconstruction)):
+        pixels: list[tuple[float, float]] = []
+        xyz: list[np.ndarray] = []
+        try:
+            for observation in image.points2D:
+                has = getattr(observation, "has_point3D", None)
+                if callable(has) and not has():
+                    continue
+                pid = int(getattr(observation, "point3D_id", -1))
+                if pid < 0 or pid >= 2 ** 63 - 1 or pid not in points3d:
+                    continue
+                xy = np.asarray(observation.xy, dtype=float).reshape(2)
+                pixels.append((float(xy[0]), float(xy[1])))
+                xyz.append(np.asarray(points3d[pid].xyz, dtype=float).reshape(3))
+        except Exception:  # noqa: BLE001 - a binding without these attributes skips the image
+            continue
+        if pixels:
+            out[_image_name(image)] = ImageObservations(pixels=np.asarray(pixels),
+                                                        points=np.asarray(xyz))
+    return out
 
 
 def _camera_record(image: Any, camera: Any) -> dict[str, Any]:

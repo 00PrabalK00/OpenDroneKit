@@ -184,9 +184,16 @@ class TestFindingNothingIsAnAnswer:
         if not model_status("structural_multiclass_detector").get("exists"):
             pytest.skip("No structural model installed in this checkout.")
 
-        paths = sorted(glob.glob("training/data/prepared/structural_det/test/images/*.jpg"))
+        import os
+        from pathlib import Path
+
+        # The prepared split lives under training/data, or where ODK_TRAINING_DATA_DIR
+        # points (the same override the other model tests honour).
+        base = Path(os.environ.get("ODK_TRAINING_DATA_DIR", "").strip() or "training/data")
+        paths = sorted(glob.glob(str(base / "prepared/structural_det/test/images/*.jpg")))
         if not paths:
-            pytest.skip("Prepared CODEBRIM test images are not present in this checkout.")
+            pytest.skip("Prepared CODEBRIM test images are not present in this checkout "
+                        "(set ODK_TRAINING_DATA_DIR).")
 
         found = 0
         for path in paths[:12]:

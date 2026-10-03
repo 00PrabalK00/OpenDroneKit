@@ -145,6 +145,10 @@ BUILT_IN: dict[str, CameraProfile] = {
         _profile("mavic3t_thermal", "DJI Mavic 3 Thermal (radiometric)",
                  7.68, 6.14, 9.1, 640, 512, thermal=True,
                  notes="Radiometric; temperature per pixel, not just an image."),
+        _profile("m30t_wide", "DJI Matrice 30T (wide)",
+                 6.4, 4.8, 4.4, 4000, 3000,
+                 notes="1/2-inch sensor; focal length 4.4 mm (24 mm equivalent) as the "
+                       "M30T writes it in its own EXIF."),
         _profile("zenmuse_p1", "DJI Zenmuse P1 (35 mm)",
                  35.9, 24.0, 35.0, 8192, 5460,
                  notes="Full-frame survey payload; the highest GSD of this set."),

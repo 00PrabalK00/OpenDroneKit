@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -176,6 +177,7 @@ CANOPY_ALIASES = ("crop", "crop_canopy", "vegetation", "tree", "trees", "orchard
 UNWANTED_ALIASES = ("weed", "weeds", "unwanted_vegetation")
 SOIL_ALIASES = ("soil", "bare_soil", "bare_land", "bareland")
 WATER_ALIASES = ("water", "water_body", "waterlogged")
+SPARSE_ALIASES = ("sparse_vegetation", "sparse_cover")
 
 
 def analyse_canopy_cover(
@@ -197,6 +199,7 @@ def analyse_canopy_cover(
     unwanted_ids, _ = ids_for_names(names, UNWANTED_ALIASES)
     soil_ids, _ = ids_for_names(names, SOIL_ALIASES)
     water_ids, _ = ids_for_names(names, WATER_ALIASES)
+    sparse_ids, _ = ids_for_names(names, SPARSE_ALIASES)
     if not canopy_ids:
         raise IndiaPackRefused("The semantic schema has no crop/canopy/vegetation class.")
 
@@ -205,7 +208,8 @@ def analyse_canopy_cover(
     unwanted = valid & np.isin(raster.data, list(unwanted_ids)) if unwanted_ids else np.zeros_like(valid)
     soil = valid & np.isin(raster.data, list(soil_ids)) if soil_ids else np.zeros_like(valid)
     water = valid & np.isin(raster.data, list(water_ids)) if water_ids else np.zeros_like(valid)
-    field = canopy | unwanted | soil
+    sparse = valid & np.isin(raster.data, list(sparse_ids)) if sparse_ids else np.zeros_like(valid)
+    field = canopy | unwanted | soil | sparse
     if not np.any(field):
         raise IndiaPackRefused("No crop/canopy or soil pixels are present in the semantic layer.")
 
@@ -213,6 +217,7 @@ def analyse_canopy_cover(
     encoded[valid] = 0
     encoded[soil] = 3
     encoded[water] = 4
+    encoded[sparse] = 5
     encoded[unwanted] = 2
     encoded[canopy] = 1
     output = Path(output_dir)
@@ -231,6 +236,7 @@ def analyse_canopy_cover(
             "ODK_CLASS_2": "unwanted_vegetation",
             "ODK_CLASS_3": "bare_soil_potential_missing_crop",
             "ODK_CLASS_4": "water",
+            "ODK_CLASS_5": "sparse_vegetation",
         },
     )
     region_features: list[dict] = []
@@ -239,6 +245,7 @@ def analyse_canopy_cover(
         ("unwanted_vegetation", unwanted),
         ("bare_soil_potential_missing_crop", soil),
         ("water", water),
+        ("sparse_vegetation", sparse),
     ):
         region_features.extend(
             polygonize_mask(
@@ -303,6 +310,15 @@ def analyse_canopy_cover(
                     "status": "unavailable",
                     "area_m2": None,
                     "reason": "The semantic schema has no water class.",
+                }
+            ),
+            "sparse_vegetation": (
+                {"status": "available", "area_m2": round(float(sparse.sum()) * pixel_area, 6)}
+                if sparse_ids
+                else {
+                    "status": "unavailable",
+                    "area_m2": None,
+                    "reason": "The semantic schema has no sparse-vegetation class.",
                 }
             ),
             "artifacts": {"class_raster": class_path, "regions": str(regions_path)},
@@ -587,3 +603,243 @@ def count_plant_instances(
         },
     )
     return IndiaPackResult(summary_path, (raster_path, str(points_path)))
+
+
+INDEX_COVER_CLASSES: dict[int, str] = {
+    1: "crop_canopy",
+    2: "sparse_vegetation",
+    3: "bare_soil",
+}
+
+
+def classify_index_cover(
+    vegetation_index_raster: str | Path,
+    output_dir: str | Path,
+    *,
+    validation_scope: str,
+    thresholds: Sequence[float] | None = None,
+) -> IndiaPackResult:
+    """Split a calibrated vegetation index into canopy / sparse vegetation / bare soil.
+
+    With no ``thresholds`` the two cut points come from this survey's own index
+    histogram (three-class multi-Otsu), so they are a measured property of the data,
+    not a crop rule. Either way the classes are spectral cover classes, not crop/weed
+    identification, and ``validation_scope`` says how far they have been checked. The
+    output is a semantic class raster plus a schema JSON that ``analyse_canopy_cover``
+    accepts.
+    """
+
+    if not validation_scope.strip():
+        raise IndiaPackRefused(
+            "Cover classes from an index need a stated validation scope "
+            "(say UNVALIDATED when nobody has checked them against the ground)."
+        )
+    index = read_raster_evidence(vegetation_index_raster, band=1, require_projected=True)
+    if index.tags.get("ODK_CALIBRATED_REFLECTANCE", "").casefold() != "true":
+        raise IndiaPackRefused(
+            "The source is not tagged as an index computed from calibrated reflectance."
+        )
+    index_name = index.tags.get("ODK_INDEX", "").upper()
+    if index_name not in INDEX_BANDS:
+        raise IndiaPackRefused("The source does not identify NDVI, NDRE, or GNDVI.")
+    data = index.data.astype(np.float32, copy=False)
+    valid = index.valid & np.isfinite(data)
+    values = data[valid]
+    if values.size < 100:
+        raise IndiaPackRefused("Too few valid index pixels to separate cover classes.")
+    if thresholds is None:
+        from skimage.filters import threshold_multiotsu
+
+        low, high = (float(t) for t in threshold_multiotsu(values, classes=3))
+        method = "multi_otsu_3_class (cut points measured from this survey's index histogram)"
+    else:
+        if len(thresholds) != 2:
+            raise ValueError("thresholds must be (bare_below, canopy_from).")
+        low, high = float(thresholds[0]), float(thresholds[1])
+        method = "operator_thresholds"
+    if not -1.0 <= low < high <= 1.0:
+        raise ValueError("Cover thresholds must satisfy -1 <= bare_below < canopy_from <= 1.")
+
+    classes = np.full(data.shape, CLASS_NODATA, dtype=np.uint16)
+    canopy = valid & (data >= high)
+    soil = valid & (data < low)
+    sparse = valid & ~canopy & ~soil
+    classes[canopy] = 1
+    classes[sparse] = 2
+    classes[soil] = 3
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    class_path = write_aligned_raster(
+        output / "index_cover_classes.tif",
+        classes,
+        index,
+        dtype="uint16",
+        nodata=CLASS_NODATA,
+        categorical=True,
+        tags={
+            "ODK_ANALYSIS": "index_cover_classes",
+            "ODK_INDEX": index_name,
+            "ODK_BARE_BELOW": low,
+            "ODK_CANOPY_FROM": high,
+            "ODK_THRESHOLD_METHOD": method,
+            "ODK_VALIDATION_SCOPE": validation_scope,
+            **{f"ODK_CLASS_{k}": v for k, v in INDEX_COVER_CLASSES.items()},
+        },
+    )
+    schema_path = output / "index_cover_schema.json"
+    schema_path.write_text(
+        json.dumps(
+            {
+                "classes": [{"id": k, "name": v} for k, v in INDEX_COVER_CLASSES.items()],
+                "source": f"{index_name} cover classes; {method}",
+                "validation_scope": validation_scope,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    total = float(valid.sum())
+    pixel_area = float(index.pixel_area_m2)
+    summary_path = write_summary(
+        output / "index_cover.json",
+        {
+            "status": "complete",
+            "analysis": "index_cover_classes",
+            "source": {"index_raster": index.path, "index": index_name, "epsg": index.epsg},
+            "threshold_method": method,
+            "thresholds": {"bare_soil_below": low, "crop_canopy_from": high},
+            "validation_scope": validation_scope,
+            "classes": {
+                name: {
+                    "id": cid,
+                    "area_m2": round(float(mask.sum()) * pixel_area, 6),
+                    "fraction": round(float(mask.sum()) / total, 6),
+                }
+                for cid, name, mask in (
+                    (1, "crop_canopy", canopy),
+                    (2, "sparse_vegetation", sparse),
+                    (3, "bare_soil", soil),
+                )
+            },
+            "interpretation": (
+                "Spectral cover classes from one index: 'bare_soil' is any surface below the "
+                "lower cut (soil, residue, dry litter), 'crop_canopy' any dense green "
+                "vegetation including weeds. No crop/weed separation is attempted."
+            ),
+            "artifacts": {"class_raster": class_path, "schema": str(schema_path)},
+        },
+    )
+    return IndiaPackResult(summary_path, (class_path, str(schema_path)))
+
+
+def count_plants_from_canopy(
+    canopy_class_raster: str | Path,
+    schema: SemanticSchema | Mapping[int | str, str] | str | Path,
+    output_dir: str | Path,
+    *,
+    validation_scope: str,
+    max_plant_area_m2: float,
+    min_plant_area_m2: float = 0.01,
+    max_merged_fraction: float = 0.5,
+) -> IndiaPackResult:
+    """Count separate canopy patches as plants only when the canopy really separates.
+
+    A canopy mask counts as plants only if individual plants show up as separate
+    connected patches. That is measured first: the share of canopy area held in patches
+    larger than ``max_plant_area_m2`` (one plant's largest plausible footprint, which the
+    operator states for the crop and stage). When more than ``max_merged_fraction`` of
+    the canopy is in such merged patches -- closed rows, or a resolution too coarse for
+    single plants -- the result is ``not_applicable`` with the measured numbers and no
+    count. Otherwise the separable patches go through ``count_plant_instances``.
+    """
+
+    if not validation_scope.strip():
+        raise IndiaPackRefused("Plant/tree counting requires a stated validation scope.")
+    if max_plant_area_m2 <= min_plant_area_m2 or min_plant_area_m2 <= 0:
+        raise ValueError("Need 0 < min_plant_area_m2 < max_plant_area_m2.")
+    if not 0.0 < max_merged_fraction < 1.0:
+        raise ValueError("max_merged_fraction must be between 0 and 1.")
+    from scipy import ndimage
+
+    raster = read_raster_evidence(canopy_class_raster, band=1, require_projected=True)
+    names = load_class_names(schema)
+    canopy_ids, _ = ids_for_names(names, CANOPY_ALIASES)
+    if not canopy_ids:
+        raise IndiaPackRefused("The schema has no crop/canopy/vegetation class.")
+    canopy = semantic_valid_mask(raster) & np.isin(raster.data, list(canopy_ids))
+    canopy_px = int(canopy.sum())
+    if canopy_px == 0:
+        raise IndiaPackRefused("No canopy pixels are present.")
+    labels, count = ndimage.label(canopy, structure=np.ones((3, 3), dtype=np.uint8))
+    sizes = np.bincount(labels.ravel())[1:].astype(np.float64)
+    pixel_area = float(raster.pixel_area_m2)
+    areas = sizes * pixel_area
+    merged = areas > max_plant_area_m2
+    too_small = areas < min_plant_area_m2
+    plant_sized = ~merged & ~too_small
+    merged_fraction = float(sizes[merged].sum()) / canopy_px
+    separability = {
+        "canopy_area_m2": round(canopy_px * pixel_area, 6),
+        "pixel_size_m": round(float(np.sqrt(pixel_area)), 6),
+        "connected_patches": int(count),
+        "patches_larger_than_one_plant": int(merged.sum()),
+        "patches_below_minimum_area": int(too_small.sum()),
+        "plant_sized_patches": int(plant_sized.sum()),
+        "largest_patch_m2": round(float(areas.max()), 6),
+        "canopy_fraction_in_merged_patches": round(merged_fraction, 6),
+        "max_plant_area_m2": max_plant_area_m2,
+        "min_plant_area_m2": min_plant_area_m2,
+        "max_merged_fraction": max_merged_fraction,
+    }
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    if merged_fraction > max_merged_fraction:
+        summary_path = write_summary(
+            output / "plant_count.json",
+            {
+                "status": "not_applicable",
+                "analysis": "plant_separability_check",
+                "source": {"canopy_class_raster": raster.path, "epsg": raster.epsg},
+                "validation_scope": validation_scope,
+                "count": None,
+                "separability": separability,
+                "reason": (
+                    f"{100 * merged_fraction:.1f}% of the canopy area lies in connected patches "
+                    f"larger than one plant ({max_plant_area_m2} m2), so single plants are not "
+                    "separable in this canopy layer (closed rows, or pixels too coarse). "
+                    "No count was produced; counting patches would report row segments as plants."
+                ),
+            },
+        )
+        return IndiaPackResult(summary_path, (), status="not_applicable")
+
+    instances = np.where(np.isin(labels, np.flatnonzero(plant_sized) + 1), 1, 0).astype(np.uint8)
+    instance_path = write_aligned_raster(
+        output / "plant_candidates.tif",
+        instances,
+        raster,
+        dtype="uint8",
+        nodata=255,
+        categorical=True,
+        tags={
+            "ODK_ANALYSIS": "separable_canopy_patches",
+            "ODK_INSTANCE_KIND": "plant",
+            "ODK_VALIDATION_SCOPE": validation_scope,
+        },
+    )
+    result = count_plant_instances(
+        instance_path,
+        output,
+        validation_scope=validation_scope,
+        min_instance_area_m2=min_plant_area_m2,
+        max_instance_area_m2=max_plant_area_m2,
+    )
+    summary = json.loads(Path(result.summary_path).read_text(encoding="utf-8"))
+    summary["separability"] = separability
+    summary["excluded"] = (
+        f"{int(merged.sum())} merged patches ({100 * merged_fraction:.1f}% of canopy area) were "
+        "not counted: they hold more than one plant and no split is attempted."
+    )
+    write_summary(result.summary_path, summary)
+    return IndiaPackResult(result.summary_path, (instance_path, *result.artifact_paths))

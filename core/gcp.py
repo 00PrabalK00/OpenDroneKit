@@ -126,19 +126,162 @@ class GcpResidual:
         }
 
 
+def epsg_from_crs_header(header: str) -> int:
+    """The EPSG code an ODM ``gcp_list.txt`` header names.
+
+    OpenDroneMap accepts three spellings on the first line: ``WGS84 UTM <zone><N|S>``,
+    ``EPSG:<code>`` and a PROJ string (``+proj=utm +zone=17 +datum=WGS84 ...``). All three
+    occur in published datasets (ODM's bellus uses the first, sheffield_cross the third).
+    A header that names no CRS this can resolve is refused: guessing one would put the
+    control in another place entirely.
+    """
+    import re
+
+    text = header.strip()
+    match = re.fullmatch(r"WGS\s*-?\s*84\s+UTM\s+(\d{1,2})\s*([NnSs])", text)
+    if match:
+        zone = int(match.group(1))
+        if not 1 <= zone <= 60:
+            raise GcpError(f"UTM zone {zone} in the header {text!r} does not exist.")
+        return (32600 if match.group(2).upper() == "N" else 32700) + zone
+    match = re.fullmatch(r"EPSG\s*:\s*(\d+)", text, flags=re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    if text.startswith("+proj") or "+proj=" in text:
+        params = dict(
+            (part[1:].split("=", 1) + [""])[:2] for part in text.split() if part.startswith("+")
+        )
+        try:
+            from pyproj import CRS
+
+            code = CRS.from_proj4(text).to_epsg(min_confidence=70)
+        except Exception:  # noqa: BLE001 - pyproj missing or the string is not one it reads
+            code = None
+        if code:
+            return int(code)
+        # WGS84 UTM written as a PROJ string resolves without pyproj's database too.
+        datum = (params.get("datum") or params.get("ellps") or "").upper()
+        if params.get("proj") == "utm" and params.get("zone", "").isdigit() and datum == "WGS84":
+            return (32700 if "south" in params else 32600) + int(params["zone"])
+        raise GcpError(
+            f"The control file's CRS header {text!r} does not match an EPSG code. "
+            "Reproject the control to a CRS with one (UTM, say) and import it again."
+        )
+    raise GcpError(
+        f"The first line of an ODM control file names its CRS ('WGS84 UTM 17N', "
+        f"'EPSG:32617' or a PROJ string); {text!r} is none of those."
+    )
+
+
+def _names_a_crs(line: str) -> bool:
+    if "," in line:
+        return False
+    try:
+        epsg_from_crs_header(line)
+    except GcpError:
+        return False
+    return True
+
+
+def _looks_like_odm(lines: Sequence[str]) -> bool:
+    """A first line that is not a CSV header, then rows of x y z px py image."""
+    if len(lines) < 2 or "," in lines[0]:
+        return False
+    for line in lines[1:]:
+        tokens = line.split()
+        if len(tokens) < 6:
+            return False
+        try:
+            [float(t) for t in tokens[:5]]
+        except ValueError:
+            return False
+    return True
+
+
+def read_odm_gcp_file(path: str | Path) -> list[GroundControlPoint]:
+    """Read OpenDroneMap's ``gcp_list.txt`` / ``gcp_file.txt`` format.
+
+    Line one names the CRS. Every other line is one *observation*:
+    ``geo_x geo_y geo_z im_x im_y image_name [gcp_name] [extra ...]``, so a point marked
+    in five photographs appears on five lines. Lines are grouped into points by their
+    name when the optional seventh column is given, otherwise by their coordinates --
+    the same surveyed position is the same mark on the ground. Pixel positions are on
+    the full-resolution photograph, as ODM defines them.
+    """
+    source = Path(path)
+    if not source.exists():
+        raise GcpError(f"{source} does not exist.")
+    text = source.read_text(encoding="utf-8-sig", errors="replace")
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    if not lines:
+        raise GcpError(f"{source.name} is empty.")
+    epsg = epsg_from_crs_header(lines[0])
+
+    points: dict[str, GroundControlPoint] = {}
+    by_position: dict[tuple[float, float, float], str] = {}
+    for line_number, line in enumerate(lines[1:], start=2):
+        tokens = line.split()
+        if len(tokens) < 6:
+            raise GcpError(
+                f"{source.name} line {line_number} has {len(tokens)} fields; an ODM "
+                "control row is 'x y z pixel_x pixel_y image [name]'."
+            )
+        try:
+            x, y, z, px, py = (float(t) for t in tokens[:5])
+        except ValueError as exc:
+            raise GcpError(f"{source.name} line {line_number} is not numeric: {line!r}") from exc
+        if px < 0 or py < 0:
+            raise GcpError(f"{source.name} line {line_number} marks a negative pixel.")
+        image = tokens[5]
+        key = (round(x, 3), round(y, 3), round(z, 3))
+        if len(tokens) >= 7:
+            name = tokens[6]
+        else:
+            name = by_position.get(key)
+            if name is None:
+                # Unnamed rows are numbered, skipping any number a named row already took.
+                serial = len(by_position) + 1
+                while f"GCP{serial:02d}" in points:
+                    serial += 1
+                name = f"GCP{serial:02d}"
+        by_position.setdefault(key, name)
+        point = points.get(name)
+        if point is None:
+            point = points[name] = GroundControlPoint(name=name, x=x, y=y, z=z, epsg=epsg)
+        elif (round(point.x, 3), round(point.y, 3), round(point.z, 3)) != key:
+            raise GcpError(
+                f"{source.name} line {line_number} gives {name} a different position from "
+                "an earlier line. One name must be one surveyed point."
+            )
+        add_mark(point, image, px, py)
+    if not points:
+        raise GcpError(f"{source.name} names a CRS but has no control rows.")
+    return list(points.values())
+
+
 def read_gcp_file(path: str | Path, default_epsg: int | None = None
                   ) -> list[GroundControlPoint]:
-    """Read control points from the CSV surveyors actually produce.
+    """Read control points from the CSV surveyors produce, or ODM's gcp_list.txt.
 
     Column order is taken from the header rather than assumed. A file of bare numbers is
     ambiguous in exactly the way that matters -- northing and easting are both large and
-    both plausible in either column -- so a headerless file is refused.
+    both plausible in either column -- so a headerless file is refused. An ODM control
+    file (CRS on line one, then ``x y z px py image``) is recognised and read with its
+    image marks.
     """
     source = Path(path)
     if not source.exists():
         raise GcpError(f"{source} does not exist.")
 
     text = source.read_text(encoding="utf-8-sig", errors="replace")
+    plain = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith("#")]
+    if _looks_like_odm(plain) or (plain and _names_a_crs(plain[0])):
+        # A first line that names a CRS is an ODM file even when a row is malformed;
+        # the ODM reader then says which line, where the CSV reader would only say
+        # there is no x column.
+        return read_odm_gcp_file(source)
     rows = [r for r in csv.reader(text.splitlines()) if r and any(c.strip() for c in r)]
     if not rows:
         raise GcpError(f"{source.name} is empty.")
@@ -312,6 +455,22 @@ def accuracy_report(points: Sequence[GroundControlPoint],
             "reconstruction; check the markings before accepting the fit."
         )
 
+    # A shared offset is not noise. Every point sitting the same tens of metres low is
+    # the signature of heights in two vertical datums (GPS ellipsoidal heights against
+    # control in orthometric heights differ by the local geoid undulation, -30 m and
+    # more in places) or of a barometric altitude, and RMSE alone hides which it is.
+    offsets = np.array([[r.dx, r.dy, r.dz] for r in residuals], dtype=float)
+    bias = offsets.mean(axis=0)
+    spread = offsets.std(axis=0) if len(residuals) > 1 else np.zeros(3)
+    if len(residuals) >= 2 and abs(bias[2]) > 1.0 and abs(bias[2]) > 3.0 * max(spread[2], 0.1):
+        warnings.append(
+            f"Every control point sits {abs(bias[2]):.1f} m "
+            f"{'below' if bias[2] < 0 else 'above'} its surveyed height (spread "
+            f"{spread[2]:.2f} m). An offset shared by all points is a datum difference, "
+            "not noise: check that the control and the georeferencing use the same "
+            "vertical datum (ellipsoidal or orthometric heights) before reading the RMSE."
+        )
+
     best_possible = max((p.accuracy_m for p in points), default=0.0)
     if rmse < best_possible:
         warnings.append(
@@ -348,6 +507,7 @@ def accuracy_report(points: Sequence[GroundControlPoint],
         "vertical_rmse_m": round(
             math.sqrt(sum(v * v for v in vertical) / len(vertical)), 4),
         "max_residual_m": round(max(totals), 4),
+        "mean_offset_m": [round(float(v), 4) for v in bias],
         "worst_point": max(residuals, key=lambda r: r.total_m).name,
         "outlier_count": len(outliers),
         "residuals": [r.to_dict() for r in residuals],
@@ -529,6 +689,12 @@ class LocatedPoint:
     views: int
     reprojection_px: dict[str, float]
     unregistered_images: list[str]
+    # How the position was found: rays intersected, or one ray followed to the surface
+    # the model's tie points describe around the mark (a weaker placement: it inherits
+    # the error of that surface, and a single mark cannot reveal a mis-marked target).
+    method: str = "ray_intersection"
+    surface_points: int = 0
+    surface_radius_px: float = 0.0
 
     @property
     def rms_reprojection_px(self) -> float:
@@ -536,17 +702,85 @@ class LocatedPoint:
         return math.sqrt(sum(v * v for v in values) / len(values)) if values else float("nan")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name, "views": self.views,
+        out = {
+            "name": self.name, "views": self.views, "method": self.method,
             "rms_reprojection_px": round(self.rms_reprojection_px, 3),
             "reprojection_px": {k: round(v, 3) for k, v in self.reprojection_px.items()},
             "unregistered_images": list(self.unregistered_images),
         }
+        if self.method != "ray_intersection":
+            out["surface_tie_points"] = self.surface_points
+            out["surface_radius_px"] = self.surface_radius_px
+        return out
+
+
+@dataclass
+class ImageObservations:
+    """The model's own tie points as one registered image sees them.
+
+    ``pixels`` are the keypoints (in the camera's pixel grid) that triangulated to the
+    model-frame positions in ``points``. They are what lets a control point marked in a
+    single photograph be placed: its ray is followed to the surface those tie points
+    describe around the mark.
+    """
+
+    pixels: np.ndarray      # (N, 2)
+    points: np.ndarray      # (N, 3) model frame
+
+
+# Search radii, in camera pixels, for tie points around a single mark; the first that
+# holds enough points to describe the surface is used.
+SURFACE_RADII_PX = (40.0, 80.0, 160.0, 320.0)
+SURFACE_MIN_POINTS = 6
+
+
+def _locate_on_surface(point: GroundControlPoint, pose: ViewPose, mark: ImageMark,
+                       observations: ImageObservations) -> tuple[np.ndarray, int, float] | None:
+    """Where the ray through one mark meets the tie-point surface around it.
+
+    A plane is fitted to the tie points nearest the mark in that image and the ray is
+    intersected with it. Returns (position, tie points used, radius) or None when the
+    image has too few tie points near the mark, or the plane is edge-on to the ray.
+    """
+    if observations.pixels.shape[0] < SURFACE_MIN_POINTS:
+        return None
+    x, y = pose._scaled(mark)
+    distance = np.hypot(observations.pixels[:, 0] - x, observations.pixels[:, 1] - y)
+    origin = pose.center
+    direction = pose.ray(mark)
+    for radius in SURFACE_RADII_PX:
+        near = observations.points[distance <= radius]
+        if near.shape[0] < SURFACE_MIN_POINTS:
+            continue
+        # Robust plane: drop the points furthest from the median depth along the ray
+        # (a roof edge or a tree in the neighbourhood), then fit by SVD.
+        depth = (near - origin) @ direction
+        keep = np.abs(depth - np.median(depth)) <= 2.5 * max(
+            float(np.median(np.abs(depth - np.median(depth)))), 1e-9)
+        near = near[keep] if keep.sum() >= SURFACE_MIN_POINTS else near
+        centroid = near.mean(axis=0)
+        _u, _s, vt = np.linalg.svd(near - centroid)
+        normal = vt[-1]
+        facing = float(normal @ direction)
+        if abs(facing) < 0.15:
+            continue
+        t = float(normal @ (centroid - origin)) / facing
+        if t <= 0:
+            return None
+        return origin + t * direction, int(near.shape[0]), float(radius)
+    return None
 
 
 def locate_in_model(point: GroundControlPoint,
-                    poses: dict[str, ViewPose]) -> LocatedPoint | None:
-    """Intersect the rays through a point's marks. None when fewer than two views see it."""
+                    poses: dict[str, ViewPose],
+                    observations: dict[str, ImageObservations] | None = None
+                    ) -> LocatedPoint | None:
+    """Intersect the rays through a point's marks.
+
+    With two or more registered marks the rays are intersected. With one, and the
+    model's tie points for that image, the ray is followed to the surface around the
+    mark instead (``views`` is then 1 and the located dict says how). None otherwise.
+    """
     rays = []
     missing = []
     for mark in point.marks:
@@ -555,6 +789,22 @@ def locate_in_model(point: GroundControlPoint,
             missing.append(mark.image)
             continue
         rays.append((pose, mark, pose.center, pose.ray(mark)))
+    if len(rays) == 1 and observations:
+        pose, mark, _origin, _direction = rays[0]
+        seen = observations.get(pose.image) or observations.get(Path(pose.image).name)
+        if seen is None:
+            return None
+        found = _locate_on_surface(point, pose, mark, seen)
+        if found is None:
+            return None
+        position, used, radius = found
+        pixel = pose.project(position)
+        x, y = pose._scaled(mark)
+        error = float(math.hypot(pixel[0] - x, pixel[1] - y)) if pixel is not None else float("nan")
+        return LocatedPoint(name=point.name, position=position, views=1,
+                            reprojection_px={mark.image: error}, unregistered_images=missing,
+                            method="single_ray_on_tie_point_surface",
+                            surface_points=used, surface_radius_px=radius)
     if len(rays) < 2:
         return None
 
@@ -610,7 +860,9 @@ class ControlSolution:
 def solve_with_control(points: Sequence[GroundControlPoint],
                        poses: dict[str, ViewPose],
                        epsg: int,
-                       camera_anchor: Any | None = None) -> ControlSolution:
+                       camera_anchor: Any | None = None,
+                       observations: dict[str, ImageObservations] | None = None
+                       ) -> ControlSolution:
     """Georeference a model from its control points, or check it against them.
 
     With three or more points each marked in at least ``MIN_IMAGE_MARKS`` registered
@@ -624,7 +876,7 @@ def solve_with_control(points: Sequence[GroundControlPoint],
 
     located: list[tuple[GroundControlPoint, LocatedPoint]] = []
     for point in points:
-        found = locate_in_model(point, poses)
+        found = locate_in_model(point, poses, observations)
         if found is not None:
             located.append((point, found))
     usable = [(p, f) for p, f in located if f.views >= MIN_IMAGE_MARKS]
@@ -665,7 +917,19 @@ def solve_with_control(points: Sequence[GroundControlPoint],
                                           dy=float(e[1]), dz=float(e[2]),
                                           mark_count=len(control[held].marks)))
             report["leave_one_out"] = accuracy_report(control, checks, role="check")
-        else:
+        # Points the model can place but that were too thinly marked to take part in the
+        # fit are independent check points against it.
+        spare = [(p, f) for p, f in located if f.views < MIN_IMAGE_MARKS]
+        if spare:
+            spare_world = surveyed_positions([p for p, _f in spare], epsg)
+            spare_placed = anchor.apply(np.asarray([f.position for _p, f in spare]), absolute=True)
+            report["checkpoints"] = accuracy_report(
+                [p for p, _f in spare],
+                [GcpResidual(name=p.name, dx=float(e[0]), dy=float(e[1]), dz=float(e[2]),
+                             mark_count=len(p.marks))
+                 for (p, _f), e in zip(spare, spare_placed - spare_world)],
+                role="check")
+        if len(usable) < 4 and not spare:
             report["warnings"].append(
                 "With only three usable control points every one of them is needed for "
                 "the fit, so there is no independent check. A fourth point, or a check "
@@ -675,28 +939,192 @@ def solve_with_control(points: Sequence[GroundControlPoint],
     else:
         anchor = None
         if camera_anchor is not None:
-            report = check_against_anchor(points, poses, camera_anchor, role="check")
+            report = check_against_anchor(points, poses, camera_anchor, role="check",
+                                          observations=observations)
         else:
             report = accuracy_report(points, [], role="check")
         report["georeferenced_by"] = "camera_gps" if camera_anchor is not None else "none"
-        report["warnings"].append(
+        too_few = (
             f"{len(usable)} control point(s) are marked in at least {MIN_IMAGE_MARKS} "
-            "registered images; three are needed to georeference the model with them, "
-            "so they were not used for the fit."
+            "registered images; three are needed to fit the model's rotation and scale "
+            "to them, so they were not used for a similarity fit."
         )
+        report["warnings"].append(too_few)
+        if camera_anchor is not None and len(located) >= SHIFT_MIN_POINTS:
+            shifted = shift_anchor_to_control(located, camera_anchor, epsg)
+            report["control_shift"] = shifted.report
+            if shifted.anchor is not None:
+                anchor = shifted.anchor
+                camera_check = {k: report.get(k) for k in (
+                    "role", "rmse_m", "horizontal_rmse_m", "vertical_rmse_m",
+                    "mean_offset_m", "residuals")}
+                report = dict(shifted.report)
+                report["camera_gps_check"] = camera_check
+                report["warnings"] = (list(shifted.report["warnings"])
+                                      + check_report_warnings(located) + [too_few])
+                report["georeferenced_by"] = "camera_gps_shifted_to_control"
     report["located"] = located_info
+    return ControlSolution(anchor=anchor, report=report)
+
+
+# A thinly marked survey can still fix where the model is, if not how it is turned or
+# scaled: three located points give a translation and a leave-one-out check of it.
+SHIFT_MIN_POINTS = 3
+
+
+def check_report_warnings(located: Sequence[tuple[GroundControlPoint, LocatedPoint]]) -> list[str]:
+    single = [f.name for _p, f in located if f.views < 2]
+    if not single:
+        return []
+    return [
+        f"{len(single)} control point(s) are marked in one registered image only "
+        f"({', '.join(single[:8])}); each was placed by following its ray to the surface "
+        "of the model's tie points around the mark. That position carries the error of "
+        "that surface, and a single mark cannot show a wrong target, so treat these "
+        "residuals as indicative."
+    ]
+
+
+def _translation_model(placed: np.ndarray, world: np.ndarray):
+    shift = (world - placed).mean(axis=0)
+    return 1.0, placed.mean(axis=0), placed.mean(axis=0) + shift
+
+
+def _scale_translation_model(placed: np.ndarray, world: np.ndarray):
+    centre = placed.mean(axis=0)
+    target = world.mean(axis=0)
+    spread = float(np.sum((placed - centre) ** 2))
+    factor = float(np.sum((placed - centre) * (world - target)) / spread) if spread > 0 else 1.0
+    return factor, centre, target
+
+
+THIN_CONTROL_MODELS = {
+    "translation": _translation_model,
+    "scale_and_translation": _scale_translation_model,
+}
+
+
+def shift_anchor_to_control(located: Sequence[tuple[GroundControlPoint, LocatedPoint]],
+                            camera_anchor: Any, epsg: int) -> ControlSolution:
+    """Correct the camera-GPS georeferencing with control too thinly marked to fit.
+
+    Camera geotags fix a model's orientation well (dozens of cameras spread over the
+    survey) and its position and size less well: consumer GPS is metres out
+    horizontally, its heights are often in another vertical datum than the control, and
+    its scale can be off by per cent (the ODM bellus survey: 4.2 per cent). Control
+    marked in one or two images each cannot carry a 7-parameter fit -- with the points
+    placed on the tie-point surface, a free tilt is what goes wrong first -- but every
+    point the model can place still says where the model is and how big. The geotag
+    rotation is kept and either a translation or a scale about the control's centroid
+    plus a translation is fitted to the control.
+
+    The correction is fitted to the points it is measured on, so its residuals flatter
+    it. Leave-one-out residuals (each point checked against a correction computed from
+    the others) are the independent figure; the model with the lower leave-one-out
+    RMSE is used, and only when that beats the uncorrected camera-GPS residuals at the
+    same points. ``anchor`` is None when it does not.
+    """
+    import dataclasses
+
+    control = [p for p, _f in located]
+    world = surveyed_positions(control, epsg)
+    placed = camera_anchor.apply(np.asarray([f.position for _p, f in located]), absolute=True)
+
+    def apply(params, xyz):
+        factor, centre, target = params
+        return (xyz - centre) * factor + target
+
+    def residuals(errors: np.ndarray) -> list[GcpResidual]:
+        return [GcpResidual(name=p.name, dx=float(e[0]), dy=float(e[1]), dz=float(e[2]),
+                            mark_count=len(p.marks)) for p, e in zip(control, errors)]
+
+    def rms(errors: np.ndarray) -> float:
+        return float(np.sqrt(np.mean(np.sum(errors ** 2, axis=1))))
+
+    candidates: dict[str, dict[str, Any]] = {}
+    for name, fit in THIN_CONTROL_MODELS.items():
+        params = fit(placed, world)
+        held = np.zeros_like(placed)
+        for index in range(len(located)):
+            keep = [k for k in range(len(located)) if k != index]
+            held[index] = apply(fit(placed[keep], world[keep]), placed[index:index + 1])[0] - world[index]
+        candidates[name] = {"params": params, "fit": apply(params, placed) - world,
+                            "held": held, "loo_rmse": rms(held)}
+    chosen = min(candidates, key=lambda k: candidates[k]["loo_rmse"])
+    best = candidates[chosen]
+    factor, centre, target = best["params"]
+
+    report = accuracy_report(control, residuals(best["fit"]), role="fit")
+    loo = accuracy_report(control, residuals(best["held"]), role="check")
+    loo["note"] = (
+        f"Each of the {len(located)} points checked against a correction computed from "
+        "the others only, so none of them took part in the georeferencing it is measured "
+        "against. This is the figure to quote for this survey."
+    )
+    report["leave_one_out"] = loo
+    before = rms(placed - world)
+    shift = target - centre
+    report.update({
+        "method": chosen,
+        "scale_factor": round(float(factor), 6),
+        "shift_m": [round(float(v), 4) for v in shift],
+        "camera_gps_rmse_m": round(before, 4),
+        "models_compared": {k: {"leave_one_out_rmse_m": round(v["loo_rmse"], 4),
+                                "fit_rmse_m": round(rms(v["fit"]), 4)}
+                            for k, v in candidates.items()},
+        "note": (
+            "The model keeps the rotation fitted to the camera geotags; "
+            + (f"it is scaled by {factor:.4f} about the control's centroid and "
+               if chosen == "scale_and_translation" else "it is ")
+            + f"translated by ({shift[0]:+.2f}, {shift[1]:+.2f}, {shift[2]:+.2f}) m onto "
+            f"{len(located)} control point(s) that are too thinly marked for a full fit. "
+            "These residuals are of the points the correction was fitted to; "
+            "leave_one_out is the independent check. Of the corrections compared, the one "
+            "with the lower leave-one-out RMSE was chosen, which makes that figure "
+            "slightly optimistic with this few points."
+        ),
+    })
+    # The correction has to earn its place: a tenth better than the geotags and by more
+    # than a centimetre, below which it is beneath what the control was surveyed to.
+    if loo["rmse_m"] is None or best["loo_rmse"] > min(0.9 * before, before - 0.01):
+        report["warnings"].append(
+            "Correcting onto the control would not improve the independent residuals "
+            f"(leave-one-out {loo['rmse_m']} m against {before:.3f} m from the geotags "
+            "alone), so the camera-GPS georeferencing was kept."
+        )
+        return ControlSolution(anchor=None, report=report)
+    # X' = f * (s R x + t + o - c) + target, expressed as a GeoAnchor about the same origin.
+    origin = camera_anchor.origin_vector
+    translation = factor * (camera_anchor.translation_vector + origin - centre) + target - origin
+    norms = np.linalg.norm(best["fit"], axis=1)
+    anchor = dataclasses.replace(
+        camera_anchor,
+        scale=float(camera_anchor.scale * factor),
+        translation=[float(v) for v in translation],
+        rmse_m=float(np.sqrt(np.mean(norms ** 2))),
+        max_residual_m=float(norms.max()),
+        method="camera_gps_shifted_to_control",
+    )
+    report["warnings"].append(
+        "Orientation comes from the camera geotags, not from the control: "
+        f"{len(located)} point(s) can place the model but fewer than three are marked in "
+        f"{MIN_IMAGE_MARKS} images, which a full fit needs. A tilt in the geotag fit "
+        "grows with distance from the control and is not measured here."
+    )
     return ControlSolution(anchor=anchor, report=report)
 
 
 def check_against_anchor(points: Sequence[GroundControlPoint],
                          poses: dict[str, ViewPose],
-                         anchor: Any, *, role: str = "check") -> dict[str, Any]:
+                         anchor: Any, *, role: str = "check",
+                         observations: dict[str, ImageObservations] | None = None
+                         ) -> dict[str, Any]:
     """Residuals of an existing georeferencing at every control point the model can see.
 
     ``role`` is "fit" when that georeferencing was itself fitted to these points and
     "check" when it came from somewhere else (the camera geotags).
     """
-    located = [(p, locate_in_model(p, poses)) for p in points]
+    located = [(p, locate_in_model(p, poses, observations)) for p in points]
     located = [(p, f) for p, f in located if f is not None]
     residuals: list[GcpResidual] = []
     if located:
@@ -707,4 +1135,13 @@ def check_against_anchor(points: Sequence[GroundControlPoint],
                      for (p, _f), e in zip(located, placed - world)]
     report = accuracy_report(points, residuals, role=role)
     report["located"] = {f.name: f.to_dict() for _p, f in located}
+    single = [f.name for _p, f in located if f.views < 2]
+    if single:
+        report["warnings"].append(
+            f"{len(single)} control point(s) are marked in one registered image only "
+            f"({', '.join(single[:8])}); each was placed by following its ray to the "
+            "surface of the model's tie points around the mark. That position carries the "
+            "error of that surface, and a single mark cannot show a wrong target, so "
+            "treat these residuals as indicative."
+        )
     return report

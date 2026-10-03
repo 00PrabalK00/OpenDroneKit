@@ -16,6 +16,11 @@
       "iou_threshold": 0.45,
       "input_size": 640,
       "description": "Primary multi-class structural defect detector.",
+      "non_defect_labels": [
+        "Background"
+      ],
+      "prelabel_score_threshold": 0.15,
+      "prelabel_threshold_note": "Pre-labels go to human review and stay out of reports, so they use the threshold where held-out F1 peaks for the letterbox decoder: structural_det test split (106 images, 743 defect boxes, IoU 0.5) gives F1 0.398 / recall 0.409 at 0.15 against F1 0.392 / recall 0.339 at 0.25. Every other path keeps score_threshold.",
       "sha256": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
       "status": "installed"
     },

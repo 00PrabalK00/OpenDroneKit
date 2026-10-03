@@ -119,6 +119,10 @@ const MISSION_OPTION_KEYS = {
   turbine_nacelle_length_m: "turbine_nacelle_length_m",
   turbine_blade_angles_deg: "turbine_blade_angles_deg",
   linked_version_ids: "linked_version_ids",
+  reconstruction_dir: "reconstruction_dir",
+  model_image_dir: "image_dir",
+  model_standoff_m: "model_standoff_m",
+  model_camera: "camera",
 };
 
 /* Fields the form shows that plan_mission has no option for.
@@ -186,6 +190,9 @@ const MISSION_TEMPLATES = {
   "Lateral capture": "lateral_capture",
   "Smart adaptive": "smart_adaptive",
   "Linked mission": "linked_mission",
+  // Planned on the wall measured from the project's own reconstruction
+  // (core/facade_survey.py via Api.plan_facade_from_reconstruction).
+  "Facade from model": "facade_from_model",
 };
 
 export class Shell {
@@ -1429,6 +1436,14 @@ export class Shell {
         if (numeric.type !== undefined) {
           const template = MISSION_TEMPLATES[String(numeric.type)];
           if (template) options.template = template;
+        }
+        // Facade from model sizes its views for the camera that took the survey: its own
+        // Camera field, or blank = the one the frames' EXIF names. The general Camera
+        // field always carries a value (mavic2pro by default), so without this a blank
+        // model camera would plan the facade for a camera that never flew the survey.
+        if (options.template === "facade_from_model"
+            && (numeric.model_camera === undefined || numeric.model_camera === "")) {
+          delete options.camera;
         }
         return options;
       },

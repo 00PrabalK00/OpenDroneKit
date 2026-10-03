@@ -8,7 +8,9 @@ import rasterio
 from core.india_agriculture import (
     ReflectanceBandCalibration,
     analyse_canopy_cover,
+    classify_index_cover,
     compute_vegetation_indices,
+    count_plants_from_canopy,
     count_plant_instances,
     create_stress_zones,
 )
@@ -113,3 +115,54 @@ def test_plant_count_counts_connected_instances_without_inventing_missing_or_hea
     assert summary["missing_plants"]["status"] == "unavailable"
     assert summary["health_categories"]["status"] == "unavailable"
     assert all(item["geometry"]["type"] == "Point" for item in points["features"])
+
+
+def test_index_cover_classes_feed_canopy_cover_and_need_a_scope(tmp_path):
+    index = np.full((10, 10), 0.1, dtype=np.float32)
+    index[:4, :] = 0.85
+    index[4:6, :] = 0.5
+    tags = {"ODK_CALIBRATED_REFLECTANCE": "true", "ODK_INDEX": "NDVI"}
+    source = write_raster(tmp_path / "ndvi.tif", index, nodata=float("nan"), tags=tags)
+    import pytest
+    from core.india_geospatial import IndiaPackRefused
+
+    with pytest.raises(IndiaPackRefused):
+        classify_index_cover(source, tmp_path / "x", validation_scope=" ")
+    cover = classify_index_cover(source, tmp_path / "cover", validation_scope="UNVALIDATED unit",
+                                 thresholds=(0.3, 0.7))
+    summary = json.loads(open(cover.summary_path, encoding="utf-8").read())
+    assert summary["classes"]["crop_canopy"]["fraction"] == 0.4
+    assert summary["classes"]["sparse_vegetation"]["fraction"] == 0.2
+    assert summary["threshold_method"] == "operator_thresholds"
+    classes, schema = cover.artifact_paths
+    canopy = analyse_canopy_cover(classes, schema, tmp_path / "canopy", min_region_area_m2=0)
+    canopy_summary = json.loads(open(canopy.summary_path, encoding="utf-8").read())
+    assert canopy_summary["canopy_cover_percent"] == 40.0
+    assert canopy_summary["sparse_vegetation"]["area_m2"] == 20.0
+
+    untagged = write_raster(tmp_path / "raw.tif", index, nodata=float("nan"))
+    with pytest.raises(IndiaPackRefused):
+        classify_index_cover(untagged, tmp_path / "y", validation_scope="UNVALIDATED unit")
+
+
+def test_plant_count_from_canopy_refuses_merged_rows_and_counts_separate_plants(tmp_path):
+    schema = {1: "crop_canopy", 3: "bare_soil"}
+    rows = np.full((20, 20), 3, dtype=np.uint16)
+    rows[2:4, :] = 1
+    rows[10:12, :] = 1
+    merged = count_plants_from_canopy(
+        write_raster(tmp_path / "rows.tif", rows, nodata=65535), schema, tmp_path / "rows",
+        validation_scope="unit", max_plant_area_m2=4.0, min_plant_area_m2=1.0)
+    summary = json.loads(open(merged.summary_path, encoding="utf-8").read())
+    assert merged.status == "not_applicable" and summary["count"] is None
+    assert summary["separability"]["canopy_fraction_in_merged_patches"] == 1.0
+
+    spots = np.full((20, 20), 3, dtype=np.uint16)
+    for r, c in ((2, 2), (2, 10), (10, 5), (15, 15)):
+        spots[r:r + 2, c:c + 2] = 1
+    counted = count_plants_from_canopy(
+        write_raster(tmp_path / "spots.tif", spots, nodata=65535), schema, tmp_path / "spots",
+        validation_scope="unit", max_plant_area_m2=4.0, min_plant_area_m2=1.0)
+    summary = json.loads(open(counted.summary_path, encoding="utf-8").read())
+    assert counted.status == "complete" and summary["count"] == 4
+    assert summary["missing_plants"]["status"] == "unavailable"

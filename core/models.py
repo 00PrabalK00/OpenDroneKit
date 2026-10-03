@@ -28,6 +28,9 @@ class ModelSpec:
     # purpose is to say what is real must not list the second as though it were the first.
     status: str = "installed"
     status_note: str = ""
+    # The threshold for machine pre-labels, which a person reviews before anything
+    # reaches a report. None means pre-labels use score_threshold like everything else.
+    prelabel_score_threshold: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +45,9 @@ class ModelSpec:
             "sha256": self.sha256,
             "status": self.status,
             "status_note": self.status_note,
+            "prelabel_score_threshold": (
+                None if self.prelabel_score_threshold is None
+                else float(self.prelabel_score_threshold)),
         }
 
 
@@ -227,6 +233,9 @@ def get_model_spec(model_key: str) -> ModelSpec | None:
         sha256=str(row.get("sha256", "") or "").strip().lower(),
         status=str(row.get("status", "installed") or "installed"),
         status_note=str(row.get("status_note", "")),
+        prelabel_score_threshold=(
+            float(row["prelabel_score_threshold"])
+            if row.get("prelabel_score_threshold") is not None else None),
     )
 
 
