@@ -28,6 +28,29 @@ at sequence 0, which MAVLink reserves for home. ArduPilot silently overwrote it 
 aircraft would never have taken off — while every mock-based test passed, because a mock
 stores what it is given and only a real autopilot has an opinion about sequence 0.
 
+## Fixed-wing: ArduPlane
+
+Fixed-wing missions are planned with `vehicle_class="fixed_wing"` (chosen automatically
+when the connected vehicle's HEARTBEAT is `MAV_TYPE_FIXED_WING`) and flown by a real
+ArduPlane in `tests/sitl/test_plane_missions.py`. Only the templates a plane can fly are
+offered for it: `grid`, `double_grid`, `corridor` and `waypoints`; hover and structure
+templates are refused with a reason. A fixed-wing plan orders its passes so every turn is
+at least a turn diameter wide, extends each pass with a 5-radius lead-in and a flown
+1-radius lead-out, uses airspeed, and ends in `DO_LAND_START` / `NAV_LOITER_TO_ALT` /
+`NAV_LAND` at the vehicle's home along its heading (or `landing_lonlat` and
+`landing_heading_deg`). The upload sets `RTL_AUTOLAND` and `RTL_ALTITUDE`; Land on a
+plane jumps to the landing sequence.
+
+The plane image is `infrastructure/docker/Dockerfile.sitl-plane` (Plane-4.5.7, the same
+4.5 line as the copter image). It copies nothing from the context:
+
+```bash
+docker build -t opendronekit-sitl-plane:local - < infrastructure/docker/Dockerfile.sitl-plane
+docker run --rm -e ODK_SITL_SPEEDUP=4 -e ODK_SITL_NO_REBUILD=1 -v "$PWD:/workspace"     -w /workspace opendronekit-sitl-plane:local     python3 -m pytest -m sitl tests/sitl/test_plane_missions.py
+```
+
+The plane tests skip unless `ODK_SITL_VEHICLE=ArduPlane` (the image sets it).
+
 ## Install ArduPilot SITL
 
 ArduPilot's supported Linux setup starts with its complete build environment. The
