@@ -1718,7 +1718,8 @@
    "menu": [],
    "actions": [],
    "api": [
-    "list_mission_versions"
+    "list_mission_versions",
+    "load_mission_version"
    ],
    "star_methods": [],
    "new_home": "\"Mission loaded\" row version picker",
@@ -1840,6 +1841,40 @@
    "placement_note": "—",
    "unbacked": false,
    "origin": "REBUILD_PLAN section 1"
+  },
+  {
+   "id": "fly.vehicle-messages",
+   "workspace": "fly",
+   "feature": "Vehicle messages (STATUSTEXT, pre-arm failures, link changes)",
+   "sources": "pymavlink bridge STATUSTEXT (published, never shown); MAVSDK status_text",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "vehicle_messages"
+   ],
+   "star_methods": [],
+   "new_home": "Inspector tab \"Messages\"; pre-arm messages under PREFLIGHT; a critical message raises the map banner",
+   "placement": "proposed",
+   "placement_note": "P",
+   "unbacked": false,
+   "origin": "U6 Fly"
+  },
+  {
+   "id": "fly.mission-on-aircraft",
+   "workspace": "fly",
+   "feature": "Mission on the aircraft (flown / remaining)",
+   "sources": "—",
+   "menu": [],
+   "actions": [],
+   "api": [
+    "vehicle_mission"
+   ],
+   "star_methods": [],
+   "new_home": "\"Mission loaded\" row; flown and remaining lines on the map; MISSION PROGRESS distances",
+   "placement": "artboard",
+   "placement_note": "A",
+   "unbacked": false,
+   "origin": "U6 Fly"
   },
   {
    "id": "process.run-reconstruction-engine-profile-image-size-den",
@@ -5187,6 +5222,15 @@
   ],
   "sample_elevation": [
    "shell.footer-elevation"
+  ],
+  "vehicle_messages": [
+   "fly.vehicle-messages"
+  ],
+  "vehicle_mission": [
+   "fly.mission-on-aircraft"
+  ],
+  "load_mission_version": [
+   "fly.mission-queue"
   ]
  },
  "internal_api": {

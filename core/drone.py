@@ -139,10 +139,64 @@ class DroneClient(Protocol):
 
 # ── Mock client ───────────────────────────────────────────────────────────────
 
-class MockDroneClient:
+class _Publisher:
+    """Subscribers for a driver's own messages (STATUSTEXT and the like).
+
+    The pymavlink bridge has always published STATUSTEXT this way; the other drivers
+    share the same three methods so the session can listen to whichever is connected.
+    Callbacks run on the driver's thread and must not block.
+    """
+
+    def _subscribers(self) -> list[Any]:
+        found = self.__dict__.get("_event_subscribers")
+        if found is None:
+            found = self.__dict__["_event_subscribers"] = []
+        return found
+
+    def subscribe(self, callback) -> None:
+        subscribers = self._subscribers()
+        if callback not in subscribers:
+            subscribers.append(callback)
+
+    def unsubscribe(self, callback) -> None:
+        subscribers = self._subscribers()
+        if callback in subscribers:
+            subscribers.remove(callback)
+
+    def _publish(self, event: dict[str, Any]) -> None:
+        for callback in list(self._subscribers()):
+            try:
+                callback(event)
+            except Exception:  # noqa: BLE001 - a broken subscriber must not stop the driver
+                pass
+
+
+# MAVLink MAV_SEVERITY values, for the messages the simulator says about itself.
+SEVERITY_CRITICAL = 2
+SEVERITY_WARNING = 4
+SEVERITY_INFO = 6
+
+# The simulator's flight model: plain kinematics, labelled simulated everywhere it shows.
+_SIM_CRUISE_MPS = 5.0
+_SIM_CLIMB_MPS = 3.0
+_SIM_DESCENT_MPS = 1.5
+_SIM_ARRIVAL_M = 1.0
+_METRES_PER_DEG_LAT = 111_320.0
+# MAV_CMD_DO_CHANGE_SPEED: param2 is the speed the plan asks for.
+_MAV_CMD_DO_CHANGE_SPEED = 178
+# MAV_CMD_NAV_* items that are positions (waypoint, loiters, land, takeoff, spline); a
+# DO_ command reuses x/y for parameters, so its "latitude" is not a place.
+_NAV_POSITIONAL = frozenset({16, 17, 18, 19, 21, 22, 31, 82})
+
+
+class MockDroneClient(_Publisher):
     """
     Simulated drone for development and UI testing.
-    Provides realistic telemetry drift and flight state transitions.
+
+    A small kinematic simulator: once a mission is uploaded and started it flies the
+    uploaded items in order at the plan's speed, returns home and lands, so the Fly
+    screen can be rehearsed end to end. Nothing it reports is a measurement: the
+    session marks every value from this driver `is_simulated`, and the interface tags it.
     """
 
     def __init__(self):
@@ -153,15 +207,23 @@ class MockDroneClient:
         self._mission_paused = False
         self._waypoint_index = 0
         self._waypoints: list[dict[str, Any]] = []
+        self._route: list[dict[str, float]] = []
+        self._target = 0
+        self._phase = "landed"          # landed | takeoff | mission | hold | rth | landing
+        self._takeoff_alt = 0.0
+        self._cruise = _SIM_CRUISE_MPS
         self._lat = 37.7749
         self._lon = -122.4194
+        self._home = (self._lat, self._lon)
         self._alt = 0.0
         self._heading = 0.0
         self._speed = 0.0
         self._battery = 87.5
         self._battery_v = 22.1
         self._link = 95.0
+        self._photos = 0
         self._t0 = time.time()
+        self._last_tick = time.time()
         self._log: list[dict[str, Any]] = []
 
     # ── Connection ──────────────────────────────────────────────────────────
@@ -169,6 +231,7 @@ class MockDroneClient:
     def connect(self, connection_uri: str = "mock://") -> None:
         self._connected = True
         self._flight_mode = "LOITER"
+        self._last_tick = time.time()
         self._log_event("connected", f"Mock drone connected to {connection_uri}")
 
     def disconnect(self) -> None:
@@ -180,28 +243,94 @@ class MockDroneClient:
     def is_connected(self) -> bool:
         return self._connected
 
-    # ── Telemetry ────────────────────────────────────────────────────────────
+    def place_at(self, latitude: float, longitude: float) -> bool:
+        """Put the simulated aircraft on the ground at a position (it is a simulator).
+
+        Refused while it is flying: a real aircraft cannot be moved by a ground station.
+        """
+        if self._phase != "landed" or self._armed:
+            return False
+        self._lat, self._lon = float(latitude), float(longitude)
+        self._home = (self._lat, self._lon)
+        self._alt = 0.0
+        self._log_event("placed", f"Simulated aircraft placed at {self._lat:.6f}, {self._lon:.6f}.")
+        return True
+
+    # ── Simulation ───────────────────────────────────────────────────────────
+
+    def _offset_m(self, lat: float, lon: float) -> tuple[float, float]:
+        north = (lat - self._lat) * _METRES_PER_DEG_LAT
+        east = (lon - self._lon) * _METRES_PER_DEG_LAT * math.cos(math.radians(self._lat))
+        return east, north
+
+    def _move_towards(self, lat: float, lon: float, alt: float, dt: float) -> bool:
+        """Advance toward a point at cruise speed; True on arrival."""
+        east, north = self._offset_m(lat, lon)
+        distance = math.hypot(east, north)
+        step = self._cruise * dt
+        if distance > 0.01:
+            self._heading = math.degrees(math.atan2(east, north)) % 360.0
+        arrived = distance <= max(step, _SIM_ARRIVAL_M)
+        if arrived:
+            self._lat, self._lon = lat, lon
+            self._speed = min(self._cruise, distance / dt) if dt > 0 else 0.0
+        else:
+            k = step / distance
+            self._lat += (north * k) / _METRES_PER_DEG_LAT
+            self._lon += (east * k) / (_METRES_PER_DEG_LAT * math.cos(math.radians(self._lat)))
+            self._speed = self._cruise
+        climb = _SIM_CLIMB_MPS * dt
+        self._alt += max(-climb, min(climb, alt - self._alt))
+        return arrived and abs(alt - self._alt) < _SIM_ARRIVAL_M
+
+    def _advance(self) -> None:
+        now = time.time()
+        dt = max(0.0, min(5.0, now - self._last_tick))
+        self._last_tick = now
+        self._battery = max(0.0, self._battery - (0.05 if self._armed else 0.002) * dt)
+        self._speed = 0.0
+        if dt <= 0:
+            return
+        phase = self._phase
+        if phase == "mission" and not self._mission_paused:
+            if not self._route:
+                # A mission with no positions (items without coordinates) still steps.
+                t = now - self._t0
+                if self._waypoints and int(t * 0.5) > self._waypoint_index:
+                    self._waypoint_index = min(int(t * 0.5), max(0, len(self._waypoints) - 1))
+                return
+            point = self._route[self._target]
+            if self._move_towards(point["lat"], point["lon"], point["alt"], dt):
+                self._target += 1
+                if self._target >= len(self._route):
+                    self._mission_running = False
+                    self._phase = "rth"
+                    self._flight_mode = "RTL"
+                    self._log_event("mission_complete", "Mission complete, returning to launch.")
+                else:
+                    self._waypoint_index = int(self._route[self._target]["seq"])
+        elif phase == "takeoff":
+            if self._move_towards(self._lat, self._lon, self._takeoff_alt, dt):
+                self._phase = "hold"
+                self._log_event("takeoff_complete", f"Reached {self._takeoff_alt:g} m.")
+        elif phase == "rth":
+            home_lat, home_lon = self._home
+            if self._move_towards(home_lat, home_lon, self._alt, dt):
+                self._phase = "landing"
+                self._flight_mode = "LAND"
+                self._log_event("landing", "Over home, landing.")
+        elif phase == "landing":
+            self._alt = max(0.0, self._alt - _SIM_DESCENT_MPS * dt)
+            if self._alt <= 0.0:
+                self._phase = "landed"
+                self._armed = False
+                self._mission_running = False
+                self._log_event("landed", "Landed. Disarmed.")
 
     def get_telemetry(self) -> DroneTelemetry:
         if not self._connected:
             return DroneTelemetry(connected=False)
-
-        t = time.time() - self._t0
-        # Battery drains slowly
-        self._battery = max(0.0, self._battery - 0.002)
-        # Simulate small position drift when flying
-        if self._mission_running and not self._mission_paused:
-            self._lat += math.sin(t * 0.05) * 0.000005
-            self._lon += math.cos(t * 0.05) * 0.000005
-            self._alt = max(0.0, 50.0 + math.sin(t * 0.1) * 2.0)
-            self._speed = 5.0 + math.sin(t * 0.2) * 0.5
-            self._heading = (self._heading + 0.1 * t) % 360.0
-            # Advance waypoints
-            if self._waypoints and int(t * 0.5) > self._waypoint_index:
-                self._waypoint_index = min(int(t * 0.5), max(0, len(self._waypoints) - 1))
-        else:
-            self._speed = 0.0
-
+        self._advance()
         return DroneTelemetry(
             connected=True,
             armed=self._armed,
@@ -217,15 +346,23 @@ class MockDroneClient:
             gps_fix=5 if self._connected else 0,
             satellites=14,
             hdop=0.8,
-            home_lat=self._lat,
-            home_lon=self._lon,
+            home_lat=self._home[0],
+            home_lon=self._home[1],
             home_alt=15.0,
             home_set=True,
             waypoint_index=self._waypoint_index,
             waypoint_total=len(self._waypoints),
-            distance_to_next_m=max(0.0, 20.0 - (t % 20.0) * 1.5),
+            distance_to_next_m=self._distance_to_next(),
             link_quality_pct=min(100.0, self._link + random.uniform(-2.0, 2.0)),
+            raw={"simulated_photos": self._photos},
         )
+
+    def _distance_to_next(self) -> float:
+        if self._phase == "mission" and self._route and self._target < len(self._route):
+            point = self._route[self._target]
+            east, north = self._offset_m(point["lat"], point["lon"])
+            return math.hypot(east, north)
+        return 0.0
 
     # ── Mission control ───────────────────────────────────────────────────────
 
@@ -234,65 +371,200 @@ class MockDroneClient:
             return CommandResult(False, "upload_mission", "Not connected.")
         self._waypoints = mission_items
         self._waypoint_index = 0
+        self._target = 0
+        self._cruise = _SIM_CRUISE_MPS
+        route = []
+        for item in mission_items:
+            lat = float(item.get("lat", item.get("latitude", 0.0)) or 0.0)
+            lon = float(item.get("lon", item.get("longitude", 0.0)) or 0.0)
+            if int(item.get("command", 0) or 0) == _MAV_CMD_DO_CHANGE_SPEED:
+                speed = float(item.get("param2", 0.0) or 0.0)
+                if speed > 0:
+                    self._cruise = speed
+            if int(item.get("command", 16) or 0) in _NAV_POSITIONAL and (lat or lon):
+                route.append({"seq": int(item.get("seq", len(route))), "lat": lat, "lon": lon,
+                              "alt": float(item.get("alt", item.get("altitude", 0.0)) or 0.0)})
+        self._route = route
+        # A simulator can be anywhere, so on the ground it starts at the mission's first
+        # position rather than flying in from wherever it was created.
+        if route and self._phase == "landed" and not self._armed:
+            self._lat, self._lon = route[0]["lat"], route[0]["lon"]
+            self._home = (self._lat, self._lon)
         self._log_event("mission_uploaded", f"Uploaded {len(mission_items)} waypoints.")
-        return CommandResult(True, "upload_mission", f"Uploaded {len(mission_items)} items.")
+        return CommandResult(True, "upload_mission", f"Uploaded {len(mission_items)} items.",
+                             ack=ACK_ACCEPTED)
+
+    def upload_geofence(self, fence_items: list[dict[str, Any]]) -> CommandResult:
+        """Kept, not enforced: the simulator flies its route and checks no fence."""
+        if not self._connected:
+            return CommandResult(False, "upload_geofence", "Not connected.")
+        self._fence = list(fence_items)
+        self._log_event("fence_uploaded", f"Geofence received ({len(fence_items)} items).")
+        return CommandResult(True, "upload_geofence", f"Uploaded {len(fence_items)} fence items.",
+                             ack=ACK_ACCEPTED)
+
+    def upload_rally_points(self, rally_items: list[dict[str, Any]]) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "upload_rally_points", "Not connected.")
+        self._rally = list(rally_items)
+        self._log_event("rally_uploaded", f"Rally points received ({len(rally_items)}).")
+        return CommandResult(True, "upload_rally_points", f"Uploaded {len(rally_items)} rally points.",
+                             ack=ACK_ACCEPTED)
 
     def start_mission(self) -> CommandResult:
         if not self._connected:
             return CommandResult(False, "start_mission", "Not connected.")
         if not self._waypoints:
-            return CommandResult(False, "start_mission", "No mission uploaded.")
+            self._log_event("refused", "Start refused: no mission uploaded.", SEVERITY_WARNING)
+            return CommandResult(False, "start_mission", "No mission uploaded.", ack=ACK_DENIED)
+        self._advance()
         self._armed = True
         self._mission_running = True
         self._mission_paused = False
         self._flight_mode = "AUTO"
-        self._waypoint_index = 0
+        self._phase = "mission"
+        self._target = 0
+        self._waypoint_index = int(self._route[0]["seq"]) if self._route else 0
         self._t0 = time.time()
         self._log_event("mission_started", "Mission started.")
-        return CommandResult(True, "start_mission", "Mission started.")
+        return CommandResult(True, "start_mission", "Mission started.", ack=ACK_ACCEPTED)
 
     def pause_mission(self) -> CommandResult:
         if not self._mission_running:
-            return CommandResult(False, "pause_mission", "No active mission.")
+            return CommandResult(False, "pause_mission", "No active mission.", ack=ACK_DENIED)
+        self._advance()
         self._mission_paused = True
         self._flight_mode = "LOITER"
         self._log_event("mission_paused", f"Paused at waypoint {self._waypoint_index}.")
-        return CommandResult(True, "pause_mission", "Mission paused.")
+        return CommandResult(True, "pause_mission", "Mission paused.", ack=ACK_ACCEPTED)
 
     def resume_mission(self) -> CommandResult:
         if not self._mission_running or not self._mission_paused:
-            return CommandResult(False, "resume_mission", "Mission not paused.")
+            return CommandResult(False, "resume_mission", "Mission not paused.", ack=ACK_DENIED)
+        self._advance()
         self._mission_paused = False
         self._flight_mode = "AUTO"
         self._log_event("mission_resumed", "Mission resumed.")
-        return CommandResult(True, "resume_mission", "Mission resumed.")
+        return CommandResult(True, "resume_mission", "Mission resumed.", ack=ACK_ACCEPTED)
 
     def return_to_home(self) -> CommandResult:
+        self._advance()
         self._mission_running = False
         self._mission_paused = False
         self._flight_mode = "RTL"
+        self._phase = "rth" if self._alt > 0.0 else "landed"
         self._log_event("rth_triggered", "Return to home triggered.")
-        return CommandResult(True, "return_to_home", "RTH triggered.")
+        return CommandResult(True, "return_to_home", "RTH triggered.", ack=ACK_ACCEPTED)
 
     def abort_mission(self) -> CommandResult:
+        self._advance()
         self._mission_running = False
         self._mission_paused = False
+        self._flight_mode = "LAND"
+        self._phase = "landing" if self._alt > 0.0 else "landed"
+        if self._phase == "landed":
+            self._armed = False
+        self._log_event("mission_aborted", "Mission aborted. Landing in place.", SEVERITY_CRITICAL)
+        return CommandResult(True, "abort_mission", "Mission aborted. Landing in place.",
+                             ack=ACK_ACCEPTED)
+
+    def arm(self, force: bool = False) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "arm", "Not connected.")
+        self._advance()
+        self._armed = True
+        self._log_event("armed", "Armed.")
+        return CommandResult(True, "arm", "Armed.", ack=ACK_ACCEPTED)
+
+    def disarm(self, force: bool = False) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "disarm", "Not connected.")
+        self._advance()
+        if self._alt > 0.5 and not force:
+            self._log_event("refused", "Disarm refused: the aircraft is airborne.", SEVERITY_WARNING)
+            return CommandResult(False, "disarm", "Refused: the aircraft is airborne.", ack=ACK_DENIED)
         self._armed = False
-        self._flight_mode = "LOITER"
-        self._speed = 0.0
-        self._log_event("mission_aborted", "Mission aborted — LOITER mode.")
-        return CommandResult(True, "abort_mission", "Mission aborted.")
+        self._mission_running = False
+        self._log_event("disarmed", "Disarmed.")
+        return CommandResult(True, "disarm", "Disarmed.", ack=ACK_ACCEPTED)
+
+    def takeoff(self, altitude_m: float) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "takeoff", "Not connected.")
+        if not self._armed:
+            self._log_event("refused", "Takeoff refused: not armed.", SEVERITY_WARNING)
+            return CommandResult(False, "takeoff", "Refused: arm first.", ack=ACK_DENIED)
+        self._advance()
+        self._takeoff_alt = float(altitude_m)
+        self._phase = "takeoff"
+        self._flight_mode = "GUIDED"
+        self._log_event("takeoff", f"Taking off to {altitude_m:g} m.")
+        return CommandResult(True, "takeoff", f"Taking off to {altitude_m:g} m.", ack=ACK_ACCEPTED)
+
+    def land(self) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "land", "Not connected.")
+        self._advance()
+        self._mission_running = False
+        self._mission_paused = False
+        self._flight_mode = "LAND"
+        self._phase = "landing" if self._alt > 0.0 else "landed"
+        self._log_event("land", "Landing.")
+        return CommandResult(True, "land", "Landing.", ack=ACK_ACCEPTED)
+
+    def loiter(self) -> CommandResult:
+        return self.set_flight_mode("LOITER")
+
+    def emergency_stop(self) -> CommandResult:
+        if not self._connected:
+            return CommandResult(False, "emergency_stop", "Not connected.")
+        self._advance()
+        self._armed = False
+        self._mission_running = False
+        self._phase = "landed"
+        self._alt = 0.0
+        self._log_event("emergency_stop", "Motors stopped.", SEVERITY_CRITICAL)
+        return CommandResult(True, "emergency_stop", "Motors stopped.", ack=ACK_ACCEPTED)
 
     def set_flight_mode(self, mode: str) -> CommandResult:
         if not self._connected:
             return CommandResult(False, "set_flight_mode", "Not connected.")
+        self._advance()
         self._flight_mode = mode.upper()
-        return CommandResult(True, "set_flight_mode", f"Mode set to {self._flight_mode}.")
+        if self._flight_mode in ("RTL", "RETURN_TO_LAUNCH"):
+            self._phase = "rth" if self._alt > 0.0 else "landed"
+            self._mission_running = False
+        elif self._flight_mode == "LAND":
+            self._phase = "landing" if self._alt > 0.0 else "landed"
+            self._mission_running = False
+        elif self._flight_mode == "AUTO" and self._mission_running:
+            self._mission_paused = False
+        elif self._mission_running:
+            # A pilot mode: the simulator holds where it is.
+            self._mission_paused = True
+        elif self._phase == "takeoff":
+            self._phase = "hold"
+        self._log_event("mode", f"Mode {self._flight_mode}.")
+        return CommandResult(True, "set_flight_mode", f"Mode set to {self._flight_mode}.",
+                             ack=ACK_ACCEPTED)
+
+    def camera(self):
+        """A simulated payload: it counts the photographs it is told to take."""
+        from .camera_control import CameraCapabilities, CameraController
+
+        def send(command: int, *params: float) -> CommandResult:
+            count = int(params[2]) if len(params) > 2 and params[2] else 1
+            self._photos += max(1, count)
+            self._log_event("camera", f"Camera triggered ({self._photos} so far).")
+            return CommandResult(True, "camera", "The simulated camera took the photo.",
+                                 ack=ACK_ACCEPTED)
+
+        return CameraController(send, CameraCapabilities())
 
     def get_command_log(self) -> list[dict[str, Any]]:
         return list(self._log)
 
-    def _log_event(self, event: str, detail: str) -> None:
+    def _log_event(self, event: str, detail: str, severity: int = SEVERITY_INFO) -> None:
         self._log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
@@ -300,6 +572,7 @@ class MockDroneClient:
         })
         if len(self._log) > 500:
             self._log = self._log[-500:]
+        self._publish({"type": "statustext", "severity": int(severity), "text": detail})
 
 
 # ── MAVSDK client (optional, requires mavsdk installed) ───────────────────────
@@ -337,7 +610,7 @@ def _mavsdk_battery_percent(remaining: float, sdk_major: int) -> float:
     return value * 100.0 if sdk_major < 2 else value
 
 
-class MAVSDKDroneClient:
+class MAVSDKDroneClient(_Publisher):
     """
     Real drone client using MAVSDK-Python (PX4).
     Requires `pip install mavsdk`; the package ships its own mavsdk_server.
@@ -501,6 +774,10 @@ class MAVSDKDroneClient:
             progress = getattr(getattr(drone, "mission", None), "mission_progress", None)
             if progress is not None:
                 self._tasks.append(loop.create_task(self._follow(progress, self._on_progress)))
+            # STATUSTEXT (pre-arm failures, mode changes, failsafes) as MAVSDK sees it.
+            status = getattr(getattr(drone, "telemetry", None), "status_text", None)
+            if status is not None:
+                self._tasks.append(loop.create_task(self._follow_status(status)))
 
         loop.call_soon_threadsafe(spawn)
 
@@ -519,6 +796,23 @@ class MAVSDKDroneClient:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - one missing stream is not a lost link
+            return
+
+    # MAVSDK StatusTextType names, as MAVLink MAV_SEVERITY numbers.
+    _STATUS_SEVERITY = {"EMERGENCY": 0, "ALERT": 1, "CRITICAL": 2, "ERROR": 3,
+                        "WARNING": 4, "NOTICE": 5, "INFO": 6, "DEBUG": 7}
+
+    async def _follow_status(self, open_stream) -> None:
+        """Publish each status text the vehicle sends, for the session's message log."""
+        try:
+            async for value in open_stream():
+                kind = getattr(getattr(value, "type", None), "name", str(getattr(value, "type", "")))
+                self._publish({"type": "statustext",
+                               "severity": self._STATUS_SEVERITY.get(str(kind).upper(), 6),
+                               "text": str(getattr(value, "text", "")).strip()})
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a vehicle without the stream simply sends none
             return
 
     @staticmethod

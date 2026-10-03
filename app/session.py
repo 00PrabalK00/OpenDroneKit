@@ -22,6 +22,13 @@ from .store import ProjectStore
 # is a lost link, not a slow one.
 TELEMETRY_STALE_AFTER_S = 3.0
 
+# How many vehicle messages the session keeps for the Fly screen.
+VEHICLE_MESSAGES_KEPT = 300
+
+# MAVLink MAV_SEVERITY names, for the message log.
+SEVERITY_NAMES = {0: "emergency", 1: "alert", 2: "critical", 3: "error", 4: "warning",
+                  5: "notice", 6: "info", 7: "debug"}
+
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
@@ -138,6 +145,21 @@ class AppSession:
         # than one battery, a route it had to guess...). Preflight's Mission Valid reads
         # it: a plan the planner itself qualified is not simply "validated".
         self.mission_plan_warnings: list[str] = []
+        # What the vehicle on the link said about itself (MAVLink STATUSTEXT: pre-arm
+        # failures, mode changes, failsafes), plus the link changes this station saw.
+        # The pymavlink bridge always published STATUSTEXT; nothing listened, so a
+        # "PreArm: Compass not calibrated" never reached the pilot.
+        import threading
+        from collections import deque
+
+        self._message_lock = threading.Lock()
+        self.vehicle_messages: deque[dict[str, Any]] = deque(maxlen=VEHICLE_MESSAGES_KEPT)
+        self._message_seq = 0
+        self._link_was_lost = False
+        # The items the vehicle acknowledged on the last upload, so the Fly screen can
+        # draw what is on the aircraft (not what is planned now) and place it on them.
+        self.uploaded_items: list[dict[str, Any]] = []
+        self.uploaded_template: str = ""
         self.no_fly_polygons: list[list[list[float]]] = []
         # The last capture match (Api.match_captures), read by Request Reflight.
         self.capture_report: dict[str, Any] | None = None
@@ -478,10 +500,75 @@ class AppSession:
             return self.vehicle.to_dict()
 
         self.mission_uploaded = False
+        self.uploaded_items = []
+        self.uploaded_template = ""
         self.preflight_acknowledged = set()
+        with self._message_lock:
+            self.vehicle_messages.clear()
+        self._link_was_lost = False
+        subscribe = getattr(client, "subscribe", None)
+        if callable(subscribe):
+            subscribe(self._on_vehicle_event)
+        self._place_simulator(client)
         self._begin_flight_log(driver, uri)
         self._begin_flight_session(client, driver, uri)
         return self.vehicle.to_dict()
+
+    def _place_simulator(self, client: Any) -> None:
+        """Start a simulated aircraft on this project's site rather than its default.
+
+        Only a simulator can be placed (`place_at`); a real aircraft is where it is. The
+        plan's first waypoint, else the middle of the drawn area. Nothing to place it on
+        leaves it where the driver put it.
+        """
+        place = getattr(client, "place_at", None)
+        if not callable(place):
+            return
+        target = None
+        waypoints = (self.mission_plan_dict or {}).get("waypoints") or []
+        first = waypoints[0] if waypoints else None
+        if isinstance(first, dict) and first.get("lat") is not None:
+            target = (float(first["lat"]), float(first.get("lon", first.get("lng", 0.0))))
+        elif isinstance(first, (list, tuple)) and len(first) >= 2:
+            target = (float(first[1]), float(first[0]))
+        elif self.aoi_polygon:
+            ring = self.aoi_polygon
+            target = (sum(p[1] for p in ring) / len(ring), sum(p[0] for p in ring) / len(ring))
+        if target is not None:
+            try:
+                place(*target)
+            except Exception:  # noqa: BLE001 - a simulator that cannot move stays put
+                pass
+
+    def _on_vehicle_event(self, event: Any) -> None:
+        """A driver's event (listener thread): keep the vehicle's status texts."""
+        if not isinstance(event, dict) or event.get("type") != "statustext":
+            return
+        self.record_vehicle_message(str(event.get("text", "")),
+                                    int(event.get("severity", 6) or 0), source="vehicle")
+
+    def record_vehicle_message(self, text: str, severity: int = 6, source: str = "vehicle") -> None:
+        """Append one message to the Fly screen's log. `source`: vehicle | station."""
+        text = str(text or "").strip()
+        if not text:
+            return
+        with self._message_lock:
+            self._message_seq += 1
+            self.vehicle_messages.append({
+                "seq": self._message_seq,
+                "time_utc": _now(),
+                "severity": int(severity),
+                "level": SEVERITY_NAMES.get(int(severity), "info"),
+                "text": text,
+                "source": source,
+                "prearm": text.lower().startswith(("prearm", "pre-arm", "arm:")),
+                "driver": self.vehicle.driver,
+                "is_simulated": _is_simulated(self.vehicle.driver),
+            })
+
+    def messages_since(self, since: int = 0) -> list[dict[str, Any]]:
+        with self._message_lock:
+            return [dict(m) for m in self.vehicle_messages if m["seq"] > int(since)]
 
     def _begin_flight_log(self, driver: str, uri: str) -> None:
         """Start a fresh log for this connection, archiving the previous one.
@@ -532,6 +619,12 @@ class AppSession:
                 pass
         client = self._drone_client
         if client is not None:
+            unsubscribe = getattr(client, "unsubscribe", None)
+            if callable(unsubscribe):
+                try:
+                    unsubscribe(self._on_vehicle_event)
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 if hasattr(client, "disconnect"):
                     client.disconnect()
@@ -540,6 +633,8 @@ class AppSession:
         self._drone_client = None
         self.vehicle = VehicleLink()
         self.mission_uploaded = False
+        self.uploaded_items = []
+        self.uploaded_template = ""
         # "Camera checked by eye" was about the aircraft that was on the link.
         self.preflight_acknowledged = set()
 
@@ -578,6 +673,10 @@ class AppSession:
         age = data.age_s() if hasattr(data, "age_s") else 0.0
         payload["telemetry_age_s"] = round(age, 1)
         if age > TELEMETRY_STALE_AFTER_S:
+            if not self._link_was_lost:
+                self._link_was_lost = True
+                self.record_vehicle_message(
+                    f"Link lost: nothing heard from the vehicle for {age:.0f} s.", 2, source="station")
             payload["connected"] = False
             payload["stale"] = True
             payload["link_lost"] = True
@@ -587,6 +686,9 @@ class AppSession:
             )
             return payload
 
+        if self._link_was_lost:
+            self._link_was_lost = False
+            self.record_vehicle_message("Link regained.", 5, source="station")
         payload["connected"] = True
         payload["stale"] = False
         # Recorded here as well as by the flight session's poll, so the log holds what

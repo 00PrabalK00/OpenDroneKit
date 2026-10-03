@@ -195,6 +195,12 @@ def _register_reconstruction_layers(session: Any, payload: dict[str, Any]) -> li
     return added
 
 
+
+# MAV_CMD_NAV_* items that are places the aircraft flies to (waypoint, loiters, land,
+# takeoff, spline). Other items use the same x/y fields for other things: a
+# DO_DIGICAM_CONTROL's "latitude" is a camera parameter, not a position.
+POSITIONAL_COMMANDS = frozenset({16, 17, 18, 19, 21, 22, 31, 82})
+
 class Api:
     """Bridge object bound to the webview window."""
 
@@ -5991,6 +5997,8 @@ class Api:
 
         # The mission is on the aircraft now, whatever happens to fence and rally.
         self._session.mission_uploaded = True
+        self._session.uploaded_items = items
+        self._session.uploaded_template = str(plan.get("template", ""))
         from core.flight_state import PHASE_UPLOADED, record_transition
 
         # Recorded so that, if this software dies before the mission ends, the next
@@ -6156,6 +6164,109 @@ class Api:
         if status is None:
             return ok(session=None, reason="No vehicle connected, so there is no flight session.")
         return ok(session=status)
+
+    @guard
+    def vehicle_messages(self, since: int = 0) -> dict[str, Any]:
+        """What the vehicle on the link has said (MAVLink STATUSTEXT), oldest first.
+
+        Pre-arm failures ("PreArm: ..."), mode changes and failsafes arrive here as the
+        autopilot sent them, with its severity; `source` is "vehicle" for those and
+        "station" for the link changes this ground station observed. `since` is the
+        last `seq` the caller has, so a poll only carries what is new. Messages from a
+        simulated driver carry `is_simulated`.
+        """
+        link = self._session.vehicle.to_dict()
+        messages = self._session.messages_since(int(since or 0))
+        return ok(messages=messages,
+                  last_seq=messages[-1]["seq"] if messages else int(since or 0),
+                  connected=bool(link.get("connected")),
+                  driver=link.get("driver", ""),
+                  is_simulated=bool(link.get("is_simulated")))
+
+    @guard
+    def vehicle_mission(self) -> dict[str, Any]:
+        """The mission on the aircraft and the one planned here, side by side.
+
+        `uploaded` lists the positional items the vehicle acknowledged on the last
+        upload (seq, lat, lon, alt), which is what MISSION_CURRENT counts through; the
+        Fly screen draws flown and remaining from these, not from a plan edited since.
+        `planned` summarises the session's current plan. `in_sync` is false when the
+        plan changed after the upload, so the pilot is told to upload again.
+        """
+        plan = self._session.mission_plan_dict or {}
+        uploaded = [
+            {"seq": int(item.get("seq", 0)), "lat": float(item.get("lat") or 0.0),
+             "lon": float(item.get("lon") or 0.0), "alt": float(item.get("alt") or 0.0),
+             "command": int(item.get("command", 0))}
+            for item in (self._session.uploaded_items or [])
+            if int(item.get("command", 0)) in POSITIONAL_COMMANDS
+            and (item.get("lat") or item.get("lon"))
+        ]
+        constraints = plan.get("safety_constraints") or {}
+        planned = None
+        if plan:
+            planned = {
+                "template": str(plan.get("template", "")),
+                "waypoints": len(plan.get("waypoints") or []),
+                "altitude_m": plan.get("altitude_m"),
+                "speed_m_s": plan.get("cruise_speed_m_s") or plan.get("speed_m_s"),
+                "front_overlap_pct": plan.get("front_overlap_pct"),
+                "side_overlap_pct": plan.get("side_overlap_pct"),
+                "estimated_gsd_cm": plan.get("estimated_gsd_cm"),
+                "path_distance_m": plan.get("path_distance_m"),
+                "estimated_time_min": plan.get("estimated_time_min"),
+                "altitude_frame": plan.get("altitude_frame") or constraints.get("altitude_frame"),
+                "rth_altitude_m": constraints.get("rth_altitude_m"),
+                "source_version": plan.get("source_version"),
+            }
+        return ok(
+            uploaded=uploaded,
+            item_count=len(self._session.uploaded_items or []),
+            uploaded_template=self._session.uploaded_template,
+            on_vehicle=bool(self._session.mission_uploaded),
+            in_sync=bool(self._session.mission_uploaded),
+            planned=planned,
+            connected=bool(self._session.vehicle.connected),
+        )
+
+    @guard
+    def load_mission_version(self, version_num: int, name: str = "") -> dict[str, Any]:
+        """Make a saved mission version the one to fly (the Fly screen's mission queue).
+
+        The version's own stored route and recipe become the session's mission, so
+        Upload sends exactly what was saved -- not a replan of it. Whatever was on the
+        aircraft is no longer this mission, so the upload and preflight confirmations
+        start again.
+        """
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        entry = next((v for v in versions
+                      if int(v.get("version_num", 0)) == int(version_num)), None)
+        if entry is None:
+            available = ", ".join(str(v.get("version_num")) for v in versions) or "none"
+            return fail(f"No version {version_num}. Saved versions: {available}.")
+        plan = _saved_version_as_plan(entry)
+        recipe = entry.get("flight_recipe") or entry.get("flight_recipe_json") or {}
+        if isinstance(recipe, str):
+            try:
+                recipe = json.loads(recipe)
+            except json.JSONDecodeError:
+                recipe = {}
+        plan["flight_recipe"] = recipe if isinstance(recipe, dict) else {}
+        plan["template"] = str(entry.get("template") or plan.get("template") or "grid")
+        plan["source_version"] = int(version_num)
+        if not plan.get("waypoints") and not plan["flight_recipe"].get("world_poses"):
+            return fail(f"Version {version_num} has no stored route to fly.")
+        self._session.mission_plan = None
+        self._session.mission_plan_dict = plan
+        self._session.mission_plan_warnings = []
+        self._session.mission_uploaded = False
+        self._session.preflight_acknowledged = set()
+        self._session.audit("mission_version_loaded_for_flight",
+                            {"version": int(version_num), "template": plan["template"],
+                             "waypoints": len(plan.get("waypoints") or [])})
+        return ok(version=int(version_num), template=plan["template"],
+                  waypoints=len(plan.get("waypoints") or []))
 
     @guard
     def run_preflight(self, acknowledged: list[str] | None = None,

@@ -8,13 +8,13 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 
 | Measure | Count |
 |---|---:|
-| Rows | 182 |
+| Rows | 184 |
 | Native menu items covered | 66 |
 | Cockpit ACTIONS keys covered | 132 |
-| Api methods covered (plus 1 internal) | 218 |
+| Api methods covered (plus 1 internal) | 221 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
-| Placement: artboard (drawn in an approved artboard) | 105 |
-| Placement: proposed (placed with an approved component pattern, not drawn) | 65 |
+| Placement: artboard (drawn in an approved artboard) | 106 |
+| Placement: proposed (placed with an approved component pattern, not drawn) | 66 |
 | Placement: artboard+proposed (partly drawn, partly proposed) | 5 |
 | Placement: gap (the design shows it but the Api cannot back it yet (owner decision 2026-09-29: build the backend for real)) | 3 |
 | Placement: none (no new control: unchanged, or not carried with the reason stated in new_home) | 4 |
@@ -115,7 +115,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `plan.view-mission-panel` | View › Mission panel | `view.panel{panel=mission}` | — | — | Opens Plan | none |
 | `plan.mission-settings-menu` | Mission settings (menu) <sup>U00</sup> | `mission.settings` | — | `plan_mission` | Opens Plan and focuses the inspector "PARAMETERS" section | proposed |
 
-## Fly (18)
+## Fly (20)
 
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
@@ -130,13 +130,15 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | `fly.mission-progress` | Mission progress | — | — | `telemetry` | Bottom MISSION PROGRESS | artboard |
 | `fly.alerts-and-clearing-them` | Alerts and clearing them | — | `Clear Alerts` | `list_notifications`, `mark_all_notifications_read` | Map banner (link lost …) + "Details" | artboard |
 | `fly.event-log` | Event log | — | — | `audit_log` | Inspector tab "Events" | proposed |
-| `fly.mission-queue` | Mission queue | — | — | `list_mission_versions` | "Mission loaded" row version picker | artboard |
+| `fly.mission-queue` | Mission queue | — | — | `list_mission_versions`, `load_mission_version` | "Mission loaded" row version picker | artboard |
 | `fly.export-flight-log` | Export flight log | — | `Export Log` | `export_flight_log` | Left "SESSION" section | proposed |
 | `fly.load-flight-resume-interrupted` | Load flight / resume interrupted | — | `Load Flight` | `list_datasets`, `set_active_dataset`, `check_interrupted_flight`, `discard_interrupted_flight` ★, `resume_from_images` ★ | SESSION › "Resume interrupted…" with Resume / Discard / From images | proposed |
 | `fly.session-status` | Session status | — | — | `flight_session` ★ | Footer vehicle segment tooltip + SESSION header | proposed |
 | `fly.linked-mission-progress` | Linked mission progress | — | `Linked Progress` | `pick_folder`, `linked_mission_progress` | SESSION | proposed |
 | `fly.fly-to-draw-corners` | Fly-to-draw corners | — | — | — | SESSION › "Mark corner" | proposed |
 | `fly.telemetry-charts-camera-live-view` | Telemetry charts, camera live view | — | — | — | Not carried: they drew no data. Recorded so this is visibly a non-removal. | none |
+| `fly.vehicle-messages` | Vehicle messages (STATUSTEXT, pre-arm failures, link changes) <sup>U00</sup> | — | — | `vehicle_messages` | Inspector tab "Messages"; pre-arm messages under PREFLIGHT; a critical message raises the map banner | proposed |
+| `fly.mission-on-aircraft` | Mission on the aircraft (flown / remaining) <sup>U00</sup> | — | — | `vehicle_mission` | "Mission loaded" row; flown and remaining lines on the map; MISSION PROGRESS distances | artboard |
 
 ## Process (17)
 

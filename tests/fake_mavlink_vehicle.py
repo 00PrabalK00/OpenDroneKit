@@ -118,6 +118,10 @@ class FakeVehicle:
         except Exception:  # noqa: BLE001
             pass
 
+    def say(self, text: str, severity: int = 6) -> None:
+        """Send a STATUSTEXT, as an autopilot does for a pre-arm failure or a failsafe."""
+        self.conn.mav.statustext_send(int(severity), text.encode("ascii")[:50].ljust(50, b"\0"))
+
     def mode_name(self) -> str:
         for name, number in COPTER_MODES.items():
             if number == self.custom_mode:
