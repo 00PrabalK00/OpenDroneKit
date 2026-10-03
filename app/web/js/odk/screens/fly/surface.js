@@ -10,7 +10,7 @@
    docs/ui/ARCHITECTURE.md, "surface.js". Every inventory row for this workspace
    (docs/ui/inventory.json) is named here, by `inventory` where the action alone does
    not say which row it satisfies. Rows with no verb (telemetry, progress, mode, the
-   vehicle on the map) are read-only panels; tests/test_ui_v1_fly.py checks those. */
+   vehicle on the map) are read-only panels, which the Fly acceptance test checks. */
 
 export const SCREEN = "fly";
 

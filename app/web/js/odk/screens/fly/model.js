@@ -128,7 +128,7 @@ export function metresBetween(a, b) {
  */
 export function progress(uploaded, telemetry) {
   if (!Array.isArray(uploaded) || !uploaded.length) return null;
-  const reported = telemetry && telemetry.connected !== undefined;
+  const reported = Boolean(telemetry && (telemetry.connected || telemetry.link_lost));
   const current = reported && finite(telemetry.waypoint_index) ? telemetry.waypoint_index : null;
   const total = reported && finite(telemetry.waypoint_total) ? telemetry.waypoint_total : null;
   const position = reported && finite(telemetry.latitude) && finite(telemetry.longitude)
@@ -274,13 +274,13 @@ export function fixed(value, digits = 1) {
   return finite(value) ? value.toFixed(digits) : null;
 }
 
-/** "184.2 m" / "1.85 km". */
+/** Metres, or kilometres from one kilometre up. */
 export function distance(metres) {
   if (!finite(metres)) return null;
   return metres >= 1000 ? `${(metres / 1000).toFixed(2)} km` : `${metres.toFixed(1)} m`;
 }
 
-/** "1 min 55 s", "42 s", "1 h 3 min". */
+/** Seconds as s, min s, or h min. */
 export function duration(seconds) {
   if (!finite(seconds) || seconds < 0) return null;
   const s = Math.round(seconds);
@@ -289,14 +289,14 @@ export function duration(seconds) {
   return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
 }
 
-/** "00:06" for a heartbeat age. */
+/** mm:ss, for a heartbeat age. */
 export function clock(seconds) {
   if (!finite(seconds) || seconds < 0) return null;
   const s = Math.floor(seconds);
   return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** "41.30372° N" / "81.75222° W". */
+/** Degrees with the hemisphere letter. */
 export function latitude(value) {
   return finite(value) ? `${Math.abs(value).toFixed(5)}° ${value >= 0 ? "N" : "S"}` : null;
 }
@@ -304,7 +304,7 @@ export function longitude(value) {
   return finite(value) ? `${Math.abs(value).toFixed(5)}° ${value >= 0 ? "E" : "W"}` : null;
 }
 
-/** "015°". */
+/** Whole degrees, three digits. */
 export function heading(value) {
   return finite(value) ? `${String(Math.round(((value % 360) + 360) % 360)).padStart(3, "0")}°` : null;
 }
@@ -312,7 +312,7 @@ export function heading(value) {
 /** GPS_RAW_INT fix_type as a pilot says it. */
 export const GPS_FIX = { 0: "no GPS", 1: "no fix", 2: "2D fix", 3: "3D fix", 4: "DGPS", 5: "RTK float", 6: "RTK fixed" };
 
-/** "14:02:31" from an ISO time, in the operator's clock. */
+/** hh:mm:ss from an ISO time, in the operator's clock. */
 export function timeOfDay(iso) {
   const date = iso ? new Date(iso) : null;
   if (!date || Number.isNaN(date.getTime())) return "";

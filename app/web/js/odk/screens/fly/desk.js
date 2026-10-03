@@ -24,6 +24,8 @@ export const SCREEN = "fly";
 
 /** Hold Abort this long to send it: the confirmation is the hold. */
 export const HOLD_TO_ABORT_MS = 1500;
+/** How long a screen switch waits for the first answers before drawing without them. */
+export const FIRST_READ_MS = 1500;
 /** How many link samples (one per poll) the LINK strip shows. */
 const LINK_SAMPLES = 30;
 
@@ -70,7 +72,9 @@ export async function render(regions, context) {
   ensureFlyStyles();
   const view = new FlyDesk(regions, context);
   view.mount();
-  await view.refresh({ slow: true });
+  // The frame is drawn; the first answers fill it. The shell waits for them, but not
+  // for longer than FIRST_READ_MS, so a busy bridge never holds a screen switch.
+  await Promise.race([view.refresh({ slow: true }), new Promise((done) => setTimeout(done, FIRST_READ_MS))]);
   view.start();
   return view;
 }
@@ -106,6 +110,7 @@ class FlyDesk {
     main.replaceChildren(this.buildMain());
     inspector.replaceChildren(this.buildInspector());
     this.flyMap = new FlyMap(this.mapHost, this.shell);
+    this.flyMap.card = [this.banner, this.legend];
     this.flyMap.mount();
     this.onRefresh = () => this.refresh({ slow: true });
     window.addEventListener("odk:refresh", this.onRefresh);
@@ -325,7 +330,9 @@ class FlyDesk {
   /** Pre-arm and other critical messages from the vehicle, above the checklist. */
   renderPreArm() {
     if (!this.preArm) return;
-    const recent = this.messages.filter((m) => m.source === "vehicle" && (m.prearm || m.severity <= 3)).slice(-3);
+    // Only the autopilot's own pre-arm refusals belong here; other critical messages
+    // raise the map banner.
+    const recent = this.messages.filter((m) => m.source === "vehicle" && m.prearm).slice(-3);
     this.preArm.hidden = !recent.length;
     this.preArm.replaceChildren(...recent.map((m) => el("div", { class: `fly-prearm-row is-${severityTone(m.severity)}` }, [
       dot(severityTone(m.severity)),
@@ -399,7 +406,13 @@ class FlyDesk {
 
   renderInterrupted(answer) {
     const box = this.interruptedBox;
-    if (!answer || !answer.recovered) { box.hidden = true; box.replaceChildren(); return; }
+    // The recovery record is written on every upload; while a link is open it is this
+    // flight's own record, not an interrupted one. It is offered once no vehicle is on
+    // the link (a restart, or after Disconnect) and the operator has something to decide.
+    const linked = Boolean(this.model.link && this.model.link.connected);
+    if (!answer || !answer.recovered || !answer.requires_operator || linked) {
+      box.hidden = true; box.replaceChildren(); return;
+    }
     box.hidden = false;
     const state = answer.state || {};
     box.replaceChildren(
@@ -529,10 +542,10 @@ class FlyDesk {
   bindHold(buttonNode) {
     let started = 0;
     let frame = 0;
-    const reset = () => { cancelAnimationFrame(frame); started = 0; this.holdFill.style.width = "0%"; };
+    const reset = () => { cancelAnimationFrame(frame); started = 0; this.holdFill.style.transform = "scaleX(0)"; };
     const step = () => {
       const p = Math.min(1, (performance.now() - started) / HOLD_TO_ABORT_MS);
-      this.holdFill.style.width = `${(p * 100).toFixed(1)}%`;
+      this.holdFill.style.transform = `scaleX(${p.toFixed(3)})`;
       if (p >= 1) { reset(); this.sendAbort(); return; }
       frame = requestAnimationFrame(step);
     };
@@ -612,16 +625,21 @@ class FlyDesk {
     head.appendChild(el("span", { class: "fly-progress-wp", text: p.current !== null && p.total !== null ? `ITEM ${p.current} / ${p.total}` : "item not reported" }));
     const sim = simulatedTag(t, { small: true });
     if (sim) { sim.classList.add("fly-push"); head.appendChild(sim); }
-    const fill = el("span", { class: "fly-bar-fill", style: `width:${((p.fraction || 0) * 100).toFixed(1)}%` });
+    const fill = el("span", { class: "fly-bar-fill", style: `transform:scaleX(${(p.fraction || 0).toFixed(4)})` });
     const bar = el("div", {
       class: "fly-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
       "aria-valuenow": ((p.fraction || 0) * 100).toFixed(0), "aria-label": "Route flown",
     }, [fill]);
     const speed = t && isNum(t.speed_mps) ? t.speed_mps : null;
-    const eta = speed && speed > 0.5 && p.leftMetres > 0 ? duration(p.leftMetres / speed) : null;
+    const lost = m.linkState === "lost";
+    const eta = !lost && speed && speed > 0.5 && p.leftMetres > 0 ? duration(p.leftMetres / speed) : null;
+    let etaText = "ETA not reported";
+    if (lost) etaText = "ETA unknown: link lost";
+    else if (eta) etaText = `ETA ${eta} @ ${fixed(speed)} m/s (est.)`;
+    else if (speed !== null) etaText = "ETA: not moving";
     this.progress.replaceChildren(head, bar, el("div", { class: "fly-progress-foot" }, [
       el("span", { text: `${distance(p.flownMetres)} flown · ${distance(p.leftMetres)} left` }),
-      el("span", { class: "fly-push", text: eta ? `ETA ${eta} @ ${fixed(speed)} m/s (est.)` : speed !== null ? "ETA: not moving" : "ETA not reported" }),
+      el("span", { class: "fly-push", text: etaText }),
     ]));
   }
 
@@ -652,7 +670,8 @@ class FlyDesk {
     }
     if (!title) { this.banner.hidden = true; return; }
     this.banner.hidden = false;
-    this.banner.className = `fly-banner is-${tone}`;
+    this.banner.classList.toggle("is-warn", tone === "warn");
+    this.banner.classList.toggle("is-danger", tone === "danger");
     const details = el("button", { type: "button", class: "odk-btn odk-btn--secondary fly-banner-btn", "data-control": "alerts", text: "Details" });
     details.addEventListener("click", () => this.openAlerts(details));
     this.banner.replaceChildren(
@@ -752,7 +771,7 @@ class FlyDesk {
   renderTelemetry() {
     const m = this.model;
     const t = m.telemetry;
-    const reported = t && t.connected !== undefined;
+    const reported = Boolean(t && (t.connected || t.link_lost));
     const lost = m.linkState === "lost";
     const head = el("div", { class: "fly-tab-head" }, [
       el("span", { class: "odk-label", text: lost ? "TELEMETRY · LAST KNOWN" : "TELEMETRY" }),
@@ -773,12 +792,13 @@ class FlyDesk {
       big("Heading", heading(t.heading_deg), "", "value"),
       big("Battery", isNum(t.battery_pct) ? fixed(t.battery_pct, 0) : null, "%", "value"),
     ]);
-    const gps = isNum(t.gps_fix) ? `${GPS_FIX[t.gps_fix] || `fix ${t.gps_fix}`} · ${t.satellites ?? "?"} sats${isNum(t.hdop) ? ` · hdop ${fixed(t.hdop, 2)}` : ""}` : null;
+    const gps = isNum(t.gps_fix) ? `${GPS_FIX[t.gps_fix] || `fix ${t.gps_fix}`} · ${t.satellites ?? "?"} sats` : null;
     const facts = el("dl", { class: "fly-kv fly-kv--wide" }, [
       ...kv("LAT", latitude(t.latitude)),
       ...kv("LON", longitude(t.longitude)),
       ...kv("ALT AMSL", isNum(t.altitude_abs_m) ? `${fixed(t.altitude_abs_m)} m` : null),
       ...kv("GPS", gps, { tone: isNum(t.gps_fix) && t.gps_fix < 3 ? "warn" : "" }),
+      ...kv("HDOP", fixed(t.hdop, 2)),
       ...kv("VOLTAGE", isNum(t.battery_v) ? `${fixed(t.battery_v, 2)} V` : null),
       ...kv("CONTROL", m.control ? m.control.control : null, { title: m.control ? m.control.description : "" }),
       ...kv("HOME", t.home_set === true ? "set" : t.home_set === false ? "not set" : null, { tone: t.home_set === false ? "warn" : "" }),
@@ -899,6 +919,7 @@ export class FlyMap {
     followBtn.classList.add("fly-follow");
     const stack = this.host.querySelector(".odk-mapf-tr");
     (stack || this.host).appendChild(el("div", { class: "odk-icon-group fly-follow-group" }, [followBtn]));
+    if (this.card) this.placeCard(this.card);
     const ready = () => { this.ensureLayers(); this.renderMap(); };
     if (this.map.isStyleLoaded()) ready(); else this.map.once("load", ready);
     this.map.on("styledata", () => this.ensureLayers());
@@ -969,7 +990,7 @@ export class FlyMap {
   renderAircraft() {
     const t = this.model.telemetry;
     const maplibre = window.maplibregl;
-    const has = t && isNum(t.latitude) && isNum(t.longitude) && (t.latitude || t.longitude) && t.connected !== undefined;
+    const has = t && isNum(t.latitude) && isNum(t.longitude) && (t.latitude || t.longitude) && (t.connected || t.link_lost);
     if (!has || !maplibre || !this.map) { if (this.marker) { this.marker.remove(); this.marker = null; } return; }
     if (!this.marker) {
       this.arrow = el("span", { class: "fly-aircraft-arrow" });
@@ -998,6 +1019,22 @@ export class FlyMap {
     if (this.follow && !lost) this.map.easeTo({ center: [t.longitude, t.latitude], duration: FAST_MS * 0.8 });
   }
 
+
+  /**
+   * Put a card (the route key, the Field mission card) in the furniture's top-left
+   * flow, on its own row under the CRS and notice chips, so the two never overlap
+   * whichever chips the map is showing. Before the map is mounted it stays where it is.
+   */
+  placeCard(nodes) {
+    this.card = nodes;
+    const tl = this.host.querySelector(".odk-mapf-tl");
+    if (!tl) return;
+    for (const node of [].concat(nodes)) {
+      if (!node || node.parentElement === tl) continue;
+      tl.append(el("span", { class: "fly-tl-break", "aria-hidden": "true" }), node);
+      node.classList.add("is-docked");
+    }
+  }
 
   /** Frame the route the aircraft carries, clear of the map furniture, once per upload. */
   fitRoute(p) {

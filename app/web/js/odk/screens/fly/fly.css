@@ -111,7 +111,9 @@
 .fly-banner.is-warn { border-color: var(--warn); }
 .fly-banner[hidden] { display: none; }
 .fly-banner-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.fly-banner-title { font-size: var(--fs-body); font-weight: var(--fw-strong); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fly-banner-title { font-size: var(--fs-body); font-weight: var(--fw-strong); color: var(--text); overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+/* In Field the vehicle's own words are read at arm's length in sunlight: never cut them. */
+[data-mode="field"] .fly-banner-title { display: block; -webkit-line-clamp: unset; line-clamp: none; }
 .fly-banner-detail { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-2); }
 .fly-banner-detail > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fly-banner .odk-btn { height: 28px; padding: 0 10px; font-size: var(--fs-small); flex-shrink: 0; }
@@ -147,7 +149,7 @@
 .fly-progress-wp.is-missing { color: var(--muted); }
 .fly-push { margin-left: auto; }
 .fly-bar { position: relative; height: 8px; background: var(--surface-2); border: 1px solid var(--line); }
-.fly-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1); }
+.fly-bar-fill { position: absolute; inset: 0; background: var(--accent); transform-origin: left center; transform: scaleX(0); transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1); }
 
 /* Command bar: state on the left, the verbs, then the two that end a flight. */
 .fly-commandbar {
@@ -189,7 +191,7 @@
   border: 1px solid var(--danger); font-size: var(--fs-small); font-weight: var(--fw-strong); cursor: pointer;
   user-select: none; touch-action: none;
 }
-.fly-hold-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(240, 106, 106, 0.28); }
+.fly-hold-fill { position: absolute; inset: 0; background: var(--danger); opacity: 0.28; transform: scaleX(0); transform-origin: left center; }
 .fly-hold-label { position: relative; }
 .fly-hold.is-nudged { animation: fly-nudge 300ms ease-out; }
 .fly-hold:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -265,7 +267,7 @@
 .fly-plan .live-wait, .fly-plan .empty-msg { margin: 0; font-size: var(--fs-small); color: var(--muted); }
 
 /* ======================================================================= FIELD */
-.flyf-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); color: var(--text); }
+.flyf-panel { display: flex; flex-direction: column; min-height: 100%; background: var(--bg); color: var(--text); }
 .flyf-status {
   display: flex; align-items: stretch; height: 56px; flex-shrink: 0; border-bottom: var(--rule-strong) solid var(--line);
   font-size: 18px; background: var(--surface-2);
@@ -283,26 +285,28 @@
 .flyf-tile:nth-child(2n) { border-right: 0; }
 .flyf-tile--wide { grid-column: 1 / -1; border-right: 0; }
 .flyf-tile-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); min-height: 28px; font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.flyf-value { font-size: 48px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.flyf-value small { font-size: 24px; font-weight: 700; margin-left: 6px; }
-.flyf-value.is-missing { font-size: 28px; line-height: 1.2; }
+.flyf-value { font-size: var(--fs-value); font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.flyf-value small { font-size: var(--fs-title); font-weight: 700; margin-left: 6px; }
+.flyf-value.is-missing { font-size: var(--fs-title); line-height: 1.2; }
 .flyf-sub { font-size: 16px; color: var(--text-2); }
 .flyf-bar { height: 24px; border: 3px solid var(--line); background: var(--bg); position: relative; margin-top: var(--sp-2); }
-.flyf-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--action); }
-.flyf-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-top: var(--rule-strong) solid var(--line); flex-shrink: 0; }
+.flyf-bar > span { position: absolute; inset: 0; background: var(--action); transform-origin: left center; }
+/* The Field panel scrolls inside the shell's aside, so the actions stay pinned to its
+   bottom edge: the one thing to press next is never scrolled away by the checklist. */
+.flyf-actions { position: sticky; bottom: 0; z-index: 2; background: var(--bg); display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); padding: var(--sp-3) var(--sp-4); border-top: var(--rule-strong) solid var(--line); flex-shrink: 0; }
 .flyf-big {
   min-height: 104px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-1);
   border: 3px solid var(--line); background: var(--action); color: var(--text); font-family: inherit; cursor: pointer; padding: var(--sp-2);
 }
-.flyf-big strong { font-size: 32px; font-weight: 700; }
+.flyf-big strong { font-size: calc(var(--fs-title) * 1.5); font-weight: 700; }
 .flyf-big span { font-size: 16px; }
 .flyf-big:disabled { background: var(--surface-2); color: var(--text-2); cursor: not-allowed; }
 .flyf-big--danger { background: var(--danger); color: var(--on-danger); border-color: var(--line); }
 .flyf-big--commit { background: var(--text); color: var(--bg); }
 .flyf-big:focus-visible { outline: 4px solid var(--selection); outline-offset: 2px; }
 .flyf-connect { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-4); }
-.flyf-connect .fly-seg { border: 3px solid var(--line); }
-.flyf-connect .fly-seg-btn { height: 64px; font-size: 18px; font-family: inherit; border-left: 3px solid var(--line); background: var(--bg); color: var(--text); }
+.flyf-connect .fly-seg { border: 3px solid var(--line); gap: 3px; background: var(--line); }
+.flyf-connect .fly-seg-btn { height: 64px; font-size: var(--fs-body); font-family: inherit; border: 0; background: var(--bg); color: var(--text); }
 .flyf-connect .fly-seg-btn[aria-checked="true"] { background: var(--selection); color: var(--on-selection); }
 .flyf-checks { list-style: none; margin: 0; padding: 0; }
 .flyf-checks li { display: flex; align-items: center; gap: var(--sp-3); min-height: 64px; padding: 0 var(--sp-4); border-bottom: var(--rule) solid var(--line); font-size: 18px; }
@@ -312,7 +316,7 @@
   position: absolute; left: var(--sp-4); top: var(--sp-4); z-index: 3; max-width: 360px; padding: var(--sp-3) var(--sp-4);
   background: var(--overlay); border: 3px solid var(--line); color: var(--text); display: flex; flex-direction: column; gap: var(--sp-1);
 }
-.flyf-map-card strong { font-size: 22px; }
+.flyf-map-card strong { font-size: var(--fs-title); }
 .flyf-map-card .flyf-label { font-size: 16px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 .flyf-key { display: flex; gap: var(--sp-3); margin-top: var(--sp-2); padding-top: var(--sp-2); border-top: 3px solid var(--line); font-size: 16px; flex-wrap: wrap; }
 .flyf-key span { display: inline-flex; align-items: center; gap: 6px; }
@@ -324,8 +328,8 @@
 [data-mode="field"] .fly-arrow-casing { stroke: var(--line); stroke-width: 5; }
 [data-mode="field"] .fly-banner { border-width: 3px; }
 
-.flyf-body { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.flyf-body > .flyf-tiles { overflow: visible; }
+.flyf-body { flex: 1 1 auto; min-height: 0; }
+.flyf-body .flyf-tiles { overflow: visible; }
 .flyf-tile-head .odk-tag { flex-shrink: 0; }
 
 .fly-cmd--icon { width: var(--button-h); padding: 0; justify-content: center; }
@@ -338,4 +342,8 @@
   [data-frame="desk"] .fly-commandbar .fly-cmd:not(.fly-cmd--abort) { width: var(--button-h); padding: 0; justify-content: center; }
   [data-frame="desk"] .fly-commandbar { gap: 6px; padding: 0 var(--sp-3); }
 }
-[data-mode="field"] .flyf-map-card { top: 76px; }
+
+/* Docked in the furniture's top-left flow (FlyMap.placeCard). */
+.fly-tl-break { flex-basis: 100%; height: 0; }
+.fly-legend.is-docked, .flyf-map-card.is-docked { position: static; }
+.fly-banner.is-docked { position: static; transform: none; width: min(440px, calc(100% - 16px)); }

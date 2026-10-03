@@ -5,7 +5,7 @@
    The core verbs the Fly screen also places (Connect, Disconnect, Preflight, Confirm
    Checks, Upload, Start Mission, Pause, Resume, RTL, Land, Abort, Manual Override,
    Capture Now, Export Log, Load Flight, Linked Progress, Mark Corner, Close Boundary,
-   Clear Corners, Clear Alerts) keep their own behaviour. These add what the v1 screen
+   Clear Corners, Clear Alerts) keep their own behaviour. These add what the new screen
    needed and the cockpit never had: a connect that takes the driver and URI from the
    CONNECTION form instead of two dialogs, a per-row preflight confirmation, arm and
    disarm, the mission queue, and the two answers to an interrupted flight. Every one
@@ -13,7 +13,7 @@
 
 import { call } from "../../../workspace/api.js";
 
-const DRIVER_NAMES = new Set(["pymavlink", "mavsdk", "mock", "mavlink", "px4", "sitl"]);
+const DRIVER_NAMES = new Set(["pymavlink", "mavsdk", "mock", "mavlink", "sitl"]);
 
 export const ACTIONS = {
   "Connect Vehicle": {

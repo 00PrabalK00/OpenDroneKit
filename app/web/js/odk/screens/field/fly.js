@@ -15,7 +15,7 @@ import {
   DRIVERS, FAST_CALLS, SLOW_CALLS, FAST_MS, SLOW_MS, read, derive, messageFeed,
   fixed, distance, duration, clock, isNum,
 } from "../fly/model.js";
-import { FlyMap, HOLD_TO_ABORT_MS, glyph } from "../fly/desk.js";
+import { FlyMap, HOLD_TO_ABORT_MS, FIRST_READ_MS, glyph } from "../fly/desk.js";
 import { ensureFlyStyles } from "../fly/styles.js";
 
 export const SCREEN = "fly";
@@ -28,7 +28,7 @@ export async function render(regions, context) {
   ensureFlyStyles();
   const view = new FlyField(regions, context);
   view.mount();
-  await view.refresh(true);
+  await Promise.race([view.refresh(true), new Promise((done) => setTimeout(done, FIRST_READ_MS))]);
   view.start();
   return view;
 }
@@ -72,6 +72,7 @@ class FlyField {
     this.root = el("div", { class: "flyf-panel" }, [this.body, this.actions]);
     left.replaceChildren(this.root);
     this.flyMap = new FlyMap(this.mapHost, this.shell);
+    this.flyMap.card = [this.banner, this.card];
     this.flyMap.mount();
     this.onRefresh = () => this.refresh(true);
     window.addEventListener("odk:refresh", this.onRefresh);
@@ -114,11 +115,13 @@ class FlyField {
     const c = this.model.commands;
     const phase = !this.model.link || !this.model.link.connected ? "connect"
       : !c.onVehicle && !c.flying ? "upload" : !c.flying ? "start" : "flying";
-    if (phase !== this.phase || phase !== "connect" || slow) {
-      this.phase = phase;
-      this.drawBody(phase);
-      this.drawActions(phase);
-    }
+    // The tiles follow every answer. The body's other parts and the action buttons are
+    // rebuilt only when what they offer changes: a button replaced under the operator's
+    // finger would drop a press, and a held Abort must stay the button being held.
+    const offer = [phase, this.driver, c.canUpload, c.canStart, c.canPause, c.canResume, c.canReturn].join("|");
+    if (phase !== this.phase) { this.phase = phase; this.drawBody(phase); }
+    else if (phase !== "connect") this.drawTiles();
+    if (offer !== this.offer && !this.holding) { this.offer = offer; this.drawActions(phase); }
     const planned = this.model.planned;
     this.context.setSubtitle(planned ? [planned.template, this.model.link && this.model.link.driver].filter(Boolean).join(" · ") : null);
   }
@@ -166,7 +169,7 @@ class FlyField {
     const recent = latest && Date.now() - new Date(latest.time_utc).getTime() < SLOW_MS * 12;
     if (!lost && !recent) { this.banner.hidden = true; return; }
     this.banner.hidden = false;
-    this.banner.className = "fly-banner is-danger";
+    this.banner.classList.add("is-danger");
     this.banner.replaceChildren(dot("danger"), el("div", { class: "fly-banner-body" }, [
       el("span", { class: "fly-banner-title", text: lost ? `Link lost · ${clock(m.telemetry.telemetry_age_s)}` : latest.text }),
       el("span", { class: "fly-banner-detail" }, [el("span", { text: lost ? "Last known values" : latest.level }), simulatedTag(m.telemetry || m.link, { small: true })].filter(Boolean)),
@@ -177,11 +180,14 @@ class FlyField {
 
   drawBody(phase) {
     if (phase === "connect") { this.body.replaceChildren(this.connectForm(), this.checks); return; }
-    if (phase !== "flying") {
-      this.body.replaceChildren(this.tiles(), this.checks);
-      return;
-    }
-    this.body.replaceChildren(this.tiles());
+    this.tilesHost = el("div", { class: "flyf-tiles-host" });
+    this.drawTiles();
+    // Before take-off the checklist still stands between the aircraft and a start.
+    this.body.replaceChildren(...(phase === "flying" ? [this.tilesHost] : [this.tilesHost, this.checks]));
+  }
+
+  drawTiles() {
+    if (this.tilesHost) this.tilesHost.replaceChildren(this.tiles());
   }
 
   connectForm() {
@@ -226,7 +232,7 @@ class FlyField {
       wide.append(
         el("span", { class: "flyf-value", text: prog.current !== null ? `Item ${prog.current}` : "not reported" }),
         el("span", { class: "flyf-sub", text: `${distance(prog.flownMetres)} of ${distance(prog.routeLength)}${eta ? ` · ~${eta} left` : ""}` }),
-        el("div", { class: "flyf-bar" }, [el("span", { style: `width:${((prog.fraction || 0) * 100).toFixed(1)}%` })]),
+        el("div", { class: "flyf-bar" }, [el("span", { style: `transform:scaleX(${(prog.fraction || 0).toFixed(4)})` })]),
       );
     } else {
       wide.append(el("span", { class: "flyf-sub", text: m.connected ? "No mission on the aircraft yet." : "No vehicle connected." }));
@@ -290,19 +296,22 @@ class FlyField {
       [fill, el("span", { class: "fly-hold-label", text: "Hold to abort and land" })]);
     let started = 0;
     let frame = 0;
-    const reset = () => { cancelAnimationFrame(frame); started = 0; fill.style.width = "0%"; };
+    const reset = () => { cancelAnimationFrame(frame); started = 0; this.holding = false; fill.style.transform = "scaleX(0)"; };
     const step = async () => {
+      // A hold only counts on the button still on the screen and still pressed.
+      if (!b.isConnected || !started) { reset(); return; }
       const p = Math.min(1, (performance.now() - started) / HOLD_TO_ABORT_MS);
-      fill.style.width = `${(p * 100).toFixed(1)}%`;
+      fill.style.transform = `scaleX(${p.toFixed(3)})`;
       if (p < 1) { frame = requestAnimationFrame(step); return; }
       reset();
       const before = this.shell.confirmAll;
       this.shell.confirmAll = true;
       try { await this.run("Abort"); } finally { this.shell.confirmAll = before; }
     };
-    b.addEventListener("pointerdown", () => { if (!started) { started = performance.now(); frame = requestAnimationFrame(step); } });
+    const begin = () => { if (started) return; started = performance.now(); this.holding = true; frame = requestAnimationFrame(step); };
+    b.addEventListener("pointerdown", begin);
     ["pointerup", "pointerleave", "pointercancel"].forEach((n) => b.addEventListener(n, reset));
-    b.addEventListener("keydown", (e) => { if ((e.key === " " || e.key === "Enter") && !started) { e.preventDefault(); started = performance.now(); frame = requestAnimationFrame(step); } });
+    b.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); begin(); } });
     b.addEventListener("keyup", reset);
     return b;
   }
