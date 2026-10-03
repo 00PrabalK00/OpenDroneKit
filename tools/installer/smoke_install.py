@@ -71,28 +71,41 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--installer", required=True)
     parser.add_argument("--work", required=True)
     parser.add_argument("--weights", default="", help="ODK_MODEL_WEIGHTS_DIR for the self-test")
+    parser.add_argument("--resume", action="store_true",
+                        help="keep an install a previous (interrupted) run left in <work>/install "
+                             "and continue from the checks; the report says so")
     args = parser.parse_args(argv)
 
     here = Path(__file__).resolve().parent
     app_id = json.loads((here / "config.json").read_text(encoding="utf-8"))["inno_app_id"].replace("{{", "{")
     installer = Path(args.installer).resolve()
     work = Path(args.work).resolve()
-    if work.exists():
-        shutil.rmtree(work)
     target, userdata = work / "install", work / "userdata"
-    work.mkdir(parents=True)
-    report: dict = {"installer": str(installer), "install_dir": str(target), "steps": []}
+    resume = bool(args.resume and (target / "launch.py").is_file())
+    if work.exists() and not resume:
+        shutil.rmtree(work)
+    work.mkdir(parents=True, exist_ok=True)
+    report: dict = {"installer": str(installer), "install_dir": str(target), "steps": [],
+                    "resumed": resume}
 
     def step(name: str, ok: bool, **detail) -> None:
         report["steps"].append({"step": name, "ok": bool(ok), **detail})
         print(f"[smoke] {'PASS' if ok else 'FAIL'} {name} {json.dumps(detail, default=str)[:400]}", flush=True)
 
     t0 = time.time()
-    proc = subprocess.run([str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-                           "/CURRENTUSER", f"/DIR={target}", "/TASKS=desktopicon",
-                           f"/LOG={work / 'install.log'}"])
-    step("silent per-user install", proc.returncode == 0 and (target / "launch.py").is_file(),
-         returncode=proc.returncode, seconds=round(time.time() - t0, 1))
+    if resume:
+        # The install itself ran in an earlier, interrupted run; its Inno Setup log is the
+        # evidence that it finished (Inno writes "Installation process succeeded" last).
+        log_text = (work / "install.log").read_text(encoding="utf-8", errors="replace")             if (work / "install.log").is_file() else ""
+        step("silent per-user install (earlier run, resumed)",
+             "Installation process succeeded" in log_text and (target / "launch.py").is_file(),
+             install_log=str(work / "install.log"))
+    else:
+        proc = subprocess.run([str(installer), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
+                               "/CURRENTUSER", f"/DIR={target}", "/TASKS=desktopicon",
+                               f"/LOG={work / 'install.log'}"])
+        step("silent per-user install", proc.returncode == 0 and (target / "launch.py").is_file(),
+             returncode=proc.returncode, seconds=round(time.time() - t0, 1))
 
     entry = uninstall_entry(app_id)
     step("uninstall entry in HKCU (no admin)", entry is not None, entry=entry)
