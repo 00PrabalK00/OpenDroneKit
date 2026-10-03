@@ -136,6 +136,40 @@ class TestManifest:
                         "odk/models/onnx/crack.onnx", "odk/server.pem"]
 
 
+class TestPayloadShape:
+    def test_long_paths_are_refused(self):
+        ok = "runtime/Lib/site-packages/numpy/__init__.py"
+        long = "runtime/Lib/site-packages/share/jupyter/" + "x" * 200 + ".js.map"
+        assert manifest.too_long_paths([ok, long], 190) == [long]
+        assert manifest.too_long_paths([ok], 190) == []
+
+    def test_limit_keeps_installed_paths_under_max_path(self):
+        cfg = json.loads((INSTALLER / "config.json").read_text(encoding="utf-8"))
+        default_dir = "C:/Users/a-typical-user/AppData/Local/Programs/OpenDroneKit/"
+        assert len(default_dir) + cfg["max_relative_path"] < 260
+
+    def test_prune_removes_only_named_folders_with_reasons(self, tmp_path):
+        cfg = json.loads((INSTALLER / "config.json").read_text(encoding="utf-8"))
+        assert cfg["payload_prune"] and all(r.get("reason") for r in cfg["payload_prune"])
+        jup = tmp_path / "runtime/Lib/site-packages/share/jupyter/labextensions"
+        jup.mkdir(parents=True)
+        (jup / "chunk.js").write_text("x")
+        keep = tmp_path / "runtime/Lib/site-packages/numpy"
+        keep.mkdir(parents=True)
+        (keep / "__init__.py").write_text("x")
+        assert build.prune_payload(tmp_path, cfg["payload_prune"]) == [
+            "runtime/Lib/site-packages/share/jupyter"]
+        assert not jup.exists() and (keep / "__init__.py").is_file()
+        # idempotent: a reused runtime that was already pruned is fine
+        assert build.prune_payload(tmp_path, cfg["payload_prune"]) == []
+
+    def test_prune_rule_without_reason_or_escaping_stage_is_refused(self, tmp_path):
+        with pytest.raises(SystemExit, match="without a reason"):
+            build.prune_payload(tmp_path, [{"path": "runtime/x"}])
+        with pytest.raises(SystemExit, match="unsafe"):
+            build.prune_payload(tmp_path, [{"path": "../outside", "reason": "r"}])
+
+
 class TestSigningPlan:
     def test_no_certificate_means_unsigned_and_says_so(self):
         plan = sign.plan_signing(env={}, signtool="signtool.exe")

@@ -10,6 +10,12 @@
     "embed_sha256_note": "Computed from the python.org download on 2026-10-02; its MD5 (6d9aa08531d48fcc261ba667e2df17c4) matches the md5_sum python.org publishes for this file in its downloads API. python.org publishes no sha256 for 3.11.9."
   },
   "payload_exclude": ["tests/", ".github/", ".claude/", ".continuum/"],
+  "payload_prune": [
+    {"path": "runtime/Lib/site-packages/share/jupyter",
+     "reason": "JupyterLab/notebook front-end assets that ipywidgets installs for notebook use (pulled in by open3d's optional web visualizer). The desktop app never runs Jupyter; three of these webpack chunks have paths over 220 characters, which put the installed path past Windows' 260-character MAX_PATH."}
+  ],
+  "max_relative_path": 190,
+  "max_relative_path_note": "Longest payload path (relative to the install folder) the build accepts. The default per-user folder LOCALAPPDATA/Programs/OpenDroneKit/ is about 52 characters plus the user name; 190 keeps every installed path under MAX_PATH (260) for user names up to about 18 characters, and the embedded Python does not opt into long paths.",
   "forbidden_payload_globs": [
     "*.onnx", "*.onnx.data", "*.pt", "*.pth", "*.ckpt", "*.safetensors",
     ".env", "*.key", "*.pem", "*.pfx", "kaggle.json", "access_token", "secrets.json",

@@ -51,7 +51,7 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO))
 
 from tools.installer.manifest import (  # noqa: E402
-    build_manifest, forbidden_files, payload_paths, sha256_file, write_manifest,
+    build_manifest, forbidden_files, payload_paths, sha256_file, too_long_paths, write_manifest,
 )
 from tools.installer.sign import plan_signing  # noqa: E402
 
@@ -297,6 +297,25 @@ SHA256SUMS.txt from the same GitHub release:
 """
 
 
+def prune_payload(stage: Path, rules: list[dict]) -> list[str]:
+    """Remove named third-party folders the app never uses. Each rule in config.json
+    carries its reason; a rule without one, or with a path outside the stage, is refused
+    rather than applied."""
+    pruned = []
+    for rule in rules:
+        if not rule.get("reason"):
+            raise SystemExit(f"[build] payload_prune rule without a reason: {rule}")
+        rel = Path(rule["path"])
+        if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+            raise SystemExit(f"[build] unsafe payload_prune path: {rule['path']}")
+        target = stage / rel
+        if target.exists():
+            shutil.rmtree(target) if target.is_dir() else target.unlink()
+            log(f"pruned {rule['path']} (reason in config.json)")
+            pruned.append(rule["path"])
+    return pruned
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the OpenDroneKit Windows installer.")
     parser.add_argument("--out", required=True, help="build root (cache/, stage/, dist/)")
@@ -374,9 +393,16 @@ def main(argv: list[str] | None = None) -> int:
         "embed_sha256": cfg["python"]["embed_sha256"], "lock_sha256": sha256_file(LOCK),
         "packages": packages, **git_meta,
     }
+    prune_payload(stage, cfg.get("payload_prune", []))
     allow = [a["path"] for a in cfg.get("forbidden_payload_allow", [])]
     # Checked on the file list first: hashing ~30k files is slow, a refusal should not be.
-    bad = forbidden_files(payload_paths(stage), cfg["forbidden_payload_globs"], allow)
+    paths = payload_paths(stage)
+    limit = int(cfg.get("max_relative_path", 190))
+    long = too_long_paths(paths, limit)
+    if long:
+        raise SystemExit(f"[build] REFUSED: {len(long)} payload path(s) longer than {limit} characters "
+                         f"would pass MAX_PATH once installed: {long[:5]}")
+    bad = forbidden_files(paths, cfg["forbidden_payload_globs"], allow)
     if bad:
         raise SystemExit(f"[build] REFUSED: forbidden files in the payload (weights/secrets/SDKs): {bad[:20]}")
     log("hashing the payload for install_manifest.json")

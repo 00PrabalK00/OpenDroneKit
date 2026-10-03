@@ -147,6 +147,13 @@ def forbidden_files(manifest: dict[str, Any] | Iterable[str], patterns: Iterable
     return hits
 
 
+def too_long_paths(paths: Iterable[str], limit: int) -> list[str]:
+    """Relative payload paths longer than ``limit`` characters, longest first. Such a
+    file would exceed MAX_PATH once installed under a normal folder, and neither Inno
+    Setup's extraction nor the embedded Python's imports can be relied on past it."""
+    return sorted((rel for rel in paths if len(rel) > limit), key=len, reverse=True)
+
+
 def payload_paths(root: Path) -> list[str]:
     return [path.relative_to(root).as_posix() for path in iter_payload(Path(root))]
 
