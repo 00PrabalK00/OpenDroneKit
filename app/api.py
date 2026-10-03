@@ -6172,13 +6172,18 @@ class Api:
         Pre-arm failures ("PreArm: ..."), mode changes and failsafes arrive here as the
         autopilot sent them, with its severity; `source` is "vehicle" for those and
         "station" for the link changes this ground station observed. `since` is the
-        last `seq` the caller has, so a poll only carries what is new. Messages from a
-        simulated driver carry `is_simulated`.
+        last `seq` the caller has, so a poll only carries what is new; `reset` says a
+        new connection began a new log. Messages from a simulated driver carry
+        `is_simulated`.
         """
         link = self._session.vehicle.to_dict()
-        messages = self._session.messages_since(int(since or 0))
-        return ok(messages=messages,
-                  last_seq=messages[-1]["seq"] if messages else int(since or 0),
+        since = int(since or 0)
+        # A new connection starts a new log numbered from one; a caller still holding
+        # the old numbering is told to start again rather than silently given nothing.
+        reset = since > self._session.last_message_seq()
+        messages = self._session.messages_since(0 if reset else since)
+        return ok(messages=messages, reset=reset,
+                  last_seq=messages[-1]["seq"] if messages else (0 if reset else since),
                   connected=bool(link.get("connected")),
                   driver=link.get("driver", ""),
                   is_simulated=bool(link.get("is_simulated")))

@@ -64,10 +64,17 @@ class TestVehicleMessages:
 
     def test_a_new_connection_starts_a_new_log(self, api):
         api.connect_vehicle("mock://", "mock")
-        api.vehicle_command("arm")
+        for command in ("arm", "disarm", "arm"):
+            api.vehicle_command(command)
+        held = api.vehicle_messages(0)["last_seq"]
+        assert held == 3
         api.connect_vehicle("mock://again", "mock")
-        texts = [m["text"] for m in api.vehicle_messages(0)["messages"]]
-        assert "Armed." not in texts
+        assert api.vehicle_messages(0)["messages"] == []
+        api.vehicle_command("arm")
+        # A caller still holding the old numbering is told the log started again.
+        again = api.vehicle_messages(held)
+        assert again["reset"] is True
+        assert [(m["seq"], m["text"]) for m in again["messages"]] == [(1, "Armed.")]
 
     def test_an_autopilot_statustext_reaches_the_log(self, api):
         from fake_mavlink_vehicle import FakeVehicle, free_udp_port

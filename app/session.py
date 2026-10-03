@@ -505,6 +505,7 @@ class AppSession:
         self.preflight_acknowledged = set()
         with self._message_lock:
             self.vehicle_messages.clear()
+            self._message_seq = 0
         self._link_was_lost = False
         subscribe = getattr(client, "subscribe", None)
         if callable(subscribe):
@@ -565,6 +566,10 @@ class AppSession:
                 "driver": self.vehicle.driver,
                 "is_simulated": _is_simulated(self.vehicle.driver),
             })
+
+    def last_message_seq(self) -> int:
+        with self._message_lock:
+            return self._message_seq
 
     def messages_since(self, since: int = 0) -> list[dict[str, Any]]:
         with self._message_lock:
