@@ -11,7 +11,7 @@ This is the "nothing dropped" ledger for the rebuild. `tests/test_ui_v1_inventor
 | Rows | 182 |
 | Native menu items covered | 66 |
 | Cockpit ACTIONS keys covered | 132 |
-| Api methods covered (plus 1 internal) | 218 |
+| Api methods covered (plus 1 internal) | 224 |
 | Methods reached by neither old UI, now given a home (★) | 36 |
 | Placement: artboard (drawn in an approved artboard) | 105 |
 | Placement: proposed (placed with an approved component pattern, not drawn) | 65 |
@@ -53,23 +53,23 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 | Id | Feature | Menu | Actions | Api | New home | Placement |
 |---|---|---|---|---|---|---|
 | `home.new-project` | New project | `project.new` | `New Project` | `pick_folder`, `create_project`, `set_active_project` | "New project" | artboard |
-| `home.open-project` | Open project | `project.open` | `Open` | `list_projects`, `set_active_project` | Projects list | artboard |
+| `home.open-project` | Open project | `project.open` | `Open` | `list_projects`, `set_active_project`, `home_projects` | Projects list | artboard |
 | `home.open-project-folder` | Open project folder | `project.reveal` | — | `get_state`, `get_project`, `open_path` | Icon button "Open project folder" | artboard |
 | `home.import-imagery` | Import imagery | `data.import_imagery` | `Import` | `pick_folder`, `import_dataset`, `set_active_dataset` | "Import photos" | artboard |
-| `home.dataset-list-and-selection` | Dataset list and selection | — | — | `list_datasets`, `list_dataset_images`, `set_active_dataset` | PHOTOS tile opens a datasets popover; also Process › INPUT | artboard+proposed |
-| `home.project-summary-tiles` | Project summary tiles | — | — | `get_project`, `get_state`, `list_layers`, `list_dataset_images` | Tiles: PHOTOS, SURVEY DATE, BOUNDARY, GRID MISSION, FINDINGS | artboard |
-| `home.reconstruction-card` | Reconstruction card | — | — | `list_jobs`, `list_layers` | Reconstruction card | artboard |
+| `home.dataset-list-and-selection` | Dataset list and selection | — | — | `list_datasets`, `list_dataset_images`, `set_active_dataset`, `dataset_summary` | PHOTOS tile opens a datasets popover; also Process › INPUT | artboard+proposed |
+| `home.project-summary-tiles` | Project summary tiles | — | — | `get_project`, `get_state`, `list_layers`, `list_dataset_images`, `dataset_summary`, `list_mission_versions`, `find_annotations`, `pipeline_reports`, `measure_geometry`, `get_project_crs` | Tiles: PHOTOS, SURVEY DATE, BOUNDARY, GRID MISSION, FINDINGS | artboard |
+| `home.reconstruction-card` | Reconstruction card | — | — | `list_jobs`, `list_layers`, `reconstruction_summary` | Reconstruction card | artboard |
 | `home.measurements-card` | Measurements card | — | — | `list_measurements` | Measurements card → "Open in Analyse" | artboard |
-| `home.report-card` | Report card | — | — | `list_reports`, `report_readiness` | Report card → Open / Regenerate | artboard |
-| `home.exports-card` | Exports card | — | — | `get_state` | Exports card | artboard · unbacked |
+| `home.report-card` | Report card | — | — | `list_reports`, `report_readiness`, `report_files`, `open_report`, `generate_report` | Report card → Open / Regenerate | artboard |
+| `home.exports-card` | Exports card | — | — | `get_state`, `list_exports`, `open_path` | Exports card | artboard |
 | `home.recent-activity-and-full-audit-log` | Recent activity and full audit log | `tools.audit` | — | `audit_log` | Recent activity + "View all activity" | artboard |
 | `home.notifications` | Notifications | `report.notifications` | — | `list_notifications`, `mark_all_notifications_read`, `mark_notification_read` ★, `clear_notifications` ★ | Recent activity gets a "Notifications" tab (per-row mark read, Clear); unread dot on the Home tab | proposed |
 | `home.project-tags` | Project tags | — | — | `list_annotation_tags` | Project card chip row → Review filter | proposed |
 | `home.share-read-only-link` | Share read-only link | — | `Share` | `create_share_link` | Project overflow menu (…) | proposed |
 | `home.revoke-links` | Revoke links | — | `Revoke Links` | `list_share_links`, `revoke_share_link` | Project overflow menu | proposed |
 | `home.sync-a-refresh-in-reality` | Sync (a refresh in reality) | — | `Sync` | `list_projects`, `list_jobs` | Left-panel SYNC row "offline · disabled"; the refresh goes in the palette | artboard |
-| `home.system-status` | System status | — | — | `capabilities`, `verify_models` | Left-panel BUILD row → Settings | artboard |
-| `home.storage-used` | Storage used | — | — | — | Left-panel STORAGE row | artboard · unbacked |
+| `home.system-status` | System status | — | — | `capabilities`, `verify_models`, `model_status` | Left-panel BUILD row → Settings | artboard |
+| `home.storage-used` | Storage used | — | — | `project_storage` | Left-panel STORAGE row | artboard |
 | `home.fleet-summary` | Fleet summary | — | — | `fleet_status` | Moves to Fleet (not on the Home artboard) | artboard |
 | `home.load-demo-workflow` | Load demo workflow | — | — | `demo_workflow` ★ | Settings › About › "Load demo project" (output is marked synthetic) | proposed |
 
@@ -334,7 +334,7 @@ Columns: **Menu** native menu ids (payload variants in braces); **Actions** cock
 
 Owner decision 2026-09-29: build the backend for every one of these, for real and with tests. Until then none may show an invented value.
 
-- Home: STORAGE disk used; Exports list.
+- Home: STORAGE disk used; Exports list. Built in U4 (project_storage, list_exports).
 - Process: stage timeline with per-stage timings.
 - Analyse: Contours layer; "Add to report" (the report takes all measurements); cursor ELEV.
 - Review: Reclassify, unless `desktop_ops.review_finding` accepts it (verify).

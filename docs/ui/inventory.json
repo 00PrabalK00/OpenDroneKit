@@ -401,7 +401,8 @@
    ],
    "api": [
     "list_projects",
-    "set_active_project"
+    "set_active_project",
+    "home_projects"
    ],
    "star_methods": [],
    "new_home": "Projects list",
@@ -464,7 +465,8 @@
    "api": [
     "list_datasets",
     "list_dataset_images",
-    "set_active_dataset"
+    "set_active_dataset",
+    "dataset_summary"
    ],
    "star_methods": [],
    "new_home": "PHOTOS tile opens a datasets popover; also Process › INPUT",
@@ -484,7 +486,13 @@
     "get_project",
     "get_state",
     "list_layers",
-    "list_dataset_images"
+    "list_dataset_images",
+    "dataset_summary",
+    "list_mission_versions",
+    "find_annotations",
+    "pipeline_reports",
+    "measure_geometry",
+    "get_project_crs"
    ],
    "star_methods": [],
    "new_home": "Tiles: PHOTOS, SURVEY DATE, BOUNDARY, GRID MISSION, FINDINGS",
@@ -502,7 +510,8 @@
    "actions": [],
    "api": [
     "list_jobs",
-    "list_layers"
+    "list_layers",
+    "reconstruction_summary"
    ],
    "star_methods": [],
    "new_home": "Reconstruction card",
@@ -537,7 +546,10 @@
    "actions": [],
    "api": [
     "list_reports",
-    "report_readiness"
+    "report_readiness",
+    "report_files",
+    "open_report",
+    "generate_report"
    ],
    "star_methods": [],
    "new_home": "Report card → Open / Regenerate",
@@ -554,13 +566,15 @@
    "menu": [],
    "actions": [],
    "api": [
-    "get_state"
+    "get_state",
+    "list_exports",
+    "open_path"
    ],
    "star_methods": [],
    "new_home": "Exports card",
    "placement": "artboard",
-   "placement_note": "A (Gap: there is no \"list exports\" Api)",
-   "unbacked": true,
+   "placement_note": "A (backend built in U4: list_exports reads the exporters' folders and the folders the audit log records)",
+   "unbacked": false,
    "origin": "REBUILD_PLAN section 1"
   },
   {
@@ -692,7 +706,8 @@
    "actions": [],
    "api": [
     "capabilities",
-    "verify_models"
+    "verify_models",
+    "model_status"
    ],
    "star_methods": [],
    "new_home": "Left-panel BUILD row → Settings",
@@ -708,12 +723,14 @@
    "sources": "—",
    "menu": [],
    "actions": [],
-   "api": [],
+   "api": [
+    "project_storage"
+   ],
    "star_methods": [],
    "new_home": "Left-panel STORAGE row",
    "placement": "artboard",
-   "placement_note": "A (Gap)",
-   "unbacked": true,
+   "placement_note": "A (backend built in U4: project_storage, bytes on disk and free space)",
+   "unbacked": false,
    "origin": "REBUILD_PLAN section 1"
   },
   {
@@ -4447,7 +4464,8 @@
    "review.run-model-prelabel-grade-corrosion",
    "review.installed-models-detectors",
    "review.thermal-inventory-module-anomaly-summary",
-   "settings.model-registry-verify"
+   "settings.model-registry-verify",
+   "home.system-status"
   ],
   "verify_models": [
    "home.system-status",
@@ -4490,7 +4508,8 @@
   ],
   "measure_geometry": [
    "plan.measure-on-the-map",
-   "analyse.select-distance-area-volume-profile-annotate"
+   "analyse.select-distance-area-volume-profile-annotate",
+   "home.project-summary-tiles"
   ],
   "set_terrain_source": [
    "plan.terrain-source-cache-coverage"
@@ -4673,7 +4692,8 @@
    "analyse.findings-on-the-model",
    "review.review-queue-and-filters-all-label-runs-refused",
    "review.thermal-inventory-module-anomaly-summary",
-   "report.included-findings"
+   "report.included-findings",
+   "home.project-summary-tiles"
   ],
   "model_scene": [
    "analyse.3d-mesh-point-cloud",
@@ -4839,20 +4859,23 @@
   ],
   "generate_report": [
    "report.generate-regenerate-type-title-author-org-client",
-   "report.branding"
+   "report.branding",
+   "home.report-card"
   ],
   "list_reports": [
    "home.report-card",
    "report.generated-reports-open"
   ],
   "pipeline_reports": [
-   "report.pipeline-inspection-report"
+   "report.pipeline-inspection-report",
+   "home.project-summary-tiles"
   ],
   "read_pipeline_report": [
    "report.pipeline-inspection-report"
   ],
   "open_report": [
-   "report.generated-reports-open"
+   "report.generated-reports-open",
+   "home.report-card"
   ],
   "save_report_template": [
    "report.report-types-templates-save-template"
@@ -4940,7 +4963,8 @@
    "shell.cursor-lat-lon-crs-scale",
    "process.crs",
    "settings.units-crs",
-   "shell.map-crs-chip"
+   "shell.map-crs-chip",
+   "home.project-summary-tiles"
   ],
   "set_project_crs": [
    "process.crs",
@@ -5074,7 +5098,8 @@
   "list_mission_versions": [
    "plan.history-and-restore",
    "fly.mission-queue",
-   "analyse.twin-scene-timeline-history"
+   "analyse.twin-scene-timeline-history",
+   "home.project-summary-tiles"
   ],
   "mission_version_history": [
    "plan.history-and-restore"
@@ -5171,7 +5196,8 @@
    "home.open-project-folder",
    "plan.export-6-formats",
    "process.outputs-reveal-export",
-   "fleet.export-fleet-register"
+   "fleet.export-fleet-register",
+   "home.exports-card"
   ],
   "raster_tiles": [
    "analyse.deep-zoom-project-rasters"
@@ -5187,6 +5213,25 @@
   ],
   "sample_elevation": [
    "shell.footer-elevation"
+  ],
+  "home_projects": [
+   "home.open-project"
+  ],
+  "dataset_summary": [
+   "home.dataset-list-and-selection",
+   "home.project-summary-tiles"
+  ],
+  "reconstruction_summary": [
+   "home.reconstruction-card"
+  ],
+  "report_files": [
+   "home.report-card"
+  ],
+  "list_exports": [
+   "home.exports-card"
+  ],
+  "project_storage": [
+   "home.storage-used"
   ]
  },
  "internal_api": {
@@ -5232,7 +5277,7 @@
  ],
  "unreached_note": "REBUILD_PLAN section 0 heads this list (38) but names 36 methods; these are the 36 named.",
  "unbacked_design_elements": [
-  "Home: STORAGE disk used; Exports list.",
+  "Home: STORAGE disk used; Exports list. Built in U4 (project_storage, list_exports).",
   "Process: stage timeline with per-stage timings.",
   "Analyse: Contours layer; \"Add to report\" (the report takes all measurements); cursor ELEV.",
   "Review: Reclassify, unless `desktop_ops.review_finding` accepts it (verify).",
