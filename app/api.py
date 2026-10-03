@@ -408,11 +408,13 @@ class Api:
     # -- map geometry ----------------------------------------------------
 
     @guard
-    def set_aoi(self, polygon_lonlat: list[list[float]]) -> dict[str, Any]:
+    def set_aoi(self, polygon_lonlat: list[list[float]], source: str = "") -> dict[str, Any]:
         """Store the area of interest drawn on the map.
 
         This replaces the hardcoded survey polygon the previous UI used for every
-        mission: planning now uses whatever the operator actually drew.
+        mission: planning now uses whatever the operator actually drew. `source` says
+        where the ring came from when it was not drawn by hand (the Plan screen's vertex
+        editor passes "edited", so a moved hull is not still called a hull).
         """
         from core import geo
 
@@ -420,6 +422,7 @@ class Api:
         # raised a TypeError at the operator instead of clearing anything.
         if not polygon_lonlat:
             self._session.aoi_polygon = []
+            self._session.aoi_source = ""
             return ok(vertices=0, area_m2=0.0, cleared=True)
         ring = [[float(p[0]), float(p[1])] for p in polygon_lonlat if len(p) >= 2]
         if len(ring) < 3:
@@ -437,6 +440,7 @@ class Api:
                 f"(limit {MAX_AOI_AREA_M2 / 1e6:,.0f} km2). Zoom in and draw the site, or "
                 "split it into several areas.")
         self._session.aoi_polygon = ring
+        self._session.aoi_source = str(source or "drawn on the map")
 
         return ok(
             vertices=len(ring),
@@ -562,6 +566,7 @@ class Api:
 
         if apply_as_aoi:
             self._session.aoi_polygon = [list(point) for point in boundary["polygon"]]
+            self._session.aoi_source = f"flown corners · {boundary['corner_count']}"
             self._session.audit("boundary_flown", {
                 "corners": boundary["corner_count"],
                 "area_hectares": boundary["area_hectares"],
@@ -873,7 +878,16 @@ class Api:
         )
 
         templates = available_templates()
+        # What each type surveys, for the Plan screen's grouped list: an area, a
+        # structure, or a capture pattern around a point or along a line. A type the
+        # table does not know lands in "other" rather than disappearing from the list.
+        groups: dict[str, list[str]] = {"area": [], "structure": [], "capture": [], "other": []}
+        for name in [*templates, *SPECIAL_MISSION_TYPES]:
+            groups[_TEMPLATE_GROUP.get(name, "other")].append(name)
+        if not groups["other"]:
+            del groups["other"]
         return ok(
+            groups=groups,
             templates=templates,
             # Planned by mission/mission_types.py rather than one planner template, and
             # reached through plan_mission with the same template field.
@@ -5174,6 +5188,7 @@ class Api:
             return fail(str(exc))
 
         self._session.aoi_polygon = [list(point) for point in polygon]
+        self._session.aoi_source = f"file · {Path(path).name}"
         summary = describe_boundary(polygon)
         self._session.audit("boundary_imported",
                             {"path": str(path), "points": summary["point_count"],
@@ -5337,6 +5352,8 @@ class Api:
         """
         self._session.mission_plan = plan
         self._session.mission_plan_dict = _plan_to_dict(plan)
+        # A new plan is not any saved version until it is saved (or loaded from one).
+        self._session.mission_identity = None
         if extra:
             self._session.mission_plan_dict.update(extra)
         # Whatever was uploaded before is not this plan, and nothing about it has been
@@ -5561,6 +5578,10 @@ class Api:
             kwargs["gimbal_tilt_deg"] = float(opts["gimbal_tilt_deg"])
         if self._given(opts, "dwell_s"):
             kwargs["inspection_dwell_s"] = float(opts["dwell_s"])
+        # The heading of the survey lines (the Plan screen's "Rotate flight lines" tool
+        # and Advanced > Line heading). The planner always took it; nothing passed it on.
+        if self._given(opts, "flight_direction_deg"):
+            kwargs["flight_direction_deg"] = float(opts["flight_direction_deg"]) % 360.0
         if opts.get("camera"):
             kwargs["camera"] = str(opts["camera"])
         kwargs.update(self._terrain_kwargs(opts))
@@ -5809,7 +5830,10 @@ class Api:
             except Exception as exc:  # noqa: BLE001
                 written[name] = f"failed: {type(exc).__name__}: {exc}"
         self._session.audit("mission_exported", {"formats": selected, "directory": str(target)})
-        return ok(written=written, directory=str(target))
+        # The size of each file written, so the screen can show what was produced.
+        sizes = {key: Path(value).stat().st_size for key, value in written.items()
+                 if not str(value).startswith("failed") and Path(value).is_file()}
+        return ok(written=written, directory=str(target), bytes=sizes)
 
     @guard
     def save_mission(self, name: str = "", note: str = "") -> dict[str, Any]:
@@ -5845,6 +5869,10 @@ class Api:
             },
             note=note,
         )
+        # The plan on screen is now this saved version (mission_overview names it).
+        self._session.mission_identity = {
+            "name": entry.get("mission_name") or name or "mission",
+            "version_num": entry.get("version_num"), "plan_ref": id(plan)}
         return ok(version=entry)
 
     @guard
@@ -5904,6 +5932,202 @@ class Api:
                             {"from_version": version_num,
                              "new_version": entry.get("version_num")})
         return ok(version=entry)
+
+    # -- the Plan screen (v1 interface) -----------------------------------
+    # What the Plan workspace reads back about the area and the mission on screen. The
+    # planner's reply to plan_mission is said once; a screen opened later, a re-render
+    # or Field mode had no way to read it again, and the waypoint inspector, altitude
+    # profile and photo footprints had no source at all (mission/overview.py).
+
+    @guard
+    def mission_overview(self) -> dict[str, Any]:
+        """The area of interest and the planned mission, as the Plan screen shows them."""
+        from core import geo
+        from mission.overview import overview
+
+        session = self._session
+        ring = session.aoi_polygon or []
+        aoi = {
+            "set": len(ring) >= 3,
+            "vertices": len(ring),
+            "area_m2": round(geo.polygon_area_m2(ring), 2) if len(ring) >= 3 else None,
+            "source": (getattr(session, "aoi_source", "") or "drawn on the map") if len(ring) >= 3 else "",
+            "polygon": ring,
+        }
+        common = {
+            "aoi": aoi,
+            "no_fly_count": len(session.no_fly_polygons or []),
+            "boundary_marks": len(getattr(session, "boundary_marks", []) or []),
+            "terrain_source": session.terrain_source_path or "",
+        }
+        plan = session.mission_plan_dict or {}
+        if not plan:
+            return ok(**common, plan=None, saved=None, warnings=[])
+
+        footprint_at = None
+        camera_note = ""
+        try:
+            from mission.cameras import resolve
+
+            profile, known = resolve(str(plan.get("camera") or ""))
+            if known:
+                footprint_at = profile.footprint_m
+            else:
+                camera_note = (f"{plan.get('camera')!r} is not a known camera, so no photo "
+                               "footprints are drawn.")
+        except Exception as exc:  # noqa: BLE001 - a footprint is optional, the plan is not
+            camera_note = f"No photo footprints: {exc}"
+
+        ground_at = None
+        terrain_note = ""
+        if session.terrain_source_path:
+            try:
+                from core.coverage_validation import _terrain_sampler
+
+                ground_at, _dataset = _terrain_sampler(session.terrain_source_path)
+            except Exception as exc:  # noqa: BLE001 - CSV / ASCII sources are not rasters
+                terrain_note = f"The terrain under the route could not be sampled: {exc}"
+        home = plan.get("home_elevation_amsl_m")
+        view = overview(plan, footprint_at=footprint_at, ground_at=ground_at,
+                        home_ground_m=None if home is None else float(home))
+        if camera_note:
+            view["footprint_basis"] = camera_note
+        if terrain_note:
+            view["terrain"]["note"] = terrain_note
+        identity = getattr(session, "mission_identity", None) or {}
+        saved = ({"name": identity.get("name"), "version_num": identity.get("version_num")}
+                 if identity.get("plan_ref") == id(plan) else None)
+        return ok(**common, plan=view, saved=saved,
+                  warnings=list(getattr(session, "mission_plan_warnings", []) or []))
+
+    @guard
+    def aoi_from_images(self) -> dict[str, Any]:
+        """Make the area of interest the hull round the survey's camera positions.
+
+        Read from the active dataset's own geotags; with no geotagged dataset, from a
+        camera-position layer in the project (a reconstruction's camera track). The
+        source is recorded, so the screen says "hull · 77 cameras" rather than
+        presenting the outline as surveyed.
+        """
+        from core import geo
+        from mission.overview import camera_hull
+
+        from .session import SUPPORTED_IMAGE_EXTENSIONS
+
+        points: list[list[float]] = []
+        origin = ""
+        folder = self._session.active_dataset_dir
+        if folder and Path(folder).is_dir():
+            images = sorted(p for p in Path(folder).iterdir()
+                            if p.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS)
+            fixes = geo.collect_gps_fixes(images)
+            points = [[fix.longitude, fix.latitude] for fix in fixes.values()]
+            origin = "geotags"
+        if len(points) < 3:
+            for layer in self._session.layers.values():
+                if layer.kind != "vector" or not layer.path:
+                    continue
+                if not re.search(r"camera|capture position", str(layer.name or ""), re.I):
+                    continue
+                try:
+                    data = json.loads(Path(layer.path).read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                found = [list(map(float, f["geometry"]["coordinates"][:2]))
+                         for f in data.get("features") or []
+                         if (f.get("geometry") or {}).get("type") == "Point"]
+                if len(found) >= 3:
+                    points, origin = found, f"layer {layer.name}"
+                    break
+        if len(points) < 3:
+            return fail("No camera positions to outline: select a geotagged dataset, or add "
+                        "the reconstruction's camera positions as a layer.")
+        ring = camera_hull(points)
+        if len(ring) < 3:
+            return fail("The camera positions lie on a line, so they enclose no area.")
+        result = self.set_aoi(ring, f"hull · {len(points)} cameras")
+        if not result.get("ok"):
+            return result
+        self._session.audit("aoi_from_images", {"cameras": len(points), "origin": origin})
+        return ok(polygon=ring, cameras=len(points), origin=origin,
+                  vertices=result["vertices"], area_m2=result["area_m2"])
+
+    @guard
+    def load_mission_version(self, version_num: int, name: str = "") -> dict[str, Any]:
+        """Put a saved version back on screen by planning it again from its saved inputs.
+
+        A saved version keeps its inputs (template, camera, overlaps, altitude, speed,
+        line heading, area, no-fly zones, altitude limits) and its result. Re-planning
+        from the inputs gives a plan that can be exported, uploaded and edited; the
+        answer says whether it matches what was saved, rather than assuming it does.
+        """
+        versions = self._session.store.list_mission_versions(
+            self._session.project_id(), name or None)
+        entry = next((v for v in versions
+                      if int(v.get("version_num", 0)) == int(version_num)), None)
+        if entry is None:
+            available = ", ".join(str(v.get("version_num")) for v in versions) or "none"
+            return fail(f"No version {version_num}. Saved versions: {available}.")
+        saved = _saved_version_as_plan(entry)
+        polygon = [list(map(float, p[:2])) for p in (saved.get("polygon") or [])]
+        if len(polygon) >= 2 and polygon[0] == polygon[-1]:
+            polygon = polygon[:-1]
+        if len(polygon) < 3:
+            return fail(f"Version {version_num} has no saved area to plan over.")
+        mission = str(entry.get("mission_name") or name or "mission")
+        safety = saved.get("safety_constraints") or {}
+        self._session.aoi_polygon = polygon
+        self._session.aoi_source = f"saved · {mission} v{version_num}"
+        self._session.no_fly_polygons = [list(map(list, ring))
+                                         for ring in (safety.get("no_fly_polygons") or [])]
+        options: dict[str, Any] = {"template": saved.get("template") or entry.get("template") or "grid"}
+        for key in ("camera", "altitude_m", "front_overlap_pct", "side_overlap_pct",
+                    "speed_m_s", "flight_direction_deg"):
+            if saved.get(key) is not None:
+                options[key] = saved[key]
+        for key in ("min_altitude_m", "max_altitude_m", "rth_altitude_m", "standoff_m"):
+            if safety.get(key) is not None:
+                options[key] = safety[key]
+        result = self.plan_mission(options)
+        if not result.get("ok"):
+            return fail(f"Version {version_num} could not be planned again: {result.get('error')}")
+        planned = int(result["summary"]["waypoints"])
+        expected = len(saved.get("waypoints") or [])
+        differences = []
+        if expected and planned != expected:
+            differences.append(f"{planned} waypoints now, {expected} when saved")
+        if saved.get("terrain_follow_enabled") and not self._session.terrain_source_path:
+            differences.append("it was saved terrain-following; no terrain model is loaded now")
+        self._session.mission_identity = {"name": mission, "version_num": int(version_num),
+                                          "plan_ref": id(self._session.mission_plan_dict)}
+        self._session.audit("mission_version_loaded",
+                            {"mission": mission, "version": int(version_num),
+                             "matches": not differences})
+        return ok(name=mission, version_num=int(version_num), summary=result["summary"],
+                  warnings=result.get("warnings", []), matches_saved=not differences,
+                  saved_waypoints=expected, differences=differences)
+
+    @guard
+    def list_mission_exports(self) -> dict[str, Any]:
+        """Mission files written by export_mission for this project, newest first."""
+        from mission import exporters
+
+        folder = self._session.project_root() / "missions"
+        if not folder.is_dir():
+            return ok(directory=str(folder), exports=[])
+        suffix_format = {suffix: name for name, (_writer, suffix) in exporters.EXPORTERS.items()}
+        runs: dict[str, list[dict[str, Any]]] = {}
+        for path in folder.iterdir():
+            match = re.match(r"^(mission_\d{8}T\d{6}Z)(_.+)?(\.[A-Za-z]+)$", path.name)
+            if not match or not path.is_file():
+                continue
+            stem, _part, suffix = match.groups()
+            runs.setdefault(stem, []).append({
+                "format": suffix_format.get(suffix.lower(), suffix.lstrip(".")),
+                "name": path.name, "path": str(path), "bytes": path.stat().st_size})
+        exports = [{"stamp": stem[len("mission_"):], "files": sorted(files, key=lambda f: f["name"])}
+                   for stem, files in sorted(runs.items(), reverse=True)]
+        return ok(directory=str(folder), exports=exports)
 
     # -- vehicle ---------------------------------------------------------
 
@@ -6850,3 +7074,15 @@ def _plan_to_dict(plan: Any) -> dict[str, Any]:
     if isinstance(plan, dict):
         return plan
     return {key: getattr(plan, key) for key in dir(plan) if not key.startswith("_") and not callable(getattr(plan, key))}
+
+
+#: The Plan screen's grouping of mission types (mission_templates `groups`).
+_TEMPLATE_GROUP = {
+    **dict.fromkeys(("grid", "double_grid", "corridor", "smart_adaptive", "solar_inspection",
+                     "magnetic_mapping", "thermal", "multispectral", "closed_loop"), "area"),
+    **dict.fromkeys(("facade", "multi_facade", "tower_mapping", "orbit", "roof_inspection",
+                     "wind_turbine", "pylon_inspection", "facade_mapping", "dome_inspection",
+                     "box_inspection"), "structure"),
+    **dict.fromkeys(("panorama", "bubble_360", "waypoints", "linear_inspection",
+                     "lateral_capture", "linked_mission"), "capture"),
+}
