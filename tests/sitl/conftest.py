@@ -116,7 +116,7 @@ def sitl_client(sitl_connection):
 
 
 @pytest.fixture
-def sitl_observer(sitl_observer_connection):
+def sitl_observer(sitl_session, sitl_observer_connection):
     os.environ.setdefault("MAVLINK20", "1")
     from pymavlink import mavutil
 
@@ -127,6 +127,11 @@ def sitl_observer(sitl_observer_connection):
     if heartbeat is None:
         observer.close()
         pytest.fail("The independent SITL telemetry observer received no heartbeat.")
+    if getattr(sitl_session, "direct_links", False):
+        # On the autopilot's own SERIAL1 (the Docker launcher) nothing else asks for this
+        # port's telemetry: without the request the observer hears only HEARTBEATs.
+        observer.mav.request_data_stream_send(observer.target_system, observer.target_component,
+                                              mavutil.mavlink.MAV_DATA_STREAM_ALL, 4, 1)
     try:
         yield observer
     finally:

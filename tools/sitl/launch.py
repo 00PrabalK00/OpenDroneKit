@@ -32,6 +32,42 @@ SITL_HOME_ALT_M = 584.0
 SITL_HOME_HEADING_DEG = 0.0
 
 
+def _home_from_environment() -> None:
+    """ODK_SITL_HOME="lat,lon[,alt_m[,heading_deg]]" moves the simulated home.
+
+    ArduPilot's default home is Canberra Model Aircraft Club. A test that flies a real
+    site's mission (Aukerman Park, Ohio) needs the aircraft to start there, and the
+    tests read these constants for their geometry, so they follow the override.
+    """
+    global SITL_HOME_LAT, SITL_HOME_LON, SITL_HOME_ALT_M, SITL_HOME_HEADING_DEG
+    raw = os.environ.get("ODK_SITL_HOME", "").strip()
+    if not raw:
+        return
+    try:
+        values = [float(part) for part in raw.split(",")]
+    except ValueError as exc:
+        raise ValueError(f"ODK_SITL_HOME={raw!r} is not lat,lon[,alt_m[,heading_deg]]") from exc
+    if not 2 <= len(values) <= 4:
+        raise ValueError(f"ODK_SITL_HOME={raw!r} is not lat,lon[,alt_m[,heading_deg]]")
+    SITL_HOME_LAT, SITL_HOME_LON = values[0], values[1]
+    if len(values) > 2:
+        SITL_HOME_ALT_M = values[2]
+    if len(values) > 3:
+        SITL_HOME_HEADING_DEG = values[3]
+
+
+_home_from_environment()
+
+# ODK_SITL_DOCKER_IMAGE runs the simulator in that image (infrastructure/docker/
+# Dockerfile.sitl) from a host with no ArduPilot toolchain -- Windows, where the app's
+# UI and a browser run. There is no MAVProxy in between: the client and the observer are
+# the autopilot's own SERIAL0 and SERIAL1 TCP ports, published on loopback, so the app
+# talks to ArduPilot as it would over a telemetry link.
+DOCKER_ARDUPILOT_HOME = "/opt/ardupilot"
+DOCKER_SERIAL0_PORT = 5760
+DOCKER_SERIAL1_PORT = 5762
+
+
 class SITLUnavailable(RuntimeError):
     """The optional local SITL toolchain is not installed."""
 
@@ -120,6 +156,12 @@ def discover_sim_vehicle(
     )
 
 
+def _free_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 def _free_udp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -193,19 +235,60 @@ class ArduPilotSITL:
             if rebuild is not None
             else not _truthy_environment("ODK_SITL_NO_REBUILD")
         )
-        self.connection_port = _free_udp_port()
-        self.observer_port = _free_udp_port()
+        self.docker_image = os.environ.get("ODK_SITL_DOCKER_IMAGE", "").strip() or None
+        free_port = _free_tcp_port if self.docker_image else _free_udp_port
+        self.connection_port = free_port()
+        self.observer_port = free_port()
         while self.observer_port == self.connection_port:
-            self.observer_port = _free_udp_port()
-        self.connection_string = f"udpin:127.0.0.1:{self.connection_port}"
-        self.observer_connection_string = f"udpin:127.0.0.1:{self.observer_port}"
+            self.observer_port = free_port()
+        if self.docker_image:
+            self.connection_string = f"tcp:127.0.0.1:{self.connection_port}"
+            self.observer_connection_string = f"tcp:127.0.0.1:{self.observer_port}"
+            self.container_name: str | None = f"odk-sitl-{os.getpid()}-{self.connection_port}"
+        else:
+            self.connection_string = f"udpin:127.0.0.1:{self.connection_port}"
+            self.observer_connection_string = f"udpin:127.0.0.1:{self.observer_port}"
+            self.container_name = None
+        # The client and observer are the autopilot's own ports rather than MAVProxy
+        # outputs, so nothing requests telemetry streams on the observer's behalf.
+        self.direct_links = bool(self.docker_image)
         self.process: subprocess.Popen | None = None
         self._temporary_directory: tempfile.TemporaryDirectory[str] | None = None
         self._log_handle = None
         self.log_path: Path | None = None
         self._atexit_registered = False
 
+    def _build_docker_command(self) -> tuple[list[str], Path | None]:
+        docker = shutil.which("docker")
+        if docker is None:
+            raise SITLUnavailable("ODK_SITL_DOCKER_IMAGE is set, but docker is not on PATH.")
+        command = [
+            docker, "run", "--rm", "--name", str(self.container_name),
+            "-p", f"127.0.0.1:{self.connection_port}:{DOCKER_SERIAL0_PORT}",
+            "-p", f"127.0.0.1:{self.observer_port}:{DOCKER_SERIAL1_PORT}",
+        ]
+        inside: list[str] = []
+        for index, param_file in enumerate(self.param_files):
+            if not param_file.is_file():
+                raise SITLStartupError(f"SITL parameter file {param_file} does not exist.")
+            target = f"/odk-params/{index}-{param_file.name}"
+            command += ["-v", f"{param_file}:{target}:ro"]
+            inside.append(f"--add-param-file={target}")
+        command += [
+            "-w", DOCKER_ARDUPILOT_HOME, str(self.docker_image),
+            f"{DOCKER_ARDUPILOT_HOME}/Tools/autotest/sim_vehicle.py",
+            "-v", self.vehicle, "-f", SITL_FRAMES[self.vehicle], "-I", "0", "-w",
+            "-l", f"{SITL_HOME_LAT},{SITL_HOME_LON},{SITL_HOME_ALT_M},{SITL_HOME_HEADING_DEG}",
+            "--speedup", str(self.speedup), "--no-mavproxy", "--no-rebuild", *inside,
+        ]
+        extra = os.environ.get("ODK_SITL_EXTRA_ARGS", "").strip()
+        if extra:
+            command.extend(_split_command(extra))
+        return command, None
+
     def _build_command(self) -> tuple[list[str], Path | None]:
+        if self.docker_image:
+            return self._build_docker_command()
         base, source_root = discover_sim_vehicle(self._configured_command)
         command = [
             *base,
@@ -251,7 +334,8 @@ class ArduPilotSITL:
         work_dir = Path(self._temporary_directory.name)
         self.log_path = work_dir / "sitl.log"
         self._log_handle = self.log_path.open("w", encoding="utf-8", errors="replace")
-        command.extend(["--use-dir", str(work_dir)])
+        if not self.docker_image:
+            command.extend(["--use-dir", str(work_dir)])
 
         environment = os.environ.copy()
         environment["MAVLINK20"] = "1"
@@ -318,9 +402,20 @@ class ArduPilotSITL:
         status_text: deque[str] = deque(maxlen=12)
         ekf_flags = 0
         gps_fix = 0
-        connection = mavutil.mavlink_connection(
-            self.connection_string, autoreconnect=True, source_system=254
-        )
+        connection = None
+        while connection is None:
+            try:
+                connection = mavutil.mavlink_connection(
+                    self.connection_string, autoreconnect=True, source_system=254
+                )
+            except OSError:
+                # A published container port refuses until SITL listens behind it.
+                exited = self.process is not None and self.process.poll() is not None
+                if time.monotonic() >= deadline or exited:
+                    raise SITLStartupError(
+                        f"Could not reach SITL at {self.connection_string}.\n{self._log_tail()}"
+                    )
+                time.sleep(1.0)
         try:
             heartbeat_seen = False
             requested = False
@@ -378,6 +473,9 @@ class ArduPilotSITL:
         """Stop sim_vehicle and its child autopilot/MAVProxy processes."""
 
         process = self.process
+        if self.container_name and process is not None:
+            subprocess.run(["docker", "rm", "-f", self.container_name], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
         if process is not None and process.poll() is None:
             if os.name == "nt":
                 try:

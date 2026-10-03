@@ -208,13 +208,14 @@ class MavlinkTrace:
             return [e for e in self._entries if e.type in kinds and e.t >= since]
 
     def wait_for(self, kind: str, predicate: Callable[[dict], bool] = lambda d: True,
-                 since: float = 0.0, timeout_s: float = 10.0) -> TraceEntry | None:
+                 since: float = 0.0, timeout_s: float = 10.0,
+                 poll_s: float = 0.1) -> TraceEntry | None:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             for entry in self.messages(kind, since):
                 if predicate(entry.data):
                     return entry
-            time.sleep(0.1)
+            time.sleep(poll_s)
         return None
 
     def statustext(self, since: float = 0.0) -> list[str]:
