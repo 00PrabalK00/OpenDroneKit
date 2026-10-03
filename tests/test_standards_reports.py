@@ -94,10 +94,18 @@ class TestNoDefaults:
         assert items and all(i["status"] == MISSING and i["value"] is None for i in items)
         assert content["completeness"]["provided_items"] == 0
         assert all(c["status"] in (MISSING,) for c in content["checks"])
+        # Every open item is on the checklist once, and the draft says how many there are.
+        todo_ids = {t["id"] for t in content["todo"] if t["kind"] == "item"}
+        assert todo_ids == {i["id"] for i in items}
+        assert content["status"] == "DRAFT"
         result = generate_standards_report(key, {}, tmp_path / "r")
-        html = Path(result["html_path"]).read_text(encoding="utf-8")
-        assert html.count(">MISSING<") >= len(items)
-        assert _pdf_text(result["pdf_path"]).count("MISSING") >= len(items)
+        pdf = re.sub(r"\s+", " ", _pdf_text(result["pdf_path"]))
+        n = content["completeness"]["open_actions"]
+        assert f"DRAFT — {n} items to complete" in pdf
+        assert "Before this report can be issued" in pdf
+        # Open items are not scattered through the body as red MISSING.
+        assert "MISSING" not in pdf
+        assert rs.verify_report(result["output_dir"])["ok"]
 
     @pytest.mark.parametrize("key", sorted(TEMPLATES))
     def test_no_report_claims_compliance_or_certification(self, key, tmp_path):
@@ -129,6 +137,36 @@ class TestNoDefaults:
         assert items["general.inspector"]["source"] == "entered by operator"
         assert items["roof.covering_type"]["value"] == "Standing-seam metal"
         assert content["completeness"]["provided_items"] == 2
+        assert content["completeness"]["entered_items"] == 2
+
+    def test_a_suggestion_is_shown_on_the_checklist_but_never_counted(self):
+        content = resolve(TEMPLATES["iec62446_3"], {"fields": {
+            "inspection.procedure": {"value": "UAV survey", "source": "default",
+                                     "origin": "suggested"},
+            "camera.netd_k": {"value": 0.05, "source": "camera registry", "origin": "data"},
+            "people.thermographer": {"value": "A. B.", "source": "operator profile 'A. B.'",
+                                     "origin": "profile"}}})
+        items = {i["id"]: i for s in content["sections"] for i in s["items"]}
+        assert items["inspection.procedure"]["status"] == MISSING
+        assert items["inspection.procedure"]["suggestion"]["value"] == "UAV survey"
+        todo = {t["id"]: t for t in content["todo"]}
+        assert todo["inspection.procedure"]["suggestion"]["value"] == "UAV survey"
+        comp = content["completeness"]
+        assert (comp["derived_items"], comp["reused_items"], comp["entered_items"]) == (1, 1, 0)
+        assert comp["provided_items"] == 2
+
+    def test_every_item_says_who_supplies_it(self):
+        from core.standards_reports import WHO_LABELS, item_who
+
+        for template in TEMPLATES.values():
+            for item in template.items():
+                assert item_who(item) in WHO_LABELS, item.id
+        whos = {i.id: item_who(i) for i in TEMPLATES["iec62446_3"].items()}
+        assert whos["people.thermographer"] == "profile"
+        assert whos["scope.module_efficiency"] == "lookup"
+        assert whos["env.cloud_okta"] == "site"
+        assert whos["camera.netd_k"] == "data"
+        assert whos["results.conclusions"] == "judgement"
 
     def test_a_table_row_missing_a_required_column_shows_missing(self):
         content = resolve(TEMPLATES["iec62446_3"], {"tables": {"anomalies": [
@@ -238,6 +276,48 @@ class TestIecOnRealThermalFrames:
         return generate_standards_report("iec62446_3", collected["facts"], tmp_path / "reports",
                                          inputs=collected["inputs"])
 
+    def test_netd_comes_from_the_camera_registry_with_its_source(self, report):
+        content = json.loads((Path(report["output_dir"]) / "content.json").read_text(encoding="utf-8"))
+        items = {i["id"]: i for s in content["sections"] for i in s["items"]}
+        netd = items["camera.netd_k"]
+        assert netd["value"] == 0.05 and netd["origin"] == "data"
+        assert "flir_duo_pro_r_640_13mm" in netd["source"]
+        assert "flir.com/products/duo-pro-r" in netd["source"]
+        assert {c["id"]: c["status"] for c in report["checks"]}["netd"] == "PASS"
+        listing = items["scope.inspected_components"]
+        assert listing["value"].startswith("4 module region(s)")
+        assert "thedpv_module_regions.json" in listing["source"]
+        # Mast captures record no distance, so the geometric resolution stays open and the
+        # checklist says how it will be computed.
+        todo = {t["id"]: t for t in content["todo"]}
+        assert "distance x pixel pitch / focal length" in todo["camera.geometric_resolution_cm_px"]["hint"]
+
+    def test_geometric_resolution_is_computed_from_an_entered_distance(self, tmp_path):
+        _need(THEDPV_SESSION, "THED-PV session")
+        from core.standards_collectors import iec_facts_from_frames
+
+        regions = json.loads(REGIONS.read_text(encoding="utf-8"))
+        frames = [THEDPV_SESSION / name for name in sorted(regions["frames"])]
+        facts = iec_facts_from_frames(frames, REGIONS, tmp_path / "w", camera_distance_m=20)["facts"]
+        gsd = facts["fields"]["camera.geometric_resolution_cm_px"]
+        # 20 m x 17 µm / 13 mm = 2.6 cm per pixel.
+        assert gsd["value"] == 2.62 and gsd["origin"] == "operator"
+        assert "distance × pixel pitch / focal length = 20 m × 17.0 µm / 13 mm" in gsd["source"]
+
+    def test_coa_is_only_suggested_with_its_basis(self, report):
+        from core.standards_collectors import suggest_coa
+
+        assert suggest_coa(55, "hotspot")["coa"] == 3
+        assert suggest_coa(15, "single_hot_cell")["coa"] == 2
+        assert suggest_coa(3, "open_substring")["coa"] == 2
+        assert suggest_coa(12, None) is None  # a hot spot without a pattern needs a person
+        assert suggest_coa(5, None)["coa"] == 1
+        content = json.loads((Path(report["output_dir"]) / "content.json").read_text(encoding="utf-8"))
+        rows = content["sections"][5]["tables"][0]["rows"]
+        assert all(r["cells"]["coa"] == MISSING for r in rows)
+        assert all(r["suggestions"]["coa"]["value"].startswith("CoA ") for r in rows)
+        assert all(f["severity"]["confirmed"] is False for f in content["findings"])
+
     def test_conditions_come_from_the_site_logger_and_pass_the_table_3_limits(self, report):
         content = json.loads((Path(report["output_dir"]) / "content.json").read_text(encoding="utf-8"))
         items = {i["id"]: i for s in content["sections"] for i in s["items"]}
@@ -256,12 +336,12 @@ class TestIecOnRealThermalFrames:
     def test_what_the_files_do_not_record_is_missing(self, report):
         content = json.loads((Path(report["output_dir"]) / "content.json").read_text(encoding="utf-8"))
         items = {i["id"]: i for s in content["sections"] for i in s["items"]}
-        for missing in ("camera.emissivity", "camera.reflected_temperature_c", "camera.netd_k",
+        for missing in ("camera.emissivity", "camera.reflected_temperature_c",
                         "inspection.location", "people.thermographer", "env.cloud_okta"):
             assert items[missing]["status"] == MISSING, missing
         rows = content["sections"][5]["tables"][0]["rows"]
         assert len(rows) == 4
-        assert {r["cells"]["coa"] for r in rows} == {MISSING}  # never assigned by software
+        assert {r["cells"]["coa"] for r in rows} == {MISSING}  # only suggested by software
 
     def test_module_temperatures_and_delta_t_are_the_decoded_values(self, report, tmp_path):
         from core.india_thermal import module_temperatures_in_image
@@ -293,24 +373,30 @@ class TestIecOnRealThermalFrames:
 
 
 class TestBridgeAndRoofOnRealImagery:
-    def test_bridge_report_reads_equipment_and_leaves_agency_records_missing(self, tmp_path):
+    def test_bridge_report_derives_location_dates_and_resolution_with_sources(self, tmp_path):
         from core.standards_collectors import bridge_facts, list_images
 
         images = list_images(_need(BRIDGE / "B1_Wide", "bridge imagery"), "*_W.JPG")
         assert len(images) == 81
-        collected = bridge_facts(images)
+        collected = bridge_facts(images, thermal_raster=BRIDGE / "orthophoto" / "B1_Aug22.tif")
         report = generate_standards_report("bridge_snbi", collected["facts"], tmp_path,
                                            inputs=collected["inputs"])
         content = json.loads((Path(report["output_dir"]) / "content.json").read_text(encoding="utf-8"))
         items = {i["id"]: i for s in content["sections"] for i in s["items"]}
         assert "ZH20T" in items["ie.equipment"]["value"]
-        # The photos are geotagged, but B.L.05/06 is the agency's record, not a photo centroid.
-        assert items["loc.latitude"]["status"] == MISSING
-        assert any("GPS extent" in o["text"] for o in content["observations"])
-        assert all(items[k]["status"] == MISSING for k in items if k.startswith(("cond.", "ie.b",
-                                                                               "ie.insp")))
+        # Location from the orthomosaic footprint, labelled as not the agency's record.
+        assert items["loc.latitude"]["value"].startswith("36.85")
+        assert "B1_Aug22.tif" in items["loc.latitude"]["source"]
+        assert "not the agency" in items["loc.latitude"]["source"]
+        assert items["ie.begin_date"]["value"] == "2022-08-26"
+        assert "DateTimeOriginal" in items["ie.begin_date"]["source"]
+        gsd = content["measurements"][0]
+        assert gsd["rows"][0][2].startswith("XMP drone-dji:LRFTargetDistance")
+        # Ratings and condition states stay with the inspector.
+        assert all(items[k]["status"] == MISSING for k in items if k.startswith("cond."))
+        assert items["ie.inspector"]["status"] == MISSING
         assert content["sections"][3]["tables"][0]["status"] == MISSING
-        assert report["inputs"] == 81
+        assert report["inputs"] == 82
         assert rs.verify_report(report["output_dir"])["ok"]
 
     def test_roof_report_counts_nadir_and_oblique_frames_from_the_gimbal(self, tmp_path):
@@ -325,7 +411,9 @@ class TestBridgeAndRoofOnRealImagery:
         assert f"{len(images) - nadir} oblique frame(s)" in method
         report = generate_standards_report("roof", collected["facts"], tmp_path,
                                            inputs=collected["inputs"])
-        assert report["completeness"]["provided_items"] == 2  # date and method; rest MISSING
+        # Date, method and the site (GPS centroid) are derived; the rest is on the checklist.
+        assert report["completeness"]["provided_items"] == 3
+        assert report["completeness"]["derived_items"] == 3
         assert rs.verify_report(report["output_dir"])["ok"]
 
 
@@ -355,6 +443,7 @@ class TestDocsAndExamples:
                             "--only", "tower"]) == 0
         summary = json.loads((tmp_path / "out" / "examples_summary.json").read_text(encoding="utf-8"))
         assert summary["tower"]["provided"] == 0
+        assert summary["tower"]["open_actions"] == 20
         assert summary["tower"]["checks"] == {"guys": MISSING}
         assert rs.verify_report(summary["tower"]["pdf_path"])["ok"]
 
@@ -372,7 +461,7 @@ class TestDocsAndExamples:
         summary = json.loads((tmp_path / "out" / "examples_summary.json").read_text(encoding="utf-8"))
         assert set(summary) == {"iec", "bridge", "roof", "tower"}
         assert summary["iec"]["checks"]["irradiance"] == "PASS"
-        assert summary["iec"]["checks"]["netd"] == MISSING
+        assert summary["iec"]["checks"]["netd"] == "PASS"  # from the camera registry
         for name, entry in summary.items():
             assert entry["provided"] < entry["required"], name  # nothing filled by default
             assert rs.verify_report(entry["pdf_path"])["ok"], name
