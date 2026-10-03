@@ -38,6 +38,9 @@ class VehicleLink:
     uri: str = ""
     last_error: str = ""
     connected_utc: str = ""
+    # The vehicle itself said it is a simulator (ArduPilot SITL over pymavlink); the
+    # driver name alone cannot, since SITL and an aircraft speak the same MAVLink.
+    simulator: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,7 +49,7 @@ class VehicleLink:
             "uri": self.uri,
             "last_error": self.last_error,
             "connected_utc": self.connected_utc,
-            "is_simulated": _is_simulated(self.driver),
+            "is_simulated": _is_simulated(self.driver) or self.simulator,
         }
 
 
@@ -474,7 +477,8 @@ class AppSession:
             client = create_drone_client(driver)
             client.connect(uri) if hasattr(client, "connect") else None
             self._drone_client = client
-            self.vehicle = VehicleLink(connected=True, driver=driver, uri=uri, connected_utc=_now())
+            self.vehicle = VehicleLink(connected=True, driver=driver, uri=uri, connected_utc=_now(),
+                                       simulator=bool(getattr(client, "is_simulator", False)))
             self.audit("vehicle_connected", {"driver": driver, "uri": uri})
         except Exception as exc:  # noqa: BLE001
             self.vehicle = VehicleLink(connected=False, driver=driver, uri=uri, last_error=str(exc))
@@ -506,7 +510,7 @@ class AppSession:
         self.flight_log = FlightLog(
             driver=driver,
             connection_uri=uri,
-            is_simulated=_is_simulated(driver),
+            is_simulated=self.vehicle.to_dict()["is_simulated"],
         )
 
     def _begin_flight_session(self, client: Any, driver: str, uri: str) -> None:
@@ -572,7 +576,7 @@ class AppSession:
             return {"connected": False, "reason": f"Telemetry read failed: {exc}"}
         payload = data.to_dict() if hasattr(data, "to_dict") else dict(getattr(data, "__dict__", {}))
         payload["driver"] = self.vehicle.driver
-        payload["is_simulated"] = _is_simulated(self.vehicle.driver)
+        payload["is_simulated"] = self.vehicle.to_dict()["is_simulated"]
 
         # Staleness, measured rather than assumed. The bridge sets connected=True on the
         # first message and nothing ever cleared it, so an aircraft that flew out of

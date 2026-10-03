@@ -90,6 +90,24 @@ MAV_CMD_GET_HOME_POSITION = 410     # deprecated, still answered by older firmwa
 MAV_CMD_REQUEST_MESSAGE = 512
 HOME_REQUEST_INTERVAL_S = 2.0
 
+# ArduPilot sends a ground station only what it is asked for. Its SRn_* stream rates
+# default to 0 on a port nothing has configured -- SITL's own TCP port among them -- so
+# a GCS that connects straight to the autopilot, rather than through Mission Planner or
+# MAVProxy (which ask for 4 Hz of everything), hears HEARTBEATs and nothing else: no
+# position, no GPS, no battery. Found connecting the app to ArduCopter 4.5.7 SITL on
+# tcp:5760, where 12 s brought 15 HEARTBEATs and not one GLOBAL_POSITION_INT.
+# REQUEST_DATA_STREAM is what Mission Planner and MAVProxy send; PX4 streams unasked.
+STREAM_RATE_HZ = 4
+STREAM_REQUEST_INTERVAL_S = 3.0
+MAV_DATA_STREAM_ALL = 0
+
+# Is the other end a simulator? A SITL flight over the pymavlink link was labelled LIVE,
+# and its log written as a real flight's: nothing in the HEARTBEAT says "simulated".
+# ArduPilot SITL has the SIM_* parameter group, which no flight-controller build carries,
+# so the vehicle answering for SIM_SPEEDUP is the simulator saying what it is.
+SIMULATOR_PARAM = "SIM_SPEEDUP"
+SIMULATOR_PROBE_S = 1.5
+
 # This client is the vehicle's ground station, so it says so once a second. ArduPilot's
 # GCS failsafe (FS_GCS_ENABLE) watches for HEARTBEATs from SYSID_MYGCS; a GCS that never
 # sends one is never "seen", so losing its link triggers nothing and the aircraft flies
@@ -452,6 +470,16 @@ class MissionPlannerDroneClient:
         # MAV_TYPE from the same HEARTBEAT: a fixed-wing (1) cannot land in place or
         # hover, and is sent the landing sequence instead (see land()).
         self._mav_type = 0
+        # Telemetry streams: when they were last asked for, and last heard.
+        self._last_stream_request = 0.0
+        self._last_stream_message = 0.0
+        # True once the vehicle has shown it is a simulator (see SIMULATOR_PARAM).
+        self._simulator = False
+
+    @property
+    def is_simulator(self) -> bool:
+        """The vehicle on this link is a simulator (ArduPilot SITL), not an aircraft."""
+        return bool(self._simulator)
 
     def _px4(self) -> bool:
         return self._autopilot == MAV_AUTOPILOT_PX4
@@ -503,6 +531,8 @@ class MissionPlannerDroneClient:
             self._connected = True
             self._uri = connection_uri
             self._send_gcs_heartbeat()
+            self._request_data_streams()
+            self._simulator = self._detect_simulator()
             self._request_home_position()
             self._start_listener()
         except AppError:
@@ -554,6 +584,11 @@ class MissionPlannerDroneClient:
                 if (not self._latest_telemetry.home_set
                         and time.monotonic() - self._last_home_request >= HOME_REQUEST_INTERVAL_S):
                     self._request_home_position()
+                # Asked again while position is not arriving: an autopilot that rebooted
+                # is back on its configured (zero) rates.
+                if (time.monotonic() - self._last_stream_message >= STREAM_REQUEST_INTERVAL_S
+                        and time.monotonic() - self._last_stream_request >= STREAM_REQUEST_INTERVAL_S):
+                    self._request_data_streams()
                 # Telemetry arrives far faster than any UI needs it, so subscribers
                 # get a snapshot at a fixed rate rather than one event per message.
                 now = time.monotonic()
@@ -617,6 +652,7 @@ class MissionPlannerDroneClient:
                 # (radio, GCS, battery, EKF, ...) and EMERGENCY when it has given up.
                 tel.raw["system_status"] = int(getattr(msg, "system_status", 0) or 0)
             elif t == "GLOBAL_POSITION_INT":
+                self._last_stream_message = time.monotonic()
                 tel.latitude = float(msg.lat) / 1e7
                 tel.longitude = float(msg.lon) / 1e7
                 tel.altitude_rel_m = float(msg.relative_alt) / 1000.0
@@ -716,6 +752,45 @@ class MissionPlannerDroneClient:
             # Retried next second; a send that keeps failing is a lost link, which the
             # telemetry age already reports.
             pass
+
+    def _request_data_streams(self) -> None:
+        """Ask an ArduPilot vehicle for its telemetry streams (see STREAM_RATE_HZ)."""
+        self._last_stream_request = time.monotonic()
+        conn = self._conn
+        if conn is None or self._px4():
+            return
+        try:
+            conn.mav.request_data_stream_send(conn.target_system, conn.target_component,
+                                              MAV_DATA_STREAM_ALL, STREAM_RATE_HZ, 1)
+        except Exception:
+            pass
+
+    def _detect_simulator(self) -> bool:
+        """Ask for SIMULATOR_PARAM; whatever else arrives meanwhile is absorbed as usual."""
+        conn = self._conn
+        if conn is None or self._px4():
+            return False
+        try:
+            conn.mav.param_request_read_send(conn.target_system, conn.target_component,
+                                             SIMULATOR_PARAM.encode("ascii"), -1)
+        except Exception:
+            return False
+        deadline = time.monotonic() + SIMULATOR_PROBE_S
+        while time.monotonic() < deadline:
+            try:
+                msg = conn.recv_match(blocking=True, timeout=0.2)
+            except Exception:
+                return False
+            if msg is None:
+                continue
+            self._absorb_message(msg)
+            if msg.get_type() == "PARAM_VALUE":
+                name = getattr(msg, "param_id", "")
+                if isinstance(name, bytes):
+                    name = name.decode("ascii", "replace")
+                if str(name).strip(_NUL) == SIMULATOR_PARAM:
+                    return True
+        return False
 
     def _request_home_position(self) -> None:
         """Ask the vehicle for HOME_POSITION (fire and forget; the listener parses it).
