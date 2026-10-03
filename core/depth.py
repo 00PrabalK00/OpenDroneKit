@@ -100,6 +100,9 @@ def _session(path: Path) -> Any:
         sess = _SESSIONS.get(key)
         if sess is None:
             options = ort.SessionOptions()
+            # One photo at a time: the arena's retained blocks only cost memory on a
+            # desktop that is also running photogrammetry.
+            options.enable_cpu_mem_arena = False
             threads = int(os.environ.get("ODK_DEPTH_THREADS", "0") or 0)
             if threads > 0:
                 options.intra_op_num_threads = threads

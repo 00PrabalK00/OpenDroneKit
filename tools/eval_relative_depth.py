@@ -41,6 +41,58 @@ from core.detection import load_image  # noqa: E402
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 
+def load_for_network(path: Path) -> tuple[np.ndarray, tuple[int, int]]:
+    """(BGR image decoded at reduced scale, the photo's full (h, w)).
+
+    The network sees ~518 px on the short side, so a 4000 x 3000 photo is decoded at
+    1/2, 1/4 or 1/8 scale (the largest reduction that keeps the short side >= 2 x 518)
+    and the bicubic resize runs from there. This keeps memory to a few MB per photo on
+    a shared machine; the photo's full size is returned so SfM points, which live on the
+    full pixel grid, are mapped correctly.
+    """
+    import cv2
+
+    full = load_image(path) if path.suffix.lower() not in {".jpg", ".jpeg"} else None
+    if full is not None:
+        return full, full.shape[:2]
+    from PIL import Image
+
+    with Image.open(path) as im:
+        w, h = im.size
+    flag, factor = cv2.IMREAD_COLOR, 1
+    for f, fl in ((8, cv2.IMREAD_REDUCED_COLOR_8), (4, cv2.IMREAD_REDUCED_COLOR_4),
+                  (2, cv2.IMREAD_REDUCED_COLOR_2)):
+        if min(h, w) / f >= 2 * 518:
+            flag, factor = fl, f
+            break
+    img = _retry(lambda: cv2.imread(str(path), flag))
+    if img is None:
+        raise RuntimeError(f"cannot read {path}")
+    if (img.shape[0] > img.shape[1]) != (h > w) and h != w:
+        h, w = w, h  # OpenCV applied an EXIF rotation that PIL's raw size does not show
+    return img, (h, w)
+
+
+def _retry(fn, attempts: int = 40, wait: float = 15.0):
+    """Run fn, waiting out transient out-of-memory errors from other jobs on the box.
+
+    Catches numpy's MemoryError, OpenCV's "Insufficient memory" and onnxruntime's
+    "bad allocation"; anything else is a real error and is raised at once.
+    """
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 - filtered on the message below
+            text = f"{type(exc).__name__} {exc}".lower()
+            if not any(k in text for k in ("memoryerror", "insufficient memory",
+                                           "bad allocation", "bad_alloc")):
+                raise
+            if i == attempts - 1:
+                raise
+            print(f"out of memory, retry {i + 1} in {wait:.0f}s", file=sys.stderr, flush=True)
+            time.sleep(wait)
+
+
 def spearman(a: np.ndarray, b: np.ndarray) -> float:
     from scipy.stats import spearmanr
 
@@ -79,13 +131,13 @@ def run_parity(fp32: Path, int8: Path, images: list[Path], seed: int = 0) -> dic
     rows = []
     t_fp32 = t_int8 = 0.0
     for path in images:
-        img = load_image(path)
+        img, _ = load_for_network(path)
         t0 = time.perf_counter()
         # Compared at the network's resolution: the upsample is the same deterministic
         # bicubic for both, and full-resolution float maps do not fit on a busy machine.
-        a = infer_onnx_network(img, fp32)
+        a = _retry(lambda: infer_onnx_network(img, fp32))
         t1 = time.perf_counter()
-        b = infer_onnx_network(img, int8)
+        b = _retry(lambda: infer_onnx_network(img, int8))
         t2 = time.perf_counter()
         t_fp32 += t1 - t0
         t_int8 += t2 - t1
@@ -133,6 +185,9 @@ def sample_network_map(net: np.ndarray, x: np.ndarray, y: np.ndarray,
                        photo_hw: tuple[int, int]) -> np.ndarray:
     """Bilinear sample of a network-resolution map at photo pixel coordinates.
 
+    Coordinates follow COLMAP's convention: (0, 0) is the top-left corner of the top-left
+    pixel, whose centre is (0.5, 0.5).
+
     Equivalent, up to interpolation order, to upsampling the map to the photo and
     reading the pixel, without allocating a full-resolution float map.
     """
@@ -140,8 +195,8 @@ def sample_network_map(net: np.ndarray, x: np.ndarray, y: np.ndarray,
 
     nh, nw = net.shape
     ph, pw = photo_hw
-    xn = (np.asarray(x, np.float64) + 0.5) * nw / pw - 0.5
-    yn = (np.asarray(y, np.float64) + 0.5) * nh / ph - 0.5
+    xn = np.asarray(x, np.float64) * nw / pw - 0.5
+    yn = np.asarray(y, np.float64) * nh / ph - 0.5
     return map_coordinates(net.astype(np.float64), [yn, xn], order=1, mode="nearest")
 
 
@@ -190,13 +245,12 @@ def run_sfm(model: Path, sparse_dir: Path, image_dir: Path, *, max_images: int |
         path = image_dir / im.name
         if not path.is_file():
             continue
-        bgr = load_image(path)
-        photo_hw = bgr.shape[:2]
+        bgr, photo_hw = load_for_network(path)
         cam = recon.cameras[im.camera_id]
         # Points are in the reconstruction's pixel grid; rescale to the photo's.
         sx, sy = photo_hw[1] / cam.width, photo_hw[0] / cam.height
         x, y, z = sparse_depths(recon, im)
-        net = infer_onnx_network(bgr, model)
+        net = _retry(lambda: infer_onnx_network(bgr, model))
         del bgr
         if z.size == 0:
             continue
