@@ -147,6 +147,7 @@
 }
 .fly-progress-wp { color: var(--text); }
 .fly-progress-wp.is-missing { color: var(--muted); }
+.fly-progress-items { color: var(--muted); }
 .fly-push { margin-left: auto; }
 .fly-bar { position: relative; height: 8px; background: var(--surface-2); border: 1px solid var(--line); }
 .fly-bar-fill { position: absolute; inset: 0; background: var(--accent); transform-origin: left center; transform: scaleX(0); transition: transform 600ms cubic-bezier(0.22, 1, 0.36, 1); }

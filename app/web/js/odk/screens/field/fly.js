@@ -230,7 +230,10 @@ class FlyField {
       const speed = isNum(t.speed_mps) ? t.speed_mps : null;
       const eta = speed && speed > 0.5 ? duration(prog.leftMetres / speed) : null;
       wide.append(
-        el("span", { class: "flyf-value", text: prog.current !== null ? `Item ${prog.current}` : "not reported" }),
+        prog.wpCurrent !== null && prog.wpTotal !== null
+          ? el("span", { class: "flyf-value", title: prog.current !== null ? `Item ${prog.current} of ${prog.total} as the aircraft counts them` : "" },
+            [`WP ${prog.wpCurrent}`, el("small", { text: `/ ${prog.wpTotal}` })])
+          : el("span", { class: "flyf-value", text: prog.current !== null ? `Item ${prog.current}` : "not reported" }),
         el("span", { class: "flyf-sub", text: `${distance(prog.flownMetres)} of ${distance(prog.routeLength)}${eta ? ` · ~${eta} left` : ""}` }),
         el("div", { class: "flyf-bar" }, [el("span", { style: `transform:scaleX(${(prog.fraction || 0).toFixed(4)})` })]),
       );

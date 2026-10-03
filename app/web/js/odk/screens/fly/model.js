@@ -62,6 +62,9 @@ export const FLIGHT_EVENTS = new Set([
 /* Below this share of packets received the bridge's own link measure is "degraded". */
 const DEGRADED_BELOW_PCT = 80;
 
+/* MAV_CMD_NAV_WAYPOINT: the items a pilot counts as waypoints. */
+const MAV_CMD_NAV_WAYPOINT = 16;
+
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 
 /** The link as the station sees it: "none" | "ok" | "degraded" | "lost". */
@@ -144,8 +147,19 @@ export function progress(uploaded, telemetry) {
   const ahead = along(remaining);
   const toNext = position && remaining.length && started ? metresBetween(position, remaining[0]) : 0;
   const left = ahead + toNext;
+  /* The aircraft counts mission items (MISSION_CURRENT): a survey route carries camera
+     and gimbal items between its waypoints, so "item 9 / 2283" is the vehicle's own
+     count and "760 wp" the plan's. The operator flies waypoints, so the acknowledged
+     NAV_WAYPOINT items give "WP n / N" from the same answer; null when none were sent. */
+  const waypoints = uploaded.filter((p) => p.command === MAV_CMD_NAV_WAYPOINT);
+  const wpTotal = waypoints.length || null;
+  let wpCurrent = null;
+  if (wpTotal !== null && current !== null) {
+    const nextWp = started ? waypoints.findIndex((p) => p.seq >= current) : 0;
+    wpCurrent = !started ? 0 : nextWp < 0 ? wpTotal : nextWp + 1;
+  }
   return {
-    current, total, flown, remaining, position, started,
+    current, total, wpCurrent, wpTotal, flown, remaining, position, started,
     routeLength,
     flownMetres: Math.max(0, routeLength - left),
     leftMetres: left,

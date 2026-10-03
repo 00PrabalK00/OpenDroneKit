@@ -622,7 +622,14 @@ class FlyDesk {
       ]));
       return;
     }
-    head.appendChild(el("span", { class: "fly-progress-wp", text: p.current !== null && p.total !== null ? `ITEM ${p.current} / ${p.total}` : "item not reported" }));
+    const items = p.current !== null && p.total !== null ? `ITEM ${p.current} / ${p.total}` : null;
+    if (p.wpCurrent !== null && p.wpTotal !== null) {
+      // Waypoints first, as the pilot counts them; the aircraft's own item count beside.
+      head.appendChild(el("span", { class: "fly-progress-wp", text: `WP ${p.wpCurrent} / ${p.wpTotal}` }));
+      if (items) head.appendChild(el("span", { class: "fly-progress-items", text: items, title: "Mission items as the aircraft counts them, camera and gimbal items included" }));
+    } else {
+      head.appendChild(el("span", { class: "fly-progress-wp", text: items || "item not reported" }));
+    }
     const sim = simulatedTag(t, { small: true });
     if (sim) { sim.classList.add("fly-push"); head.appendChild(sim); }
     const fill = el("span", { class: "fly-bar-fill", style: `transform:scaleX(${(p.fraction || 0).toFixed(4)})` });
@@ -1006,7 +1013,9 @@ export class FlyMap {
     const lost = this.model.linkState === "lost";
     this.markerNode.classList.toggle("is-lost", lost);
     this.markerNode.classList.toggle("is-sim", t.is_simulated === true);
-    const wp = isNum(t.waypoint_index) && isNum(t.waypoint_total) && t.waypoint_total ? `item ${t.waypoint_index} / ${t.waypoint_total}` : null;
+    const prog = this.model.progress;
+    const wp = prog && prog.wpCurrent !== null && prog.wpTotal !== null ? `wp ${prog.wpCurrent} / ${prog.wpTotal}`
+      : isNum(t.waypoint_index) && isNum(t.waypoint_total) && t.waypoint_total ? `item ${t.waypoint_index} / ${t.waypoint_total}` : null;
     this.callout.replaceChildren(
       el("span", { text: [t.driver, wp].filter(Boolean).join(" · ") }),
       el("span", { text: [isNum(t.altitude_rel_m) ? `${fixed(t.altitude_rel_m)} m` : null, heading(t.heading_deg), isNum(t.speed_mps) ? `${fixed(t.speed_mps)} m/s` : null].filter(Boolean).join(" · ") }),

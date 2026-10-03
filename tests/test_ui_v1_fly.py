@@ -236,6 +236,11 @@ class TestDeskWithTheSimulator:
         # The aircraft climbs, then flies the route: progress follows the vehicle.
         wait_api(lambda: api.telemetry()["telemetry"]["waypoint_index"] > 0, timeout_s=60)
         browser.wait_for("/ITEM [1-9]/.test(document.querySelector('.fly-progress').textContent)", 20)
+        # Waypoints as the pilot counts them, from the NAV_WAYPOINT items the aircraft
+        # acknowledged: the plan's 760, not the 2,283 items camera commands included.
+        waypoints = sum(1 for i in api.vehicle_mission()["uploaded"] if i["command"] == 16)
+        assert waypoints == api.vehicle_mission()["planned"]["waypoints"]
+        browser.wait_for(f"/WP [1-9][0-9]* \\/ {waypoints}/.test(document.querySelector('.fly-progress-wp').textContent)", 20)
         click(browser, '.fly-commandbar [data-action="Pause"]')
         wait_api(lambda: (api.flight_session()["session"] or {}).get("state", {}).get("status") == "paused")
         browser.wait_for("document.querySelector('.fly-commandbar [data-action=\"Resume\"]') !== null", 15)
