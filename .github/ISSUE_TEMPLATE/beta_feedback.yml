@@ -1,0 +1,75 @@
+name: Beta feedback (v0.1.0-beta)
+description: How the 30-minute beta test in docs/BETA_TESTING.md went for you, step by step.
+title: "[beta] "
+labels: ["beta-feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. The test script is in [docs/BETA_TESTING.md](https://github.com/00PrabalK00/OpenDroneKit/blob/main/docs/BETA_TESTING.md).
+        One clear problem is better filed as a **Bug report**; this form is for the run as a whole.
+        Please remove anything private (site coordinates, imagery, tokens) before posting. Security problems go through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The installer file name you ran, or `git rev-parse --short HEAD` for a source install.
+      placeholder: OpenDroneKit-0.1.0-beta-win64-setup.exe
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install?
+      options:
+        - Windows installer
+        - From source (conda env from environment.yml)
+        - From source (other Python environment)
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Windows version and hardware
+      placeholder: Windows 11 24H2, Ryzen 7 5800H, 16 GB RAM, RTX 3060 / no GPU
+    validations:
+      required: true
+  - type: checkboxes
+    id: steps
+    attributes:
+      label: Which steps worked?
+      description: Tick each step that did what docs/BETA_TESTING.md says it should.
+      options:
+        - label: 0. Test data downloaded (note the hash below if it differed)
+        - label: 1. Project created and images imported
+        - label: 2. Grid mission planned
+        - label: 3. Exported to QGroundControl, DJI and Litchi
+        - label: 4. Reconstruction finished
+        - label: 5. Distance and area measured
+        - label: 6. Report generated (or refused with a checklist)
+        - label: 7. Crack model ran on the sample image
+  - type: textarea
+    id: problems
+    attributes:
+      label: What went wrong or surprised you
+      description: For each step that did not work, the exact message from the bottom right of the window and what you did just before.
+    validations:
+      required: true
+  - type: textarea
+    id: timings
+    attributes:
+      label: How long things took
+      description: Rough times, especially install, reconstruction (and how many images) and report generation.
+      placeholder: |
+        Install: 6 min
+        Reconstruction, 20 Aukerman images: 12 min, sparse (no CUDA COLMAP)
+  - type: textarea
+    id: wanted
+    attributes:
+      label: What would you need before using it for real work?
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The startup error log (`logs/startup-error.log` under the data folder) or a traceback, if there was one.
+      render: text
