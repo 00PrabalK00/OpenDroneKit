@@ -3407,6 +3407,165 @@ class Api:
 
         return ok(reports=standards_builder.list_reports(self._session))
 
+    # ---------------------------------------------- inspection details and records
+    #
+    # What only the operator knows, captured once and reused: operator profiles and
+    # procedure templates (per installation), the site-conditions log and the per-project
+    # inspection details (people, client, module model, camera distance, entered items,
+    # CoA confirmations). See core/inspection_records.py and docs/REPORT_STANDARDS.md.
+
+    @guard
+    def get_inspection_details(self, template: str) -> dict[str, Any]:
+        """The template-driven inspection-details form, stored values, profiles, procedure."""
+        from app import standards_builder
+
+        try:
+            return ok(**standards_builder.get_inspection_details(self._session, template))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def set_inspection_details(self, template: str, details: dict[str, Any],
+                               entered_by: str = "") -> dict[str, Any]:
+        """Save per-inspection details; every value records who entered it and when."""
+        from app import standards_builder
+        from core.pv_modules import UnknownModule
+
+        try:
+            result = standards_builder.set_inspection_details(self._session, template,
+                                                              details or {}, entered_by)
+        except UnknownModule as exc:
+            return fail(str(exc.args[0]) if exc.args else "Unknown module.")
+        except ValueError as exc:
+            return fail(str(exc))
+        self._session.audit("inspection_details_saved",
+                            {"template": template, "entered_by": entered_by})
+        return ok(**result)
+
+    @guard
+    def confirm_anomaly_class(self, template: str, key: str, coa: int, confirmed_by: str = "",
+                              abnormality_type: str = "", action: str = "") -> dict[str, Any]:
+        """Record the thermographer's CoA for one anomaly (suggestions count only once confirmed)."""
+        from app import standards_builder
+
+        try:
+            saved = standards_builder.confirm_anomaly_class(
+                self._session, template, key, coa, confirmed_by, abnormality_type, action)
+        except (ValueError, TypeError) as exc:
+            return fail(str(exc))
+        self._session.audit("anomaly_class_confirmed",
+                            {"template": template, "key": key, "coa": saved["coa"],
+                             "confirmed_by": saved["confirmed_by"]})
+        return ok(confirmation=saved)
+
+    @guard
+    def list_operator_profiles(self) -> dict[str, Any]:
+        from core import inspection_records
+
+        return ok(profiles=inspection_records.list_operator_profiles(),
+                  roles=list(inspection_records.ROLES))
+
+    @guard
+    def save_operator_profile(self, profile: dict[str, Any], saved_by: str = "") -> dict[str, Any]:
+        """Add or update a person (name, role, qualification, certificate number...)."""
+        from core import inspection_records
+
+        try:
+            return ok(profile=inspection_records.save_operator_profile(profile or {}, saved_by))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def delete_operator_profile(self, profile_id: str) -> dict[str, Any]:
+        from core import inspection_records
+
+        if not inspection_records.delete_operator_profile(profile_id):
+            return fail(f"No operator profile {profile_id!r}.")
+        return ok(deleted=profile_id)
+
+    @guard
+    def procedure_templates(self) -> dict[str, Any]:
+        """Built-in default procedures (suggestions) and the ones a named person saved."""
+        from core import inspection_records
+
+        return ok(**inspection_records.list_procedures())
+
+    @guard
+    def save_procedure_template(self, template: str, text: str, inspection_type: str = "",
+                                edited_by: str = "", workflow_id: str = "") -> dict[str, Any]:
+        """Adopt or edit the procedure text for a standard (optionally per mission template)."""
+        from core import inspection_records
+        from core.standards_reports import get_template
+
+        try:
+            get_template(template)
+            return ok(procedure=inspection_records.save_procedure(
+                template, text, inspection_type, edited_by, workflow_id))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def list_site_conditions(self) -> dict[str, Any]:
+        from core import inspection_records
+
+        return ok(records=inspection_records.list_site_conditions(self._session.project_root()),
+                  fields=list(inspection_records.CONDITION_FIELDS),
+                  cloud_types=list(inspection_records.CLOUD_TYPES))
+
+    @guard
+    def add_site_conditions(self, record: dict[str, Any], recorded_by: str = "") -> dict[str, Any]:
+        """A structured on-site record (Field mode): oktas, cloud type, wind, notes, time."""
+        from core import inspection_records
+
+        try:
+            return ok(record=inspection_records.add_site_conditions(
+                self._session.project_root(), record or {}, recorded_by))
+        except ValueError as exc:
+            return fail(str(exc))
+
+    @guard
+    def import_site_conditions(self, source: str, observed_at: str = "",
+                               columns: dict[str, str] | None = None, imported_by: str = "",
+                               flight_id: str = "", kind: str = "meteo_csv") -> dict[str, Any]:
+        """Import a site-conditions record from a meteo CSV row or a flight-log JSON."""
+        from datetime import datetime as _dt
+
+        from core import inspection_records
+
+        try:
+            if kind == "flight_log":
+                record = inspection_records.import_site_conditions_from_flight_log(
+                    self._session.project_root(), source, imported_by, flight_id=flight_id)
+            else:
+                record = inspection_records.import_site_conditions_from_meteo(
+                    self._session.project_root(), source, _dt.fromisoformat(observed_at),
+                    columns or {}, imported_by, flight_id=flight_id)
+        except (ValueError, OSError, KeyError) as exc:
+            return fail(str(exc))
+        return ok(record=record)
+
+    @guard
+    def search_pv_modules(self, query: str, limit: int = 20) -> dict[str, Any]:
+        """Search the bundled CEC module list (NREL SAM library, BSD-3) by model name."""
+        from core import pv_modules
+
+        return ok(modules=pv_modules.search(query, limit), database=pv_modules.database_info())
+
+    @guard
+    def measure_surface_planes(self, dsm_path: str, outlines: list[dict[str, Any]] | None = None,
+                               dtm_path: str = "") -> dict[str, Any]:
+        """Tilt/azimuth per outlined array or roof facet (or RANSAC facets with a DTM)."""
+        from core import surface_planes
+
+        try:
+            if outlines:
+                return ok(**surface_planes.measure_outlined_surfaces(dsm_path, outlines))
+            if not dtm_path:
+                return fail("Give outlines, or a DTM so roof facets can be segmented.")
+            return ok(**surface_planes.segment_roof_facets(dsm_path, dtm_path))
+        except (surface_planes.PlaneFitError, OSError) as exc:
+            return fail(str(exc))
+
     @guard
     def verify_report(self, path: str, inputs_root: str = "",
                       check_inputs: bool = True) -> dict[str, Any]:
