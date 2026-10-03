@@ -954,10 +954,242 @@ def evaluate_structural_split(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+# ── pretrained infrastructure detectors (COCO AP through the app's runner) ───
+#
+# These need pycocotools (an evaluation-only dependency, not an app dependency). The
+# predictions come from core.model_runner.run_registered_model, i.e. the digest-checked
+# onnxruntime path the application uses, at a 0.001 score floor and at most 100 boxes
+# per image (COCO maxDets).
+
+RDD_TO_RFDETR = {"D00": "longitudinal_crack", "D10": "transverse_crack",
+                 "D20": "alligator_crack", "D40": "pothole"}
+TTPLA_FOLDER = "ttpla_test"
+
+
+def _coco_eval(gt_images: list[dict[str, Any]], gt_annotations: list[dict[str, Any]],
+               categories: list[str], detections: list[dict[str, Any]],
+               iou_type: str) -> dict[str, Any]:
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+    except ImportError as exc:  # pragma: no cover - evaluation-only dependency
+        raise SystemExit("pycocotools is needed for COCO AP (pip install pycocotools).") from exc
+    import contextlib
+    import io
+
+    gt = COCO()
+    gt.dataset = {"images": gt_images, "annotations": gt_annotations,
+                  "categories": [{"id": i + 1, "name": n} for i, n in enumerate(categories)]}
+    with contextlib.redirect_stdout(io.StringIO()):
+        gt.createIndex()
+        dt = gt.loadRes(detections) if detections else COCO()
+    out: dict[str, Any] = {}
+    for cat_ids, name in [([i + 1 for i in range(len(categories))], "all")] + [
+            ([i + 1], n) for i, n in enumerate(categories)]:
+        if not detections:
+            out[name] = {"ap50": 0.0, "ap50_95": 0.0}
+            continue
+        ev = COCOeval(gt, dt, iou_type)
+        ev.params.catIds = cat_ids
+        with contextlib.redirect_stdout(io.StringIO()):
+            ev.evaluate()
+            ev.accumulate()
+            ev.summarize()
+        n_gt = sum(1 for a in gt_annotations if a["category_id"] in cat_ids)
+        out[name] = {"ap50_95": round(float(ev.stats[0]), 4), "ap50": round(float(ev.stats[1]), 4),
+                     "ar100": round(float(ev.stats[8]), 4), "gt_instances": n_gt}
+    return out
+
+
+def evaluate_rdd2022_detectionbench_test(args: argparse.Namespace) -> dict[str, Any]:
+    """road_damage_rfdetr_small on RDD2022 subset ∩ DetectionBench test.
+
+    The subset in odk-testdata comes from RDD2022's public labelled pool, which
+    DetectionBench split 70/15/15 for this model's training. Only the images its
+    published split puts in *test* are scored. The membership file is built by
+    ``--membership`` (default: <ODK_TRAINING_DATA_DIR>/prepared/rdd2022_subset/
+    detectionbench_membership.json) from the split tree of the HF dataset
+    dronefreak/RDD2022, the mirror DetectionBench publishes; its per-split counts equal
+    DetectionBench's docs (26,869 / 5,758 / 5,758), and every test image of ours was
+    checked byte-identical to the mirror's copy.
+    """
+    root = os.environ.get("ODK_TRAINING_DATA_DIR", "").strip()
+    if not root:
+        raise SystemExit("Set ODK_TRAINING_DATA_DIR (holding prepared/rdd2022_subset/test).")
+    prepared = Path(root) / "prepared" / "rdd2022_subset"
+    membership_path = Path(args.membership) if getattr(args, "membership", None) else (
+        prepared / "detectionbench_membership.json")
+    if not membership_path.is_file():
+        raise SystemExit(f"{membership_path} is missing; without the split there is no "
+                         "leakage-free set, and no number is reported.")
+    membership = json.loads(membership_path.read_text(encoding="utf-8"))
+    test_names = sorted(r["image"] for r in membership["images"] if r["split"] == "test")
+    samples = {Path(s["image"]).name: s for s in rdd_samples(testdata_root())}
+    dest = prepared / "test"
+    (dest / "images").mkdir(parents=True, exist_ok=True)
+    (dest / "labels").mkdir(parents=True, exist_ok=True)
+    classes = list(RDD_TO_RFDETR.values())
+    images, annotations, dropped = [], [], Counter()
+    for image_id, name in enumerate(test_names, start=1):
+        s = samples[name]
+        shutil.copy2(s["image"], dest / "images" / name)
+        w, h = s["width"], s["height"]
+        if not w or not h:
+            h, w = cv2.imread(str(s["image"])).shape[:2]
+        images.append({"id": image_id, "file_name": name, "width": w, "height": h})
+        lines = []
+        for label, (x1, y1, x2, y2) in s["objects"]:
+            if label not in RDD_TO_RFDETR:
+                dropped[label] += 1
+                continue
+            cls = classes.index(RDD_TO_RFDETR[label])
+            lines.append(f"{cls} {(x1 + x2) / 2 / w:.6f} {(y1 + y2) / 2 / h:.6f} "
+                         f"{(x2 - x1) / w:.6f} {(y2 - y1) / h:.6f}")
+            annotations.append({"id": len(annotations) + 1, "image_id": image_id,
+                                "category_id": cls + 1, "bbox": [x1, y1, x2 - x1, y2 - y1],
+                                "area": (x2 - x1) * (y2 - y1), "iscrowd": 0})
+        (dest / "labels" / (Path(name).stem + ".txt")).write_text(
+            "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+
+    from core.model_runner import run_registered_model
+
+    key = "road_damage_rfdetr_small"
+    model = model_row(key)
+    detections, voc_preds = [], defaultdict(list)
+    for meta in images:
+        image = cv2.imread(str(dest / "images" / meta["file_name"]))
+        result = run_registered_model(image, key, score_threshold=0.001)
+        hits = sorted(result.output["detections"], key=lambda d: -d["confidence"])[:100]
+        for d in hits:
+            x1, y1, x2, y2 = d["bbox_xyxy"]
+            detections.append({"image_id": meta["id"], "category_id": classes.index(d["label"]) + 1,
+                               "bbox": [x1, y1, x2 - x1, y2 - y1], "score": d["confidence"]})
+            voc_preds[d["label"]].append((meta["id"], d["confidence"], (x1, y1, x2, y2)))
+    coco = _coco_eval(images, annotations, classes, detections, "bbox")
+    by_country = Counter(n.rsplit("_", 1)[0] for n in test_names)
+    return {
+        "evaluation": "road_damage_rfdetr_small on RDD2022 subset ∩ DetectionBench test",
+        "measured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "split": f"RDD2022 subset ∩ DetectionBench test, N={len(test_names)}",
+        "dataset": {"images": len(test_names), "by_source": dict(by_country),
+                    "subset_images_total": len(membership["images"]),
+                    "subset_by_split": dict(Counter(r["split"] for r in membership["images"])),
+                    "labels_dropped_not_in_4_class_taxonomy": dict(dropped),
+                    "membership_file": str(membership_path),
+                    "membership_source": membership.get("source", "")},
+        "model": model,
+        "coco_bbox": coco,
+        "how": "COCO AP (pycocotools, maxDets 100) of run_registered_model predictions down "
+               "to score 0.001 against the subset's own Pascal-VOC boxes, D00/D10/D20/D40 -> "
+               "longitudinal/transverse/alligator/pothole; other RDD labels dropped as "
+               "DetectionBench drops them.",
+        "caveats": [
+            "Small N: one image moves per-class AP by several points.",
+            "Our boxes are the original RDD2022 VOC annotations; DetectionBench used the "
+            "RDD_SPLIT YOLO export of the same images.",
+            "Not comparable to the CRDDC2022 leaderboard, as the publisher also says.",
+        ],
+    }
+
+
+def _ttpla_class(raw: str) -> int | None:
+    """The model card's 2-class remap (scripts/prepare_ttpla.py): cable -> Line,
+    tower_* -> Tower, void and anything else skipped."""
+    label = raw.strip().lower()
+    if label == "cable":
+        return 0
+    if label.startswith("tower"):
+        return 1
+    return None
+
+
+def evaluate_ttpla_test(args: argparse.Namespace) -> dict[str, Any]:
+    """powerline_ttpla_yolo11s_seg on TTPLA's official 220-image test split, box and mask AP."""
+    from pycocotools import mask as mask_utils
+
+    folder = testdata_root() / TTPLA_FOLDER
+    if not (folder / "images").is_dir():
+        raise SystemExit(f"{folder} is missing; see odk-testdata/INDEX.md.")
+    from core.infrastructure_detectors import load_model, run_yolo_seg
+
+    key = "powerline_ttpla_yolo11s_seg"
+    model = model_row(key)
+    loaded = load_model(key, expected_kinds={"onnx_yolo_seg"})
+    classes = ["Line", "Tower"]
+    names = sorted(p.stem for p in (folder / "annotations").glob("*.json"))
+    if args.limit:
+        names = names[: args.limit]
+    images, annotations, box_dets, mask_dets = [], [], [], []
+    skipped = Counter()
+    started = time.time()
+    for image_id, stem in enumerate(names, start=1):
+        ann = json.loads((folder / "annotations" / f"{stem}.json").read_text(encoding="utf-8"))
+        h, w = int(ann["imageHeight"]), int(ann["imageWidth"])
+        images.append({"id": image_id, "file_name": f"{stem}.jpg", "width": w, "height": h})
+        for shape in ann.get("shapes", []):
+            cls = _ttpla_class(str(shape.get("label", "")))
+            if cls is None:
+                skipped[str(shape.get("label"))] += 1
+                continue
+            pts = np.asarray(shape["points"], dtype=np.float64)
+            if len(pts) < 3:
+                skipped["degenerate"] += 1
+                continue
+            rle = mask_utils.merge(mask_utils.frPyObjects([pts.reshape(-1).tolist()], h, w))
+            x1, y1 = pts.min(0)
+            x2, y2 = pts.max(0)
+            annotations.append({"id": len(annotations) + 1, "image_id": image_id,
+                                "category_id": cls + 1, "segmentation": rle,
+                                "area": float(mask_utils.area(rle)),
+                                "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                                "iscrowd": 0})
+        image = cv2.imread(str(folder / "images" / f"{stem}.jpg"))
+        hits = run_yolo_seg(image, loaded, 0.001, float(loaded.row.get("iou_threshold", 0.7)),
+                            keep_masks=True)[:100]
+        buffer = np.zeros((h, w), dtype=np.uint8, order="F")
+        for d in hits:
+            x1, y1, x2, y2 = d["bbox_xyxy"]
+            cat = classes.index(d["label"]) + 1
+            box_dets.append({"image_id": image_id, "category_id": cat, "score": d["confidence"],
+                             "bbox": [x1, y1, x2 - x1, y2 - y1]})
+            local = d.pop("_mask_local")
+            buffer[y1:y2, x1:x2] = local
+            rle = mask_utils.encode(buffer)
+            buffer[y1:y2, x1:x2] = 0
+            mask_dets.append({"image_id": image_id, "category_id": cat, "score": d["confidence"],
+                              "segmentation": rle})
+        if image_id % 20 == 0:
+            print(f"ttpla {image_id}/{len(names)} {time.time() - started:.0f}s", file=sys.stderr,
+                  flush=True)
+    box = _coco_eval(images, [dict(a) for a in annotations], classes, box_dets, "bbox")
+    seg = _coco_eval(images, annotations, classes, mask_dets, "segm")
+    return {
+        "evaluation": "powerline_ttpla_yolo11s_seg on the TTPLA official test split",
+        "measured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "split": f"TTPLA official test (R3ab/ttpla_dataset test.txt), N={len(names)}",
+        "dataset": {"images": len(names), "labels_skipped": dict(skipped),
+                    "remap": "cable -> Line; tower_lattice/tower_tucohy/tower_wooden -> Tower; "
+                             "void skipped (the model card's prepare_ttpla.py)"},
+        "model": model,
+        "coco_bbox": box,
+        "coco_segm": seg,
+        "how": "COCO AP (pycocotools, maxDets 100) of core.infrastructure_detectors.run_yolo_seg "
+               "(640 letterbox, per-class NMS at the registry IoU, score floor 0.001) against "
+               "the LabelMe polygons at full 3840x2160 resolution.",
+        "caveats": [
+            "pycocotools AP; the publisher's figures come from the Ultralytics validator, "
+            "whose interpolation and matching differ slightly.",
+            "The publisher does not say whether its 74.24/60.37 are box or mask AP.",
+        ],
+    }
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 EVALUATIONS = {"road": evaluate_road, "pv": evaluate_pv, "bridge": evaluate_bridge,
-               "structural-split": evaluate_structural_split}
+               "structural-split": evaluate_structural_split,
+               "rdd2022-detectionbench-test": evaluate_rdd2022_detectionbench_test,
+               "ttpla-test": evaluate_ttpla_test}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -969,6 +1201,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--overlays", type=int, default=24, help="Road: overlays for the first N images.")
     parser.add_argument("--tiled-frames", type=int, default=3,
                         help="Bridge: also segment the first N frames as native 1024 px tiles.")
+    parser.add_argument("--membership",
+                        help="rdd2022-detectionbench-test: the split-membership JSON.")
     args = parser.parse_args(argv)
     summary = EVALUATIONS[args.area](args)
     text = json.dumps(summary, indent=2, default=str)

@@ -1,0 +1,68 @@
+{
+  "evaluation": "road_damage_rfdetr_small on RDD2022 subset \u2229 DetectionBench test",
+  "measured_utc": "2026-10-03T09:03:37Z",
+  "split": "RDD2022 subset \u2229 DetectionBench test, N=27",
+  "dataset": {
+    "images": 27,
+    "by_source": {
+      "China_Drone": 17,
+      "India": 10
+    },
+    "subset_images_total": 200,
+    "subset_by_split": {
+      "train": 145,
+      "test": 27,
+      "valid": 28
+    },
+    "labels_dropped_not_in_4_class_taxonomy": {
+      "Repair": 8
+    },
+    "membership_file": "E:\\Shit was cluittering\\Projects\\odk-scratch\\u5\\training_data\\prepared\\rdd2022_subset\\detectionbench_membership.json",
+    "membership_source": "Split folder of each image in the HF dataset dronefreak/RDD2022 @ 72b01f94c2e5bfe430861afd73995f2d412b8855 (DetectionBench RDD2022 export; data/images/{train,valid,test}). Split sizes 26,869/5,758/5,758 equal DetectionBench docs/datasets/rdd2022/README.md @ 5efbe794. The 27 test-split images of our subset were checked byte-identical (sha256) to the mirror copies on 2026-10-03."
+  },
+  "model": {
+    "model_key": "road_damage_rfdetr_small",
+    "file": "road_damage_rfdetr_small.onnx",
+    "sha256_measured": "38d4799494058741c01590d5a919f182f1644af58f12b378f6b2161e77f2c504",
+    "sha256_registered": "38d4799494058741c01590d5a919f182f1644af58f12b378f6b2161e77f2c504",
+    "sha256_matches_registry": true
+  },
+  "coco_bbox": {
+    "all": {
+      "ap50_95": 0.3689,
+      "ap50": 0.6798,
+      "ar100": 0.6481,
+      "gt_instances": 21
+    },
+    "longitudinal_crack": {
+      "ap50_95": 0.4176,
+      "ap50": 0.8015,
+      "ar100": 0.6111,
+      "gt_instances": 9
+    },
+    "transverse_crack": {
+      "ap50_95": 0.5842,
+      "ap50": 0.8678,
+      "ar100": 0.7667,
+      "gt_instances": 6
+    },
+    "alligator_crack": {
+      "ap50_95": 0.1047,
+      "ap50": 0.3703,
+      "ar100": 0.5667,
+      "gt_instances": 6
+    },
+    "pothole": {
+      "ap50_95": -1.0,
+      "ap50": -1.0,
+      "ar100": -1.0,
+      "gt_instances": 0
+    }
+  },
+  "how": "COCO AP (pycocotools, maxDets 100) of run_registered_model predictions down to score 0.001 against the subset's own Pascal-VOC boxes, D00/D10/D20/D40 -> longitudinal/transverse/alligator/pothole; other RDD labels dropped as DetectionBench drops them.",
+  "caveats": [
+    "Small N: one image moves per-class AP by several points.",
+    "Our boxes are the original RDD2022 VOC annotations; DetectionBench used the RDD_SPLIT YOLO export of the same images.",
+    "Not comparable to the CRDDC2022 leaderboard, as the publisher also says."
+  ]
+}

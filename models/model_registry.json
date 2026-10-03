@@ -274,6 +274,367 @@
       "description": "DINOv2 ViT-B/14 + UPerNet, shared_semantic v4, epoch 35 of 40 (the run was cut at Kaggle's 12h cap and the weekly GPU quota is spent; the last five epochs are not in these weights). Validation mean IoU 0.7018. SIX CLASSES ARE PREDICTED AND TWO ARE USABLE. Scored on Gorakhpur, Uttar Pradesh -- 49 exhaustively annotated tiles at 0.448 m/px, pinned to test and never trained on -- the per-class IoU is: vegetation 0.913, building 0.621, road 0.366, water 0.003, bare_land 0.000, background 0.000. Pixel accuracy 0.916. usable_labels names the two that hold up. ROAD IS WEAK, not usable: 0.366 IoU, precision 0.593, recall 0.488 -- it misses half the road it is shown. WATER IS NOT WORKING: 0.003 IoU on 288851 labelled pixels. It predicts roughly the right AMOUNT of water (282787 px) in the wrong PLACES, which is worse than silence because the output looks plausible. BARE_LAND IS DEAD: zero pixels predicted across all 49 tiles against 19990 labelled. Neither improved when v4 added 463 water and 178 bare_land samples over v3 -- water in fact fell from 0.092 to 0.003 -- so more data is not the outstanding fix for them and no claim should be built on either. The mean IoU of 0.317 averages working and dead classes together and should not be quoted; the per-class column is the result. Background reads 0.000 because Gorakhpur's annotators labelled every pixel into a real class, so the model's background predictions have nothing to match. TRAINING CAVEAT: 13.4 per cent of optimiser steps were dropped as non-finite. The cause is unknown -- the absent-class-penalty overflow hypothesis was tested and died, measured max |grad| 0.0625, not the ~1e6 an fp16 overflow needs. SCOPE: one Indian city, captured from satellite or aircraft, not from a drone at 60 m. It is not verified for India and says nothing about differently built sites. ONNX parity max_abs_diff 1.2e-04 over 1073296 pixels with zero label disagreements. Evidence: docs/holdout/shared_semantic_v4_gorakhpur.json.",
       "sha256": "95b113795b45ba13460c56ba2c2bb8b04c95215d51290d94371bb2481bf7d466",
       "status": "installed"
+    },
+    "road_damage_rfdetr_small": {
+      "kind": "onnx_detr",
+      "path": "road_damage_rfdetr_small/road_damage_rfdetr_small.onnx",
+      "labels": [
+        "longitudinal_crack",
+        "transverse_crack",
+        "alligator_crack",
+        "pothole"
+      ],
+      "score_threshold": 0.25,
+      "input_size": 512,
+      "num_select": 300,
+      "description": "RF-DETR Small (32.1M params, DINOv2-S windowed backbone) fine-tuned on RDD2022 by DetectionBench, exported by OpenDroneKit to ONNX (opset 17, 512x512, rfdetr 1.11.1) from checkpoint_best_total.pth. Classes from the checkpoint's config.json in index order; the head has a fifth no-object slot that is never reported. Preprocessing: RGB, bilinear stretch to 512, ImageNet normalisation; decode: sigmoid, top-300 over queries x classes, no NMS. Road damage pre-labels for review: longitudinal, transverse and alligator cracks and potholes. SCOPE: smartphone, dashcam and some drone frames from six countries; thin cracks are lost when 4000 px frames are downscaled to 512; the 'other' class (block cracks, repairs) was dropped, so those are not detected. Not a measurement of crack width or pothole depth.",
+      "sha256": "38d4799494058741c01590d5a919f182f1644af58f12b378f6b2161e77f2c504",
+      "status": "installed",
+      "status_note": "Weights not installed. Download road_damage_rfdetr_small.onnx from the v0.1.0-beta release into <models>/road_damage_rfdetr_small/.",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "Apache-2.0 (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "road_damage_rfdetr_small.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/road_damage_rfdetr_small.onnx",
+            "sha256": "38d4799494058741c01590d5a919f182f1644af58f12b378f6b2161e77f2c504"
+          }
+        ]
+      },
+      "licence": {
+        "weights": "Apache-2.0",
+        "weights_url": "https://huggingface.co/dronefreak/rdd2022-rfdetr-small",
+        "data": "RDD2022, CC BY 4.0 per the authors' Figshare release (10.6084/m9.figshare.21431547). The HF mirror dronefreak/RDD2022 states CC BY-SA 4.0; the original's terms are used. Images are not redistributed.",
+        "data_url": "https://doi.org/10.6084/m9.figshare.21431547",
+        "use": "commercial",
+        "attribution": "Weights: dronefreak/rdd2022-rfdetr-small (DetectionBench), base roboflow/rf-detr (Apache-2.0; Robinson et al., ICLR 2026). Data: Arya, Maeda, Ghosh, Toshniwal, Sekimoto, 'RDD2022: A multi-national image dataset for automatic Road Damage Detection', arXiv:2209.08538, 2022."
+      },
+      "source": {
+        "repo": "https://huggingface.co/dronefreak/rdd2022-rfdetr-small",
+        "revision": "51718250c97c40e7ddf2f586695a441fa19fb38b",
+        "files": [
+          "checkpoint_best_total.pth",
+          "config.json"
+        ],
+        "checkpoint_sha256": "19e446593695f2ae4335114b6f5a419b06352b31ddda01c357ed4d3c0351f33b",
+        "conversion": "rfdetr 1.11.1 RFDETRSmall.export(opset 17), CPU; parity against model.predict in docs/model_cards/road_damage_rfdetr_small.md"
+      },
+      "output_semantics": "detection",
+      "metric": {
+        "value": {
+          "map50": 64.71,
+          "map50_95": 35.73,
+          "precision": 65.69,
+          "recall": 59.41
+        },
+        "name": "mAP50 / mAP50-95 (%), supervision metrics",
+        "split": "DetectionBench RDD2022 test split: a held-out 15% of the publicly labelled images (70/15/15, countries merged). Not comparable to the CRDDC2022 leaderboard (publisher).",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/dronefreak/rdd2022-rfdetr-small"
+      },
+      "publisher_metric": {
+        "value": {
+          "map50": 64.71,
+          "map50_95": 35.73,
+          "precision": 65.69,
+          "recall": 59.41
+        },
+        "name": "mAP50 / mAP50-95 (%), supervision metrics",
+        "split": "DetectionBench RDD2022 test split: a held-out 15% of the publicly labelled images (70/15/15, countries merged). Not comparable to the CRDDC2022 leaderboard (publisher).",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/dronefreak/rdd2022-rfdetr-small"
+      },
+      "result_note": "Road damage pre-label: a box for review, not a crack width or depth."
+    },
+    "powerline_ttpla_yolo11s_seg": {
+      "kind": "onnx_yolo_seg",
+      "path": "powerline_ttpla_yolo11s_seg/powerline_ttpla_yolo11s_seg.onnx",
+      "labels": [
+        "Line",
+        "Tower"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.7,
+      "input_size": 640,
+      "description": "Ultralytics YOLO11s-seg fine-tuned on TTPLA (ft640 deployment checkpoint), the publisher's own ONNX export (opset 12, 640), byte for byte. Power line (Line) and transmission tower (Tower) boxes with instance masks, 640 letterbox. SCOPE: low-altitude forward-camera UAV video frames. Geometry only, not clearance: a 2-D mask says where a cable is in the image, not how far it is from anything. No insulator or fitting faults. The publisher calls it a pilot/operator warning, not a certified sense-and-avoid system.",
+      "sha256": "28c83ee06096f8a8854acf782e7006b2d7b1009f3c01a7098c1e48b41b5ce766",
+      "status": "installed",
+      "status_note": "Weights not installed. Download powerline_ttpla_yolo11s_seg.onnx (AGPL-3.0) from the v0.1.0-beta release into <models>/powerline_ttpla_yolo11s_seg/.",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "AGPL-3.0-or-later (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "powerline_ttpla_yolo11s_seg.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/powerline_ttpla_yolo11s_seg.onnx",
+            "sha256": "28c83ee06096f8a8854acf782e7006b2d7b1009f3c01a7098c1e48b41b5ce766"
+          }
+        ]
+      },
+      "licence": {
+        "weights": "AGPL-3.0-or-later",
+        "weights_url": "https://huggingface.co/ethan0502/ttpla-yolo11-seg",
+        "corresponding_source": "https://github.com/ethan0502/ttpla-yolo11-seg",
+        "data": "TTPLA, Apache-2.0 (R3ab/ttpla_dataset). Images are not redistributed.",
+        "data_url": "https://github.com/R3ab/ttpla_dataset",
+        "use": "copyleft",
+        "attribution": "Weights: ethan0502/ttpla-yolo11-seg, a fine-tune of Ultralytics yolo11s-seg (AGPL-3.0). Data: Abdelfattah, Wang, Wang, 'TTPLA: An Aerial-Image Dataset for Detection and Segmentation of Transmission Towers and Power Lines', ACCV 2020."
+      },
+      "source": {
+        "repo": "https://huggingface.co/ethan0502/ttpla-yolo11-seg",
+        "revision": "b77643ae3b3b2a95b777d0e92e2da6a8744c23a5",
+        "files": [
+          "yolo11s_seg_ft640.onnx",
+          "classes.txt"
+        ]
+      },
+      "output_semantics": "mask",
+      "metric": {
+        "value": {
+          "map50": 74.24,
+          "map50_95": 60.37
+        },
+        "name": "mAP50 / mAP50-95 (%), Ultralytics validator; the card does not say box or mask",
+        "split": "TTPLA official 220-image held-out test split, 2-class (Line, Tower) remap",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/ethan0502/ttpla-yolo11-seg"
+      },
+      "publisher_metric": {
+        "value": {
+          "map50": 74.24,
+          "map50_95": 60.37
+        },
+        "name": "mAP50 / mAP50-95 (%), Ultralytics validator; the card does not say box or mask",
+        "split": "TTPLA official 220-image held-out test split, 2-class (Line, Tower) remap",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/ethan0502/ttpla-yolo11-seg"
+      },
+      "result_note": "TTPLA: geometry only, not clearance."
+    },
+    "powerline_insplad_detector": {
+      "kind": "onnx_yolo",
+      "labels": [
+        "yoke",
+        "yoke suspension",
+        "spacer",
+        "stockbridge damper",
+        "lightning rod shackle",
+        "lightning rod suspension",
+        "polymer insulator",
+        "glass insulator",
+        "tower id plate",
+        "vari-grip",
+        "polymer insulator lower shackle",
+        "polymer insulator upper shackle",
+        "polymer insulator tower shackle",
+        "glass insulator big shackle",
+        "glass insulator small shackle",
+        "glass insulator tower shackle",
+        "spiral damper"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "condition_model": "powerline_insplad_condition",
+      "licence": {
+        "weights": "CC-BY-NC-3.0",
+        "weights_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "weights_also_claimed": "AGPL-3.0 (Ultralytics states every YOLO11 fine-tune is AGPL-3.0; the ONNX metadata carries 'AGPL-3.0 License'). The detector's two licences conflict: AGPL forbids the non-commercial restriction. OWNER GATE, unresolved; see WEIGHTS_LICENSES.md.",
+        "data": "InsPLAD, CC BY-NC 3.0 (Vieira-e-Silva et al., IJRS 2023)",
+        "data_url": "https://github.com/andreluizbvs/InsPLAD",
+        "use": "non-commercial",
+        "attribution": "Weights: ACloudCenter/yolo11s-insplad-powerline (code: github.com/Josh-E-S/powerline-inspection-demo). Data: Vieira-e-Silva, Felix, Simoes, Teichrieb, 'InsPLAD: A Dataset and Benchmark for Power Line Asset Inspection in UAV Images', International Journal of Remote Sensing 44(23), 2023.",
+        "owner_gate": "InsPLAD CC BY-NC 3.0 vs Ultralytics AGPL-3.0"
+      },
+      "output_semantics": "detection",
+      "result_note": "Non-commercial; research/demonstration use per the publisher, not operational decisions. The three glass-insulator shackle classes reach only 0.34-0.47 Box AP per the publisher.",
+      "path": "powerline_insplad_detector/powerline_insplad_detector_640_int8.onnx",
+      "input_size": 640,
+      "description": "YOLO11s (9.4M params) on InsPLAD, 17 power-line asset classes, the publisher's INT8 static QDQ ONNX at 640 (byte for byte; names read from the ONNX metadata). The CPU default; powerline_insplad_detector_1280 is the fp32 1280 variant for a GPU or a patient CPU. Detections of the five defect-prone assets go to powerline_insplad_condition for a condition suggestion. SCOPE: one geography and capture programme; research and demonstration per the publisher.",
+      "sha256": "4b3ff85a0a2e1a38f88cd1bdff8c6ac1805039d1924be7e64d4f643afaa9e161",
+      "status": "installed",
+      "status_note": "Weights not installed. Download powerline_insplad_detector_640_int8.onnx (CC BY-NC 3.0, non-commercial) from the v0.1.0-beta release into <models>/powerline_insplad_detector/.",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "CC-BY-NC-3.0 (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "powerline_insplad_detector_640_int8.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/powerline_insplad_detector_640_int8.onnx",
+            "sha256": "4b3ff85a0a2e1a38f88cd1bdff8c6ac1805039d1924be7e64d4f643afaa9e161"
+          }
+        ]
+      },
+      "source": {
+        "repo": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "revision": "e444141f5e91f26acc7ecc809b462bc32b2f1d17",
+        "files": [
+          "detector-640-int8.onnx"
+        ]
+      },
+      "metric": {
+        "value": {
+          "box_ap_50_95": 0.71,
+          "ap50": 0.889
+        },
+        "name": "COCO Box AP (int8, 640)",
+        "split": "InsPLAD official test split (2,626 images, 6,324 instances); per-class counts matched to the paper's Table 3 by the publisher. Unmeasured by OpenDroneKit: the dataset is one 6.4 GB archive, over the 5 GB download limit.",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline"
+      }
+    },
+    "powerline_insplad_detector_1280": {
+      "kind": "onnx_yolo",
+      "labels": [
+        "yoke",
+        "yoke suspension",
+        "spacer",
+        "stockbridge damper",
+        "lightning rod shackle",
+        "lightning rod suspension",
+        "polymer insulator",
+        "glass insulator",
+        "tower id plate",
+        "vari-grip",
+        "polymer insulator lower shackle",
+        "polymer insulator upper shackle",
+        "polymer insulator tower shackle",
+        "glass insulator big shackle",
+        "glass insulator small shackle",
+        "glass insulator tower shackle",
+        "spiral damper"
+      ],
+      "score_threshold": 0.25,
+      "iou_threshold": 0.45,
+      "condition_model": "powerline_insplad_condition",
+      "licence": {
+        "weights": "CC-BY-NC-3.0",
+        "weights_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "weights_also_claimed": "AGPL-3.0 (Ultralytics states every YOLO11 fine-tune is AGPL-3.0; the ONNX metadata carries 'AGPL-3.0 License'). The detector's two licences conflict: AGPL forbids the non-commercial restriction. OWNER GATE, unresolved; see WEIGHTS_LICENSES.md.",
+        "data": "InsPLAD, CC BY-NC 3.0 (Vieira-e-Silva et al., IJRS 2023)",
+        "data_url": "https://github.com/andreluizbvs/InsPLAD",
+        "use": "non-commercial",
+        "attribution": "Weights: ACloudCenter/yolo11s-insplad-powerline (code: github.com/Josh-E-S/powerline-inspection-demo). Data: Vieira-e-Silva, Felix, Simoes, Teichrieb, 'InsPLAD: A Dataset and Benchmark for Power Line Asset Inspection in UAV Images', International Journal of Remote Sensing 44(23), 2023.",
+        "owner_gate": "InsPLAD CC BY-NC 3.0 vs Ultralytics AGPL-3.0"
+      },
+      "output_semantics": "detection",
+      "result_note": "Non-commercial; research/demonstration use per the publisher, not operational decisions. The three glass-insulator shackle classes reach only 0.34-0.47 Box AP per the publisher.",
+      "path": "powerline_insplad_detector_1280/powerline_insplad_detector_1280.onnx",
+      "input_size": 1280,
+      "description": "The same InsPLAD YOLO11s detector as powerline_insplad_detector, unquantised fp32 at 1280 (byte for byte from the publisher). Slower; use with a GPU or when the int8 640 model misses small fittings. Same scope and terms.",
+      "sha256": "485c730a83d5162984f2731ae8baeb24f2970002d7cd5132a92f628db5cd3aa2",
+      "status": "installed",
+      "status_note": "Weights not installed. Download powerline_insplad_detector_1280.onnx (CC BY-NC 3.0, non-commercial) from the v0.1.0-beta release into <models>/powerline_insplad_detector_1280/.",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "CC-BY-NC-3.0 (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "powerline_insplad_detector_1280.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/powerline_insplad_detector_1280.onnx",
+            "sha256": "485c730a83d5162984f2731ae8baeb24f2970002d7cd5132a92f628db5cd3aa2"
+          }
+        ]
+      },
+      "source": {
+        "repo": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "revision": "e444141f5e91f26acc7ecc809b462bc32b2f1d17",
+        "files": [
+          "detector-1280-fp32.onnx"
+        ]
+      },
+      "metric": {
+        "value": {
+          "box_ap_50_95": 0.738,
+          "ap50": 0.912
+        },
+        "name": "COCO Box AP (fp32, 1280)",
+        "split": "InsPLAD official test split (2,626 images, 6,324 instances); per-class counts matched to the paper's Table 3 by the publisher. Unmeasured by OpenDroneKit: the dataset is one 6.4 GB archive, over the 5 GB download limit.",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline"
+      }
+    },
+    "powerline_insplad_condition": {
+      "kind": "onnx_condition_classifier",
+      "path": "powerline_insplad_condition/powerline_insplad_condition.onnx",
+      "labels": [
+        "glass-insulator__good",
+        "glass-insulator__missing-cap",
+        "lightning-rod-suspension__good",
+        "lightning-rod-suspension__rust",
+        "polymer-insulator-upper-shackle__good",
+        "polymer-insulator-upper-shackle__rust",
+        "vari-grip__bird-nest",
+        "vari-grip__good",
+        "vari-grip__rust",
+        "yoke-suspension__good",
+        "yoke-suspension__rust"
+      ],
+      "output_classes": [
+        "glass-insulator__good",
+        "glass-insulator__missing-cap",
+        "lightning-rod-suspension__good",
+        "lightning-rod-suspension__rust",
+        "polymer-insulator-upper-shackle__good",
+        "polymer-insulator-upper-shackle__rust",
+        "vari-grip__bird-nest",
+        "vari-grip__good",
+        "vari-grip__rust",
+        "yoke-suspension__good",
+        "yoke-suspension__rust"
+      ],
+      "input_size": 224,
+      "condition_of": "powerline_insplad_detector",
+      "preprocessing": {
+        "input": "crop, short side 256 bilinear, centre 224, rgb_0_1",
+        "normalisation": "imagenet",
+        "output": "logits",
+        "mask": "logits masked to the detected asset's asset__condition classes before the softmax"
+      },
+      "description": "EfficientNetV2-S condition classifier on InsPLAD fault crops: one head over 11 asset__condition classes for five assets (glass insulator, lightning rod suspension, polymer insulator upper shackle, vari-grip, yoke suspension). The publisher's classifier.onnx with its .onnx.data folded into one file by OpenDroneKit (outputs identical: max abs diff 0.0 on 8 random inputs). It runs only as the second stage of the InsPLAD detector, on a crop of a detected component; its answer is a condition suggestion on that crop, not a located defect.",
+      "sha256": "66635a28e0fe34a74ce273536226720baefd92359dab222d3711c0868a138831",
+      "status": "installed",
+      "status_note": "Weights not installed. Download powerline_insplad_condition.onnx (CC BY-NC 3.0, non-commercial) from the v0.1.0-beta release into <models>/powerline_insplad_condition/. Detections are still returned without a condition.",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "CC-BY-NC-3.0 (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "powerline_insplad_condition.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/powerline_insplad_condition.onnx",
+            "sha256": "66635a28e0fe34a74ce273536226720baefd92359dab222d3711c0868a138831"
+          }
+        ]
+      },
+      "licence": {
+        "weights": "CC-BY-NC-3.0",
+        "weights_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "weights_also_claimed": "None for the classifier itself (EfficientNetV2-S, not Ultralytics); it is CC BY-NC 3.0 as a derivative of InsPLAD.",
+        "data": "InsPLAD, CC BY-NC 3.0 (Vieira-e-Silva et al., IJRS 2023)",
+        "data_url": "https://github.com/andreluizbvs/InsPLAD",
+        "use": "non-commercial",
+        "attribution": "Weights: ACloudCenter/yolo11s-insplad-powerline (code: github.com/Josh-E-S/powerline-inspection-demo). Data: Vieira-e-Silva, Felix, Simoes, Teichrieb, 'InsPLAD: A Dataset and Benchmark for Power Line Asset Inspection in UAV Images', International Journal of Remote Sensing 44(23), 2023.",
+        "owner_gate": "InsPLAD CC BY-NC 3.0 vs Ultralytics AGPL-3.0"
+      },
+      "source": {
+        "repo": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline",
+        "revision": "e444141f5e91f26acc7ecc809b462bc32b2f1d17",
+        "files": [
+          "classifier.onnx",
+          "classifier.onnx.data",
+          "classifier_classes.json"
+        ],
+        "conversion": "onnx.save_model(save_as_external_data=False)"
+      },
+      "output_semantics": "suggestion",
+      "metric": {
+        "value": 0.96,
+        "name": "balanced accuracy",
+        "split": "InsPLAD fault test split (6,417 crops); published baseline 0.954. Unmeasured by OpenDroneKit (dataset archive over the 5 GB limit).",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/ACloudCenter/yolo11s-insplad-powerline"
+      },
+      "result_note": "Non-commercial; research/demonstration use per the publisher, not operational decisions. The three glass-insulator shackle classes reach only 0.34-0.47 Box AP per the publisher."
     }
   }
 }

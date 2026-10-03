@@ -1,0 +1,199 @@
+{
+  "model": "dronefreak/rdd2022-rfdetr-small@51718250c97c40e7ddf2f586695a441fa19fb38b",
+  "checkpoint_sha256": "19e446593695f2ae4335114b6f5a419b06352b31ddda01c357ed4d3c0351f33b",
+  "rfdetr_version": "",
+  "torch_version": "2.11.0+cu128",
+  "onnxruntime_version": "1.28.0",
+  "resolution": 512,
+  "class_names": [
+    "longitudinal_crack",
+    "transverse_crack",
+    "alligator_crack",
+    "pothole"
+  ],
+  "io": {
+    "input": [
+      "input",
+      [
+        1,
+        3,
+        512,
+        512
+      ]
+    ],
+    "outputs": [
+      [
+        "dets",
+        [
+          1,
+          300,
+          4
+        ]
+      ],
+      [
+        "labels",
+        [
+          1,
+          300,
+          5
+        ]
+      ]
+    ]
+  },
+  "raw_output_max_abs_diff_same_tensor": {
+    "boxes": 0.4843583106994629,
+    "logits": 1.2064495086669922
+  },
+  "end_to_end_threshold": 0.3,
+  "end_to_end": [
+    {
+      "image": "China_Drone_000011.jpg",
+      "reference": 2,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 1.0728836059570312e-06
+    },
+    {
+      "image": "China_Drone_000248.jpg",
+      "reference": 4,
+      "ours": 4,
+      "matched_iou_0.9_same_class": 4,
+      "max_score_diff": 1.1920928955078125e-06
+    },
+    {
+      "image": "China_Drone_000416.jpg",
+      "reference": 2,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 1.7881393432617188e-07
+    },
+    {
+      "image": "China_Drone_000593.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 0.0
+    },
+    {
+      "image": "China_Drone_000801.jpg",
+      "reference": 3,
+      "ours": 3,
+      "matched_iou_0.9_same_class": 3,
+      "max_score_diff": 6.556510925292969e-07
+    },
+    {
+      "image": "China_Drone_001080.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 2.1278858184814453e-05
+    },
+    {
+      "image": "China_Drone_001192.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 5.960464477539062e-07
+    },
+    {
+      "image": "China_Drone_001507.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 4.172325134277344e-07
+    },
+    {
+      "image": "China_Drone_001689.jpg",
+      "reference": 2,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 2.384185791015625e-07
+    },
+    {
+      "image": "China_Drone_001789.jpg",
+      "reference": 2,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 4.76837158203125e-07
+    },
+    {
+      "image": "China_Drone_001978.jpg",
+      "reference": 2,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 4.76837158203125e-07
+    },
+    {
+      "image": "China_Drone_002224.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 3.5762786865234375e-07
+    },
+    {
+      "image": "India_000043.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 0.0003809332847595215
+    },
+    {
+      "image": "India_000711.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 0.007490217685699463
+    },
+    {
+      "image": "India_002917.jpg",
+      "reference": 0,
+      "ours": 0,
+      "matched_iou_0.9_same_class": 0,
+      "max_score_diff": 0.0
+    },
+    {
+      "image": "India_004329.jpg",
+      "reference": 0,
+      "ours": 0,
+      "matched_iou_0.9_same_class": 0,
+      "max_score_diff": 0.0
+    },
+    {
+      "image": "India_005084.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 0.0020435452461242676
+    },
+    {
+      "image": "India_006561.jpg",
+      "reference": 3,
+      "ours": 2,
+      "matched_iou_0.9_same_class": 2,
+      "max_score_diff": 0.0028996169567108154
+    },
+    {
+      "image": "India_007338.jpg",
+      "reference": 0,
+      "ours": 0,
+      "matched_iou_0.9_same_class": 0,
+      "max_score_diff": 0.0
+    },
+    {
+      "image": "India_008960.jpg",
+      "reference": 1,
+      "ours": 1,
+      "matched_iou_0.9_same_class": 1,
+      "max_score_diff": 0.0009186863899230957
+    }
+  ],
+  "totals": {
+    "images": 20,
+    "reference_boxes": 29,
+    "our_boxes": 28,
+    "matched": 28,
+    "max_score_diff": 0.007490217685699463
+  },
+  "onnx_sha256": "38d4799494058741c01590d5a919f182f1644af58f12b378f6b2161e77f2c504",
+  "onnx_bytes": 114253423
+}
