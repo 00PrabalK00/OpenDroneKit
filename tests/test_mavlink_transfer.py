@@ -94,6 +94,10 @@ class LoopbackVehicle:
             f"tcpin:127.0.0.1:{port}", source_system=1, source_component=1
         )
         self.stored: dict[int, list] = {0: [], 1: [], 2: []}
+        # Ask for this item twice, as ArduPilot does when an answer is slower than its
+        # retry timer; the second copy then arrives out of sequence and is NAKed.
+        self.rerequest_item: int | None = None
+        self.sequence_naks = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._serve, daemon=True)
 
@@ -144,14 +148,22 @@ class LoopbackVehicle:
                     message.get_srcSystem(), message.get_srcComponent(), 0, pending_type
                 )
 
+            elif kind == "MISSION_ITEM_INT" and int(message.seq) != len(received):
+                # ArduPilot (MissionItemProtocol::handle_mission_item) NAKs an item it
+                # did not ask for with MAV_MISSION_INVALID_SEQUENCE and keeps waiting.
+                self.sequence_naks += 1
+                self.connection.mav.mission_ack_send(
+                    message.get_srcSystem(), message.get_srcComponent(), 13, pending_type)
+
             elif kind == "MISSION_ITEM_INT":
                 received.append(message)
                 seq = int(message.seq)
                 if seq + 1 < expected:
-                    self.connection.mav.mission_request_int_send(
-                        message.get_srcSystem(), message.get_srcComponent(),
-                        seq + 1, pending_type,
-                    )
+                    for _ in range(2 if seq + 1 == self.rerequest_item else 1):
+                        self.connection.mav.mission_request_int_send(
+                            message.get_srcSystem(), message.get_srcComponent(),
+                            seq + 1, pending_type,
+                        )
                 else:
                     self.stored[pending_type] = received
                     self.connection.mav.mission_ack_send(
@@ -213,6 +225,23 @@ def test_mission_upload_is_acknowledged(linked_vehicle):
     assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == len(items) + 1
     stored = vehicle.stored[MAV_MISSION_TYPE_MISSION]
     assert int(stored[1].command) == int(items[0]["command"])
+
+
+def test_an_out_of_sequence_nak_does_not_end_the_upload(linked_vehicle):
+    """ArduPilot re-requests an item whose answer was slow, NAKs the duplicate with
+    MAV_MISSION_INVALID_SEQUENCE, and carries on. The client reported that NAK as "Vehicle
+    rejected the upload at item 23 of 613: mission type not supported" (ArduCopter 4.5.7
+    SITL, an Aukerman grid uploaded from the cockpit) while the vehicle was still asking
+    for the rest of the mission."""
+    client, vehicle = linked_vehicle
+    items = [item.to_dict() for item in build_mission_items(PLAN)]
+    vehicle.rerequest_item = 3
+
+    result = client.upload_mission(items)
+
+    assert result.success, result.message
+    assert vehicle.sequence_naks >= 1
+    assert len(vehicle.stored[MAV_MISSION_TYPE_MISSION]) == len(items) + 1
 
 
 def test_capture_commands_reach_the_vehicle(linked_vehicle):

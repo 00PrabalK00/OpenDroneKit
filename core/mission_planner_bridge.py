@@ -156,10 +156,14 @@ _MISSION_RESULT_TEXT = {
     10: "x/latitude invalid",
     11: "y/longitude invalid",
     12: "z/altitude invalid",
-    13: "mission type not supported",
-    14: "vehicle busy",
+    13: "item out of sequence",
+    14: "denied",
     15: "operation cancelled",
 }
+# This table said 13 was "mission type not supported" and 14 "vehicle busy"; in
+# MAV_MISSION_RESULT they are MAV_MISSION_INVALID_SEQUENCE and MAV_MISSION_DENIED, so an
+# upload ArduPilot was still running was reported to the pilot as an unsupported type.
+MAV_MISSION_INVALID_SEQUENCE = 13
 
 # MAV_FRAME_*_INT frames are deprecated aliases of the plain ones: in MISSION_ITEM_INT
 # both carry degrees x 1e7 and mean the same altitude reference. PX4 answers a download
@@ -970,6 +974,18 @@ class MissionPlannerDroneClient:
 
                 if msg.get_type() == "MISSION_ACK":
                     result = int(getattr(msg, "type", 1))
+                    acked_type = int(getattr(msg, "mission_type", mission_type) or 0)
+                    if acked_type != mission_type:
+                        continue  # the answer to some other list's transfer
+                    if result == MAV_MISSION_INVALID_SEQUENCE:
+                        # Not the end of the transfer. ArduPilot NAKs an item it did not
+                        # ask for next -- the second copy of one it re-requested when the
+                        # first answer was slow -- and carries on asking for the item it
+                        # wants. Treated as final, a 613-item upload to ArduCopter SITL
+                        # failed at item 23 whenever one answer took longer than the
+                        # autopilot's retry timer. Anything really wrong ends in a
+                        # different ACK, or in silence and the timeout below.
+                        continue
                     if result == MAV_MISSION_ACCEPTED:
                         if mission_type == MAV_MISSION_TYPE_MISSION:
                             self._mission_uploaded_count = len(items)
