@@ -274,6 +274,156 @@
       "description": "DINOv2 ViT-B/14 + UPerNet, shared_semantic v4, epoch 35 of 40 (the run was cut at Kaggle's 12h cap and the weekly GPU quota is spent; the last five epochs are not in these weights). Validation mean IoU 0.7018. SIX CLASSES ARE PREDICTED AND TWO ARE USABLE. Scored on Gorakhpur, Uttar Pradesh -- 49 exhaustively annotated tiles at 0.448 m/px, pinned to test and never trained on -- the per-class IoU is: vegetation 0.913, building 0.621, road 0.366, water 0.003, bare_land 0.000, background 0.000. Pixel accuracy 0.916. usable_labels names the two that hold up. ROAD IS WEAK, not usable: 0.366 IoU, precision 0.593, recall 0.488 -- it misses half the road it is shown. WATER IS NOT WORKING: 0.003 IoU on 288851 labelled pixels. It predicts roughly the right AMOUNT of water (282787 px) in the wrong PLACES, which is worse than silence because the output looks plausible. BARE_LAND IS DEAD: zero pixels predicted across all 49 tiles against 19990 labelled. Neither improved when v4 added 463 water and 178 bare_land samples over v3 -- water in fact fell from 0.092 to 0.003 -- so more data is not the outstanding fix for them and no claim should be built on either. The mean IoU of 0.317 averages working and dead classes together and should not be quoted; the per-class column is the result. Background reads 0.000 because Gorakhpur's annotators labelled every pixel into a real class, so the model's background predictions have nothing to match. TRAINING CAVEAT: 13.4 per cent of optimiser steps were dropped as non-finite. The cause is unknown -- the absent-class-penalty overflow hypothesis was tested and died, measured max |grad| 0.0625, not the ~1e6 an fp16 overflow needs. SCOPE: one Indian city, captured from satellite or aircraft, not from a drone at 60 m. It is not verified for India and says nothing about differently built sites. ONNX parity max_abs_diff 1.2e-04 over 1073296 pixels with zero label disagreements. Evidence: docs/holdout/shared_semantic_v4_gorakhpur.json.",
       "sha256": "95b113795b45ba13460c56ba2c2bb8b04c95215d51290d94371bb2481bf7d466",
       "status": "installed"
+    },
+    "relative_depth_dav2_small": {
+      "kind": "onnx_relative_depth",
+      "task": "relative depth overlay from one photo",
+      "path": "relative_depth_dav2_small/relative_depth_dav2_small.onnx",
+      "labels": [],
+      "input_size": 518,
+      "description": "Depth Anything V2 Small (ViT-S, 24.8M params), fp32 ONNX. Gives RELATIVE INVERSE DEPTH for one photo: larger is nearer, and the values are defined only up to an unknown per-image scale and shift. UNITLESS, NEVER METRES. Use it to read structure: occlusion order, a bulge or sag that shading hides, which member sits in front of which. Do NOT use it for clearance, crack depth, height, spall or stockpile volume; no API converts it to any of those. Zero-shot on drone inspection imagery; it was not trained on it.",
+      "sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+      "status": "installed",
+      "status_note": "Weights not installed. Download the v0.1.0-beta release asset relative_depth_dav2_small.onnx (Apache-2.0) into the models folder or ODK_MODEL_WEIGHTS_DIR under relative_depth_dav2_small/.",
+      "output_semantics": "relative",
+      "units": "relative (unitless)",
+      "preprocessing": {
+        "input": "rgb_0_1",
+        "normalisation": "imagenet",
+        "resize": "short side 518, aspect kept, both sides rounded to a multiple of 14, bicubic",
+        "output": "relative inverse depth [1,H,W], bicubic upsample to the photo size"
+      },
+      "licence": {
+        "weights": "Apache-2.0",
+        "weights_url": "https://github.com/DepthAnything/Depth-Anything-V2#license",
+        "data": "595K synthetic labelled images plus 62M+ pseudo-labelled real images (Depth Anything V2 paper); mixed source licences; the data is not redistributed.",
+        "data_url": "https://arxiv.org/abs/2406.09414",
+        "use": "commercial",
+        "attribution": "Depth Anything V2 (Small) by Lihe Yang, Bingyi Kang, Zilong Huang, Zhen Zhao, Xiaogang Xu, Jiashi Feng, Hengshuang Zhao; arXiv:2406.09414. Apache-2.0. Only the Small model is Apache-2.0; Base/Large/Giant are CC BY-NC 4.0 and are not shipped.",
+        "text": "LICENSES/relative_depth_dav2_small.txt"
+      },
+      "source": {
+        "repo": "onnx-community/depth-anything-v2-small",
+        "revision": "4472b7362082ad9968fee890ca0f1e5aca36b93d",
+        "files": [
+          {
+            "path": "onnx/model.onnx",
+            "sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+            "bytes": 99060839,
+            "shipped": true
+          },
+          {
+            "path": "onnx/model_int8.onnx",
+            "sha256": "01aa7a23de3f4a0ee1a2bb9997e6918104c85a9f95dea46d27b9b3fb0c6b9001",
+            "bytes": 27258801,
+            "shipped": false,
+            "note": "kept for the parity measurement only; not released"
+          }
+        ],
+        "original": "depth-anything/Depth-Anything-V2-Small",
+        "original_revision": "03876f8651c73a60fe4c2c48294e09fcb6838fcf"
+      },
+      "metric": {
+        "value": 0.029,
+        "name": "AbsRel, agreement with SfM depth (scale and shift fitted in inverse depth on a random half of each photo's points, scored on the other half; mean over photos)",
+        "split": "ODM bellus (OpenDroneMap/odm_data_bellus @ 36f8086), the 106 of 122 photos registered by the existing OpenDroneKit COLMAP run; SfM sparse depth, not ground truth",
+        "n": 106,
+        "n_points": 28113,
+        "measured_by": "opendronekit",
+        "source_url": "tools/eval_relative_depth.py sfm; docs/model_cards/relative_depth_dav2_small.md",
+        "label": "agreement with SfM depth, ODM bellus, N=106",
+        "delta1": 0.9995,
+        "spearman_rho": 0.785,
+        "baseline_flat_scene": {
+          "absrel": 0.063,
+          "delta1": 0.98
+        },
+        "note": "Nadir survey: depth range p95/p5 is only 1.27, so a flat scene already scores AbsRel 0.063 and delta1 0.980. The model halves the flat-scene AbsRel; delta1 says little here. Agreement with photogrammetry, not accuracy."
+      },
+      "measured_metrics": [
+        {
+          "value": 0.012,
+          "name": "AbsRel, agreement with SfM depth (same protocol)",
+          "split": "ODM sheffield_cross (pierotofy/drone_dataset_sheffield_cross @ 143f556), 172 of 172 photos registered by the existing OpenDroneKit COLMAP run; oblique, gimbal about -75 degrees",
+          "n": 172,
+          "n_points": 412477,
+          "measured_by": "opendronekit",
+          "source_url": "tools/eval_relative_depth.py sfm",
+          "label": "agreement with SfM depth, ODM sheffield_cross, N=172",
+          "delta1": 0.9999,
+          "spearman_rho": 0.984,
+          "baseline_flat_scene": {
+            "absrel": 0.082,
+            "delta1": 0.994
+          }
+        }
+      ],
+      "publisher_metrics": [
+        {
+          "value": 0.078,
+          "name": "AbsRel (affine-invariant inverse depth, scale and shift aligned)",
+          "split": "KITTI, zero-shot",
+          "measured_by": "publisher",
+          "source_url": "https://arxiv.org/abs/2406.09414",
+          "table": "Table 2 (zero-shot relative depth), checked against arXiv 2406.09414v2 on 2026-10-03"
+        },
+        {
+          "value": 0.936,
+          "name": "delta1 (affine-aligned)",
+          "split": "KITTI, zero-shot",
+          "measured_by": "publisher",
+          "source_url": "https://arxiv.org/abs/2406.09414",
+          "table": "Table 2 (zero-shot relative depth), checked against arXiv 2406.09414v2 on 2026-10-03"
+        },
+        {
+          "value": 0.053,
+          "name": "AbsRel (affine-aligned)",
+          "split": "NYU-D, zero-shot",
+          "measured_by": "publisher",
+          "source_url": "https://arxiv.org/abs/2406.09414",
+          "table": "Table 2 (zero-shot relative depth), checked against arXiv 2406.09414v2 on 2026-10-03"
+        },
+        {
+          "value": 0.973,
+          "name": "delta1 (affine-aligned)",
+          "split": "NYU-D, zero-shot",
+          "measured_by": "publisher",
+          "source_url": "https://arxiv.org/abs/2406.09414",
+          "table": "Table 2 (zero-shot relative depth), checked against arXiv 2406.09414v2 on 2026-10-03"
+        },
+        {
+          "value": 0.953,
+          "name": "relative depth ordering accuracy",
+          "split": "DA-2K",
+          "measured_by": "publisher",
+          "source_url": "https://arxiv.org/abs/2406.09414",
+          "table": "Table 3 (DA-2K), checked against arXiv 2406.09414v2 on 2026-10-03"
+        }
+      ],
+      "parity": {
+        "measurement": "PARITY of int8 against fp32 ONNX on raw network-resolution maps (not accuracy)",
+        "split": "odk-testdata/bridge_inspection_h20t_boga_cayi/B1_Wide, 20 photos evenly spaced",
+        "n": 20,
+        "spearman_rho_mean": 0.978,
+        "spearman_rho_min": 0.862,
+        "absrel_after_scale_shift_mean": 0.031,
+        "absrel_after_scale_shift_max": 0.068,
+        "decision": "fp32 shipped: int8 is not at parity (rank correlation falls to 0.86 on one photo, AbsRel up to 6.8%) and ran slower on this CPU (5.3 s vs 2.2 s per photo)",
+        "measured_by": "opendronekit",
+        "tool": "tools/eval_relative_depth.py parity"
+      },
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "Apache-2.0 (weights); see WEIGHTS_LICENSES.md and LICENSES/relative_depth_dav2_small.txt",
+        "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/relative_depth_dav2_small.onnx",
+        "files": [
+          {
+            "name": "relative_depth_dav2_small.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/relative_depth_dav2_small.onnx",
+            "sha256": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c"
+          }
+        ]
+      }
     }
   }
 }
