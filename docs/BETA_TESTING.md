@@ -21,25 +21,35 @@ one, reconstruction runs sparse and says so.
 
 ### Option A: the Windows installer (when it is published)
 
-1. Download `OpenDroneKit-<version>-win64-setup.exe` from the GitHub Release
-   `v0.1.0-beta`. The release page lists its exact file name, size and SHA-256.
+1. Download the installer from the GitHub Release `v0.1.0-beta`. Its name has the form
+   `OpenDroneKit-<version>-win64-setup-UNSIGNED.exe`, where `<version>` is the Python
+   package version (`0.1.0b0` for this beta), so expect
+   `OpenDroneKit-0.1.0b0-win64-setup-UNSIGNED.exe`. The release page lists its exact
+   file name, size and SHA-256.
 2. Check the hash before running it:
 
    ```
-   certutil -hashfile OpenDroneKit-<version>-win64-setup.exe SHA256
+   certutil -hashfile <installer file name> SHA256
    ```
 
    It must match the SHA-256 on the release page. If it does not, do not run it, and
    tell us.
-3. If the file name ends in `-UNSIGNED`, Windows SmartScreen will warn that the
+3. If the file name contains `-UNSIGNED`, Windows SmartScreen will warn that the
    publisher is unknown. That build has no code-signing certificate; the hash check in
    step 2 is how you know the file is the one we published.
-4. Run the installer. It installs per user by default and needs no administrator rights.
-5. Model weights are not inside the installer. Get them as described on the release
-   page (a separate weights download, checked against the SHA-256 recorded for each
-   model in `models/model_registry.json`). A model whose file does not match its
-   recorded hash is refused, not used. Without weights the app still runs, and each
-   detector says it has no model instead of returning empty results.
+4. Run the installer. It installs per user (into `%LOCALAPPDATA%\Programs\OpenDroneKit`)
+   and needs no administrator rights.
+5. Model weights are not inside the installer. Run **Download AI models** from the
+   Start menu. It fetches only the weights published with this release and installs a
+   file only if it matches the SHA-256 recorded in `models/model_registry.json`.
+
+**Which models you can get.** Of the nine registered models, this beta publishes the
+weights of two: `crack_presence_classifier` and `solar_thermal_anomaly_classifier`. The
+other seven are not distributed, because their base models or training data carry
+licences that do not allow it (AGPL-3.0, non-commercial or research-only terms);
+[WEIGHTS_LICENSES.md](../WEIGHTS_LICENSES.md) gives the reason for each. Without a
+model's weights the app still runs, and that detector says it has no model instead of
+returning empty results.
 
 If the release has no installer attached yet, use option B.
 
@@ -54,9 +64,21 @@ conda activate odk
 python main.py --check-deps             # names anything missing or too old
 ```
 
-Then double-click `OpenDroneKit.bat`, or run `python main.py --ui cockpit`. Put model
-weights in `models/` (or point `ODK_MODEL_WEIGHTS_DIR` at a folder that has them).
-`python -m training.register --list` shows which models are installed and verified.
+Then double-click `OpenDroneKit.bat`, or run `python main.py --ui cockpit`.
+
+Model weights: download the two published `.onnx` files from the `v0.1.0-beta` release
+page and put them where the registry expects them:
+
+| Release asset | Put it at |
+|---|---|
+| `crack_presence_classifier.onnx` | `models/structural/crack_presence_classifier.onnx` |
+| `solar_thermal_anomaly_cls.onnx` | `models/solar/solar_thermal_anomaly_cls.onnx` |
+
+(Or keep them in another folder with the same layout and point `ODK_MODEL_WEIGHTS_DIR`
+at it.) If your checkout has `core/model_download.py`, `python -m core.model_download
+--all` downloads and verifies them for you. Either way,
+`python -m training.register --list` shows which models are installed and whether each
+file matches its recorded SHA-256; a file that does not match is refused, not used.
 Full details: [INSTALLATION.md](INSTALLATION.md).
 
 ## A guided 30-minute test
@@ -68,7 +90,7 @@ you click something and **no message appears**, that is a bug: please report it.
 Write down, as you go, anything that surprises you, takes longer than you expect, or
 refuses with a message you don't understand. Note the time each step took.
 
-### 0. Get the test data (about 5 minutes, 544 MB)
+### 0. Get the test data (544 MB download)
 
 The OpenDroneMap **Aukerman** survey: 77 geotagged nadir photos of a park in Ohio,
 released under CC0 1.0 (public domain dedication).
@@ -78,11 +100,20 @@ released under CC0 1.0 (public domain dedication).
   `7ea900fe1ff4a420cf47de0cd9b0780f5b78448e6b744e7b627ae33bcdf8887e`, archive of commit
   `4e8031630f4193494c79b1c1d3524108826d1ba9` (the zip comment carries the commit id).
   GitHub generates branch archives on request and does not promise byte-identical zips,
-  so a different hash on your download does not by itself mean the data is wrong. If it
-  differs, check that the archive has 77 `.JPG` files under `images/`, and mention the
-  hash in your feedback.
+  so a different zip hash does not by itself mean the data is wrong.
 
-Unzip it. To keep the run inside 30 minutes, copy the **first 20 images** of
+Unzip it. The check that matters is per file:
+[docs/beta/aukerman.sha256](beta/aukerman.sha256) lists the SHA-256 of all 77 images
+and the licence file at that commit. In PowerShell, from inside
+`odm_data_aukerman-master/`:
+
+```
+Get-Content <path to>ukerman.sha256 | ForEach-Object { $h, $p = $_ -split ' \*'; if ((Get-FileHash $p).Hash -ne $h) { "MISMATCH $p" } }
+```
+
+No output means every file matches. (In Git Bash: `sha256sum -c <path to>/aukerman.sha256`.)
+If a file mismatches, mention it in your feedback.
+ To keep the run inside 30 minutes, copy the **first 20 images** of
 `odm_data_aukerman-master/images/` into a folder of their own (for example
 `aukerman20/`). Use all 77 if you have time to spare.
 
@@ -160,14 +191,16 @@ active dataset.
 1. Put `concrete_cracked_public_domain.jpg` (or your own crack photo) alone in a new
    folder, for example `crack-sample/`.
 2. **Projects**: `Import`, choose `crack-sample/`.
-3. **AI Inspection**: `Run Model`, choose `crack_presence_classifier` (or
-   `crack_segmentation`), then choose the image.
+3. **AI Inspection**: `Run Model`, choose `crack_presence_classifier`, then choose the
+   image. (`crack_segmentation` also appears if you have obtained its weights yourself;
+   they are not published with this beta.)
 
 Check: the result shows the model's output beside its sha256 and the registry's scope
 note, and an overlay is written under the project's `analysis/models/` folder. Only
 installed, verified models are offered; with no weights installed the list is empty,
-which is correct. `crack_segmentation` misses thin and faint cracks at its shipped
-threshold, so an empty mask is not proof of a sound surface.
+which is correct. `crack_presence_classifier` was trained on close-range tiles and
+missed about one cracked tile in fourteen at validation, so "uncracked" is not proof
+of a sound surface ([model card](model_cards/crack_presence_classifier.md)).
 
 ## What NOT to do
 
@@ -203,6 +236,7 @@ Everything runs on your PC. OpenDroneKit needs no account, has no telemetry and 
 analytics, and sends nothing about you or your data anywhere. The UI is served on
 127.0.0.1 only. The things that do use the network are ones you ask for: online
 basemap tiles (which the map fetches from the tile provider while you browse it),
-downloading model weights, an update check if you switch it on (it is off by default),
+downloading model weights, the installer's update check if you switch it on (it is off
+by default),
 and anything you configure yourself, such as a cloud reconstruction endpoint. Your projects, images and reports stay in the local data
 folder. Nothing you do in the beta reaches us unless you put it in an issue.

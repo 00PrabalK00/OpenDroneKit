@@ -14,7 +14,7 @@ body:
     attributes:
       label: Version
       description: The installer file name you ran, or `git rev-parse --short HEAD` for a source install.
-      placeholder: OpenDroneKit-0.1.0-beta-win64-setup.exe
+      placeholder: OpenDroneKit-0.1.0b0-win64-setup-UNSIGNED.exe
     validations:
       required: true
   - type: dropdown
@@ -47,7 +47,7 @@ body:
         - label: 4. Reconstruction finished
         - label: 5. Distance and area measured
         - label: 6. Report generated (or refused with a checklist)
-        - label: 7. Crack model ran on the sample image
+        - label: 7. crack_presence_classifier ran on the sample image
   - type: textarea
     id: problems
     attributes:
