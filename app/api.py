@@ -6846,6 +6846,38 @@ class Api:
                   overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
 
     @guard
+    def relative_depth(self, image_path: str,
+                       model_key: str = "relative_depth_dav2_small") -> dict[str, Any]:
+        """Relative depth overlay for one photo: unitless, never metres.
+
+        Saves analysis/depth/<stem>.npy (float32 relative inverse depth), a 16-bit PNG
+        display stretch, the overlay and a JSON saying the values are relative. There is
+        deliberately no scale, distance, clearance, crack-depth or volume in the reply:
+        the model's output is defined only up to an unknown per-image scale and shift.
+        Refuses (no fallback) when the model is missing or its sha256 does not match.
+        """
+        from core.depth import relative_depth, save_depth
+        from core.detection import load_image
+        from core.model_runner import ModelRunRefused
+
+        path = self._resolve_image(image_path)
+        if path is None:
+            return fail(f"No such image: {image_path}")
+        try:
+            result = relative_depth(load_image(path), str(model_key))
+        except ModelRunRefused as exc:
+            return fail(str(exc))
+        out_dir = self._session.project_root() / "analysis" / "depth"
+        files = save_depth(result, out_dir, path.stem)
+        self._session.audit("relative_depth", {"model_key": result.model_key,
+                                                "model_sha256": result.model_sha256,
+                                                "image": str(path)})
+        summary = result.summary()
+        summary["units_label"] = summary.pop("units")  # "relative (unitless)"
+        return ok(**summary, units="relative", image=str(path),
+                  overlay_data_uri=self._data_uri(result.overlay), **files)
+
+    @guard
     def grade_corrosion(self, image_path: str) -> dict[str, Any]:
         """Grade corrosion severity per pixel, or refuse with the reason.
 
