@@ -78,6 +78,34 @@ class TestManifest:
         with pytest.raises(OSError):
             manifest.sha256_file(target)
 
+    def test_directory_listing_retries_transient_errors(self, tmp_path, monkeypatch):
+        # A starved machine fails a directory listing with WinError 1450; the walk must
+        # retry it rather than abort the build, and still list every file exactly once.
+        (tmp_path / "pkg").mkdir()
+        (tmp_path / "pkg" / "a.py").write_bytes(b"a")
+        (tmp_path / "b.dll").write_bytes(b"bb")
+        real = manifest._list_dir
+        calls = {"n": 0}
+
+        def flaky(path):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(1450, "Insufficient system resources")
+            return real(path)
+
+        monkeypatch.setattr(manifest.time, "sleep", lambda s: None)
+        monkeypatch.setattr(manifest, "_list_dir", flaky)
+        data = manifest.build_manifest(tmp_path, _meta())
+        assert sorted(data["files"]) == ["b.dll", "pkg/a.py"]
+        assert data["files"]["b.dll"]["size"] == 2
+
+        def always(path):
+            raise OSError(1450, "Insufficient system resources")
+
+        monkeypatch.setattr(manifest, "_list_dir", always)
+        with pytest.raises(OSError):
+            manifest.build_manifest(tmp_path, _meta())
+
     def test_signed_must_be_a_real_boolean(self):
         data = {"schema": 1, **_meta(signed="no"), "files": {}}
         with pytest.raises(ValueError, match="signed"):

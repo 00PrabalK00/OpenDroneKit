@@ -11,6 +11,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
@@ -40,19 +41,66 @@ def sha256_file(path: Path, attempts: int = 7) -> str:
     raise AssertionError("unreachable")
 
 
+def _retrying(fn, *args, attempts: int = 7):
+    """Call ``fn`` and retry a transient OSError (WinError 1450 and friends on a starved
+    machine) with the same doubling backoff as :func:`sha256_file`. A missing file is
+    not transient and raises at once."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn(*args)
+        except FileNotFoundError:
+            raise
+        except (OSError, MemoryError):
+            if attempt == attempts:
+                raise
+            time.sleep(0.5 * 2 ** (attempt - 1))
+    raise AssertionError("unreachable")
+
+
+def _list_dir(path: str) -> list[tuple[str, bool, bool, int]]:
+    out = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            is_dir = entry.is_dir(follow_symlinks=False)
+            is_file = not is_dir and entry.is_file(follow_symlinks=False)
+            # On Windows the size comes from the directory listing itself (no extra
+            # stat call per file); elsewhere this is one lstat.
+            size = entry.stat(follow_symlinks=False).st_size if is_file else 0
+            out.append((entry.name, is_dir, is_file, size))
+    return out
+
+
+def walk_payload(root: Path) -> list[tuple[Path, int]]:
+    """Every regular file under ``root`` (except the manifest) with its size, sorted by
+    relative path. Uses ``os.scandir`` so a ~30k-file runtime is listed with one call per
+    directory rather than one stat per file, and retries a directory listing that fails
+    transiently."""
+    root = Path(root)
+    found: list[tuple[Path, int]] = []
+    pending = [str(root)]
+    while pending:
+        current = pending.pop()
+        for name, is_dir, is_file, size in _retrying(_list_dir, current):
+            full = os.path.join(current, name)
+            if is_dir:
+                pending.append(full)
+            elif is_file and not (current == str(root) and name == MANIFEST_NAME):
+                found.append((Path(full), size))
+    found.sort(key=lambda item: item[0].relative_to(root).as_posix())
+    return found
+
+
 def iter_payload(root: Path) -> Iterable[Path]:
-    for path in sorted(Path(root).rglob("*")):
-        if path.is_file() and path.name != MANIFEST_NAME:
-            yield path
+    for path, _size in walk_payload(root):
+        yield path
 
 
 def build_manifest(root: Path, meta: dict[str, Any]) -> dict[str, Any]:
     root = Path(root)
     files = {}
     total = 0
-    for path in iter_payload(root):
+    for path, size in walk_payload(root):
         rel = path.relative_to(root).as_posix()
-        size = path.stat().st_size
         files[rel] = {"sha256": sha256_file(path), "size": size}
         total += size
     manifest = {"schema": SCHEMA, **meta, "file_count": len(files), "total_bytes": total,
@@ -120,8 +168,13 @@ def verify_tree(root: Path, manifest: dict[str, Any]) -> list[str]:
     problems = []
     for rel, entry in manifest["files"].items():
         path = Path(root) / rel
+        try:
+            size = _retrying(lambda: path.stat().st_size)
+        except FileNotFoundError:
+            problems.append(f"missing: {rel}")
+            continue
         if not path.is_file():
             problems.append(f"missing: {rel}")
-        elif path.stat().st_size != entry["size"] or sha256_file(path) != entry["sha256"]:
+        elif size != entry["size"] or sha256_file(path) != entry["sha256"]:
             problems.append(f"changed: {rel}")
     return problems
