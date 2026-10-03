@@ -3,7 +3,10 @@
  * ./desk.js once, the first time Home renders. */
 
 /* -- left panel ------------------------------------------------------------- */
-.odk-home-left { min-height: 100%; display: flex; flex-direction: column; }
+/* The region has no height of its own; giving it the panel's lets the machine state and
+ * New project sit at the foot of the panel, as on the artboard. */
+.odk-region:has(> .odk-home-left) { min-height: 100%; display: flex; flex-direction: column; }
+.odk-home-left { flex: 1 0 auto; display: flex; flex-direction: column; }
 .odk-home-left-head {
   display: flex; align-items: center; justify-content: space-between; padding: var(--sp-4) var(--sp-4) var(--sp-2);
 }
