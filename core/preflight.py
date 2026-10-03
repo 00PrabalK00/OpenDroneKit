@@ -644,12 +644,17 @@ def path_points(mission: Any) -> list[tuple[float, float]]:
     Taken from the MAVLink items that would be uploaded rather than from the planner's
     waypoint list, because the items are what the autopilot flies.
     """
-    from mission.exporters import build_mission_items
+    from mission.exporters import _plan_dict, build_mission_items, plan_vehicle_class
 
     from .mission_planner_bridge import _NON_POSITIONAL_COMMANDS
 
+    plan = _plan_dict(mission)
+    # A fixed-wing plan whose landing is not placed yet (no vehicle home when it was
+    # planned) has no landing items to check; the upload places it from the home.
+    landing_unknown = (plan_vehicle_class(plan) == "fixed_wing"
+                       and not (plan.get("fixed_wing") or {}).get("landing"))
     points: list[tuple[float, float]] = []
-    for item in build_mission_items(mission):
+    for item in build_mission_items(mission, include_rth=not landing_unknown):
         if int(item.command) in _NON_POSITIONAL_COMMANDS:
             continue
         lat = float(getattr(item, "latitude", 0.0) or 0.0)
@@ -719,6 +724,13 @@ def plan_airspace(mission: Any, extra_no_fly: Iterable[Any] | None = None,
         if key(polygon) not in seen:
             seen.add(key(polygon))
             zones.append(polygon)
+    from mission.exporters import plan_vehicle_class
+
+    if plan_vehicle_class(plan) == "fixed_wing":
+        # A plane's fence is widened to its turns and landing pattern (fence_rings), and
+        # it is that fence the path and the landing are checked against.
+        uploaded = [ring for inclusion, ring in fence_rings(plan) if inclusion]
+        fence = uploaded[0] if uploaded else fence
     geofence = assess_geofence(points, fence)
     if geofence is not None and launch_lonlat is not None:
         launch = tuple(float(v) for v in list(launch_lonlat)[:2])

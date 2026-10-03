@@ -25,6 +25,8 @@ MAV_CMD_NAV_LOITER_TIME = 19
 MAV_CMD_NAV_RETURN_TO_LAUNCH = 20
 MAV_CMD_NAV_LAND = 21
 MAV_CMD_NAV_TAKEOFF = 22
+MAV_CMD_NAV_LOITER_TO_ALT = 31
+MAV_CMD_DO_LAND_START = 189
 MAV_CMD_CONDITION_YAW = 115
 MAV_CMD_DO_CHANGE_SPEED = 178
 MAV_CMD_DO_DIGICAM_CONTROL = 203
@@ -220,6 +222,13 @@ def _capture_spacing(plan: dict[str, Any]) -> float:
     return float(capture.get("capture_spacing_m", 0.0) or 0.0)
 
 
+def plan_vehicle_class(mission: Any) -> str:
+    """"fixed_wing" for a plan made for a plane (planner vehicle_class), else "multirotor"."""
+    plan = _plan_dict(mission)
+    meta = (plan.get("flight_recipe") or {}).get("metadata") or {}
+    return "fixed_wing" if str(meta.get("vehicle_class", "")) == "fixed_wing" else "multirotor"
+
+
 def build_mission_items(mission: Any, *, include_rth: bool = True,
                         autopilot: str = "ardupilot") -> list[MissionItem]:
     """Expand a mission plan into a full MAVLink item sequence.
@@ -229,9 +238,22 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
 
     ``autopilot`` is the flight stack the items are for ("ardupilot" or "px4"); see
     the heading notes below for where they differ.
+
+    A plan made for a fixed-wing (see mission/fixed_wing.py) is written as a plane flies
+    it, checked against ArduPlane 4.5.7 SITL: its speed is an airspeed, no
+    CONDITION_YAW (a plane cannot turn on the spot), the camera's distance trigger is on
+    along each pass and off in the turns, and it ends in a landing sequence rather than
+    RETURN_TO_LAUNCH -- which on ArduPlane circles home at ALT_HOLD_RTL and never lands.
     """
     px4 = str(autopilot or "").lower() == "px4"
     plan = _plan_dict(mission)
+    fixed_wing = plan_vehicle_class(plan) == "fixed_wing"
+    landing = (plan.get("fixed_wing") or {}).get("landing")
+    if fixed_wing and include_rth and not landing:
+        raise ValueError(
+            "A fixed-wing mission needs a landing point and direction: plan it with the "
+            "vehicle connected (its home and heading are used) or give landing_lonlat and "
+            "landing_heading_deg.")
     viewpoints = _viewpoints(plan)
     if not viewpoints:
         raise ValueError("Mission plan contains no waypoints to export.")
@@ -249,7 +271,7 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
         nonlocal seq
         if kwargs.get("frame", nav_frame) != MAV_FRAME_MISSION:
             kwargs.setdefault("frame", nav_frame)
-            if nav_frame == MAV_FRAME_GLOBAL and command != MAV_CMD_NAV_LAND:
+            if kwargs["frame"] == MAV_FRAME_GLOBAL and command != MAV_CMD_NAV_LAND:
                 kwargs["altitude"] = float(kwargs.get("altitude", 0.0)) + home_elevation
         items.append(MissionItem(seq=seq, command=command, current=1 if seq == 0 else 0, **kwargs))
         seq += 1
@@ -257,7 +279,9 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
     first = viewpoints[0]
     add(
         MAV_CMD_NAV_TAKEOFF,
-        param1=0.0,
+        # Plane: the minimum climb pitch (degrees) until the takeoff altitude; 15 is
+        # QGroundControl's default. Copter ignores param1.
+        param1=15.0 if fixed_wing else 0.0,
         latitude=first["lat"],
         longitude=first["lon"],
         altitude=first["alt"],
@@ -271,7 +295,11 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
         add(
             MAV_CMD_DO_CHANGE_SPEED,
             frame=MAV_FRAME_MISSION,
-            param1=1.0,
+            # Speed type: 1 = ground speed for a multirotor. ArduPlane takes a ground
+            # speed as its *minimum* ground speed and keeps flying its cruise airspeed:
+            # a plan at 18 m/s flew at 23 m/s ("Set groundspeed 18", SITL). Airspeed
+            # (0) is the speed a plane actually flies.
+            param1=0.0 if fixed_wing else 1.0,
             param2=speed,
             param3=-1.0,
             label=f"speed {speed:.1f} m/s",
@@ -311,7 +339,7 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
         # at its first one ("IGN MISSION_ITEM: Invalid item", MAV_MISSION_UNSUPPORTED).
         # PX4 flies a waypoint's param4 as the heading to hold there, which the
         # waypoint below already carries, so for PX4 that is the heading.
-        if pose["yaw_locked"] and not px4:
+        if pose["yaw_locked"] and not px4 and not fixed_wing:
             add(
                 MAV_CMD_CONDITION_YAW,
                 frame=MAV_FRAME_MISSION,
@@ -365,7 +393,20 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
                 label=f"waypoint {index + 1}",
             )
 
-        if spacing > 0.0 and index == 0:
+        if fixed_wing and spacing > 0.0:
+            # Per pass: on at a pass's first capture point, off at its last. The
+            # lead-in and lead-out points around each pass do not trigger, so the camera
+            # is quiet in the turns instead of photographing the horizon in a bank.
+            capturing = bool(pose["trigger"])
+            was = index > 0 and bool(viewpoints[index - 1]["trigger"])
+            nxt = index + 1 < len(viewpoints) and bool(viewpoints[index + 1]["trigger"])
+            if capturing and not was:
+                add(MAV_CMD_DO_SET_CAM_TRIGG_DIST, frame=MAV_FRAME_MISSION, param1=spacing,
+                    param3=1.0, label=f"trigger every {spacing:.1f} m")
+            if capturing and not nxt:
+                add(MAV_CMD_DO_SET_CAM_TRIGG_DIST, frame=MAV_FRAME_MISSION, param1=0.0,
+                    label="stop trigger")
+        elif spacing > 0.0 and index == 0:
             # Distance triggering starts on arrival at the first viewpoint (a do-command
             # after a waypoint runs when it is reached; param3=1 shoots there at once).
             # It used to be switched on before the first waypoint, so ArduCopter took
@@ -389,10 +430,29 @@ def build_mission_items(mission: Any, *, include_rth: bool = True,
                 label="capture",
             )
 
-    if spacing > 0.0:
+    if spacing > 0.0 and not fixed_wing:
         add(MAV_CMD_DO_SET_CAM_TRIGG_DIST, frame=MAV_FRAME_MISSION, param1=0.0, label="stop trigger")
 
-    if include_rth:
+    if include_rth and fixed_wing:
+        # DO_LAND_START marks where the landing begins (an ArduPlane RTL with
+        # RTL_AUTOLAND, or a GCS land command, jumps here); the plane circles down to the
+        # approach altitude on the centreline and leaves the circle once heading for the
+        # touchdown point (param1 = 1), then lands. Positional items stay relative to
+        # home: the landing point is home's ground.
+        add(MAV_CMD_DO_LAND_START, frame=MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            latitude=landing["land_lat"], longitude=landing["land_lon"], altitude=0.0,
+            label="landing sequence")
+        add(MAV_CMD_NAV_LOITER_TO_ALT, frame=MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            param1=1.0, param2=float(landing["loiter_radius_m"]), param4=1.0,
+            latitude=landing["loiter_lat"], longitude=landing["loiter_lon"],
+            altitude=float(landing["approach_altitude_m"]),
+            label=f"descend to {landing['approach_altitude_m']:.0f} m on approach")
+        # param4 NaN: no yaw is asked of a landing plane (ArduPilot keeps only its sign,
+        # as a deep-stall direction). param1 0: no abort altitude, ArduPlane's default.
+        add(MAV_CMD_NAV_LAND, frame=MAV_FRAME_GLOBAL_RELATIVE_ALT, param4=float("nan"),
+            latitude=landing["land_lat"], longitude=landing["land_lon"], altitude=0.0,
+            label=f"land heading {landing['heading_deg']:.0f} deg")
+    elif include_rth:
         action = str(constraints.get("rth_action", "return_home") or "return_home").lower()
         rth_alt = float(constraints.get("rth_altitude_m", viewpoints[-1]["alt"]) or viewpoints[-1]["alt"])
         if action in {"land", "land_in_place"}:
@@ -481,6 +541,18 @@ def fence_rings(
         or plan.get("polygon")
         or []
     )
+    if len(geofence) >= 3 and plan_vehicle_class(plan) == "fixed_wing":
+        # A plane flies outside the area it photographs: a turn radius beyond each end
+        # of every pass, and down a final approach to its landing point. A fence equal
+        # to the area would be breached at the first turn, so the fixed-wing fence is the
+        # hull of the area, the flight path and the landing pattern, plus the margin.
+        from mission.fixed_wing import convex_hull, landing_outline
+
+        points = list(geofence) + [[v["lon"], v["lat"]] for v in _viewpoints(plan)]
+        landing = (plan.get("fixed_wing") or {}).get("landing")
+        if landing:
+            points += landing_outline(landing)
+        geofence = convex_hull(points)
     if len(geofence) >= 3:
         rings.append((True, _offset_ring_outward(geofence, inclusion_margin_m)))
     exclusions = (

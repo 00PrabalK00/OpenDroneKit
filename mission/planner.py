@@ -3408,6 +3408,17 @@ class MissionPlanner:
                     for p in local_poses
                 ]
         constrained_poses, safety_adjustments = self._apply_constraints(local_poses, recipe_obj)
+        if str(recipe_obj.metadata.get("vehicle_class", "")) == "fixed_wing":
+            # After the constraints, deliberately: the lead-in and lead-out points sit a
+            # turn radius beyond the area, and the geofence projection would pull them
+            # back onto its edge. The fixed-wing fence is widened to contain them instead
+            # (exporters.fence_rings).
+            from mission.fixed_wing import arrange_passes
+
+            constrained_poses, fixed_wing_report = arrange_passes(
+                constrained_poses, float(recipe_obj.metadata.get("fixed_wing_turn_radius_m", 0.0)))
+            recipe_obj = replace(recipe_obj, metadata={**recipe_obj.metadata,
+                                                       "fixed_wing": fixed_wing_report})
         world_poses = self._local_to_world_poses(constrained_poses, recipe_obj.asset_frame)
         follow_mode = str(recipe_obj.metadata.get("terrain_follow_mode", "agl")).lower()
         altitude_frame = (
@@ -3769,7 +3780,21 @@ class MissionPlanner:
         dome_radius_m: float | None = None,
         dome_base_altitude_m: float = 0.0,
         box_altitude_levels_m: list[float] | None = None,
+        vehicle_class: str = "multirotor",
+        fixed_wing_turn_radius_m: float | None = None,
     ) -> MissionPlan:
+        # A fixed-wing plan is a different plan, not a different export: its passes are
+        # ordered and extended for the turn radius (see mission/fixed_wing.py), and only
+        # the templates a plane can fly are offered for it.
+        from mission.fixed_wing import (
+            DEFAULT_TURN_RADIUS_M, FIXED_WING, FIXED_WING_TEMPLATES, normalise_vehicle_class)
+
+        vehicle_class = normalise_vehicle_class(vehicle_class)
+        if vehicle_class == FIXED_WING and _normalize_template(mode) not in FIXED_WING_TEMPLATES:
+            raise ValueError(
+                f"The {_normalize_template(mode)!r} template cannot be flown by a fixed-wing "
+                "aircraft: it hovers, holds a heading at a point, or circles inside a turn "
+                "radius. Fixed-wing plans support: " + ", ".join(sorted(FIXED_WING_TEMPLATES)) + ".")
         if repeat_recipe is not None:
             recipe_obj = self._coerce_recipe(repeat_recipe)
             if asset_frame is not None:
@@ -3881,6 +3906,13 @@ class MissionPlanner:
             constraints=constraints,
             asset_frame=asset_frame,
         )
+        if vehicle_class == FIXED_WING:
+            radius = float(DEFAULT_TURN_RADIUS_M if fixed_wing_turn_radius_m is None
+                           else fixed_wing_turn_radius_m)
+            if radius <= 0.0:
+                raise ValueError("A fixed-wing plan needs a positive turn radius.")
+            recipe = replace(recipe, metadata={**recipe.metadata, "vehicle_class": FIXED_WING,
+                                               "fixed_wing_turn_radius_m": radius})
         return self.compile_recipe(
             recipe=recipe,
             speed_m_s=speed_m_s,
