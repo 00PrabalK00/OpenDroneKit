@@ -31,6 +31,20 @@ class ModelSpec:
     # The threshold for machine pre-labels, which a person reviews before anything
     # reaches a report. None means pre-labels use score_threshold like everything else.
     prelabel_score_threshold: float | None = None
+    # Licence-driven release fields (MODEL_CATALOGUE section 3). All optional: a row
+    # that predates them reads as empty, never as "cleared".
+    #   licence: {"weights", "weights_url", "data", "data_url",
+    #             "use": "commercial" | "copyleft" | "non-commercial",
+    #             "attribution", "redistribution": "allowed" | "held" | "forbidden"}
+    #   source: {"repo", "revision", "files": [...]}
+    #   companions: ["<key>/<other file>", ...] -- further files the model needs
+    #   metric: {"value", "name", "split", "measured_by", "source_url"} | "unmeasured"
+    #   output_semantics: "suggestion" | "relative" | "detection" | "mask"
+    licence: dict[str, Any] | None = None
+    source: dict[str, Any] | None = None
+    companions: tuple[str, ...] = ()
+    metric: dict[str, Any] | str | None = None
+    output_semantics: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +62,12 @@ class ModelSpec:
             "prelabel_score_threshold": (
                 None if self.prelabel_score_threshold is None
                 else float(self.prelabel_score_threshold)),
+            "licence": dict(self.licence) if self.licence else {},
+            "source": dict(self.source) if self.source else {},
+            "companions": list(self.companions),
+            "metric": (dict(self.metric) if isinstance(self.metric, dict)
+                       else (self.metric or "")),
+            "output_semantics": self.output_semantics,
         }
 
 
@@ -236,7 +256,84 @@ def get_model_spec(model_key: str) -> ModelSpec | None:
         prelabel_score_threshold=(
             float(row["prelabel_score_threshold"])
             if row.get("prelabel_score_threshold") is not None else None),
+        licence=row.get("licence") if isinstance(row.get("licence"), dict) else None,
+        source=row.get("source") if isinstance(row.get("source"), dict) else None,
+        companions=tuple(str(c) for c in (row.get("companions") or [])
+                         if isinstance(c, str) and c.strip()),
+        metric=(row.get("metric") if isinstance(row.get("metric"), (dict, str)) else None),
+        output_semantics=str(row.get("output_semantics", "") or ""),
     )
+
+
+# What the UI shows beside a model, keyed by licence.use. A row without a licence block
+# gets no badge rather than a guessed one.
+LICENCE_BADGES = {
+    "commercial": "Commercial OK",
+    "copyleft": "Copyleft AGPL",
+    "non-commercial": "Non-commercial",
+}
+
+
+def licence_summary(spec: "ModelSpec") -> dict[str, Any]:
+    """The licence facts a UI needs to badge a model, from its registry row only."""
+    licence = spec.licence or {}
+    use = str(licence.get("use", "") or "")
+    return {
+        "licence_use": use,
+        "licence_badge": LICENCE_BADGES.get(use, ""),
+        "licence_weights": str(licence.get("weights", "") or ""),
+        "licence_terms": f"docs/model_licences/{spec.key}.md" if licence else "",
+        "redistribution": str(licence.get("redistribution", "") or ""),
+        "output_semantics": spec.output_semantics,
+    }
+
+
+def _resolve_relative(rel: str) -> Path:
+    """Resolve a registry-relative path the way resolve_model_path does."""
+    path = Path(rel)
+    if path.is_absolute():
+        return path.resolve()
+    local = models_root() / path
+    extra = extra_weights_root()
+    if not local.exists() and extra is not None and (extra / path).exists():
+        local = extra / path
+    return local.resolve()
+
+
+def companion_paths(model_key: str) -> list[Path]:
+    """The resolved companion files of a model, in the fixed digest order (by name)."""
+    spec = get_model_spec(model_key)
+    if spec is None or not spec.companions:
+        return []
+    return sorted((_resolve_relative(c) for c in spec.companions), key=lambda p: p.name)
+
+
+def sha256_model_files(primary: str | Path, companions: list[Path] | tuple[Path, ...]) -> str:
+    """One digest over a model made of several files.
+
+    Order is fixed: the primary file (with any ONNX external-data sidecars, as
+    sha256_onnx_model finds them), then each companion sorted by file name, each with
+    its own sidecars. Every file contributes ``name + NUL + bytes``, the scheme
+    sha256_onnx_model uses, so renaming a file changes the digest. The downloader and
+    any tool that records a digest for a row with ``companions`` must use this.
+    """
+    import hashlib
+    from core.semantic_engine import onnx_model_files
+
+    ordered: list[Path] = []
+    for part in [Path(primary), *sorted((Path(c) for c in companions), key=lambda p: p.name)]:
+        files = onnx_model_files(part) if part.suffix == ".onnx" else [part]
+        for f in files:
+            if f not in ordered:
+                ordered.append(f)
+    digest = hashlib.sha256()
+    for f in ordered:
+        digest.update(f.name.encode("utf-8"))
+        digest.update(b"\0")
+        with f.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve_model_path(model_key: str) -> Path | None:
@@ -368,7 +465,7 @@ def migrate_legacy_models() -> dict[str, Any]:
 
 # Digests are cached against (path, size, mtime) so a repeated detection does not
 # re-read a 200 MB graph, while a model replaced on disk still produces a new identity.
-_DIGEST_CACHE: dict[tuple[str, int, float], str] = {}
+_DIGEST_CACHE: dict[tuple, str] = {}
 
 
 def model_identity(model_key: str) -> dict[str, str]:
@@ -411,6 +508,25 @@ def model_identity(model_key: str) -> dict[str, str]:
     # plain byte hashes; nothing about them is unsafe, because with no sidecar there is
     # nothing outside the file to swap.
     from core.semantic_engine import onnx_model_files, sha256_onnx_model
+
+    # A row with "companions" (a decoder beside an encoder, a tokenizer beside a graph)
+    # is one model across several files. Hashing the primary alone would let a companion
+    # be swapped while the identity still read "verified", so those rows hash every file
+    # in a fixed order (sha256_model_files). Rows without companions are untouched and
+    # keep their recorded digests.
+    companions = companion_paths(model_key)
+    if companions:
+        missing = [str(c) for c in companions if not c.is_file()]
+        if missing:
+            return {"model_key": model_key, "model_sha256": "", "model_path": path_str,
+                    "missing_companions": missing}
+        stamp = tuple((str(c), c.stat().st_size, c.stat().st_mtime) for c in companions)
+        cache_key = (path_str, stat.st_size, stat.st_mtime, stamp)
+        digest = _DIGEST_CACHE.get(cache_key)
+        if digest is None:
+            digest = sha256_model_files(path, companions)
+            _DIGEST_CACHE[cache_key] = digest
+        return {"model_key": model_key, "model_sha256": digest, "model_path": path_str}
 
     parts = onnx_model_files(path) if path.suffix == ".onnx" else [path]
     cache_key = (path_str, stat.st_size, stat.st_mtime, len(parts))
@@ -464,6 +580,13 @@ def verify_model_identity(model_key: str) -> dict[str, Any]:
         detail = spec.status_note or (
             f"{model_key} is a registered target with no weights trained or obtained "
             "yet. It is not an available model."
+        )
+    elif not actual and identity.get("missing_companions"):
+        status = "missing"
+        detail = (
+            f"{model_key} is installed without "
+            f"{', '.join(Path(p).name for p in identity['missing_companions'])}, which "
+            "the registry lists as part of the model. It cannot be verified or run."
         )
     elif not actual:
         status = "missing"

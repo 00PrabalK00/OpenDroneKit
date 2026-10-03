@@ -388,14 +388,23 @@ class Api:
         hid that solar and metal detection were heuristic on every machine.
         """
         from core.model_runner import detector_backends
-        from core.models import load_registry, model_status as status_for
+        from core.models import (get_model_spec, licence_summary, load_registry,
+                                 model_status as status_for)
 
         keys = list((load_registry().get("models") or {}).keys())
         rows = []
         for key in keys:
             try:
                 info = status_for(key)
-                rows.append({"key": key, **(info if isinstance(info, dict) else {"status": str(info)})})
+                row = {"key": key, **(info if isinstance(info, dict) else {"status": str(info)})}
+                # Licence badge for "Run Model" and "Prelabel" (Commercial OK / Copyleft
+                # AGPL / Non-commercial), and whether the output is a suggestion a person
+                # confirms. Both come from the registry row only; a row without a licence
+                # block reports empty strings, never a guessed licence.
+                spec = get_model_spec(key)
+                if spec is not None:
+                    row.update(licence_summary(spec))
+                rows.append(row)
             except Exception as exc:  # noqa: BLE001
                 rows.append({"key": key, "exists": False, "error": str(exc)})
         available = sum(1 for r in rows if r.get("exists"))

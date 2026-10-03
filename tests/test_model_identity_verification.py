@@ -276,3 +276,87 @@ class TestTheRealRegistry:
         by_key = {row["model_key"]: row for row in verify_all_models()["models"]}
         assert by_key["solar_defect_detector"]["status"] == "awaiting_weights"
         assert "Kaggle" in by_key["solar_defect_detector"]["detail"]
+
+
+class TestCompanions:
+    """A model made of several files is verified across all of them, in a fixed order."""
+
+    def test_a_row_without_companions_keeps_its_plain_byte_digest(self, registry):
+        digest = registry.install("solo/model.onnx", b"single graph")
+        registry.write({"solo": {"kind": "onnx_yolo", "path": "solo/model.onnx",
+                                 "sha256": digest}})
+        assert verify_model_identity("solo")["status"] == "verified"
+
+    def test_companions_are_folded_into_the_digest(self, registry):
+        from core.models import sha256_model_files
+
+        registry.install("pair/encoder.onnx", b"encoder")
+        registry.install("pair/decoder.onnx", b"decoder")
+        registry.install("pair/tokenizer.json", b"{}")
+        root = registry.root
+        expected = sha256_model_files(root / "pair/encoder.onnx",
+                                      [root / "pair/tokenizer.json", root / "pair/decoder.onnx"])
+        registry.write({"pair": {"kind": "x", "path": "pair/encoder.onnx", "sha256": expected,
+                                 "companions": ["pair/tokenizer.json", "pair/decoder.onnx"]}})
+        assert verify_model_identity("pair")["status"] == "verified"
+
+        # The order is fixed by name, not by how the registry happens to list them.
+        registry.write({"pair": {"kind": "x", "path": "pair/encoder.onnx", "sha256": expected,
+                                 "companions": ["pair/decoder.onnx", "pair/tokenizer.json"]}})
+        models_module._DIGEST_CACHE.clear()
+        assert verify_model_identity("pair")["status"] == "verified"
+
+    def test_swapping_a_companion_is_a_mismatch(self, registry):
+        from core.models import sha256_model_files
+
+        registry.install("pair/encoder.onnx", b"encoder")
+        registry.install("pair/decoder.onnx", b"decoder")
+        root = registry.root
+        expected = sha256_model_files(root / "pair/encoder.onnx", [root / "pair/decoder.onnx"])
+        registry.write({"pair": {"kind": "x", "path": "pair/encoder.onnx", "sha256": expected,
+                                 "companions": ["pair/decoder.onnx"]}})
+        registry.install("pair/decoder.onnx", b"a different decoder")
+        assert verify_model_identity("pair")["status"] == "mismatch"
+
+    def test_a_missing_companion_is_missing_not_verified(self, registry):
+        registry.install("pair/encoder.onnx", b"encoder")
+        registry.write({"pair": {"kind": "x", "path": "pair/encoder.onnx", "sha256": "0" * 64,
+                                 "companions": ["pair/decoder.onnx"]}})
+        result = verify_model_identity("pair")
+        assert result["status"] == "missing"
+        assert "decoder.onnx" in result["detail"]
+
+    def test_the_companion_digest_differs_from_the_primary_alone(self, registry):
+        import hashlib
+        from core.models import sha256_model_files
+
+        registry.install("pair/encoder.onnx", b"encoder")
+        registry.install("pair/decoder.onnx", b"decoder")
+        root = registry.root
+        assert sha256_model_files(root / "pair/encoder.onnx", [root / "pair/decoder.onnx"]) != \
+            hashlib.sha256(b"encoder").hexdigest()
+
+
+class TestLicenceFields:
+    def test_spec_round_trips_the_licence_fields(self, registry):
+        from core.models import get_model_spec, licence_summary
+
+        registry.write({"m": {"kind": "onnx_yolo", "path": "m.onnx",
+                              "licence": {"weights": "AGPL-3.0", "use": "copyleft"},
+                              "output_semantics": "suggestion", "metric": "unmeasured",
+                              "companions": ["m/tok.json"]}})
+        spec = get_model_spec("m")
+        row = spec.to_dict()
+        assert row["licence"]["use"] == "copyleft"
+        assert row["metric"] == "unmeasured"
+        assert row["companions"] == ["m/tok.json"]
+        summary = licence_summary(spec)
+        assert summary["licence_badge"] == "Copyleft AGPL"
+        assert summary["output_semantics"] == "suggestion"
+
+    def test_a_row_without_a_licence_gets_no_badge(self, registry):
+        from core.models import get_model_spec, licence_summary
+
+        registry.write({"m": {"kind": "onnx_yolo", "path": "m.onnx"}})
+        summary = licence_summary(get_model_spec("m"))
+        assert summary["licence_badge"] == "" and summary["licence_use"] == ""
