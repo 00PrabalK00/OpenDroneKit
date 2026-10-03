@@ -22,7 +22,44 @@
       "prelabel_score_threshold": 0.15,
       "prelabel_threshold_note": "Pre-labels go to human review and stay out of reports, so they use the threshold where held-out F1 peaks for the letterbox decoder: structural_det test split (106 images, 743 defect boxes, IoU 0.5) gives F1 0.398 / recall 0.409 at 0.15 against F1 0.392 / recall 0.339 at 0.25. Every other path keeps score_threshold.",
       "sha256": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "AGPL-3.0 AND LicenseRef-CODEBRIM (non-commercial research and educational use)",
+        "weights_url": "https://github.com/MrtnMndt/meta-learning-CODEBRIM/blob/master/license.md",
+        "data": "CODEBRIM (Goethe University / FIAS), Zenodo record 2620293, licence 'Other (Non-Commercial)'; used via the Roboflow export codebrim_structural",
+        "data_url": "https://zenodo.org/records/2620293",
+        "use": "non-commercial",
+        "copyleft": "AGPL-3.0",
+        "redistribution": "allowed",
+        "attribution": "Martin Mundt, Sagnik Majumder, Sreenivas Murali, Panagiotis Panetsos and Visvanathan Ramesh, 'Meta-learning Convolutional Neural Architectures for Multi-target Concrete Defect Classification with the COncrete DEfect BRidge IMage Dataset', CVPR 2019. Fine-tuned from Ultralytics YOLO11x (AGPL-3.0).",
+        "owner_gate": "AGPL-3.0 vs non-commercial terms; see WEIGHTS_LICENSES.md OWNER GATE"
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "structural_yolo11x",
+        "base_model": "Ultralytics YOLO11x",
+        "base_model_url": "https://www.ultralytics.com/license"
+      },
+      "metric": {
+        "value": 0.392,
+        "name": "F1 at score 0.25, IoU 0.5 (letterbox decoder)",
+        "split": "structural_det test (106 images, 743 defect boxes)",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "detection",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "AGPL-3.0 AND LicenseRef-CODEBRIM (non-commercial research and educational use) (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "structural_multiclass_detector.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/structural_multiclass_detector.onnx",
+            "sha256": "359817c663f4cb7772f44e4370095c116efb9d0123478bc58aa618884380c445",
+            "bytes": 227714515
+          }
+        ]
+      }
     },
     "structural_codebrim_detector": {
       "kind": "onnx_yolo",
@@ -127,7 +164,42 @@
       "input_size": 1024,
       "description": "SegFormer-B5 @1024, run crack_segformer_b5, 40 epochs. Best validation IoU 0.6063 during training; the shipped decision threshold of 0.85 was chosen by sweep on the validation split, scoring 0.5962 against 0.5582 at the previous 0.25. The higher threshold trades recall for precision on purpose: at 0.25 the model painted crack over enough sound surface to make the masks hard to trust. READ THE THRESHOLD BEFORE READING A MASK. At 0.85 thin and faint cracks are missed, so an empty mask is not evidence of a sound surface. SCOPE: this locates crack extent for measurement; it is NOT a triage model and is the weaker of the two crack models. crack_presence_classifier answers 'is there a crack here' far more reliably (balanced accuracy 0.958) and should gate which tiles reach this one. Crack WIDTH is not measured by this model -- width at survey GSD is usually below one pixel, and a width read off these masks would be a statement about the resolution rather than the crack. Not measured on Indian sites.",
       "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only)",
+        "weights_url": "https://github.com/NVlabs/SegFormer/blob/master/LICENSE",
+        "data": "crack_segmentation_kaggle (lakshaymiddha/crack-segmentation-dataset, Kaggle licence 'Unknown'; aggregates CRACK500, GAPs384, CFD, AEL, CrackTree200, DeepCrack, Rissbilder, Volker and others), DeepCrack (non-commercial research and educational use only), CrackForest/CFD (non-commercial research only). GAPs: academic use only, commercial use prohibited. None forbids distributing a trained model; see docs/model_licences/crack_segmentation.md",
+        "data_url": "https://www.kaggle.com/datasets/lakshaymiddha/crack-segmentation-dataset",
+        "use": "non-commercial",
+        "redistribution": "allowed",
+        "attribution": "See docs/model_licences/crack_segmentation.md for the citation of every source dataset. Fine-tuned from NVIDIA SegFormer nvidia/mit-b5, NVIDIA Source Code License for SegFormer."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "crack_segformer_b5 (40 epochs)",
+        "base_model": "nvidia/mit-b5",
+        "base_model_url": "https://huggingface.co/nvidia/mit-b5"
+      },
+      "metric": {
+        "value": 0.5962,
+        "name": "IoU (crack) at the shipped threshold 0.85",
+        "split": "validation (1,568 samples)",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "mask",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only) (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "crack_segmentation.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/crack_segmentation.onnx",
+            "sha256": "3391eca15d43bcc2810c3fcfe7e9db9f99dddb5de4633d5963c705c8e1cc0c23",
+            "bytes": 340011769
+          }
+        ]
+      }
     },
     "solar_cell_defect_detector": {
       "kind": "onnx_detection",
@@ -147,7 +219,44 @@
       "input_size": 1024,
       "description": "YOLO11l @1024 on PVEL-AD electroluminescence cells, run pvel_ad_yolo11l, 60 epochs. Validation mAP50 0.8835, mAP50-95 0.5434, P 0.812, R 0.856. Per-class mAP50-95: short_circuit 0.918, black_core 0.847, finger 0.540, horizontal_dislocation 0.504, thick_line 0.485, star_crack 0.393, vertical_dislocation 0.335, crack 0.325. SCOPE: this is an EL cell-level defect detector for module manufacturing and lab inspection imagery. It is NOT an aerial or thermal model and must not be applied to drone photographs of installed panels. Four of the twelve classes PVEL-AD declares (printing_error, corner, fragment, scratch) had under 35 boxes each and were dropped rather than trained, so this model answers eight questions and cannot see those four defect types at all. Label order is the model checkpoint order, which predates the sorted-index fix in the corpus builder; any re-validation must use these labels rather than a freshly prepared data.yaml.",
       "sha256": "a57676a7141baba3605fa81dd3a817405ee28522aff9edbc3e74e12755c6783b",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "AGPL-3.0 AND LicenseRef-PVEL-AD (research and academic use only)",
+        "weights_url": "https://github.com/binyisu/PVEL-AD",
+        "data": "PVEL-AD (Hebei University of Technology and Beihang University), released through a signed request form: 'The datasets can ONLY be used for research and academic purposes.'",
+        "data_url": "https://github.com/binyisu/PVEL-AD",
+        "use": "non-commercial",
+        "copyleft": "AGPL-3.0",
+        "redistribution": "allowed",
+        "attribution": "Binyi Su, Zhong Zhou, Haiyong Chen, 'PVEL-AD: A Large-Scale Open-World Dataset for Photovoltaic Cell Anomaly Detection', IEEE Trans. Ind. Inform., doi:10.1109/TII.2022.3162846. Fine-tuned from Ultralytics YOLO11l (AGPL-3.0).",
+        "owner_gate": "AGPL-3.0 vs non-commercial terms; see WEIGHTS_LICENSES.md OWNER GATE"
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "pvel_ad_yolo11l (60 epochs)",
+        "base_model": "Ultralytics YOLO11l",
+        "base_model_url": "https://www.ultralytics.com/license"
+      },
+      "metric": {
+        "value": 0.8835,
+        "name": "mAP50",
+        "split": "validation",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "detection",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "AGPL-3.0 AND LicenseRef-PVEL-AD (research and academic use only) (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "solar_cell_defect_detector.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/solar_cell_defect_detector.onnx",
+            "sha256": "a57676a7141baba3605fa81dd3a817405ee28522aff9edbc3e74e12755c6783b",
+            "bytes": 101783319
+          }
+        ]
+      }
     },
     "solar_thermal_anomaly_classifier": {
       "kind": "onnx_classification",
@@ -179,7 +288,30 @@
         "input": "rgb_0_1",
         "normalisation": "imagenet",
         "output": "logits"
-      }
+      },
+      "licence": {
+        "weights": "MIT",
+        "weights_url": "https://opensource.org/license/mit",
+        "data": "Raptor Maps InfraredSolarModules (MIT)",
+        "data_url": "https://github.com/RaptorMaps/InfraredSolarModules",
+        "use": "commercial",
+        "redistribution": "allowed",
+        "attribution": "InfraredSolarModules, Copyright Raptor Maps, Inc., MIT licence. Base: torchvision ResNet18 (BSD-3-Clause)."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "solar_thermal_cls",
+        "base_model": "torchvision resnet18 ImageNet-1K",
+        "base_model_url": "https://github.com/pytorch/vision/blob/main/LICENSE"
+      },
+      "metric": {
+        "value": 0.724,
+        "name": "balanced accuracy",
+        "split": "validation",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "classification"
     },
     "rail_corridor_segmentation": {
       "kind": "onnx_segmentation",
@@ -192,7 +324,42 @@
       "input_size": 512,
       "description": "SegFormer-B2 @512 on UAV-RSOD, run rail_corridor_segformer_b2, 60 epochs. Validation IoU 0.681, Dice 0.810, precision 0.752, recall 0.878. ONNX parity max_abs_diff 2.4e-07 and cv2.dnn loads it. CORPUS SIZE IS THE CAVEAT: about 315 distinct Indian UAV images, emitted as 315 samples after one mask aspect was selected. That is small enough that 0.681 is a first indication rather than a settled figure, and it has not been tested outside the flights it was trained on. SCOPE: segments the rail CORRIDOR surface only. The archive also masks Rail Lines as a separate binary aspect over the same imagery; that was deliberately excluded rather than merged, because the source states no ordering between the two and training on both would have given the model two contradictory definitions of foreground for the same pixel. A rails model is a separate run, not a class here.",
       "sha256": "1885757000e89f396c16ead68ccc4c8ce14a46f593e42abdabcbdeba6312ada1",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only)",
+        "weights_url": "https://github.com/NVlabs/SegFormer/blob/master/LICENSE",
+        "data": "UAV-RSOD, V1 segmentation archive (Rail Corridor aspect), CC BY 4.0",
+        "data_url": "https://doi.org/10.5281/zenodo.12606374",
+        "use": "non-commercial",
+        "redistribution": "allowed",
+        "attribution": "R S, Rampriya (2024), UAV Railroad Images for Segmentation and Obstacle Detection, Zenodo, doi:10.5281/zenodo.12606374, CC BY 4.0. Fine-tuned from NVIDIA SegFormer nvidia/mit-b2, NVIDIA Source Code License for SegFormer."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "rail_corridor_segformer_b2 (60 epochs)",
+        "base_model": "nvidia/mit-b2",
+        "base_model_url": "https://huggingface.co/nvidia/mit-b2"
+      },
+      "metric": {
+        "value": 0.681,
+        "name": "IoU (rail_corridor)",
+        "split": "validation",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "mask",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only) (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "rail_corridor_segmentation.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/rail_corridor_segmentation.onnx",
+            "sha256": "1885757000e89f396c16ead68ccc4c8ce14a46f593e42abdabcbdeba6312ada1",
+            "bytes": 109908496
+          }
+        ]
+      }
     },
     "crack_presence_classifier": {
       "kind": "onnx_classification",
@@ -201,7 +368,7 @@
         "crack"
       ],
       "input_size": 224,
-      "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (IoU 0.637). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface.",
+      "description": "ResNet18 @224 on the merged crack classification corpus, run crack_cls on a Kaggle P100, 20 epochs. Validation balanced accuracy 0.9575, plain accuracy 0.9659 over 14,399 held-out tiles. Both classes are recalled: cracked 0.931 recall / 0.954 precision on 4,322 samples, uncracked 0.981 / 0.971 on 10,077. Balanced accuracy selected the checkpoint. SCOPE: this answers 'is there a crack in this tile', nothing more. It is NOT a localiser and must not be used to report where a crack is, how long it is, or how wide -- crack_segmentation is the model for that, and it is the weaker of the two (validation IoU 0.6063 best during training; 0.5962 at its shipped threshold of 0.85, per the crack_segmentation row). The honest division is that this one triages tiles and the segmenter measures the ones it flags; a high number here says nothing about the quality of any geometry downstream. The corpus is tiles of concrete and pavement surfaces at close range. Performance on aerial imagery at survey altitude is unmeasured, and the 2:1 class balance here is far richer in cracks than any real structure, so the precision figure will not survive contact with a corpus that is mostly sound surface.",
       "sha256": "92a4d1425b60a8ff96aa31de0ae404325f5a1ab47edc01f5b3acef061da34d74",
       "download": {
         "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/crack_presence_classifier.onnx",
@@ -218,7 +385,30 @@
         "input": "rgb_0_1",
         "normalisation": "in_graph",
         "output": "softmax_in_graph"
-      }
+      },
+      "licence": {
+        "weights": "MIT",
+        "weights_url": "https://opensource.org/license/mit",
+        "data": "SDNET2018 (CC BY 4.0); Concrete Crack Images for Classification (CC BY 4.0)",
+        "data_url": "https://doi.org/10.15142/T3TD19",
+        "use": "commercial",
+        "redistribution": "allowed",
+        "attribution": "Maguire, Dorafshan & Thomas (2018) SDNET2018, Utah State University, doi:10.15142/T3TD19; Ozgenel & Gonenc Sorguc, ISARC 2018. Base: torchvision ResNet18 (BSD-3-Clause)."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "crack_cls",
+        "base_model": "torchvision resnet18 ImageNet-1K",
+        "base_model_url": "https://github.com/pytorch/vision/blob/main/LICENSE"
+      },
+      "metric": {
+        "value": 0.9575,
+        "name": "balanced accuracy",
+        "split": "validation (14,399 held-out tiles)",
+        "measured_by": "opendronekit",
+        "source_url": "models/model_registry.json"
+      },
+      "output_semantics": "classification"
     },
     "rail_obstacle_detector": {
       "kind": "onnx_yolo",
@@ -236,7 +426,42 @@
       "input_size": 640,
       "description": "YOLO11l @640 on the rail corridor obstacle corpus, trained on a Kaggle P100, 60 epochs. Validation mAP50 0.824, mAP50-95 0.493, precision 0.762, recall 0.743 over 273 held-out images. All six classes are predicted; none is ignored. Per-class mAP50-95: Barrel 0.590, Boulder 0.532, IronRod 0.531, Person 0.493, Jerrycan 0.418, Branch 0.395. READ THE RECALL BEFORE USING THIS FOR SAFETY. At 0.743 overall recall roughly one obstacle in four is missed, and Person is mid-table at 0.493 mAP50-95. This model must NOT be presented as clearing a track: an empty result means the model found nothing, not that the corridor is safe. It is a review aid that flags candidates for a human, and a track cleared on its silence would be cleared on no evidence. SCOPE: trained on 1,338 corridor images of discrete objects lying on or beside track. It does not detect track geometry faults, ballast condition, missing fasteners, or vegetation encroachment, and it has not been measured on Indian railway imagery.",
       "sha256": "7a53c8b9eaeabf956a1f2fc3a25ca3ff39f6217c5cb3a3b744f54e017e8ced23",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "AGPL-3.0",
+        "weights_url": "https://www.ultralytics.com/license",
+        "data": "UAV Railroad Images for Segmentation and Obstacle Detection (UAV-RSOD), V2 obstacle detection archive, CC BY 4.0",
+        "data_url": "https://doi.org/10.5281/zenodo.12606374",
+        "use": "copyleft",
+        "redistribution": "allowed",
+        "attribution": "R S, Rampriya (2024), UAV Railroad Images for Segmentation and Obstacle Detection, Zenodo, doi:10.5281/zenodo.12606374, CC BY 4.0. Fine-tuned from Ultralytics YOLO11l (AGPL-3.0)."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "kaggle_v7/rail (YOLO11l, 60 epochs)",
+        "base_model": "Ultralytics YOLO11l",
+        "base_model_url": "https://www.ultralytics.com/license"
+      },
+      "metric": {
+        "value": 0.824,
+        "name": "mAP50",
+        "split": "validation (273 held-out images)",
+        "measured_by": "opendronekit",
+        "source_url": "models/manifests/model_provenance.json"
+      },
+      "output_semantics": "detection",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "AGPL-3.0 (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "rail_obstacle_detector.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/rail_obstacle_detector.onnx",
+            "sha256": "7a53c8b9eaeabf956a1f2fc3a25ca3ff39f6217c5cb3a3b744f54e017e8ced23",
+            "bytes": 101514362
+          }
+        ]
+      }
     },
     "corrosion_severity_segmentation": {
       "kind": "onnx_segmentation_multiclass",
@@ -252,7 +477,42 @@
       "input_size": 512,
       "description": "SegFormer-B2 @512 on the Corrosion Condition State corpus (440 prepared images: 330 train / 66 val / 44 test), run corrosion_segformer_b2_cs, 80 epochs with log-inverse class weighting. Validation mean IoU 0.5769, pixel accuracy 0.8497. Per class IoU: good 0.871, fair 0.498, poor 0.450, severe 0.489. ONNX export agrees with torch on every one of 262,144 pixel decisions (max abs prob diff 2.7e-06) and cv2.dnn loads it. OUTPUT IS PER-CLASS PROBABILITY, NOT A BINARY MASK: the graph ends in a softmax over four channels and the answer is the argmax, so score_threshold does not apply the way it does to the binary segmenters here. WHAT THE NUMBERS MEAN: the classes are an ORDINAL severity scale and the errors are almost entirely between adjacent grades -- of the 653,071 severe pixels it recovers 514,827 (recall 0.788) and loses 124,241 of the rest to 'poor', one step down. A mean IoU near 0.58 on a four-way ordinal task is not the same weakness as 0.58 on independent classes, but it does mean a reported grade can be one step off. CORPUS SIZE IS THE CAVEAT: 440 images from a single source, so these figures are a first indication rather than a settled measurement, and the model has not been tested on Indian infrastructure imagery.",
       "sha256": "edcecd84cc6839d76b7db3e5a6475ec694636fc6cffe545ca4718c7147b5002f",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only)",
+        "weights_url": "https://github.com/NVlabs/SegFormer/blob/master/LICENSE",
+        "data": "Corrosion Condition State Semantic Segmentation Dataset (Virginia Tech), CC0 1.0",
+        "data_url": "https://doi.org/10.7294/16624663.v2",
+        "use": "non-commercial",
+        "redistribution": "allowed",
+        "attribution": "Bianchi, E. & Hebdon, M., Corrosion Condition State Semantic Segmentation Dataset, University Libraries, Virginia Tech, doi:10.7294/16624663.v2 (CC0 1.0; credit given as courtesy). Fine-tuned from NVIDIA SegFormer nvidia/mit-b2, NVIDIA Source Code License for SegFormer."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "corrosion_segformer_b2_cs (80 epochs)",
+        "base_model": "nvidia/mit-b2",
+        "base_model_url": "https://huggingface.co/nvidia/mit-b2"
+      },
+      "metric": {
+        "value": 0.5769,
+        "name": "mean IoU (good/fair/poor/severe)",
+        "split": "validation (66 images)",
+        "measured_by": "opendronekit",
+        "source_url": "models/manifests/model_provenance.json"
+      },
+      "output_semantics": "mask",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "LicenseRef-NVIDIA-SegFormer (NVIDIA Source Code License for SegFormer, non-commercial: research or evaluation only) (weights); see WEIGHTS_LICENSES.md",
+        "files": [
+          {
+            "name": "corrosion_severity_segmentation.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/corrosion_severity_segmentation.onnx",
+            "sha256": "edcecd84cc6839d76b7db3e5a6475ec694636fc6cffe545ca4718c7147b5002f",
+            "bytes": 109917813
+          }
+        ]
+      }
     },
     "shared_semantic_landcover": {
       "kind": "onnx_shared_semantic",
@@ -273,7 +533,31 @@
       "target_gsd_m": 0.3,
       "description": "DINOv2 ViT-B/14 + UPerNet, shared_semantic v4, epoch 35 of 40 (the run was cut at Kaggle's 12h cap and the weekly GPU quota is spent; the last five epochs are not in these weights). Validation mean IoU 0.7018. SIX CLASSES ARE PREDICTED AND TWO ARE USABLE. Scored on Gorakhpur, Uttar Pradesh -- 49 exhaustively annotated tiles at 0.448 m/px, pinned to test and never trained on -- the per-class IoU is: vegetation 0.913, building 0.621, road 0.366, water 0.003, bare_land 0.000, background 0.000. Pixel accuracy 0.916. usable_labels names the two that hold up. ROAD IS WEAK, not usable: 0.366 IoU, precision 0.593, recall 0.488 -- it misses half the road it is shown. WATER IS NOT WORKING: 0.003 IoU on 288851 labelled pixels. It predicts roughly the right AMOUNT of water (282787 px) in the wrong PLACES, which is worse than silence because the output looks plausible. BARE_LAND IS DEAD: zero pixels predicted across all 49 tiles against 19990 labelled. Neither improved when v4 added 463 water and 178 bare_land samples over v3 -- water in fact fell from 0.092 to 0.003 -- so more data is not the outstanding fix for them and no claim should be built on either. The mean IoU of 0.317 averages working and dead classes together and should not be quoted; the per-class column is the result. Background reads 0.000 because Gorakhpur's annotators labelled every pixel into a real class, so the model's background predictions have nothing to match. TRAINING CAVEAT: 13.4 per cent of optimiser steps were dropped as non-finite. The cause is unknown -- the absent-class-penalty overflow hypothesis was tested and died, measured max |grad| 0.0625, not the ~1e6 an fp16 overflow needs. SCOPE: one Indian city, captured from satellite or aircraft, not from a drone at 60 m. It is not verified for India and says nothing about differently built sites. ONNX parity max_abs_diff 1.2e-04 over 1073296 pixels with zero label disagreements. Evidence: docs/holdout/shared_semantic_v4_gorakhpur.json.",
       "sha256": "95b113795b45ba13460c56ba2c2bb8b04c95215d51290d94371bb2481bf7d466",
-      "status": "installed"
+      "status": "installed",
+      "licence": {
+        "weights": "none available (held): DINOv2 base is Apache-2.0, but the training data admits no single compliant licence",
+        "weights_url": "https://github.com/facebookresearch/dinov2",
+        "data": "SpaceNet 7 (CC BY-SA 4.0); OpenEarthMap CC BY and CC BY-SA regions; OpenEarthMap CC BY-NC-SA 4.0 regions (admitted by commit 8e06ab5c1, --include-noncommercial)",
+        "data_url": "https://open-earth-map.org/attribution.html",
+        "use": "non-commercial",
+        "redistribution": "held",
+        "held_reason": "CC BY-SA 4.0 and CC BY-NC-SA 4.0 training data are mutually incompatible: each requires adaptations to be shared under the same licence, so no set of terms satisfies both. Fix: retrain without the NC regions (the default corpus build, without --include-noncommercial), then publish under CC BY-SA 4.0.",
+        "attribution": "SpaceNet 7 (CC BY-SA 4.0); OpenEarthMap (Xia et al., WACV 2023), per-region licences at https://open-earth-map.org/attribution.html."
+      },
+      "source": {
+        "repo": "in-house (OpenDroneKit training/)",
+        "revision": "shared_semantic v4, epoch 35 of 40",
+        "base_model": "DINOv2 ViT-B/14",
+        "base_model_url": "https://github.com/facebookresearch/dinov2"
+      },
+      "metric": {
+        "value": 0.913,
+        "name": "IoU (vegetation); building 0.621; other classes not usable",
+        "split": "Gorakhpur test (49 tiles, never trained on)",
+        "measured_by": "opendronekit",
+        "source_url": "docs/holdout/shared_semantic_v4_gorakhpur.json"
+      },
+      "output_semantics": "mask"
     }
   }
 }
