@@ -232,6 +232,9 @@ class TestThePlanFlow:
             browser.js(f"odkShell.drawing.addVertex([{lon}, {lat}]); true")
         browser.js("odkShell.drawing.finishDrawing(); true")
         browser.wait_for("odkShell.state && (odkShell.state.aoi || []).length >= 3", 30)
+        # refreshState reads the CRS, jobs and telemetry before it re-settles the panels:
+        # wait for the AOI panel itself, not only the state, on a loaded machine.
+        browser.wait_for("((document.querySelector('.odk-plan-aoi') || {}).textContent || '').includes('drawn on the map')", 60)
         settle(browser)
         assert api.mission_overview()["aoi"]["vertices"] == len(ring)
         aoi_text = text(browser, ".odk-plan-aoi")
