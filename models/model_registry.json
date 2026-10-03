@@ -274,6 +274,247 @@
       "description": "DINOv2 ViT-B/14 + UPerNet, shared_semantic v4, epoch 35 of 40 (the run was cut at Kaggle's 12h cap and the weekly GPU quota is spent; the last five epochs are not in these weights). Validation mean IoU 0.7018. SIX CLASSES ARE PREDICTED AND TWO ARE USABLE. Scored on Gorakhpur, Uttar Pradesh -- 49 exhaustively annotated tiles at 0.448 m/px, pinned to test and never trained on -- the per-class IoU is: vegetation 0.913, building 0.621, road 0.366, water 0.003, bare_land 0.000, background 0.000. Pixel accuracy 0.916. usable_labels names the two that hold up. ROAD IS WEAK, not usable: 0.366 IoU, precision 0.593, recall 0.488 -- it misses half the road it is shown. WATER IS NOT WORKING: 0.003 IoU on 288851 labelled pixels. It predicts roughly the right AMOUNT of water (282787 px) in the wrong PLACES, which is worse than silence because the output looks plausible. BARE_LAND IS DEAD: zero pixels predicted across all 49 tiles against 19990 labelled. Neither improved when v4 added 463 water and 178 bare_land samples over v3 -- water in fact fell from 0.092 to 0.003 -- so more data is not the outstanding fix for them and no claim should be built on either. The mean IoU of 0.317 averages working and dead classes together and should not be quoted; the per-class column is the result. Background reads 0.000 because Gorakhpur's annotators labelled every pixel into a real class, so the model's background predictions have nothing to match. TRAINING CAVEAT: 13.4 per cent of optimiser steps were dropped as non-finite. The cause is unknown -- the absent-class-penalty overflow hypothesis was tested and died, measured max |grad| 0.0625, not the ~1e6 an fp16 overflow needs. SCOPE: one Indian city, captured from satellite or aircraft, not from a drone at 60 m. It is not verified for India and says nothing about differently built sites. ONNX parity max_abs_diff 1.2e-04 over 1073296 pixels with zero label disagreements. Evidence: docs/holdout/shared_semantic_v4_gorakhpur.json.",
       "sha256": "95b113795b45ba13460c56ba2c2bb8b04c95215d51290d94371bb2481bf7d466",
       "status": "installed"
+    },
+    "open_vocab_grounding_dino_tiny": {
+      "kind": "onnx_open_vocab_detection",
+      "path": "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny.onnx",
+      "labels": [],
+      "score_threshold": 0.35,
+      "text_threshold": 0.25,
+      "iou_threshold": 0.5,
+      "input_size": 800,
+      "description": "Grounding DINO Tiny (Swin-T, 172M parameters): open-vocabulary detection from a text prompt ('insulator. bird nest. rust stain.'), int8 ONNX. ZERO-SHOT: it was never trained on any OpenDroneKit inspection class. Every box is a SUGGESTION that goes to Review, out of every report, until a person confirms it; the score is uncalibrated and is not a probability. Expect false positives on 'crack' and 'corrosion'. Publisher metric: COCO zero-shot AP 48.4 (Swin-T, O365+GoldG+Cap4M, official GroundingDINO README); that figure does not transfer to inspection imagery. What OpenDroneKit measured on open drone sets is in opendronekit_measurements.",
+      "sha256": "3bff430de583461ab3c1e8b99b19508f4fb238bf0fea0cde2c45f840a0082a26",
+      "status": "installed",
+      "status_note": "Grounding DINO Tiny is not installed. Download open_vocab_grounding_dino_tiny from the v0.1.0-beta release (python -m core.model_download open_vocab_grounding_dino_tiny); text-prompted suggestions refuse until it is present.",
+      "output_semantics": "suggestion",
+      "companions": [
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__tokenizer.json",
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__vocab.txt",
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__config.json",
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__preprocessor_config.json",
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__tokenizer_config.json",
+        "open_vocab_grounding_dino_tiny/open_vocab_grounding_dino_tiny__special_tokens_map.json"
+      ],
+      "licence": {
+        "weights": "Apache-2.0",
+        "weights_url": "https://github.com/IDEA-Research/GroundingDINO/blob/main/LICENSE",
+        "data": "Objects365 (images: 'academic purpose only' per the Objects365 site; annotations CC BY 4.0), GoldG (Flickr30k Entities, GQA) and Cap4M. Flagged, not blocking: the restriction is on the images, and the weights are Apache-2.0. No training data is redistributed.",
+        "data_url": "https://www.objects365.org/",
+        "use": "commercial",
+        "attribution": "Grounding DINO: Liu et al., 'Grounding DINO: Marrying DINO with Grounded Pre-Training for Open-Set Object Detection', ECCV 2024 (arXiv:2303.05499), IDEA-Research. ONNX conversion by onnx-community.",
+        "text": "LICENSES/open_vocab_grounding_dino_tiny.txt"
+      },
+      "source": {
+        "repo": "onnx-community/grounding-dino-tiny-ONNX",
+        "revision": "ff690b0a8050566c290287545bd059350f3e9096",
+        "original": "IDEA-Research/grounding-dino-tiny@a2bb814d",
+        "files": [
+          "onnx/model_int8.onnx",
+          "tokenizer.json",
+          "vocab.txt",
+          "config.json",
+          "preprocessor_config.json",
+          "tokenizer_config.json",
+          "special_tokens_map.json"
+        ],
+        "not_shipped": "onnx/model.onnx (fp32, 718.8 MB), kept for int8 parity measurement only"
+      },
+      "metric": {
+        "value": 48.4,
+        "name": "COCO zero-shot box AP",
+        "split": "COCO val2017, zero-shot (Swin-T, O365+GoldG+Cap4M)",
+        "measured_by": "publisher",
+        "source_url": "https://github.com/IDEA-Research/GroundingDINO#luggage-checkpoints"
+      },
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "Apache-2.0 (weights); see WEIGHTS_LICENSES.md and LICENSES/open_vocab_grounding_dino_tiny.txt",
+        "files": [
+          {
+            "name": "open_vocab_grounding_dino_tiny.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny.onnx",
+            "sha256": "3bff430de583461ab3c1e8b99b19508f4fb238bf0fea0cde2c45f840a0082a26"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__tokenizer.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__tokenizer.json",
+            "sha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__vocab.txt",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__vocab.txt",
+            "sha256": "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__config.json",
+            "sha256": "f4b79138d4a83efb56ebad85c194a5a99a57102204c9829f76c0cd109acb0aeb"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__preprocessor_config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__preprocessor_config.json",
+            "sha256": "ffc8a8a93bb1782cc6f84a37b83babb0660bb19146e52600c122335a798b503f"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__tokenizer_config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__tokenizer_config.json",
+            "sha256": "5723ed14feabd5c974010123a7c93005116bdc5e3d69bcce3d9334987241f53c"
+          },
+          {
+            "name": "open_vocab_grounding_dino_tiny__special_tokens_map.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/open_vocab_grounding_dino_tiny__special_tokens_map.json",
+            "sha256": "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a"
+          }
+        ]
+      }
+    },
+    "vision_language_florence2_base_ft": {
+      "kind": "onnx_vision_language",
+      "path": "vision_language_florence2_base_ft/vision_language_florence2_base_ft__decoder_model_merged_int8.onnx",
+      "labels": [],
+      "input_size": 768,
+      "description": "Florence-2-base-ft (0.23B parameters): captions, OCR, object detection and phrase grounding, int8 ONNX (four graphs). Generated text is a MACHINE DESCRIPTION, UNVERIFIED: captions can invent details, and nothing it writes reaches a report unless a person accepts it. Grounded boxes carry no score and are suggestions for Review. Captions and OCR are unmeasured by OpenDroneKit (no ground truth on inspection imagery). Publisher metrics (model card, Florence-2-base-ft): COCO Caption Karpathy test CIDEr 140.0; TextVQA test-dev 63.6; COCO Det val2017 mAP 41.4; RefCOCO RES val mIoU 78.0.",
+      "sha256": "f22f52f980c33df0efa15932c2f3db6d9d3595ce6387eca938b8cfe23dc4c641",
+      "status": "installed",
+      "status_note": "Florence-2-base-ft is not installed. Download vision_language_florence2_base_ft from the v0.1.0-beta release (python -m core.model_download vision_language_florence2_base_ft); Describe image refuses until it is present.",
+      "output_semantics": "suggestion",
+      "tasks": [
+        "<CAPTION>",
+        "<DETAILED_CAPTION>",
+        "<OD>",
+        "<CAPTION_TO_PHRASE_GROUNDING>",
+        "<OCR>",
+        "<OCR_WITH_REGION>"
+      ],
+      "companions": [
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__vision_encoder_int8.onnx",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__embed_tokens_int8.onnx",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__encoder_model_int8.onnx",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__tokenizer.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__vocab.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__merges.txt",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__added_tokens.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__config.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__generation_config.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__preprocessor_config.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__tokenizer_config.json",
+        "vision_language_florence2_base_ft/vision_language_florence2_base_ft__special_tokens_map.json"
+      ],
+      "licence": {
+        "weights": "MIT",
+        "weights_url": "https://huggingface.co/microsoft/Florence-2-base-ft/blob/main/LICENSE",
+        "data": "FLD-5B (126M images, 5.4B annotations): not released; its licence is unknown. Not redistributed.",
+        "data_url": "https://arxiv.org/abs/2311.06242",
+        "use": "commercial",
+        "attribution": "Florence-2: Xiao et al., 'Florence-2: Advancing a Unified Representation for a Variety of Vision Tasks', CVPR 2024 (arXiv:2311.06242), Microsoft. ONNX conversion by onnx-community.",
+        "text": "LICENSES/vision_language_florence2_base_ft.txt"
+      },
+      "source": {
+        "repo": "onnx-community/Florence-2-base-ft",
+        "revision": "e88a44eaf3791a35eae0c5a47b3dbcd36e67eb6f",
+        "original": "microsoft/Florence-2-base-ft@f6c1a258",
+        "files": [
+          "onnx/decoder_model_merged_int8.onnx",
+          "onnx/vision_encoder_int8.onnx",
+          "onnx/embed_tokens_int8.onnx",
+          "onnx/encoder_model_int8.onnx",
+          "tokenizer.json",
+          "vocab.json",
+          "merges.txt",
+          "added_tokens.json",
+          "config.json",
+          "generation_config.json",
+          "preprocessor_config.json",
+          "tokenizer_config.json",
+          "special_tokens_map.json"
+        ],
+        "not_shipped": "fp32 graphs (about 1.09 GB), kept for parity measurement only"
+      },
+      "metric": {
+        "value": 140.0,
+        "name": "COCO Caption CIDEr",
+        "split": "COCO Caption Karpathy test",
+        "measured_by": "publisher",
+        "source_url": "https://huggingface.co/microsoft/Florence-2-base-ft",
+        "also_published": {
+          "TextVQA test-dev accuracy": 63.6,
+          "COCO Det val2017 mAP": 41.4,
+          "RefCOCO RES val mIoU": 78.0
+        }
+      },
+      "captions_and_ocr_metric": "unmeasured",
+      "download": {
+        "release": "v0.1.0-beta",
+        "license": "MIT (weights); see WEIGHTS_LICENSES.md and LICENSES/vision_language_florence2_base_ft.txt",
+        "files": [
+          {
+            "name": "vision_language_florence2_base_ft__decoder_model_merged_int8.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__decoder_model_merged_int8.onnx",
+            "sha256": "f22f52f980c33df0efa15932c2f3db6d9d3595ce6387eca938b8cfe23dc4c641"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__vision_encoder_int8.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__vision_encoder_int8.onnx",
+            "sha256": "d7876c1ab0f7ec11998942ca189e99a775c5a4a912b813c7745d0f6fa9343487"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__embed_tokens_int8.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__embed_tokens_int8.onnx",
+            "sha256": "6b2258db1c8ee9b160576ccde3cd3814d83a2edaed0dd1c6ca9ff3c38fa62214"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__encoder_model_int8.onnx",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__encoder_model_int8.onnx",
+            "sha256": "f4ad7a68f1fb875d3bcf735ea14a7021b7ba7e83baf7cf10289881b4ed6d9b85"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__tokenizer.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__tokenizer.json",
+            "sha256": "d69dcdb2323e124ac4f800cb9863ddccea0d7bb11e16125e8df3bd60f2f8aeac"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__vocab.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__vocab.json",
+            "sha256": "394fdc63c71aabe0a9b97117f5d62fb5fcc4d59b2b3ea929a3929e6a53217b3c"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__merges.txt",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__merges.txt",
+            "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__added_tokens.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__added_tokens.json",
+            "sha256": "ba67457c577895525996e7a42d7da60a05856506ea4fd25ff9a023a64662f74b"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__config.json",
+            "sha256": "d90c22ed72eb55291f183fcd9b98ebd3bd3d92bfcffb6c7f6e1606085e793525"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__generation_config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__generation_config.json",
+            "sha256": "7b8eb17bbd6cf8a07f619ad83ae03881eff05b6b9237bab89005b40e77783c29"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__preprocessor_config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__preprocessor_config.json",
+            "sha256": "c892857e34a7082284983a7717717d39c9bf7e574f1f41d80d4c918c97502efa"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__tokenizer_config.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__tokenizer_config.json",
+            "sha256": "d8e64607233cb53b619fb46664f6cad08176c26e0e8735b2d30d888364f19600"
+          },
+          {
+            "name": "vision_language_florence2_base_ft__special_tokens_map.json",
+            "url": "https://github.com/00PrabalK00/OpenDroneKit/releases/download/v0.1.0-beta/vision_language_florence2_base_ft__special_tokens_map.json",
+            "sha256": "72ff172dc769bc1551b1b4211628ce3271643bc60379e4da45d85a9be9332c39"
+          }
+        ]
+      }
     }
   }
 }

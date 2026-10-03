@@ -39,6 +39,8 @@ pymavlink>=2.4.41
 
 # Model inference (training extras live in training/requirements-train.txt)
 onnxruntime>=1.17
+# Tokenizers for the text-prompted models (Grounding DINO, Florence-2); Apache-2.0.
+tokenizers>=0.19
 
 # Object storage (S3 / MinIO backend)
 boto3>=1.34

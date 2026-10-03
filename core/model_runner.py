@@ -280,6 +280,17 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
                     "object of the kind the model was trained on.",
         }, None)
 
+    if kind == "onnx_open_vocab_detection":
+        # Zero-shot: without the words to look for there is nothing to answer, and a
+        # default prompt would be a guess presented as a search.
+        raise ModelRunRefused(
+            f"{model_key} needs a text prompt; use Suggest (text) and say what to look "
+            "for. Its boxes are zero-shot suggestions that go to Review.")
+    if kind == "onnx_vision_language":
+        raise ModelRunRefused(
+            f"{model_key} needs a text prompt or a task; use Describe image (caption, "
+            "OCR) or Suggest (text). Its text is an unverified machine description.")
+
     raise ModelRunRefused(
         f"{model_key} is a {kind} model, which runs over a georeferenced orthomosaic "
         "rather than a single photograph; use the land-cover run for it."
