@@ -122,6 +122,38 @@ class TestVerify:
         assert not result["ok"]
         assert any("after signing" in p for p in result["problems"])
 
+    def test_page_content_smuggled_into_the_signature_update_fails(self, report, tmp_path):
+        """Rewrite the unsigned signature update so it also adds a page content stream.
+
+        One %%EOF, the signed prefix untouched and the same signature entry: only the
+        object-level check catches that the file now shows unsigned content.
+        """
+        import io
+
+        from pypdf.generic import ArrayObject, DecodedStreamObject, NameObject
+
+        pdf = Path(report["pdf_path"])
+        data = pdf.read_bytes()
+        entry = pypdf.PdfReader(io.BytesIO(data)).metadata[rs.SIGNATURE_INFO_KEY]
+        prefix = tmp_path / "prefix.pdf"
+        prefix.write_bytes(data[:json.loads(entry)["statement"]["signed_length"]])
+        writer = pypdf.PdfWriter(str(prefix), incremental=True)
+        writer.add_metadata({rs.SIGNATURE_INFO_KEY: entry})
+        stream = DecodedStreamObject()
+        stream.set_data(b"BT /F1 40 Tf 50 400 Td (FORGED) Tj ET")
+        page = writer.pages[0]
+        contents = page["/Contents"]
+        parts = ArrayObject(list(contents) if isinstance(contents, ArrayObject) else [contents])
+        parts.append(writer._add_object(stream))
+        page[NameObject("/Contents")] = parts
+        with open(pdf, "wb") as handle:
+            writer.write(handle)
+        assert pdf.read_bytes().count(b"%%EOF") == data.count(b"%%EOF")
+        result = rs.verify_pdf(pdf)
+        assert result["signature_valid"]  # the maths still checks...
+        assert not result["ok"]  # ...but the file shows content it does not cover
+        assert any("not signed" in p for p in result["problems"])
+
     def test_a_changed_input_is_reported(self, report, inputs):
         Path(inputs[1]["path"]).write_bytes(b"different raster")
         result = rs.verify_report(report["pdf_path"])
@@ -202,3 +234,43 @@ class TestCommandLine:
                              capture_output=True, text=True, timeout=120)
         assert bad.returncode == 1
         assert json.loads(bad.stdout)["files"]["report.html"] == "changed"
+
+
+class TestRefusal:
+    """A report that cannot be signed is refused, and nothing unsigned is left on disk."""
+
+    def _generate(self, inputs, root):
+        return generate_standards_report("telecom_tower", {}, root, title="Refused",
+                                         project="p", inputs=inputs)
+
+    def test_missing_cryptography_refuses_before_writing(self, data_root, inputs, tmp_path,
+                                                         monkeypatch):
+        def unavailable():
+            raise rs.SigningUnavailable("Report signing needs the 'cryptography' package")
+
+        monkeypatch.setattr(rs, "_crypto", unavailable)
+        root = tmp_path / "reports"
+        with pytest.raises(rs.SigningUnavailable, match="cryptography"):
+            self._generate(inputs, root)
+        assert not root.exists() or not any(root.iterdir())
+        assert not (data_root / "keys").exists()
+
+    def test_missing_pypdf_refuses_before_writing(self, data_root, inputs, tmp_path,
+                                                  monkeypatch):
+        monkeypatch.setitem(sys.modules, "pypdf", None)  # import pypdf -> ImportError
+        root = tmp_path / "reports"
+        with pytest.raises(rs.SigningUnavailable, match="pypdf"):
+            self._generate(inputs, root)
+        assert not root.exists() or not any(root.iterdir())
+
+    def test_a_signing_failure_removes_the_unsigned_report(self, data_root, inputs, tmp_path,
+                                                           monkeypatch):
+        def broken(*_args, **_kwargs):
+            raise RuntimeError("disk full while signing")
+
+        monkeypatch.setattr(rs, "sign_pdf", broken)
+        root = tmp_path / "reports"
+        with pytest.raises(RuntimeError, match="disk full"):
+            self._generate(inputs, root)
+        assert list(root.glob("*/report.pdf")) == []
+        assert list(root.glob("*/report.html")) == []

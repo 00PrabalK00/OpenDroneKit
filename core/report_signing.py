@@ -64,8 +64,19 @@ def _crypto():
     except ImportError as exc:  # pragma: no cover - exercised only without the package
         raise SigningUnavailable(
             "Report signing needs the 'cryptography' package (pip install -r "
-            "requirements.txt); no signature was made.") from exc
+            "requirements.txt); no signature was made and no report was written.") from exc
     return serialization, Ed25519PrivateKey, Ed25519PublicKey
+
+
+def require_signing() -> None:
+    """Raise SigningUnavailable unless both signing libraries are importable."""
+    _crypto()
+    try:
+        import pypdf  # noqa: F401
+    except ImportError as exc:
+        raise SigningUnavailable(
+            "Report signing needs the 'pypdf' package (pip install -r requirements.txt) to "
+            "embed the manifest and append the signature; no report was written.") from exc
 
 
 def canonical(value: Any) -> bytes:
@@ -363,6 +374,58 @@ def _attachments(reader) -> dict[str, bytes]:
     return found
 
 
+def _unsigned_tail_problems(full_reader, prefix: bytes) -> list[str]:
+    """The unsigned signature update may carry the document-info entry and nothing else.
+
+    The signature covers only the bytes before it; a viewer renders the whole file. So
+    an update that also redefines a page, a content stream or the catalogue would show
+    content that was never signed while the signature still checks. Every object
+    location in the full file must therefore equal the signed prefix's, except the info
+    dictionary, and the catalogue must be the signed one.
+    """
+    import io
+
+    import pypdf
+    from pypdf.generic import DictionaryObject, IndirectObject, StreamObject
+
+    try:
+        signed = pypdf.PdfReader(io.BytesIO(prefix))
+    except Exception as exc:  # noqa: BLE001 - the prefix check reports the cause
+        return [f"The signed part of the PDF cannot be read: {exc}"]
+    problems: list[str] = []
+    full_trailer, signed_trailer = full_reader.trailer, signed.trailer
+    if "/Encrypt" in full_trailer and "/Encrypt" not in signed_trailer:
+        problems.append("The signature update adds encryption that was not signed.")
+    root_full, root_signed = full_trailer.raw_get("/Root"), signed_trailer.raw_get("/Root")
+    if not (isinstance(root_full, IndirectObject) and isinstance(root_signed, IndirectObject)
+            and (root_full.idnum, root_full.generation)
+            == (root_signed.idnum, root_signed.generation)):
+        problems.append("The signature update replaces the document catalogue.")
+    info = full_trailer.raw_get("/Info") if "/Info" in full_trailer else None
+    info_id = (info.idnum, info.generation) if isinstance(info, IndirectObject) else None
+    signed_info = signed_trailer.raw_get("/Info") if "/Info" in signed_trailer else None
+    signed_info_id = ((signed_info.idnum, signed_info.generation)
+                      if isinstance(signed_info, IndirectObject) else None)
+    changed = sorted(
+        (num, gen) for gen, table in full_reader.xref.items() for num, offset in table.items()
+        if signed.xref.get(gen, {}).get(num) != offset and (num, gen) != info_id)
+    if full_reader.xref_objStm != signed.xref_objStm:
+        problems.append("The signature update moves compressed objects of the signed PDF.")
+    if changed:
+        problems.append(
+            "The signature update redefines objects that were not signed ("
+            + ", ".join(f"{n} {g} R" for n, g in changed[:10])
+            + "); the file would display content the signature does not cover.")
+    if info_id is not None and info_id != signed_info_id and any(
+            info_id[0] in table for table in signed.xref.values()):
+        problems.append("The signature update reuses a signed object as the info dictionary.")
+    if info_id is not None:
+        info_obj = full_reader.get_object(info)
+        if isinstance(info_obj, StreamObject) or not isinstance(info_obj, DictionaryObject):
+            problems.append("The signature entry is not held in a plain info dictionary.")
+    return problems
+
+
 def verify_pdf(pdf_path: str | Path, *, check_input_files: bool = True,
                inputs_root: str | Path | None = None) -> dict[str, Any]:
     """Check a signed report PDF: signature, untouched bytes, manifest, inputs."""
@@ -404,6 +467,8 @@ def verify_pdf(pdf_path: str | Path, *, check_input_files: bool = True,
     if tail.count(b"%%EOF") != 1 or not tail.rstrip().endswith(b"%%EOF"):
         problems.append("The PDF was changed after signing (content appended after the "
                         "signature update).")
+    elif 0 < length <= len(data):
+        problems += _unsigned_tail_problems(reader, data[:length])
 
     manifest: dict[str, Any] = {}
     content: dict[str, Any] = {}

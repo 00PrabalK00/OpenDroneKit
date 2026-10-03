@@ -190,7 +190,8 @@ def _iec_checks(facts: dict[str, Any]) -> list[dict[str, Any]]:
     else:
         out.append(_check("irradiance", "In-plane irradiance >= 600 W/m²", "5.3 Table 3 a",
                           "PASS" if poa >= 600 else "FAIL",
-                          f"{poa:g} W/m² recorded in the plane of the modules."))
+                          f"{poa:g} W/m² recorded as in-plane irradiance "
+                          f"({fact(facts, 'env.irradiance_poa_w_m2')['source']})."))
     wind = number(facts, "env.wind_speed_m_s")
     bft = number(facts, "env.wind_bft")
     if wind is None and bft is None:
@@ -908,29 +909,40 @@ def generate_standards_report(template_key: str, facts: dict[str, Any], reports_
     report_id = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc).isoformat()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(reports_root) / f"{stamp}_{template.key}_{_slug(title or template.title)}_{report_id[:8]}"
-    out_dir.mkdir(parents=True, exist_ok=False)
+    # Refuse before anything is written: a report that cannot be signed is not made,
+    # so no unsigned report.pdf/report.html can be mistaken for a signed one.
+    rs.require_signing()
     manifest = rs.build_manifest(all_inputs, models or [], report={
         "report_id": report_id, "template": template.key,
         "structured_following": template.structured_following,
         "title": title or template.title, "project": project, "generated_at": generated_at,
     })
     key_info = rs.key_info()
+    out_dir = Path(reports_root) / f"{stamp}_{template.key}_{_slug(title or template.title)}_{report_id[:8]}"
+    out_dir.mkdir(parents=True, exist_ok=False)
     meta = {"title": title or template.title, "report_id": report_id,
             "generated_at": generated_at, "project": project,
             "fingerprint": key_info["fingerprint"],
             "manifest_attachment": rs.MANIFEST_ATTACHMENT}
-    manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
-    (out_dir / "manifest.json").write_bytes(manifest_bytes)
-    content_bytes = json.dumps(content, indent=2, sort_keys=True, default=str).encode("utf-8")
-    (out_dir / "content.json").write_bytes(content_bytes)
-    (out_dir / "report.html").write_text(render_html(content, manifest, meta), encoding="utf-8")
-    pdf = render_pdf(out_dir / "report.pdf", content, manifest, meta)
-    rs.embed_attachments(pdf, {rs.MANIFEST_ATTACHMENT: manifest_bytes,
-                               rs.CONTENT_ATTACHMENT: content_bytes})
-    rs.sign_pdf(pdf, manifest)
-    rs.sign_files(out_dir, ["report.pdf", "report.html", "manifest.json", "content.json"],
-                  manifest)
+    try:
+        manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+        (out_dir / "manifest.json").write_bytes(manifest_bytes)
+        content_bytes = json.dumps(content, indent=2, sort_keys=True, default=str).encode("utf-8")
+        (out_dir / "content.json").write_bytes(content_bytes)
+        (out_dir / "report.html").write_text(render_html(content, manifest, meta),
+                                             encoding="utf-8")
+        pdf = render_pdf(out_dir / "report.pdf", content, manifest, meta)
+        rs.embed_attachments(pdf, {rs.MANIFEST_ATTACHMENT: manifest_bytes,
+                                   rs.CONTENT_ATTACHMENT: content_bytes})
+        rs.sign_pdf(pdf, manifest)
+        rs.sign_files(out_dir, ["report.pdf", "report.html", "manifest.json", "content.json"],
+                      manifest)
+    except BaseException:
+        # A half-written folder holds an unsigned report; remove it rather than leave it.
+        import shutil
+
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
     result = {
         "id": report_id, "template": template.key, "title": meta["title"],
         "structured_following": template.structured_following,

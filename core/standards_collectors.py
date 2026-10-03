@@ -363,7 +363,8 @@ def iec_facts_from_frames(frames: list[str | Path], regions_file: str | Path,
             mid = min(t for t, _ in times) + (max(t for t, _ in times) - min(t for t, _ in times)) / 2
             env = environment_at(environment["source"], mid, environment["columns"])
             src = (f"{env['label']} row {env['row_time']} (nearest to the frames' mid-time "
-                   f"{mid.isoformat(sep=' ')})")
+                   f"{mid.isoformat(sep=' ')}; assumes the camera clock and the logger "
+                   "share one time base, which neither file records)")
             names = {"poa": "env.irradiance_poa_w_m2", "air": "env.air_temperature_c",
                      "wind": "env.wind_speed_m_s", "wind_dir": "env.wind_direction_deg"}
             for name, item_id in names.items():

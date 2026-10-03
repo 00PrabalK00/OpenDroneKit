@@ -115,3 +115,16 @@ def test_verifying_a_missing_file_says_so(api, tmp_path):
     result = api.verify_report(str(tmp_path / "nothing.pdf"))
     assert result["ok"] and not result["verified"]
     assert "does not exist" in result["problems"][0]
+
+
+def test_generation_is_refused_with_a_reason_when_signing_is_unavailable(api, monkeypatch):
+    from core import report_signing as rs
+
+    def unavailable():
+        raise rs.SigningUnavailable("Report signing needs the 'cryptography' package")
+
+    monkeypatch.setattr(rs, "_crypto", unavailable)
+    result = api.generate_standards_report("bridge_snbi", "Refused")
+    assert not result["ok"]
+    assert "cryptography" in result["error"]
+    assert api.list_standards_reports()["reports"] == []

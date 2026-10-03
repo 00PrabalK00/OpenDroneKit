@@ -122,8 +122,9 @@ Sources:
   detached `signature.json` also signs the final `report.pdf` and `report.html`.
 - **Key**: one key pair per user, created on first use in `<data root>/keys/`
   (`core.paths.data_root`; `ODK_DATA_DIR` moves it). The private key is never written into a
-  report. The public key and its fingerprint are. If the `cryptography` package is
-  missing, the report is refused with that reason; it is never written unsigned.
+  report. The public key and its fingerprint are. If the `cryptography` or `pypdf` package
+  is missing, the report is refused with that reason before anything is written; if signing
+  fails part-way, the half-written folder is removed. A report is never left unsigned.
 - **Trust**: a valid signature from a key this installation does not know is reported as
   *untrusted*, not verified. The `trust_report_key` call adds another signer's public key.
 
@@ -135,8 +136,9 @@ python -m core.report_signing key        # show (create on first use) this insta
 ```
 
 Verification detects these problems: a changed byte in the signed PDF, anything appended after
-signing, an edited HTML copy, a manifest that is not the signed one, and an input whose
-hash changed. Inputs that are not present on this machine produce a warning, and
+signing, a signature update that also redefines signed objects (a page or content stream
+smuggled into the unsigned update, which a viewer would display), an edited HTML copy, a
+manifest that is not the signed one, and an input whose hash changed. Inputs that are not present on this machine produce a warning, and
 `--inputs-root` locates moved inputs by name. It also catches a strip-and-re-sign with
 another key. What it does **not** prove is that the inputs were captured as described or
 that the inspection meets the standard. Exit code 0 means verified and 1 means not verified.

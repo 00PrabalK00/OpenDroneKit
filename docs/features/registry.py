@@ -1880,7 +1880,8 @@ PLATFORM = [
       "model with no digest is refused. The Ed25519 key is created on first use in "
       "<data root>/keys and its private half never appears in a report.",
       "implemented", ["tests/test_report_signing.py::TestKey",
-                      "tests/test_report_signing.py::TestManifest"],
+                      "tests/test_report_signing.py::TestManifest",
+                      "tests/test_report_signing.py::TestRefusal"],
       "core/report_signing.py."),
     F("rp.signing.verify", "Verify a signed report's signature, bytes, manifest and inputs",
       "hub", "Reporting",
