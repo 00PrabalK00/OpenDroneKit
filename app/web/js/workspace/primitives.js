@@ -175,9 +175,9 @@ export function fields(spec, onChange) {
       continue;
     }
     const input = item.options
-      ? el("select", {}, item.options.map((o) =>
+      ? el("select", { "data-key": item.key || "" }, item.options.map((o) =>
           el("option", { value: o, text: o, ...(o === item.value ? { selected: "" } : {}) })))
-      : el("input", { type: item.type || "text", value: item.value ?? "" });
+      : el("input", { type: item.type || "text", value: item.value ?? "", "data-key": item.key || "" });
     input.addEventListener("change", () => onChange && onChange(item.key, input.value));
     wrap.appendChild(el("div", { class: "field" }, [
       el("label", { text: item.label }),

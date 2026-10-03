@@ -99,6 +99,7 @@ const settingChanged = (key, value) => {
   // A token is a credential: the selection readout names it without echoing it.
   const shown = key === "cloud_token" ? (value ? "(set)" : "(empty)") : value;
   selection.select("setting", { id: key, label: `${key} = ${shown}`, key, value });
+  if ([...MISSION_FIELDS, ...AIRCRAFT_FIELDS].some((item) => item.key === key)) formValues[key] = value;
   if (key in reportChoice) {
     reportChoice[key] = value;
     window.dispatchEvent(new Event("odk:refresh"));
@@ -474,6 +475,73 @@ const missionTypes = [
   "Lateral capture", "Smart adaptive", "Linked mission",
 ];
 
+/* The Mission Properties form. What it shows is what Plan sends.
+ *
+ * Only edited fields reached the planner, so a form left at its defaults -- Type
+ * "3D modelling", 60 m, 8 m/s, RTH 90 m -- planned the Api's defaults instead: a
+ * 2D grid at another altitude and speed under a panel that said otherwise (found
+ * flying the Aukerman grid through the cockpit against ArduCopter SITL). The values
+ * shown are kept here, defaults included, and missionFormValues() is what Plan reads.
+ * Re-rendering the panel shows the edited values rather than resetting to defaults. */
+const MISSION_FIELDS = [
+      { group: "Geometry" },
+      { key: "type", label: "Type", value: "3D modelling", options: missionTypes },
+      { key: "alt", label: "Altitude AGL", value: "60", unit: "m" },
+      { key: "gsd", label: "Target GSD", value: "1.8", unit: "cm" },
+      { key: "fwd", label: "Front overlap", value: "80", unit: "%" },
+      { key: "side", label: "Side overlap", value: "70", unit: "%" },
+      { group: "Path" },
+      { key: "speed", label: "Speed", value: "8", unit: "m/s" },
+      { key: "angle", label: "Line heading", value: "90", unit: "°" },
+      { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
+      /* Inputs only some mission types read. Left blank they are not sent as values:
+         plan_mission refuses a thermal, multispectral or pylon plan that lacks its
+         one essential input, and says which. */
+      { group: "Mission type inputs" },
+      { key: "thermal_camera", label: "Thermal camera", value: "" },
+      { key: "target_gsd_cm", label: "Thermal GSD", value: "", unit: "cm" },
+      { key: "rgb_camera", label: "Paired RGB camera", value: "" },
+      { key: "payload_key", label: "Multispectral payload", value: "" },
+      { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
+      { key: "accept_relative_values", label: "No panel: relative values", value: "no",
+        options: ["no", "yes"] },
+      { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
+      { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
+      { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },
+      { key: "facade_bottom_altitude_m", label: "Wall base", value: "", unit: "m" },
+      { key: "facade_top_altitude_m", label: "Wall top", value: "", unit: "m" },
+      { key: "tower_bottom_altitude_m", label: "Tower base", value: "", unit: "m" },
+      { key: "tower_top_altitude_m", label: "Tower top", value: "", unit: "m" },
+      { key: "tower_object_radius_m", label: "Tower radius", value: "", unit: "m" },
+      { key: "turbine_rotor_facing_deg", label: "Rotor faces", value: "", unit: "°" },
+      { key: "turbine_hub_height_m", label: "Hub height", value: "", unit: "m" },
+      { key: "turbine_blade_length_m", label: "Blade length", value: "", unit: "m" },
+      { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
+      { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
+      { key: "linked_version_ids", label: "Linked version ids", value: "" },
+];
+const AIRCRAFT_FIELDS = [
+      { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },
+      { key: "batt", label: "Batteries", value: "3" },
+      { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
+];
+const formValues = {};
+const shownValue = (item) => (item.key && item.key in formValues
+  ? { ...item, value: formValues[item.key] } : item);
+export function missionFormValues() {
+  const values = {};
+  for (const item of [...MISSION_FIELDS, ...AIRCRAFT_FIELDS]) {
+    if (item.key && item.value !== undefined && item.value !== "") values[item.key] = item.value;
+  }
+  return { ...values, ...formValues };
+}
+/* Choosing a type in the Mission Types list is choosing the mission's type: the list
+   used to highlight the row and change nothing, so Plan flew the Type field's value. */
+const chooseMissionType = (node) => {
+  settingChanged("type", node.label);
+  document.querySelectorAll('select[data-key="type"]').forEach((input) => { input.value = node.label; });
+};
+
 const planning = {
   id: "planning",
   title: "Mission Planning",
@@ -512,7 +580,8 @@ const planning = {
       },
     }) },
     { id: "plan.templates", title: "Mission Types", render: () => reference(tree(
-      missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })), { selectKind: "template" })) },
+      missionTypes.map((t, i) => ({ id: `t${i}`, label: t, icon: "◇" })),
+      { selectKind: "template", onSelect: chooseMissionType })) },
     /* Appended "Obstacles" and "No-fly regions" as layer rows. Both are real concepts
        -- set_no_fly_zones stores them -- but they are session geometry rather than
        registered layers, so the rows toggled nothing and implied the project held
@@ -549,48 +618,8 @@ const planning = {
   }),
   right: [
     { id: "plan.props", title: "Mission Properties", tabs: [
-      { title: "Mission", render: () => fields([
-        { group: "Geometry" },
-        { key: "type", label: "Type", value: "3D modelling", options: missionTypes },
-        { key: "alt", label: "Altitude AGL", value: "60", unit: "m" },
-        { key: "gsd", label: "Target GSD", value: "1.8", unit: "cm" },
-        { key: "fwd", label: "Front overlap", value: "80", unit: "%" },
-        { key: "side", label: "Side overlap", value: "70", unit: "%" },
-        { group: "Path" },
-        { key: "speed", label: "Speed", value: "8", unit: "m/s" },
-        { key: "angle", label: "Line heading", value: "90", unit: "°" },
-        { key: "standoff", label: "Stand-off", value: "12", unit: "m" },
-        /* Inputs only some mission types read. Left blank they are not sent as values:
-           plan_mission refuses a thermal, multispectral or pylon plan that lacks its
-           one essential input, and says which. */
-        { group: "Mission type inputs" },
-        { key: "thermal_camera", label: "Thermal camera", value: "" },
-        { key: "target_gsd_cm", label: "Thermal GSD", value: "", unit: "cm" },
-        { key: "rgb_camera", label: "Paired RGB camera", value: "" },
-        { key: "payload_key", label: "Multispectral payload", value: "" },
-        { key: "calibration_panel_lonlat", label: "Panel lon, lat", value: "" },
-        { key: "accept_relative_values", label: "No panel: relative values", value: "no",
-          options: ["no", "yes"] },
-        { key: "pylon_elements", label: "Pylon elements (name@height)", value: "" },
-        { key: "dome_radius_m", label: "Dome radius", value: "", unit: "m" },
-        { key: "box_altitude_levels_m", label: "Box levels", value: "", unit: "m" },
-        { key: "facade_bottom_altitude_m", label: "Wall base", value: "", unit: "m" },
-        { key: "facade_top_altitude_m", label: "Wall top", value: "", unit: "m" },
-        { key: "tower_bottom_altitude_m", label: "Tower base", value: "", unit: "m" },
-        { key: "tower_top_altitude_m", label: "Tower top", value: "", unit: "m" },
-        { key: "tower_object_radius_m", label: "Tower radius", value: "", unit: "m" },
-        { key: "turbine_rotor_facing_deg", label: "Rotor faces", value: "", unit: "°" },
-        { key: "turbine_hub_height_m", label: "Hub height", value: "", unit: "m" },
-        { key: "turbine_blade_length_m", label: "Blade length", value: "", unit: "m" },
-        { key: "turbine_nacelle_length_m", label: "Nacelle length", value: "", unit: "m" },
-        { key: "turbine_blade_angles_deg", label: "Blade angles (90 = up)", value: "" },
-        { key: "linked_version_ids", label: "Linked version ids", value: "" },
-      ], settingChanged) },
-      { title: "Aircraft", render: () => fields([
-        { key: "air", label: "Aircraft", value: "M350 RTK", options: ["M350 RTK", "M300", "Mavic 3E"] },
-        { key: "batt", label: "Batteries", value: "3" },
-        { key: "rth", label: "RTH altitude", value: "90", unit: "m" },
-      ], settingChanged) },
+      { title: "Mission", render: () => fields(MISSION_FIELDS.map(shownValue), settingChanged) },
+      { title: "Aircraft", render: () => fields(AIRCRAFT_FIELDS.map(shownValue), settingChanged) },
       { title: "Camera", render: () => properties([
         { group: "P1 / 35 mm" },
         { label: "Sensor", value: "35.9 × 24.0", unit: "mm" },
@@ -851,7 +880,10 @@ const flight = {
               ? chip(`battery ${Math.round(tm.battery_pct)}%`, tm.battery_pct < 25 ? "warn" : "ok")
               : chip("battery not reported", "warn"),
             ...(tm.waypoint_total
-              ? [chip(`waypoint ${tm.waypoint_index ?? 0} / ${tm.waypoint_total}`)]
+              /* MISSION_CURRENT counts mission items -- each capture point is a
+                 waypoint, a shutter and a gimbal item -- so "waypoint 105 / 612" over
+                 a 203-waypoint plan read as a mission three times its size. */
+              ? [chip(`mission item ${tm.waypoint_index ?? 0} / ${tm.waypoint_total}`)]
               : []),
           ];
         },
@@ -907,7 +939,7 @@ const flight = {
           const total = tm.waypoint_total;
           return el("div", {}, [
             el("div", { class: "field" }, [
-              el("label", { text: "Waypoints" }),
+              el("label", { text: "Mission items" }),
               el("span", { text: `${done} / ${total}` }),
             ]),
             meter(total ? done / total : 0),

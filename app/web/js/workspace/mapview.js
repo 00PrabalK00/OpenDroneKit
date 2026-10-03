@@ -326,6 +326,99 @@ export function showMission(map, { line = [], captures = [] } = {}) {
   return true;
 }
 
+/* ------------------------------------------------------------ the aircraft */
+
+/*
+ * Where the aircraft is, on every map on screen, and the track it has flown since the
+ * link came up.
+ *
+ * Neither the Flight screen's map nor any other showed the vehicle: an operator
+ * watching a survey (ArduCopter SITL over Aukerman Park) saw the planned lines and a
+ * readout, and had to infer from "waypoint 105 / 612" where the aircraft was. The
+ * position is the one the vehicle last reported. A simulated vehicle is drawn amber, as
+ * every other SIMULATED marker is; a link that went quiet draws it grey, at the place it
+ * was last heard, because that is all that is known.
+ */
+const VEHICLE_ID = "odk-vehicle";
+const TRACK_ID = "odk-vehicle-track";
+const HEADING_ID = "odk-vehicle-heading";
+const TRACK_LIMIT = 20000;
+let vehicleTrack = [];
+let vehicleNow = null;
+
+function metresToDegrees(lat, north, east) {
+  return [east / (111320 * Math.cos((lat * Math.PI) / 180)), north / 110540];
+}
+
+function vehicleFeatures() {
+  if (!vehicleNow) return null;
+  const { lon, lat, heading, tone } = vehicleNow;
+  const rad = ((Number(heading) || 0) * Math.PI) / 180;
+  const [dLon, dLat] = metresToDegrees(lat, 18 * Math.cos(rad), 18 * Math.sin(rad));
+  return {
+    point: { type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] },
+      properties: { tone } },
+    heading: { type: "Feature", geometry: { type: "LineString",
+      coordinates: [[lon, lat], [lon + dLon, lat + dLat]] }, properties: { tone } },
+    track: { type: "Feature", geometry: { type: "LineString",
+      coordinates: vehicleTrack.length > 1 ? vehicleTrack : [[lon, lat], [lon, lat]] },
+      properties: {} },
+  };
+}
+
+const TONE_COLOUR = ["match", ["get", "tone"], "sim", "#f59e0b", "lost", "#9ca3af", "#22c55e"];
+
+function drawVehicle(map) {
+  if (!mapReady(map)) return;
+  const features = vehicleFeatures();
+  const ids = [TRACK_ID, HEADING_ID, VEHICLE_ID];
+  if (!features) {
+    for (const id of ids) {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(id)) map.removeSource(id);
+    }
+    return;
+  }
+  const data = { [TRACK_ID]: features.track, [HEADING_ID]: features.heading, [VEHICLE_ID]: features.point };
+  for (const id of ids) {
+    const source = map.getSource(id);
+    if (source) { source.setData(data[id]); map.moveLayer(id); continue; }
+    map.addSource(id, { type: "geojson", data: data[id] });
+    if (id === VEHICLE_ID) {
+      map.addLayer({ id, type: "circle", source: id, paint: {
+        "circle-radius": 7, "circle-color": TONE_COLOUR,
+        "circle-stroke-color": "#0d1015", "circle-stroke-width": 2 } });
+    } else if (id === HEADING_ID) {
+      map.addLayer({ id, type: "line", source: id, paint: {
+        "line-color": TONE_COLOUR, "line-width": 3 } });
+    } else {
+      map.addLayer({ id, type: "line", source: id, paint: {
+        "line-color": "#f8fafc", "line-width": 2, "line-opacity": 0.75 } });
+    }
+  }
+}
+
+/** Show the vehicle from a telemetry reply (Api.telemetry().telemetry), or clear it. */
+export function showVehicle(telemetry) {
+  const t = telemetry || {};
+  const lat = Number(t.latitude), lon = Number(t.longitude);
+  const placed = (t.connected || t.link_lost) && Number.isFinite(lat) && Number.isFinite(lon)
+    && !(lat === 0 && lon === 0) && Number(t.gps_fix || 0) >= 2;
+  if (!t.connected && !t.link_lost) vehicleTrack = [];
+  if (!placed) {
+    vehicleNow = null;
+  } else {
+    vehicleNow = { lon, lat, heading: t.heading_deg ?? t.heading ?? 0,
+      tone: t.link_lost ? "lost" : t.is_simulated ? "sim" : "live" };
+    const last = vehicleTrack[vehicleTrack.length - 1];
+    if (t.armed && (!last || Math.abs(last[0] - lon) + Math.abs(last[1] - lat) > 2e-6)) {
+      vehicleTrack.push([lon, lat]);
+      if (vehicleTrack.length > TRACK_LIMIT) vehicleTrack = vehicleTrack.slice(-TRACK_LIMIT);
+    }
+  }
+  for (const map of liveMaps()) drawVehicle(map);
+}
+
 /* ------------------------------------------------------------ project content */
 
 /*

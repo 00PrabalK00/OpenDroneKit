@@ -8,7 +8,7 @@
 
 import { Dock } from "./dock.js";
 import { el, selection } from "./primitives.js";
-import { WORKSPACES, WORKSPACE_BY_ID, auditLine } from "./workspaces.js";
+import { WORKSPACES, WORKSPACE_BY_ID, auditLine, missionFormValues } from "./workspaces.js";
 import { DATA, DEMO, SAMPLE_SENTINELS, demoEnabled } from "./demo.js";
 import { call, connected, lastError, tryCall, whenReady } from "./api.js";
 import { ACTIONS, UNWIRED, describeMeasurement, prerequisite, resolve } from "./actions.js";
@@ -16,7 +16,7 @@ import {
   armDrawing, armTool, bindDrawingKeys, canDraw, configureDrawing, currentMap, formatArea,
   formatLength, recordMeasurement, stopDrawing, undoPoint, vertices,
 } from "./draw.js";
-import { basemapNames, fitTo, refreshProjectOverlays, setBasemap, showVector, visibleBounds } from "./mapview.js";
+import { basemapNames, fitTo, refreshProjectOverlays, setBasemap, showVector, showVehicle, visibleBounds } from "./mapview.js";
 import { currentImage, setImage, setView } from "./viewstate.js";
 import { ask, askOne, choose as chooseModal, confirmAsk, labelBoxes, reveal, showResult } from "./modal.js";
 import { refreshLive } from "./live.js";
@@ -1324,7 +1324,8 @@ export class Shell {
         // planned template=grid at altitude 55. That is the worst shape a bug can take
         // here -- a plausible mission that is not the one that was asked for, with
         // nothing on screen to say so.
-        const raw = this.settings || {};
+        // The form's values as shown, defaults included (see missionFormValues).
+        const raw = { ...(this.settings || {}), ...missionFormValues() };
         const numeric = {};
         for (const [key, value] of Object.entries(raw)) {
           const asNumber = Number(value);
@@ -1623,6 +1624,7 @@ export class Shell {
       return;
     }
     const v = this.vehicle;
+    showVehicle(v);
     if (v && v.link_lost) {
       set(this.vehicleDot, this.vehicleLabel, "warn", "aircraft link lost");
     } else if (v && v.connected) {
@@ -1851,8 +1853,11 @@ export class Shell {
         : `${DEMO.CLOCK} UTC`;
       // The aircraft indicator follows the link, so a lost link shows up in the frame
       // on every screen, not only on the Flight workspace.
+      // Every second while an aircraft is on the link, so the map follows it; every
+      // third otherwise.
       ticks += 1;
-      if (this.mode === "connected" && ticks % 3 === 0) {
+      const flying = this.vehicle && (this.vehicle.connected || this.vehicle.link_lost);
+      if (this.mode === "connected" && (flying || ticks % 3 === 0)) {
         const telemetry = await tryCall("telemetry");
         this.vehicle = (telemetry && telemetry.telemetry) || null;
         this.renderIndicators();
