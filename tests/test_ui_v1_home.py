@@ -314,8 +314,10 @@ class TestTheAcceptancePath:
         created = [p for p in api.home_projects()["projects"] if p["id"] not in before]
         assert len(created) == 1 and created[0]["active"] and created[0]["name"] == "Second site"
         browser.wait_for("(document.querySelector('.odk-home-title h1') || {}).textContent === 'Second site'", 60)
-        assert "none" in text(browser, "[data-where='home.tiles.photos']") or \
-            "no dataset" in text(browser, "[data-where='home.tiles.photos']")
+        # The header and the tiles are separate live panels re-read on the same refresh;
+        # the title can land first, so wait for the tile rather than read it once.
+        browser.wait_for(r"""/none|no dataset/.test(
+            (document.querySelector("[data-where='home.tiles.photos']") || {}).textContent || '')""", 60)
 
         # Import the Aukerman photographs through the header's own button.
         api.folders.append(str(IMAGES))
@@ -332,8 +334,10 @@ class TestTheAcceptancePath:
             click(browser, "[data-control='project-more']")
             click(browser, ".odk-popover:not([hidden]) [data-action='Share']")
             answer_prompt(browser, "Client review")
-            answer_prompt(browser)  # the token is shown once
-            browser.wait_for("window.__toasts.some((t) => /Link .* issued/.test(t))", 30)
+            # The token is shown once. The first link of a session cold-loads the REST
+            # service's models and database; on a loaded machine that took 84 s here.
+            answer_prompt(browser, timeout_s=240)
+            browser.wait_for("window.__toasts.some((t) => /Link .* issued/.test(t))", 60)
             pid = api.get_project()["project"]["id"]
             links = api.list_share_links(pid)["links"]
             assert len(links) == 1 and not links[0]["revoked"]
