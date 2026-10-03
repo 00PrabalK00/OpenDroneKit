@@ -43,8 +43,8 @@ NOT_CERTIFIED = (
     "This report is structured following the cited standard so that its required "
     "contents can be checked item by item. It is not a certificate of compliance or "
     "conformity, it was not issued by an accredited body, and OpenDroneKit makes no "
-    "claim that the inspection meets the standard. Items marked MISSING were not "
-    "supplied and were not filled with defaults.")
+    "claim that the inspection meets the standard. Items not supplied are listed as "
+    "open on the checklist and were not filled with defaults.")
 
 
 # ── Template model ────────────────────────────────────────────────────────────
@@ -235,8 +235,9 @@ def _iec_checks(facts: dict[str, Any]) -> list[dict[str, Any]]:
                "site_marking")
     for row in rows:
         have = [k for k in id_keys if row.get(k) not in (None, "")]
-        out.append(_check(f"identification:{row.get('object', '?')}",
-                          f"{row.get('object', '?')}: at least 2 position identifications",
+        name = row.get("key") or row.get("object", "?")
+        out.append(_check(f"identification:{name}",
+                          f"{name}: at least 2 position identifications",
                           "8 i", "PASS" if len(have) >= 2 else "FAIL",
                           f"{len(have)} of the five listed identifications supplied"
                           + (f" ({', '.join(have)})." if have else ".")))
@@ -566,6 +567,117 @@ def get_template(key: str) -> StandardTemplate:
                          f"{', '.join(TEMPLATES)}.") from None
 
 
+# ── Who supplies each item ────────────────────────────────────────────────────
+#
+# Every required item is supplied by one of these. The report's checklist says which, and
+# the Api's inspection-details form is driven by it.
+#   data       read or computed from the project's files (source names the file/tag/formula)
+#   profile    a saved operator profile picked for the inspection (entered once, reused)
+#   procedure  an adopted procedure template (entered once, reused)
+#   lookup     a public database entry the operator picks (CEC module list)
+#   site       the on-site conditions log (Field mode) or an imported meteo record
+#   operator   typed per inspection
+#   judgement  a qualified person's assessment; software may only suggest
+WHO_LABELS = {
+    "data": "Derived from data",
+    "profile": "Saved operator profile",
+    "procedure": "Adopted procedure template",
+    "lookup": "Module database lookup",
+    "site": "Site conditions log",
+    "operator": "Entered per inspection",
+    "judgement": "Qualified person's assessment",
+}
+REUSED = ("profile", "procedure", "lookup")
+
+_HINTS = {
+    "profile": "Pick the person from the saved operator profiles (Report > Inspection details > People).",
+    "procedure": "Adopt or edit the procedure template for this standard (Settings > Procedures).",
+    "lookup": "Pick the module model from the CEC module list (Report > Inspection details > Module).",
+    "site": "Record it on site in Field mode (Site conditions), or import the meteo CSV row.",
+    "operator": "Enter it in Report > Inspection details.",
+    "judgement": "Assessment by the qualified person named in the report.",
+    "data": "Not found in the project's files; enter it in Report > Inspection details.",
+}
+
+ITEM_WHO: dict[str, tuple[str, str]] = {
+    # IEC TS 62446-3
+    "people.pv_expert": ("profile", ""), "people.thermographer": ("profile", ""),
+    "people.attending": ("profile", ""),
+    "inspection.datetime": ("data", "No capture time in the frames; enter the inspection date and time."),
+    "inspection.location": ("data", "The frames carry no GPS position and the project has no "
+                            "georeference; enter the site address or set the georeference."),
+    "inspection.procedure": ("procedure", ""), "inspection.type": ("procedure", ""),
+    "scope.component_types": ("lookup", ""), "scope.module_efficiency": ("lookup", ""),
+    "scope.inspected_components": ("data", "Outline the inspected modules (or run the module "
+                                   "detector) so the listing is produced from them."),
+    "scope.mounting": ("data", "Needs a DSM with the array outlined (tilt and azimuth are "
+                       "fitted from it), or enter mounting type, orientation and inclination."),
+    "scope.bos_location": ("operator", ""),
+    "camera.make_model": ("data", ""), "camera.serial_lens": ("data", ""),
+    "camera.ir_resolution_px": ("data", ""), "camera.spectral_response": ("data", ""),
+    "camera.netd_k": ("data", "The camera is not in the camera registry with a NETD; add it "
+                      "from the datasheet (Settings > Cameras)."),
+    "camera.geometric_resolution_cm_px": ("data", "Enter the camera-to-module distance; it is "
+                                          "then computed as distance x pixel pitch / focal length."),
+    "camera.emissivity": ("data", "The radiometric files do not record it; enter the emissivity "
+                          "set in the camera."),
+    "camera.reflected_temperature_c": ("data", "The radiometric files do not record it; enter "
+                                       "the reflected temperature set or measured on site."),
+    "env.air_temperature_c": ("data", "No logger reading near the capture time; record it in "
+                              "the site conditions log."),
+    "env.wind_speed_m_s": ("data", "No logger reading; record it in the site conditions log."),
+    "env.wind_direction_deg": ("data", "No logger reading; record it in the site conditions log."),
+    "env.cloud_okta": ("site", ""), "env.cloud_type": ("site", ""),
+    "env.irradiance_poa_w_m2": ("data", "No plane-of-array irradiance near the capture time; "
+                                "import the irradiance logger or record it on site."),
+    "env.soiling": ("data", "Attach soiling photos or a soiling-sensor reading."),
+    "results.summary": ("judgement", ""), "results.next_inspection": ("judgement", ""),
+    "results.conclusions": ("judgement", ""),
+    # Bridge
+    "id.bridge_number": ("operator", "The agency's NBI structure number."),
+    "id.bridge_name": ("operator", ""), "loc.state_code": ("operator", "The SNBI state code."),
+    "loc.county_code": ("operator", "The SNBI county code."),
+    "loc.latitude": ("data", "No georeferenced imagery; enter the agency's B.L.05 value."),
+    "loc.longitude": ("data", "No georeferenced imagery; enter the agency's B.L.06 value."),
+    "ie.type": ("procedure", ""),
+    "ie.begin_date": ("data", "No capture dates in the imagery; enter the inspection dates."),
+    "ie.completion_date": ("data", "No capture dates in the imagery; enter the inspection dates."),
+    "ie.inspector": ("profile", ""), "ie.interval_months": ("operator", ""),
+    "ie.due_date": ("data", "Computed from the completion date and the interval once the "
+                    "interval is entered."),
+    "ie.note": ("operator", ""), "ie.equipment": ("data", ""),
+    # Roof
+    "general.address": ("data", "No geotagged imagery; enter the property address."),
+    "general.inspector": ("profile", ""),
+    "general.datetime": ("data", "No capture time in the imagery; enter the date."),
+    "general.weather": ("site", ""), "general.method": ("data", ""),
+    "roof.covering_type": ("operator", "Describe the roof-covering material seen on the imagery."),
+    "roof.limitations": ("operator", "State the areas not inspected and why."),
+    # Tower
+    "site.structure_id": ("operator", ""),
+    "site.location": ("data", "No geotagged imagery; enter the site coordinates or address."),
+    "site.structure_type": ("operator", ""), "site.height_m": ("operator", ""),
+    "site.assessor": ("profile", ""),
+    "site.datetime": ("data", "No capture time in the imagery; enter the assessment date."),
+    "site.weather": ("site", ""), "site.interval": ("operator", ""),
+}
+
+
+def item_who(item: Item) -> str:
+    """Who supplies an item (see WHO_LABELS). Assessments default to ``judgement``."""
+    if item.id in ITEM_WHO:
+        return ITEM_WHO[item.id][0]
+    if item.id.startswith(("cond.", "roof.", "j.")):
+        return "judgement"
+    return "operator"
+
+
+def item_hint(item: Item) -> str:
+    who = item_who(item)
+    specific = ITEM_WHO.get(item.id, ("", ""))[1]
+    return specific or _HINTS[who]
+
+
 # ── Resolution: template + facts -> content ───────────────────────────────────
 
 def _cell(value: Any) -> str:
@@ -578,28 +690,56 @@ def _cell(value: Any) -> str:
     return str(value)
 
 
+def _origin(raw: Any, source: str) -> str:
+    """How a supplied value was obtained: data | profile | procedure | lookup | operator | suggested."""
+    if isinstance(raw, dict) and raw.get("origin"):
+        return str(raw["origin"])
+    if source.startswith("entered by") or not isinstance(raw, dict):
+        return "operator"
+    return "data"
+
+
 def resolve(template: StandardTemplate, facts: dict[str, Any]) -> dict[str, Any]:
-    """Every required item with its value and source, or MISSING. Pure: no I/O."""
+    """Every required item with its value, source and origin, or MISSING. Pure: no I/O.
+
+    A value whose origin is ``suggested`` (a default procedure nobody adopted, a software
+    class proposal) is kept as a suggestion: the item stays MISSING until a person
+    confirms it, and the checklist shows the suggestion next to it.
+    """
     facts = dict(facts or {})
-    sections, missing, provided = [], [], 0
+    sections, missing, todo = [], [], []
+    counts = {"data": 0, "reused": 0, "operator": 0}
     for section in template.sections:
         items = []
         for item in section.items:
+            raw = (facts.get("fields") or {}).get(item.id)
             found = fact(facts, item.id)
-            if found is None:
+            who = item_who(item)
+            base = {"id": item.id, "label": item.label, "ref": item.ref, "unit": item.unit,
+                    "who": who, "section": section.title}
+            origin = _origin(raw, found["source"]) if found else None
+            if found is None or origin == "suggested":
                 missing.append(f"{item.ref} {item.label}")
-                items.append({"id": item.id, "label": item.label, "ref": item.ref,
-                              "unit": item.unit, "status": MISSING, "value": None,
-                              "source": None})
+                entry = {**base, "status": MISSING, "value": None, "source": None,
+                         "origin": None, "hint": item_hint(item)}
+                if found is not None:
+                    entry["suggestion"] = {"value": found["value"], "source": found["source"]}
+                items.append(entry)
+                todo.append({"kind": "item", "id": item.id, "ref": item.ref,
+                             "label": item.label, "who": who, "hint": entry["hint"],
+                             "section": section.title,
+                             "suggestion": entry.get("suggestion")})
             else:
-                provided += 1
-                items.append({"id": item.id, "label": item.label, "ref": item.ref,
-                              "unit": item.unit, "status": "PROVIDED",
-                              "value": found["value"], "source": found["source"]})
+                bucket = ("data" if origin == "data" else
+                          "reused" if origin in REUSED else "operator")
+                counts[bucket] += 1
+                items.append({**base, "status": "PROVIDED", "value": found["value"],
+                              "source": found["source"], "origin": origin})
         tables = []
         for table in section.tables:
             rows = list((facts.get("tables") or {}).get(table.id) or [])
-            out_rows = []
+            out_rows: list[dict[str, Any]] = []
+            gaps: dict[str, list[str]] = {}
             for row in rows:
                 cells = {}
                 for column in table.columns:
@@ -607,21 +747,45 @@ def resolve(template: StandardTemplate, facts: dict[str, Any]) -> dict[str, Any]
                     if value in (None, ""):
                         cells[column.key] = MISSING if column.required else "-"
                         if column.required:
+                            gaps.setdefault(column.key, []).append(column.label)
                             missing.append(f"{table.ref} {table.title}: "
                                            f"{column.label} ({row.get(table.columns[0].key, '?')})")
                     else:
                         cells[column.key] = _cell(value)
-                out_rows.append({"cells": cells, "source": str(row.get("source") or
-                                                               "entered by operator")})
+                out_rows.append({"cells": cells, "key": str(row.get("key") or ""),
+                                 "source": str(row.get("source") or "entered by operator"),
+                                 "suggestions": dict(row.get("suggestions") or {}),
+                                 "figure": row.get("figure"),
+                                 "extra": dict(row.get("extra") or {})})
             if not rows:
                 missing.append(f"{table.ref} {table.title}: no rows recorded")
+                todo.append({"kind": "table", "id": table.id, "ref": table.ref,
+                             "label": f"{table.title}: no rows recorded", "who": "judgement",
+                             "hint": table.note or _HINTS["judgement"],
+                             "section": section.title, "suggestion": None})
+            for key, labels in gaps.items():
+                suggested = sum(1 for r in rows if (r.get("suggestions") or {}).get(key))
+                todo.append({"kind": "table", "id": table.id, "ref": table.ref,
+                             "label": f"{table.title}: {labels[0]}, open in {len(labels)} of "
+                                      f"{len(rows)} row(s)",
+                             "who": "judgement", "hint": table.note or _HINTS["judgement"],
+                             "section": section.title,
+                             "suggestion": ({"value": f"software suggestion for {suggested} "
+                                                      "row(s); confirm or change each in review",
+                                             "source": "see the findings pages"}
+                                            if suggested else None)})
             tables.append({"id": table.id, "title": table.title, "ref": table.ref,
                            "note": table.note,
-                           "columns": [{"key": c.key, "label": c.label} for c in table.columns],
+                           "columns": [{"key": c.key, "label": c.label, "required": c.required}
+                                       for c in table.columns],
                            "rows": out_rows, "status": "PROVIDED" if rows else MISSING})
         sections.append({"id": section.id, "title": section.title, "ref": section.ref,
                          "items": items, "tables": tables})
     item_count = len(template.items())
+    provided = counts["data"] + counts["reused"] + counts["operator"]
+    by_who: dict[str, int] = {}
+    for entry in todo:
+        by_who[entry["who"]] = by_who.get(entry["who"], 0) + 1
     return {
         "template": template.key,
         "title": template.title,
@@ -633,10 +797,22 @@ def resolve(template: StandardTemplate, facts: dict[str, Any]) -> dict[str, Any]
         "checks": template.checks(facts),
         "observations": list(facts.get("observations") or []),
         "evidence": list(facts.get("evidence") or []),
+        "figures": list(facts.get("figures") or []),
+        "findings": list(facts.get("findings") or []),
+        "summary": dict(facts.get("summary") or {}),
+        "measurements": list(facts.get("measurements") or []),
+        "details": dict(facts.get("details") or {}),
+        "todo": todo,
+        "status": "DRAFT" if todo else "READY TO ISSUE",
         "completeness": {
             "required_items": item_count,
             "provided_items": provided,
+            "derived_items": counts["data"],
+            "reused_items": counts["reused"],
+            "entered_items": counts["operator"],
             "missing_items": item_count - provided,
+            "open_actions": len(todo),
+            "open_by_who": by_who,
             "missing": missing,
         },
     }
@@ -645,15 +821,21 @@ def resolve(template: StandardTemplate, facts: dict[str, Any]) -> dict[str, Any]
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
 _CSS = """
-body{font-family:Segoe UI,Arial,sans-serif;margin:32px;color:#18211e;max-width:1100px}
-h1{font-size:22px;margin-bottom:4px} h2{font-size:17px;border-bottom:1px solid #ccd;
-padding-bottom:3px;margin-top:28px} .ref{color:#556;font-size:12px}
-.statement{background:#fff6dc;border:1px solid #e0c060;padding:10px;font-size:13px}
-table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
-th,td{border:1px solid #ccd;padding:4px 6px;text-align:left;vertical-align:top}
-th{background:#eef1f4} .MISSING{color:#b00020;font-weight:700}
-.PASS{color:#11683a;font-weight:700} .FAIL{color:#b00020;font-weight:700}
-.src{color:#556;font-size:11px} code{font-size:11px;word-break:break-all}
+body{font-family:Helvetica,Arial,sans-serif;margin:0;color:#1d2433;background:#f3f4f6}
+main{max-width:980px;margin:0 auto;padding:32px 40px;background:#fff}
+h1{font-size:28px;margin:4px 0} h2{font-size:18px;margin-top:36px;border-bottom:1px solid #d9dde5;
+padding-bottom:4px} h3{font-size:14px;margin:18px 0 6px}
+.kicker{color:#5b6475;text-transform:uppercase;letter-spacing:.08em;font-size:11px}
+.status{display:inline-block;padding:4px 10px;border:1.5px solid #9a5b00;color:#9a5b00;
+font-weight:700;font-size:12px;border-radius:3px} .status.ready{border-color:#0f5f66;color:#0f5f66}
+.meta{display:grid;grid-template-columns:repeat(3,1fr);gap:10px 24px;margin:18px 0}
+.meta div{font-size:13px} .meta b{display:block;color:#5b6475;font-weight:500;font-size:11px}
+.statement{color:#5b6475;font-size:12px;border-left:3px solid #d9dde5;padding-left:10px}
+table{border-collapse:collapse;width:100%;font-size:12px;margin:8px 0}
+th,td{border-bottom:1px solid #d9dde5;padding:5px 6px;text-align:left;vertical-align:top}
+th{color:#5b6475;font-weight:600} .src{color:#5b6475;font-size:11px}
+.box{display:inline-block;width:10px;height:10px;border:1.2px solid #1d2433}
+.open{color:#8a909c;font-style:italic} code{font-size:11px;word-break:break-all}
 """
 
 
@@ -661,74 +843,107 @@ def _e(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
 
-def _value_text(item: dict[str, Any]) -> str:
+def value_text(item: dict[str, Any]) -> str:
     if item["status"] == MISSING:
-        return MISSING
+        return "open (see checklist)"
     unit = f" {item['unit']}" if item.get("unit") else ""
     return f"{_cell(item['value'])}{unit}"
 
 
+def status_line(content: dict[str, Any]) -> str:
+    n = content["completeness"]["open_actions"]
+    return (f"DRAFT — {n} item{'s' if n != 1 else ''} to complete"
+            if content["status"] == "DRAFT" else "Ready to issue")
+
+
 def render_html(content: dict[str, Any], manifest: dict[str, Any], meta: dict[str, Any]) -> str:
-    parts = [f"<h1>{_e(meta.get('title') or content['title'])}</h1>",
-             f"<p><b>{_e(content['structured_following'])}</b></p>",
-             f"<p class='ref'>Report {_e(meta.get('report_id'))} · generated "
-             f"{_e(meta.get('generated_at'))} · project {_e(meta.get('project'))}</p>",
-             f"<div class='statement'>{_e(content['statement'])}</div>"]
+    """The HTML twin of the PDF: same order, same checklist, no scattered MISSING."""
     comp = content["completeness"]
-    parts.append(f"<p><b>Completeness:</b> {comp['provided_items']} of "
-                 f"{comp['required_items']} required items provided; "
-                 f"<span class='MISSING'>{comp['missing_items']} MISSING</span>"
-                 f" (plus {len(comp['missing']) - comp['missing_items']} missing table "
-                 "entries).</p>")
+    draft = content["status"] == "DRAFT"
+    details = content.get("details") or {}
+    parts = [f"<p class='kicker'>{_e(content['title'])}</p>",
+             f"<h1>{_e(meta.get('title') or content['title'])}</h1>",
+             f"<span class='status{'' if draft else ' ready'}'>{_e(status_line(content))}</span>",
+             "<div class='meta'>" + "".join(
+                 f"<div><b>{_e(k)}</b>{_e(v)}</div>" for k, v in (
+                     ("Site", details.get("site") or "not recorded"),
+                     ("Inspection date", details.get("date") or "not recorded"),
+                     ("Client", details.get("client") or "not recorded"),
+                     ("Report", meta.get("report_id")),
+                     ("Generated", meta.get("generated_at")),
+                     ("Structure", content["structured_following"]))) + "</div>",
+             f"<p class='statement'>{_e(content['statement'])}</p>"]
+    if content["todo"]:
+        parts.append("<h2>Before this report can be issued</h2><table>"
+                     "<tr><th></th><th>Ref</th><th>Item</th><th>Who / how</th></tr>")
+        for entry in content["todo"]:
+            sug = entry.get("suggestion")
+            parts.append(f"<tr><td><span class='box'></span></td><td>{_e(entry['ref'])}</td>"
+                         f"<td>{_e(entry['label'])}"
+                         + (f"<div class='src'>Suggested: {_e(_cell(sug['value']))} "
+                            f"({_e(sug['source'])})</div>" if sug else "")
+                         + f"</td><td>{_e(WHO_LABELS[entry['who']])}<div class='src'>"
+                         f"{_e(entry['hint'])}</div></td></tr>")
+        parts.append("</table>")
+    parts.append("<h2>Summary</h2><p>"
+                 f"{comp['provided_items']} of {comp['required_items']} required items supplied: "
+                 f"{comp['derived_items']} derived from data, {comp['reused_items']} from saved "
+                 f"profiles and templates, {comp['entered_items']} entered for this inspection.</p>")
+    for line in (content.get("summary") or {}).get("lines") or []:
+        parts.append(f"<p>{_e(line)}</p>")
+    shown = [(f.get("rendered"), f.get("caption")) for f in content.get("figures") or []]
+    shown += [(f.get("rendered"), f"{f.get('title')}: {(f.get('severity') or {}).get('label', '')}. "
+               f"{f.get('note', '')}") for f in content.get("findings") or []]
+    shown += [(e.get("rendered"), e.get("caption")) for e in content.get("evidence") or []]
+    for rendered, caption in shown:
+        if rendered:
+            parts.append(f"<figure><img style='max-width:100%' src='figures/{_e(Path(rendered).name)}'>"
+                         f"<figcaption class='src'>{_e(caption)}</figcaption></figure>")
+    if content["checks"]:
+        parts.append("<h2>Checks against the standard's stated limits</h2><table><tr><th>Ref"
+                     "</th><th>Check</th><th>Result</th><th>Detail</th></tr>")
+        for check in content["checks"]:
+            result = "open" if check["status"] == MISSING else check["status"]
+            parts.append(f"<tr><td>{_e(check['ref'])}</td><td>{_e(check['label'])}</td>"
+                         f"<td>{_e(result)}</td><td>{_e(check['detail'])}</td></tr>")
+        parts.append("</table>")
+    if content["observations"]:
+        parts.append("<h2>Supporting measurements</h2><ul>")
+        for obs in content["observations"]:
+            parts.append(f"<li>{_e(obs.get('text'))} <span class='src'>[{_e(obs.get('source'))}]"
+                         "</span></li>")
+        parts.append("</ul>")
+    parts.append("<h2>Appendix A: clause-by-clause items</h2>")
     for section in content["sections"]:
-        parts.append(f"<h2>{_e(section['title'])} <span class='ref'>{_e(section['ref'])}"
-                     "</span></h2>")
+        parts.append(f"<h3>{_e(section['title'])} <span class='src'>{_e(section['ref'])}</span></h3>")
         if section["items"]:
             parts.append("<table><tr><th>Ref</th><th>Item</th><th>Value</th><th>Source</th></tr>")
             for item in section["items"]:
-                cls = "MISSING" if item["status"] == MISSING else ""
-                parts.append(f"<tr><td class='ref'>{_e(item['ref'])}</td><td>{_e(item['label'])}"
-                             f"</td><td class='{cls}'>{_e(_value_text(item))}</td>"
+                cls = " class='open'" if item["status"] == MISSING else ""
+                parts.append(f"<tr><td>{_e(item['ref'])}</td><td>{_e(item['label'])}</td>"
+                             f"<td{cls}>{_e(value_text(item))}</td>"
                              f"<td class='src'>{_e(item['source'] or '')}</td></tr>")
             parts.append("</table>")
         for table in section["tables"]:
-            parts.append(f"<h3>{_e(table['title'])} <span class='ref'>{_e(table['ref'])}</span></h3>")
-            if table["note"]:
-                parts.append(f"<p class='ref'>{_e(table['note'])}</p>")
+            parts.append(f"<p><b>{_e(table['title'])}</b> <span class='src'>{_e(table['ref'])}"
+                         f"</span></p>")
             if not table["rows"]:
-                parts.append("<p class='MISSING'>MISSING: no rows recorded.</p>")
+                parts.append("<p class='open'>No rows recorded yet (see the checklist).</p>")
                 continue
             parts.append("<table><tr>" + "".join(f"<th>{_e(c['label'])}</th>"
                                                  for c in table["columns"]) + "<th>Source</th></tr>")
             for row in table["rows"]:
                 parts.append("<tr>" + "".join(
-                    f"<td class='{'MISSING' if row['cells'][c['key']] == MISSING else ''}'>"
-                    f"{_e(row['cells'][c['key']])}</td>" for c in table["columns"])
+                    f"<td>{_e('open' if row['cells'][c['key']] == MISSING else row['cells'][c['key']])}"
+                    "</td>" for c in table["columns"])
                     + f"<td class='src'>{_e(row['source'])}</td></tr>")
             parts.append("</table>")
-    if content["checks"]:
-        parts.append("<h2>Checks against the standard's stated limits</h2><table><tr><th>Ref"
-                     "</th><th>Check</th><th>Result</th><th>Detail</th></tr>")
-        for check in content["checks"]:
-            parts.append(f"<tr><td class='ref'>{_e(check['ref'])}</td><td>{_e(check['label'])}"
-                         f"</td><td class='{_e(check['status'])}'>{_e(check['status'])}</td>"
-                         f"<td>{_e(check['detail'])}</td></tr>")
-        parts.append("</table>")
-    if content["observations"]:
-        parts.append("<h2>Supporting measurements (not standard items)</h2><ul>")
-        for obs in content["observations"]:
-            parts.append(f"<li>{_e(obs.get('text'))} <span class='src'>"
-                         f"[{_e(obs.get('source'))}]</span></li>")
-        parts.append("</ul>")
-    parts.append("<h2>Missing items</h2>")
-    parts.append("<ul>" + "".join(f"<li class='MISSING'>{_e(m)}</li>" for m in comp["missing"])
-                 + "</ul>" if comp["missing"] else "<p>None.</p>")
     parts.append("<h2>Sources for the report structure</h2><ul>" + "".join(
         f"<li>{_e(s['label'])}: {_e(s['url'])}</li>" for s in content["sources"]) + "</ul>")
     parts.append(_manifest_html(manifest, meta))
     return ("<!doctype html><html><head><meta charset='utf-8'><title>"
             f"{_e(meta.get('title') or content['title'])}</title><style>{_CSS}</style></head>"
-            f"<body>{''.join(parts)}</body></html>")
+            f"<body><main>{''.join(parts)}</main></body></html>")
 
 
 def _manifest_html(manifest: dict[str, Any], meta: dict[str, Any]) -> str:
@@ -736,8 +951,8 @@ def _manifest_html(manifest: dict[str, Any], meta: dict[str, Any]) -> str:
                    f"<td><code>{_e(i['sha256'])}</code></td></tr>" for i in manifest["inputs"])
     models = "".join(f"<tr><td>{_e(m['name'])}</td><td><code>{_e(m['sha256'])}</code></td>"
                      f"<td>{_e(m['digest_source'])}</td></tr>" for m in manifest["models"])
-    return ("<h2>Input manifest (SHA-256)</h2>"
-            f"<p class='ref'>Signed with Ed25519 key {_e(meta.get('fingerprint'))}. Verify "
+    return ("<h2>Signature and input manifest (SHA-256)</h2>"
+            f"<p class='src'>Signed with Ed25519 key {_e(meta.get('fingerprint'))}. Verify "
             "with <code>python -m core.report_signing verify report.pdf</code>.</p>"
             + (f"<table><tr><th>Role</th><th>File</th><th>Bytes</th><th>SHA-256</th></tr>"
                f"{rows}</table>" if rows else "<p>No input files.</p>")
@@ -747,146 +962,29 @@ def _manifest_html(manifest: dict[str, Any], meta: dict[str, Any]) -> str:
 
 def render_pdf(path: Path, content: dict[str, Any], manifest: dict[str, Any],
                meta: dict[str, Any]) -> Path:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.platypus import (Image as RLImage, Paragraph, SimpleDocTemplate, Spacer,
-                                    Table as RLTable, TableStyle)
+    from .standards_pdf import render_pdf as _render
 
-    styles = getSampleStyleSheet()
-    small = ParagraphStyle("small", parent=styles["BodyText"], fontSize=7.5, leading=9)
-    body = ParagraphStyle("body", parent=styles["BodyText"], fontSize=9, leading=11)
-    red = ParagraphStyle("red", parent=small, textColor=colors.HexColor("#b00020"),
-                         fontName="Helvetica-Bold")
-    state = {"MISSING": red,
-             "PASS": ParagraphStyle("pass", parent=small, textColor=colors.HexColor("#11683a"),
-                                    fontName="Helvetica-Bold"),
-             "FAIL": red}
-
-    def p(text: Any, style=small) -> Paragraph:
-        return Paragraph(html.escape(str(text if text is not None else "")).replace("\n", "<br/>"),
-                         style)
-
-    grid = TableStyle([("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#99a")),
-                       ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef1f4")),
-                       ("VALIGN", (0, 0), (-1, -1), "TOP")])
-    page = landscape(A4)
-    width = page[0] - 30 * mm
-    story: list[Any] = [Paragraph(html.escape(meta.get("title") or content["title"]),
-                                  styles["Title"]),
-                        p(content["structured_following"], styles["Heading3"]),
-                        p(f"Report {meta.get('report_id')} | generated {meta.get('generated_at')} "
-                          f"| project {meta.get('project')} | signing key {meta.get('fingerprint')}"),
-                        Spacer(1, 4), p(content["statement"], body)]
-    comp = content["completeness"]
-    story.append(p(f"Completeness: {comp['provided_items']} of {comp['required_items']} "
-                   f"required items provided; {comp['missing_items']} MISSING "
-                   f"(plus {len(comp['missing']) - comp['missing_items']} missing table "
-                   "entries).", body))
-    for section in content["sections"]:
-        story.append(p(f"{section['title']}  ({section['ref']})", styles["Heading2"]))
-        if section["items"]:
-            data = [[p("Ref"), p("Item"), p("Value"), p("Source")]]
-            for item in section["items"]:
-                value = _value_text(item)
-                data.append([p(item["ref"]), p(item["label"]),
-                             p(value, red if item["status"] == MISSING else small),
-                             p(item["source"] or "")])
-            t = RLTable(data, colWidths=[width * 0.1, width * 0.3, width * 0.3, width * 0.3],
-                        repeatRows=1)
-            t.setStyle(grid)
-            story.append(t)
-        for table in section["tables"]:
-            story.append(p(f"{table['title']}  ({table['ref']})", styles["Heading4"]))
-            if table["note"]:
-                story.append(p(table["note"]))
-            if not table["rows"]:
-                story.append(p("MISSING: no rows recorded.", red))
-                continue
-            cols = table["columns"]
-            data = [[p(c["label"]) for c in cols] + [p("Source")]]
-            for row in table["rows"]:
-                data.append([p(row["cells"][c["key"]],
-                               red if row["cells"][c["key"]] == MISSING else small)
-                             for c in cols] + [p(row["source"])])
-            t = RLTable(data, colWidths=[width / (len(cols) + 1)] * (len(cols) + 1), repeatRows=1)
-            t.setStyle(grid)
-            story.append(t)
-    if content["checks"]:
-        story.append(p("Checks against the standard's stated limits", styles["Heading2"]))
-        data = [[p("Ref"), p("Check"), p("Result"), p("Detail")]]
-        for check in content["checks"]:
-            data.append([p(check["ref"]), p(check["label"]),
-                         p(check["status"], state.get(check["status"], small)), p(check["detail"])])
-        t = RLTable(data, colWidths=[width * 0.12, width * 0.33, width * 0.1, width * 0.45],
-                    repeatRows=1)
-        t.setStyle(grid)
-        story.append(t)
-    if content["observations"]:
-        story.append(p("Supporting measurements (not standard items)", styles["Heading2"]))
-        for obs in content["observations"]:
-            story.append(p(f"- {obs.get('text')}  [{obs.get('source')}]", body))
-    for ev in content["evidence"]:
-        image = Path(str(ev.get("path", "")))
-        if image.is_file() and image.suffix.lower() in (".jpg", ".jpeg", ".png"):
-            import io
-
-            from PIL import Image as PILImage
-
-            # A downscaled copy is drawn; the original is the file in the manifest.
-            with PILImage.open(image) as im:
-                im = im.convert("RGB")
-                im.thumbnail((1400, 1400))
-                w, h = im.size
-                buffer = io.BytesIO()
-                im.save(buffer, "JPEG", quality=85)
-            buffer.seek(0)
-            scale = min(120 * mm / w, 80 * mm / h)
-            story += [Spacer(1, 4), RLImage(buffer, w * scale, h * scale),
-                      p(f"{ev.get('caption', '')} ({image.name}; downscaled for print, "
-                        "original hashed in the manifest)")]
-    story.append(p("Missing items", styles["Heading2"]))
-    for item in comp["missing"] or ["None."]:
-        story.append(p(item, red if comp["missing"] else small))
-    story.append(p("Sources for the report structure", styles["Heading2"]))
-    for source in content["sources"]:
-        story.append(p(f"{source['label']}: {source['url']}"))
-    story.append(p("Input manifest (SHA-256)", styles["Heading2"]))
-    story.append(p(f"Signed with Ed25519 key {meta.get('fingerprint')}. The manifest is also "
-                   f"embedded in this PDF as {meta.get('manifest_attachment')}. Verify with: "
-                   "python -m core.report_signing verify report.pdf"))
-    if manifest["inputs"]:
-        data = [[p("Role"), p("File"), p("Bytes"), p("SHA-256")]]
-        data += [[p(i["role"]), p(i["name"]), p(i["bytes"]), p(i["sha256"])]
-                 for i in manifest["inputs"]]
-        t = RLTable(data, colWidths=[width * 0.12, width * 0.33, width * 0.1, width * 0.45],
-                    repeatRows=1)
-        t.setStyle(grid)
-        story.append(t)
-    else:
-        story.append(p("No input files."))
-    if manifest["models"]:
-        data = [[p("Model"), p("SHA-256"), p("Digest source")]]
-        data += [[p(m["name"]), p(m["sha256"]), p(m["digest_source"])] for m in manifest["models"]]
-        t = RLTable(data, colWidths=[width * 0.3, width * 0.45, width * 0.25], repeatRows=1)
-        t.setStyle(grid)
-        story.append(t)
-    else:
-        story.append(p("No model produced any content in this report."))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(str(path), pagesize=page, leftMargin=15 * mm, rightMargin=15 * mm,
-                            topMargin=12 * mm, bottomMargin=12 * mm,
-                            title=str(meta.get("title") or content["title"]),
-                            author="OpenDroneKit", subject=content["structured_following"])
-    doc.build(story)
-    return path
+    return _render(path, content, manifest, meta)
 
 
 # ── End to end ────────────────────────────────────────────────────────────────
 
 def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", str(text)).strip("-").lower()[:40] or "report"
+
+
+def _render_figures(content: dict[str, Any], folder: Path) -> None:
+    """Draw every figure, finding image and evidence photo into ``folder``."""
+    from .standards_figures import render
+
+    for fig in content["figures"]:
+        fig["rendered"] = str(render(fig["spec"], folder))
+    for finding in content["findings"]:
+        if finding.get("figure"):
+            finding["rendered"] = str(render(finding["figure"], folder))
+    for ev in content["evidence"]:
+        if Path(str(ev.get("path", ""))).suffix.lower() in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
+            ev["rendered"] = str(render({"type": "photo", "path": ev["path"]}, folder))
 
 
 def generate_standards_report(template_key: str, facts: dict[str, Any], reports_root: str | Path,
@@ -903,9 +1001,27 @@ def generate_standards_report(template_key: str, facts: dict[str, Any], reports_
 
     template = get_template(template_key)
     content = resolve(template, facts)
+    from .standards_figures import spec_paths
+
     all_inputs = list(inputs or [])
+    seen = {str(Path(str(i.get("path"))).resolve()) for i in all_inputs}
+
+    def _add(path: Any, role: str) -> None:
+        key = str(Path(str(path)).resolve())
+        if key not in seen:
+            seen.add(key)
+            all_inputs.append({"path": str(path), "role": role})
+
+    # Every file a figure or a piece of evidence is drawn from is hashed, so nothing the
+    # report shows is outside the signed manifest.
     for ev in content["evidence"]:
-        all_inputs.append({"path": ev.get("path"), "role": "evidence image"})
+        _add(ev.get("path"), "evidence image")
+    for fig in content["figures"]:
+        for src in spec_paths(fig["spec"]):
+            _add(src, "figure source")
+    for finding in content["findings"]:
+        for src in spec_paths(finding.get("figure") or {}):
+            _add(src, "finding image")
     report_id = str(uuid.uuid4())
     generated_at = datetime.now(timezone.utc).isoformat()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -925,6 +1041,7 @@ def generate_standards_report(template_key: str, facts: dict[str, Any], reports_
             "fingerprint": key_info["fingerprint"],
             "manifest_attachment": rs.MANIFEST_ATTACHMENT}
     try:
+        _render_figures(content, out_dir / "figures")
         manifest_bytes = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
         (out_dir / "manifest.json").write_bytes(manifest_bytes)
         content_bytes = json.dumps(content, indent=2, sort_keys=True, default=str).encode("utf-8")
