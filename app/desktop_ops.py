@@ -785,8 +785,14 @@ def _is_model_output(model_used: str) -> bool:
 def findings_from_detections(project_root: str | Path, project_id: str, image_path: str,
                              *, model_used: str, model_key: str, model_sha256: str,
                              detections: list[dict[str, Any]],
-                             run_tag: str = "") -> list[dict[str, Any]]:
-    """Write one reviewable finding per model detection; refuse unattributable ones."""
+                             run_tag: str = "", tags: list[str] | None = None,
+                             note: str = "") -> list[dict[str, Any]]:
+    """Write one reviewable finding per model detection; refuse unattributable ones.
+
+    ``tags`` are added after ``model-prelabel`` (``vegetation-candidate``, ``suggestion``);
+    ``note`` is appended to the standard pre-label note, for the caveat a reviewer must
+    read with this kind of finding ("plan distance only; ...").
+    """
     from core.annotations import create_annotation
 
     if not _is_model_output(model_used) or not model_key or not model_sha256:
@@ -803,15 +809,17 @@ def findings_from_detections(project_root: str | Path, project_id: str, image_pa
             continue
         geometry = {"type": "Polygon", "coordinates": [[
             [x1, y1], [x2, y1], [x2, y2], [x1, y2], [x1, y1]]]}
-        tags = ["model-prelabel"] + ([run_tag] if run_tag else [])
+        finding_tags = (["model-prelabel"] + ([run_tag] if run_tag else [])
+                        + [str(t) for t in (tags or []) if str(t)])
+        base_note = (f"Machine pre-label from {model_used}, awaiting review. Severity is a "
+                     "review default, not an assessment.")
         annotation = create_annotation(
             Path(project_root), str(project_id), "image", str(image_path), "rectangle",
             geometry, str(hit["label"]), "info", "in_review",
-            note=(f"Machine pre-label from {model_used}, awaiting review. Severity is a "
-                  "review default, not an assessment."),
+            note=(f"{base_note} {note}".strip() if note else base_note),
             include_in_report=False, created_by="model",
             model_used=model_used, model_key=model_key, model_sha256=model_sha256,
-            confidence=float(confidence), tags=tags,
+            confidence=float(confidence), tags=finding_tags,
         )
         created.append(annotation.to_dict())
     return created

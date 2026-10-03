@@ -280,6 +280,19 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
                     "object of the kind the model was trained on.",
         }, None)
 
+    if kind == "onnx_tree_crowns":
+        from .tree_crowns import TreeCrownModel, detect_in_image
+
+        # One photo is a handful of 400 px tiles, so the CPU is allowed here; the
+        # orthomosaic run (Api.detect_tree_crowns) keeps the CPU guard.
+        crowns = TreeCrownModel(model_key, allow_cpu=True)
+        output = detect_in_image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB), crowns)
+        overlay = image_bgr.copy()
+        for hit in output["detections"]:
+            x1, y1, x2, y2 = hit["bbox_xyxy"]
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 200, 0), 2)
+        return ModelRunResult(model_key, kind, used, crowns.model_sha256, scope, output, overlay)
+
     raise ModelRunRefused(
         f"{model_key} is a {kind} model, which runs over a georeferenced orthomosaic "
         "rather than a single photograph; use the land-cover run for it."

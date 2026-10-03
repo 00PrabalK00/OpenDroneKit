@@ -6890,6 +6890,101 @@ class Api:
 
         return ok(job_id=self._jobs.submit("landcover", work))
 
+    def _tree_crowns_dir(self) -> Path:
+        return self._session.project_root() / "analysis" / "tree_crowns"
+
+    @guard
+    def detect_tree_crowns(self, orthomosaic_path: str = "", allow_cpu: bool = False) -> dict[str, Any]:
+        """Tree-crown boxes over a georeferenced orthomosaic, as a background job.
+
+        The run_landcover pattern: find the orthomosaic layer, refuse on the CPU unless
+        asked, then register the crowns as a vector layer. A missing or mismatched model
+        is refused here, before a job is queued. Per-crown height is added only when the
+        project has its own DSM and DTM, and is labelled as measured from the DSM.
+        """
+        from core.models import verify_model_identity
+        from core.tree_crowns import MODEL_KEY
+
+        source = orthomosaic_path or ""
+        if not source:
+            for layer in self._session.layers.values():
+                candidate = str(getattr(layer, "path", "") or "")
+                if "orthomosaic" in candidate.lower() and candidate.lower().endswith((".tif", ".tiff")):
+                    source = candidate
+                    break
+        if not source:
+            return fail("No orthomosaic: run a reconstruction or add an orthomosaic layer first.")
+        if not Path(source).is_file():
+            return fail(f"Orthomosaic not found: {source}")
+        check = verify_model_identity(MODEL_KEY)
+        if not check.get("verified"):
+            return fail(f"{MODEL_KEY} refused: {check.get('detail') or check.get('status')}")
+        output = self._tree_crowns_dir()
+        dsm = self._product_path("dsm") or None
+        dtm = self._product_path("dtm") or None
+        session = self._session
+
+        def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
+            from core.tree_crowns import detect_tree_crowns
+
+            progress(5, "Running tree-crown model")
+            result = detect_tree_crowns(source, output, allow_cpu=bool(allow_cpu),
+                                        dsm_path=dsm, dtm_path=dtm, progress=progress,
+                                        should_cancel=should_cancel)
+            crowns = result.get("crowns_wgs84_path")
+            if crowns and Path(crowns).exists():
+                session.register_vector_layer(crowns, name="Tree crowns (model)")
+            session.audit("tree_crowns_complete", {"model_key": result["model_key"],
+                                                   "count": result["crown_count"]})
+            return result
+
+        return ok(job_id=self._jobs.submit("tree_crowns", work))
+
+    @guard
+    def trees_near_line(self, line_lonlat: list[list[float]], buffer_m: float,
+                        send_to_review: bool = False) -> dict[str, Any]:
+        """Crowns from the last tree-crown run within a plan distance of a drawn line.
+
+        Plan (2-D) distance from each crown box to the line, in the orthomosaic's metric
+        CRS. It is not a clearance: no conductor sag, crown height or 3-D geometry is
+        considered. With ``send_to_review`` the hits become in-review findings tagged
+        ``vegetation-candidate``, out of the report until a person confirms them.
+        """
+        from app import desktop_ops
+        from core.tree_crowns import TreeCrownsRefused, trees_near_line
+
+        folder = self._tree_crowns_dir()
+        crowns_path = folder / "tree_crowns.geojson"
+        summary_path = folder / "tree_crowns_summary.json"
+        if not crowns_path.is_file() or not summary_path.is_file():
+            return fail("No tree-crown run in this project yet: run Tree Crowns first.")
+        try:
+            result = trees_near_line(crowns_path, line_lonlat, float(buffer_m))
+        except (TreeCrownsRefused, ValueError) as exc:
+            return fail(str(exc))
+        created: list[dict[str, Any]] = []
+        if send_to_review and result["crowns"]:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            detections = [{
+                "label": "Tree",
+                "confidence": hit["score"],
+                "bbox_xyxy": hit["bbox_px_xyxy"],
+            } for hit in result["crowns"]]
+            try:
+                created = desktop_ops.findings_from_detections(
+                    self._session.project_root(), str(self._session.project_id()),
+                    str(summary["orthomosaic"]), model_used=str(summary["model_used"]),
+                    model_key=str(summary["model_key"]),
+                    model_sha256=str(summary["model_sha256"]), detections=detections,
+                    tags=["vegetation-candidate"],
+                    note=(f"Within {float(buffer_m):g} m of the drawn line: plan distance "
+                          "only; 3-D clearance not computed."))
+            except ValueError as exc:
+                return fail(str(exc))
+            self._session.audit("tree_crowns_to_review", {"count": len(created)})
+        return ok(**result, findings_created=len(created),
+                  finding_ids=[f.get("id") for f in created])
+
     def _resolve_image(self, image_path: str) -> Path | None:
         """An absolute path, or a name inside the active dataset."""
         raw = str(image_path or "").strip()
