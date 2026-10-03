@@ -413,7 +413,16 @@ class Project:
         path = Path(image).resolve()
         if not path.is_file():
             raise Refused(f"No such image: {image}")
-        result = detect_cracks(load_image(path), min_area_px=min_area_px, use_model=use_model)
+        pixels = load_image(path)
+        result = detect_cracks(pixels, min_area_px=min_area_px, use_model=use_model)
+        fallback_reason = ""
+        if result.model_used == "onnx_fallback_heuristic":
+            # The model is installed but its forward pass failed. Try once more (a
+            # transient out-of-memory on a busy machine is the usual cause); if it
+            # still fails, keep the heuristic mask, labelled as such, with the cause.
+            result = detect_cracks(pixels, min_area_px=min_area_px, use_model=use_model)
+            if result.model_used == "onnx_fallback_heuristic":
+                fallback_reason = _crack_model_failure(pixels)
         source = "model" if str(result.model_used).startswith("onnx:") else "heuristic"
         # One folder per source: a heuristic run never overwrites a model's mask.
         out = self.root / "analysis" / "cracks" / path.stem / source
@@ -428,7 +437,8 @@ class Project:
         return CrackDetection(path, source, result.model_used, result.model_key,
                               result.model_sha256, int(result.crack_pixels),
                               float(result.crack_ratio), float(result.estimated_length_px),
-                              float(result.estimated_max_width_px), mask_path, overlay_path)
+                              float(result.estimated_max_width_px), mask_path, overlay_path,
+                              fallback_reason)
 
     def run_model(self, model_key: str, image: str | os.PathLike[str]) -> Detections:
         """Run any installed registry model on one image (refused if not installed)."""
@@ -574,3 +584,22 @@ class Project:
                       Path(raw["docx_path"]) if raw.get("docx_path") else None,
                       Path(raw["output_dir"]), int(raw.get("findings") or 0),
                       tuple(raw.get("warnings") or ()), raw)
+
+
+def _crack_model_failure(pixels: Any) -> str:
+    """Why the installed crack model could not produce a mask, in words."""
+    from core.detection import _run_onnx_segmentation
+    from core.models import get_model_spec, model_status
+
+    status = model_status("crack_segmentation")
+    spec = get_model_spec("crack_segmentation")
+    if not status.get("exists") or spec is None:
+        return "The crack_segmentation model is not installed."
+    try:
+        _run_onnx_segmentation(
+            pixels, Path(str(status["path"])),
+            threshold=float(getattr(spec, "score_threshold", 0.5) or 0.5),
+            input_size=int(getattr(spec, "input_size", 512) or 512), raise_errors=True)
+    except Exception as exc:  # noqa: BLE001 - the cause is reported, not hidden
+        return f"The crack_segmentation model failed: {type(exc).__name__}: {exc}"
+    return "The crack_segmentation model failed twice and then ran; the heuristic mask was kept."

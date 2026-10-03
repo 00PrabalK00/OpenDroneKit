@@ -157,9 +157,29 @@ class TestDetection:
         import hashlib
 
         found = project.detect_cracks(RDD_IMAGE)
-        assert found.source == "model" and found.model_used.startswith("onnx:")
+        assert found.source == "model" and found.model_used.startswith("onnx:"), found.fallback_reason
         digest = hashlib.sha256(Path(status["path"]).read_bytes()).hexdigest()
         assert found.model_sha256 == digest
+
+    def test_a_failing_model_is_retried_then_explained(self, project, photo_dir, monkeypatch):
+        import core.detection as det
+        import dataclasses
+
+        calls = []
+        real = det.detect_cracks
+
+        def failing(image, **kwargs):
+            calls.append(kwargs.get("use_model"))
+            res = real(image, min_area_px=kwargs.get("min_area_px", 30), use_model=False)
+            return dataclasses.replace(res, model_used="onnx_fallback_heuristic")
+
+        monkeypatch.setattr(det, "detect_cracks", failing)
+        monkeypatch.setattr("opendronekit.workspace._crack_model_failure",
+                            lambda pixels: "The crack_segmentation model failed: MemoryError: x")
+        found = project.detect_cracks(photo_dir / "wall.png")
+        assert calls == [True, True]
+        assert found.source == "heuristic" and found.model_sha256 == ""
+        assert "MemoryError" in found.fallback_reason
 
     def test_a_missing_image_is_refused(self, project, tmp_path):
         with pytest.raises(odk.Refused, match="No such image"):

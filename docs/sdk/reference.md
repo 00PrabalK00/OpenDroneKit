@@ -44,7 +44,7 @@ The plugin API is :mod:`opendronekit.plugins` (contract level ``PLUGIN_API_LEVEL
 
 ### `opendronekit.CrackDetection`
 
-*dataclass* `opendronekit.CrackDetection(image: Path, source: str, model_used: str, model_key: str, model_sha256: str, crack_pixels: int, crack_ratio: float, length_px: float, max_width_px: float, mask_path: Path, overlay_path: Path)`
+*dataclass* `opendronekit.CrackDetection(image: Path, source: str, model_used: str, model_key: str, model_sha256: str, crack_pixels: int, crack_ratio: float, length_px: float, max_width_px: float, mask_path: Path, overlay_path: Path, fallback_reason: str = '')`
 
 A crack mask over one image, and what produced it.
 
@@ -65,6 +65,7 @@ not a model result, and is never labelled as one.
 | `max_width_px` | `float` | `required` |
 | `mask_path` | `Path` | `required` |
 | `overlay_path` | `Path` | `required` |
+| `fallback_reason` | `str` | `''` |
 
 ### `opendronekit.Dataset`
 

@@ -90,6 +90,8 @@ class CrackDetection:
     max_width_px: float
     mask_path: Path
     overlay_path: Path
+    #: Set when the model is installed but failed and the heuristic ran instead.
+    fallback_reason: str = ""
 
 
 @dataclass(frozen=True)
