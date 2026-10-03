@@ -28,6 +28,38 @@ at sequence 0, which MAVLink reserves for home. ArduPilot silently overwrote it 
 aircraft would never have taken off — while every mock-based test passed, because a mock
 stores what it is given and only a real autopilot has an opinion about sequence 0.
 
+## The UI, clicked, against SITL (from Windows)
+
+`tests/sitl/test_ui_flight.py` flies the Aukerman Park grid by clicking each UI -- the
+cockpit (`workspace.html`) and the classic window (`index.html`) -- in headless
+Edge/Chromium at 1920x1080, against the production Api: plan, connect over pymavlink,
+preflight, upload, start, pause, resume, RTL, landed. Each step is checked on
+ArduPilot's own SERIAL1, not through the app: the mission is read back and compared to
+the plan, the hold is measured, and the landing is confirmed at home. The flight is
+recorded to `app-flight-<ui>.mp4` with a contact sheet and a step log.
+
+It needs a browser, which the SITL image does not have, so it runs on the desktop with
+the simulator in Docker. `ODK_SITL_DOCKER_IMAGE` makes the launcher start the image and
+publish the autopilot's SERIAL0 (the app) and SERIAL1 (the observer) on loopback TCP;
+there is no MAVProxy in between, so the app talks to ArduPilot as it would over a radio.
+
+```bat
+set ODK_SITL_DOCKER_IMAGE=opendronekit-sitl:local
+set ODK_SITL_HOME=41.3041,-81.7521,300,0
+set ODK_SITL_SPEEDUP=1
+set ODK_UI_FLIGHT_OUT=D:\recordings
+python -m pytest -m sitl tests/sitl/test_ui_flight.py
+```
+
+`ODK_SITL_SPEEDUP=1` records the flight at the speed it happened; a higher speedup runs
+the same checks faster. Inside the container the test skips, saying there is no browser.
+
+In the classic window Start, Pause, Resume and RTH are toolbar buttons beside Upload (and
+also the desktop shell's native Fly menu); before this test they were only in the native
+menu, so the classic page served to a browser could upload a mission and never start it.
+`ODK_UI_RECORD_FPS` (default 4) caps the screenshot rate; the browser's own log and its
+memory use are kept beside the video.
+
 ## Fixed-wing: ArduPlane
 
 Fixed-wing missions are planned with `vehicle_class="fixed_wing"` (chosen automatically
@@ -99,6 +131,8 @@ Useful optional settings are:
 | `ODK_SITL_INSTANCE` | `0` | `sim_vehicle.py` instance number |
 | `ODK_SITL_NO_REBUILD` | unset | Set to `1` to pass `--no-rebuild` |
 | `ODK_SITL_EXTRA_ARGS` | unset | Additional `sim_vehicle.py` arguments |
+| `ODK_SITL_HOME` | Canberra (ArduPilot's) | `lat,lon[,alt_m[,heading]]` home for the simulator; the tests' geometry follows it |
+| `ODK_SITL_DOCKER_IMAGE` | unset | Run SITL in this image from a host without ArduPilot (see below) |
 
 Check discovery without starting anything:
 
