@@ -482,8 +482,20 @@ function geometriesOf(geojson) {
  *
  * `ask` is tryCall: every read may be refused, and a refusal leaves that item off the map
  * rather than stopping the rest.
+ *
+ * One draw at a time per map: a draw clears the project and then awaits each layer, so
+ * two overlapping draws (the map's first draw and a screen's redraw) would both add the
+ * same source ids. A second call waits for the first to finish, then draws.
  */
-export async function showProject(map, ask) {
+export function showProject(map, ask) {
+  if (!map) return Promise.resolve(null);
+  const previous = map._odkShowing || Promise.resolve();
+  const next = previous.catch(() => null).then(() => drawProject(map, ask));
+  map._odkShowing = next;
+  return next;
+}
+
+async function drawProject(map, ask) {
   if (!map || !mapReady(map)) return null;
   const [state, mission, markers, listed] = await Promise.all([
     ask("get_state"), ask("mission_geojson"), ask("list_site_markers"), ask("list_layers"),
