@@ -295,6 +295,34 @@ class TestLauncher:
         assert out == [str(tmp_path / "OpenDroneKit" / "data"),
                        str(tmp_path / "OpenDroneKit" / "models"), "1"]
 
+    def test_launcher_never_writes_bytecode_into_the_install(self, tmp_path):
+        env = {"LOCALAPPDATA": str(tmp_path), "SYSTEMROOT": "C:\\Windows", "PATH": ""}
+        code = ("import sys; sys.path.insert(0, r'%s'); import launch; "
+                "launch._defaults = lambda: None; launch.ODK = __import__('pathlib').Path(r'%s'); "
+                "sys.modules['main'] = type(sys)('main'); sys.modules['main'].main = lambda a: 0; "
+                "launch.main([]); print(sys.dont_write_bytecode)" % (INSTALLER, tmp_path))
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                             text=True, check=True).stdout.split()
+        assert out == ["True"]
+
+
+class TestBytecode:
+    def test_site_packages_are_recompiled_as_unchecked_hash(self, tmp_path):
+        # Timestamp .pyc files were rewritten on first import after Inno Setup changed
+        # source mtimes; unchecked-hash ones never are.
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "mod.py").write_text("X = 1\n")
+        (pkg / "py2_only.py").write_text("print 'python 2'\n")
+        out = subprocess.run([sys.executable, "-c", build.BYTECODE_SCRIPT, str(tmp_path)],
+                             capture_output=True, text=True, check=True).stdout
+        assert "bytecode: 2 compiled, 1 skipped" in out
+        tag = sys.implementation.cache_tag
+        for name in ("__init__", "mod"):
+            header = (pkg / "__pycache__" / f"{name}.{tag}.pyc").read_bytes()[4:8]
+            assert int.from_bytes(header, "little") == 0b01, "hash-based, source not checked"
+
 
 class TestSelfTest:
     def test_runs_headless_in_this_environment(self, tmp_path, monkeypatch):

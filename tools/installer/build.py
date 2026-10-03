@@ -65,6 +65,25 @@ def log(message: str) -> None:
     print(f"[build] {message}", flush=True)
 
 
+# Recompile every .py under argv[1] as unchecked-hash .pyc, replacing pip's
+# timestamp-based ones. A file that does not compile (a template or a Python 2 test
+# file some wheels ship) is counted and skipped -- pip skipped it too, and it is never
+# imported. Prints "bytecode: <compiled> compiled, <failed> skipped".
+BYTECODE_SCRIPT = r"""
+import py_compile, sys
+from pathlib import Path
+ok = bad = 0
+for src in sorted(Path(sys.argv[1]).rglob("*.py")):
+    try:
+        py_compile.compile(str(src), doraise=True,
+                           invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        ok += 1
+    except (py_compile.PyCompileError, SyntaxError, ValueError, OSError):
+        bad += 1
+print(f"bytecode: {ok} compiled, {bad} skipped")
+"""
+
+
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     log("$ " + " ".join(str(c) for c in cmd))
     proc = subprocess.run([str(c) for c in cmd], **kwargs)
@@ -380,6 +399,12 @@ def main(argv: list[str] | None = None) -> int:
     # stays exactly what the manifest lists.
     run([runtime / "python.exe", "-m", "compileall", "-q", "-j", "0",
          "--invalidation-mode", "unchecked-hash", stage / "odk", stage / "launch.py"])
+    # pip wrote timestamp-checked .pyc files into site-packages. Inno Setup does not
+    # restore every source file's mtime exactly (identical empty __init__.py files are
+    # stored once), so on first import Python found them "stale" and rewrote 9 of them,
+    # and the self-test reported the install as modified. Recompile them all as
+    # unchecked-hash: Python never rewrites those, and the manifest still pins the sources.
+    run([runtime / "python.exe", "-c", BYTECODE_SCRIPT, runtime / "Lib" / "site-packages"])
     run([runtime / "python.exe", "-c",
          "import sys, numpy, onnxruntime, rasterio, webview; print(sys.version); "
          "print('runtime imports ok')"])

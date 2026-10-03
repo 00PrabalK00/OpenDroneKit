@@ -2064,6 +2064,7 @@ PLATFORM = [
       "or secrets in the payload, and ships a manifest the installed app re-verifies.",
       "verified", ["tests/test_installer_pipeline.py::TestManifest",
                    "tests/test_installer_pipeline.py::TestPayloadShape",
+                   "tests/test_installer_pipeline.py::TestBytecode",
                    "tests/test_installer_pipeline.py::TestRuntimeLayout",
                    "tests/test_installer_pipeline.py::TestInnoScript",
                    "tests/test_installer_pipeline.py::TestLauncher",

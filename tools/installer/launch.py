@@ -32,6 +32,10 @@ def _defaults() -> None:
 
 
 def main(argv: list[str]) -> int:
+    # The install folder is read-only in spirit (and in fact under Program Files): every
+    # .pyc was compiled at build time and is listed in install_manifest.json, so the
+    # runtime must not write new ones beside the sources.
+    sys.dont_write_bytecode = True
     _defaults()
     if str(ODK) not in sys.path:
         sys.path.insert(0, str(ODK))
