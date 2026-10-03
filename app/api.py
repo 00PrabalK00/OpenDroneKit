@@ -6846,6 +6846,169 @@ class Api:
                   overlay_data_uri=self._data_uri(result.overlay) if result.overlay is not None else "")
 
     @guard
+    def segment_prompt(self, source_path: str, points: list[list[float]] | None = None,
+                       box: list[float] | None = None, model_key: str = "") -> dict[str, Any]:
+        """Click or box to mask: the 'Segment' tool's one call per prompt change.
+
+        points are [x, y, label] in the source's pixels (label 1 include, 0 exclude); box
+        is [x0, y0, x1, y1]. For an orthomosaic the coordinates are the full raster's
+        column and row; a window around the prompt is read and the polygon comes back in
+        the raster's frame, plus its CRS and lon/lat when the raster has a CRS.
+
+        model_key '' takes the default: SAM 2.1-T with a CUDA GPU, EfficientSAM-Ti
+        otherwise. A model that is missing or fails its sha256 check is refused; the
+        other one is never substituted. The reply names the model that ran.
+        """
+        from core.interactive_segmentation import mask_png_data_uri, segment_source
+        from core.model_runner import ModelRunRefused
+
+        path = self._resolve_image(source_path)
+        if path is None:
+            return fail(f"No such image: {source_path}")
+        try:
+            result = segment_source(path, points or [], box, model_key)
+        except ModelRunRefused as exc:
+            return fail(str(exc))
+        except (ValueError, FileNotFoundError) as exc:
+            return fail(str(exc))
+        mask = result.pop("_mask")
+        memory = getattr(self, "_segment_memory", None)
+        if memory is None:
+            memory = self._segment_memory = {}
+        memory[str(path)] = {k: result[k] for k in ("model_key", "model_sha256", "model_used",
+                                                     "score")}
+        self._session.audit("segment_prompt", {"model_key": result["model_key"],
+                                                "model_sha256": result["model_sha256"],
+                                                "image": str(path)})
+        return ok(**result, mask_png_data_uri=mask_png_data_uri(mask))
+
+    @guard
+    def save_segmented_finding(self, source_path: str, polygon_px: list[list[float]],
+                               label: str, severity: str = "info", measure: bool = True,
+                               model_key: str = "", model_sha256: str = "",
+                               score: float | None = None, note: str = "") -> dict[str, Any]:
+        """Save a model-assisted polygon as a finding, then measure it.
+
+        The person drew it with the model's help and chose to keep it, so the finding is
+        created_by 'user', tagged 'sam-assisted', and records the model key, its sha256
+        and its predicted-IoU score. The provenance comes from the arguments or from the
+        last segment_prompt on this source; with neither, it is refused.
+
+        measure=True on a raster takes the same path as measure_on_raster(kind='area')
+        and _record_measurement: area in m2 and perimeter in m, or the existing
+        NotGeoreferenced / NotProjected refusal (and then nothing is saved). On a plain
+        photo the area is in pixels and says so; it is not added to the measurement
+        history, which holds ground units.
+        """
+        from core.annotations import create_annotation
+        from core.interactive_segmentation import (
+            is_raster_path,
+            polygon_for_raster_measurement,
+            shoelace,
+        )
+
+        root = self._session.project_root()
+        if root is None:
+            return fail("Open a project first.")
+        path = self._resolve_image(source_path)
+        if path is None:
+            return fail(f"No such image: {source_path}")
+        ring = [[float(p[0]), float(p[1])] for p in (polygon_px or []) if len(p) >= 2]
+        if len(ring) > 1 and ring[0] == ring[-1]:
+            ring = ring[:-1]
+        if len(ring) < 3:
+            return fail("A segmented finding needs a polygon of at least three vertices.")
+        if not str(label or "").strip():
+            return fail("Name the finding: a label is required.")
+        remembered = (getattr(self, "_segment_memory", None) or {}).get(str(path), {})
+        same_model = not model_key or model_key == remembered.get("model_key")
+        key = str(model_key or remembered.get("model_key") or "")
+        digest = str(model_sha256 or (remembered.get("model_sha256") if same_model else "") or "")
+        if not key or not digest:
+            return fail("This saves a model-assisted polygon, and no model is on record for "
+                        "it: run segment_prompt on this source first, or pass model_key and "
+                        "model_sha256.")
+        used = str(remembered.get("model_used") or "") if same_model else ""
+        confidence = score if score is not None else (
+            remembered.get("score") if same_model else None)
+
+        measurement: dict[str, Any] | None = None
+        record: dict[str, Any] | None = None
+        if measure and is_raster_path(path):
+            pixels = polygon_for_raster_measurement(ring)
+            area = self.measure_on_raster(str(path), pixels, "area")
+            if not area.get("ok"):
+                return area
+            perimeter = self.measure_on_raster(str(path), pixels, "perimeter")
+            if not perimeter.get("ok"):
+                return perimeter
+            area_m = area["measurement"]
+            perim_m = perimeter["measurement"]
+            area_value = self._planar_value_in_metres(str(path), "area", area_m)
+            perim_value = self._planar_value_in_metres(str(path), "perimeter", perim_m)
+            if area_value is None or perim_value is None:
+                return fail(f"{path.name} is in {area_m.get('unit')}, a unit with no known "
+                            "length in metres. Reproject the raster to a CRS in metres first.")
+            record = {"area": area_m, "perimeter": perim_m,
+                      "area_m2": area_value, "perimeter_m": perim_value}
+            measurement = {"kind": "area", "value": round(area_value, 4), "unit": "m2",
+                           "perimeter_m": round(perim_value, 4),
+                           "area_px": shoelace(ring), "crs_epsg": area_m.get("epsg"),
+                           "caveats": area_m.get("caveats") or []}
+        elif measure:
+            measurement = {"kind": "area", "value": shoelace(ring), "unit": "px2",
+                           "units_label": "square pixels: this photo has no ground scale",
+                           "area_px": shoelace(ring)}
+
+        closed = ring + [ring[0]]
+        geometry = {"type": "Polygon", "coordinates": [closed], "frame": "pixel",
+                    "pixel_convention": "edges: pixel (c, r) covers [c, c+1] x [r, r+1]"}
+        note_text = str(note or "").strip()
+        provenance = (f"Outline suggested by {key} (predicted IoU "
+                      f"{float(confidence):.3f}, uncalibrated) and accepted by the user."
+                      if confidence is not None else
+                      f"Outline suggested by {key} and accepted by the user.")
+        try:
+            annotation = create_annotation(
+                Path(root), str(self._session.project_id()), "image", str(path), "polygon",
+                geometry, str(label).strip(), str(severity or "info").lower(), "open",
+                note=(note_text + "\n" if note_text else "") + provenance,
+                created_by="user", model_used=used or f"onnx:{key}", model_key=key,
+                model_sha256=digest,
+                confidence=None if confidence is None else float(confidence),
+                tags=["sam-assisted"],
+            )
+        except ValueError as exc:
+            return fail(str(exc))
+
+        measurement_ids: dict[str, str] = {}
+        if record is not None:
+            import rasterio
+            from rasterio.warp import transform as rio_transform
+
+            world = record["area"].get("vertices_world") or []
+            lonlat: list[list[float]] = []
+            if world:
+                with rasterio.open(path) as src:
+                    crs = src.crs
+                lon, lat = rio_transform(crs, "EPSG:4326", [p[0] for p in world],
+                                         [p[1] for p in world])
+                lonlat = [[float(a), float(b)] for a, b in zip(lon, lat)]
+            details = {"annotation_id": annotation.id, "model_key": key,
+                       "model_sha256": digest, "tags": ["sam-assisted"]}
+            measurement_ids["area"] = self._record_measurement(
+                "area", float(record["area_m2"]), "m2", lonlat, str(path),
+                {"measurement": record["area"], **details}, label=f"{label} area")
+            measurement_ids["perimeter"] = self._record_measurement(
+                "perimeter", float(record["perimeter_m"]), "m", lonlat, str(path),
+                {"measurement": record["perimeter"], **details}, label=f"{label} perimeter")
+        self._session.audit("segmented_finding_saved", {
+            "id": annotation.id, "label": annotation.label, "model_key": key,
+            "model_sha256": digest, "image": path.name})
+        return ok(finding=annotation.to_dict(), measurement=measurement,
+                  measurement_ids=measurement_ids)
+
+    @guard
     def grade_corrosion(self, image_path: str) -> dict[str, Any]:
         """Grade corrosion severity per pixel, or refuse with the reason.
 
