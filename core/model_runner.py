@@ -214,6 +214,13 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
     passes the registry's measured pre-label threshold). Boxes for labels the registry
     marks as non-defects (CODEBRIM "Background") are returned apart from the detections.
     """
+    declared = get_model_spec(model_key)
+    if declared is not None and declared.kind == "onnx_prompt_segmentation":
+        # A promptable segmenter answers a click or a box, not an image; running it with
+        # no prompt would mean inventing one.
+        raise ModelRunRefused(
+            f"{model_key} is an interactive segmentation model and needs a prompt (a click "
+            "or a box); use Segment (Api.segment_prompt).")
     spec, path, row = _installed(model_key)
     kind = spec.kind
     scope = str(row.get("description") or spec.description or "")
