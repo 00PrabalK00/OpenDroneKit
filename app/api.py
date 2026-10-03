@@ -6317,6 +6317,7 @@ class Api:
         def work(progress: Callable[[int, str], None], should_cancel: Callable[[], bool], **_: Any) -> dict[str, Any]:
             from core.reconstruction_colmap import build_reconstructor
 
+            started_wall = time.time()
             reconstructor = build_reconstructor(
                 opts.get("engine", "auto"),
                 profile=opts.get("profile", "standard"),
@@ -6359,6 +6360,22 @@ class Api:
             except Exception as exc:  # noqa: BLE001 - never lose a finished reconstruction
                 payload["provenance_error"] = f"{type(exc).__name__}: {exc}"
             session.audit("reconstruction_complete", {"engine": payload.get("engine"), "output": str(output)})
+            # How long it took and with what settings, kept beside the products: the job
+            # record holding the runtime lives in memory and was gone after a restart, so
+            # Home could not say what a finished reconstruction cost (app/home_data.py).
+            try:
+                finished_wall = time.time()
+                (output / "run_record.json").write_text(json.dumps(json_safe({
+                    "started_utc": datetime.fromtimestamp(started_wall, timezone.utc).isoformat(),
+                    "finished_utc": datetime.fromtimestamp(finished_wall, timezone.utc).isoformat(),
+                    "elapsed_s": round(finished_wall - started_wall, 1),
+                    "engine": payload.get("engine") or opts.get("engine", "auto"),
+                    "profile": opts.get("profile", "standard"),
+                    "dense_requested": opts.get("dense"),
+                    "result": {k: v for k, v in payload.items() if not isinstance(v, (dict, list))},
+                }), indent=2), encoding="utf-8")
+            except Exception:  # noqa: BLE001 - never lose a finished reconstruction over its record
+                pass
             return payload
 
         job_id = self._jobs.submit("reconstruction", work)
@@ -6707,6 +6724,70 @@ class Api:
         else:
             subprocess.run(["xdg-open", str(target)], check=False)
         return ok(opened=str(target))
+
+    # -- home (U4): what the Home workspace reads --------------------------
+    # Each of these answers a figure the Home artboard shows and no method could say
+    # before: when the survey was flown, what the project occupies on disk, which files
+    # were exported, what the reconstruction measured. app/home_data.py reads them from
+    # the files themselves; a figure no file holds comes back null ("not reported").
+
+    @guard
+    def home_projects(self) -> dict[str, Any]:
+        """Every project on this machine with its photographs, survey date and status."""
+        from app import home_data
+
+        active = self._session.store.get_active_project_id()
+        projects = home_data.projects_overview(self._session.store, active)
+        return ok(projects=projects, count=len(projects), active_id=active)
+
+    @guard
+    def dataset_summary(self) -> dict[str, Any]:
+        """The open project's datasets, and the selected one's photographs and capture window."""
+        from app import home_data
+
+        return ok(**home_data.dataset_summary(
+            self._session.store, self._session.project_id(), self._session.project_root(),
+            self._session.active_dataset_dir or ""))
+
+    @guard
+    def reconstruction_summary(self) -> dict[str, Any]:
+        """Every reconstruction in the open project, with the figures its files record."""
+        from app import home_data
+
+        return ok(**home_data.reconstruction_summary(self._session.project_root(), self._jobs.list()))
+
+    @guard
+    def project_storage(self) -> dict[str, Any]:
+        """Bytes the open project occupies on disk, its datasets kept elsewhere, and free space."""
+        from app import home_data
+
+        folders = [row.get("path") for row in self._session.list_datasets()]
+        if self._session.active_dataset_dir:
+            folders.append(self._session.active_dataset_dir)
+        return ok(**home_data.project_storage(self._session.project_root(), folders))
+
+    @guard
+    def list_exports(self, limit: int = 200) -> dict[str, Any]:
+        """Files exported from the open project (missions, flight logs, fleet, audit, findings)."""
+        from app import home_data
+
+        events = self._session.store.list_audit_events(self._session.project_id(), 1000)
+        return ok(**home_data.list_exports(self._session.project_root(), events, int(limit)))
+
+    @guard
+    def report_files(self, report_id: str = "") -> dict[str, Any]:
+        """A generated report's files: size of each format and the PDF's page count."""
+        from app import home_data, report_builder
+
+        reports = report_builder.list_reports(self._session)
+        if not reports:
+            return fail("No report has been generated in this project yet.")
+        wanted = str(report_id or "").strip()
+        report = next((r for r in reports if r["id"] == wanted or r["id"].startswith(wanted)),
+                      None) if wanted else reports[0]
+        if report is None:
+            return fail(f"No report {report_id!r} in this project.")
+        return ok(**home_data.report_files(report))
 
 
 
