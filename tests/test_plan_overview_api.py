@@ -179,3 +179,27 @@ def test_overview_without_waypoint_features_reads_the_waypoint_list() -> None:
     view = overview(plan)
     assert view["waypoint_count"] == 3 and view["line_count"] == 1
     assert view["footprints"]["features"] == []  # no camera given: no footprint invented
+
+
+def test_a_compass_line_bearing_is_flown_as_drawn(api) -> None:
+    assert api.set_aoi(AOI)["ok"]
+    for bearing in (0.0, 30.0, 120.0):
+        assert api.plan_mission({"template": "grid", "line_bearing_deg": bearing})["ok"]
+        reported = api.mission_overview()["plan"]["line_bearing_deg"]
+        assert min(abs(reported - bearing), 180 - abs(reported - bearing)) < 2.0, (bearing, reported)
+
+
+def test_the_area_read_as_a_building_footprint(api) -> None:
+    assert api.facade_footprint()["ok"] is False  # no outline yet
+    # An L-shaped building, ~40 x 30 m, with one reflex corner.
+    lon0, lat0 = -81.750, 41.303
+    dx, dy = 1 / (111_320 * math.cos(math.radians(lat0))), 1 / 111_320
+    ell = [[0, 0], [40, 0], [40, 15], [20, 15], [20, 30], [0, 30]]
+    assert api.set_aoi([[lon0 + x * dx, lat0 + y * dy] for x, y in ell])["ok"]
+    result = api.facade_footprint(10.0, 1.5)
+    assert result["ok"], result
+    assert result["footprint"]["reflex_count"] == 1
+    assert result["footprint"]["area_m2"] == pytest.approx(40 * 15 + 20 * 15, rel=0.01)
+    assert result["segment_count"] == len(result["segments"]) >= 3
+    assert "occluded" in result["occlusion"]
+    assert all(len(s["start_lonlat"]) == 2 for s in result["segments"])

@@ -195,6 +195,21 @@ def overview(plan: dict[str, Any], *,
             footprint_basis = ("height above the take-off point: no terrain model is loaded, "
                                "so the ground is taken as flat")
 
+    # The compass bearing of the survey lines, from the longest straight leg (0-180:
+    # a line is flown both ways). The planner's own flight_direction_deg is an angle
+    # from east, counter-clockwise, which is not what an operator reads off a map.
+    leg_ends: dict[int, tuple[dict, dict]] = {}
+    for row in rows:
+        first, _last = leg_ends.get(row["leg"], (row, row))
+        leg_ends[row["leg"]] = (first, row)
+    line_bearing = None
+    longest = 0.0
+    for first, last in leg_ends.values():
+        length = last["along_m"] - first["along_m"]
+        bearing = _bearing_deg([first["lon"], first["lat"]], [last["lon"], last["lat"]])
+        if bearing is not None and length > longest:
+            longest, line_bearing = length, round(bearing % 180.0, 1)
+
     safety = plan.get("safety_constraints") or {}
     terrain_type = plan.get("terrain_model_type") or "flat"
     return {
@@ -208,6 +223,7 @@ def overview(plan: dict[str, Any], *,
         "cruise_speed_m_s": plan.get("cruise_speed_m_s"),
         "gimbal_tilt_deg": plan.get("gimbal_tilt_deg"),
         "flight_direction_deg": plan.get("flight_direction_deg"),
+        "line_bearing_deg": line_bearing,
         "line_spacing_m": plan.get("line_spacing_m") or None,
         "capture_spacing_m": plan.get("capture_spacing_m") or None,
         "distance_m": plan.get("path_distance_m"),

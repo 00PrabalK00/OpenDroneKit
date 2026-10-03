@@ -5582,6 +5582,10 @@ class Api:
         # and Advanced > Line heading). The planner always took it; nothing passed it on.
         if self._given(opts, "flight_direction_deg"):
             kwargs["flight_direction_deg"] = float(opts["flight_direction_deg"]) % 360.0
+        # The same heading as a compass bearing of the lines (what a map shows and what
+        # a line drawn on it measures). The planner's angle is from east, anticlockwise.
+        if self._given(opts, "line_bearing_deg"):
+            kwargs["flight_direction_deg"] = (90.0 - float(opts["line_bearing_deg"])) % 360.0
         if opts.get("camera"):
             kwargs["camera"] = str(opts["camera"])
         kwargs.update(self._terrain_kwargs(opts))
@@ -6128,6 +6132,41 @@ class Api:
         exports = [{"stamp": stem[len("mission_"):], "files": sorted(files, key=lambda f: f["name"])}
                    for stem, files in sorted(runs.items(), reverse=True)]
         return ok(directory=str(folder), exports=exports)
+
+    @guard
+    def facade_footprint(self, standoff_m: float = 10.0,
+                         overhang_depth_m: float = 0.0) -> dict[str, Any]:
+        """The drawn area read as a building footprint, for the Multi-facade type.
+
+        plan_irregular_facade and plan_complex_facade take the footprint in metres; the
+        area of interest is longitude/latitude. This projects it to its UTM zone and asks
+        both: reflex corners (named, not smoothed), the facade passes with any that
+        would fall inside the building dropped, and whether an overhang hides wall.
+        """
+        from core import geo
+
+        ring = self._session.aoi_polygon or []
+        if len(ring) < 3:
+            return fail("Draw the building's outline as the area of interest first.")
+        epsg = geo.auto_utm_epsg(ring[0][1], ring[0][0])
+        east, north = geo.wgs84_to_projected([p[0] for p in ring], [p[1] for p in ring], epsg)
+        polygon_xy = [[float(x), float(y)] for x, y in zip(east, north)]
+        irregular = self.plan_irregular_facade(polygon_xy, float(standoff_m))
+        if not irregular.get("ok"):
+            return irregular
+        complex_ = self.plan_complex_facade(polygon_xy, [], float(standoff_m), float(overhang_depth_m))
+        if not complex_.get("ok"):
+            return complex_
+
+        def lonlat(xy: list[float]) -> list[float]:
+            lon, lat = geo.projected_to_wgs84([xy[0]], [xy[1]], epsg)
+            return [float(lon[0]), float(lat[0])]
+
+        segments = [{**seg, "start_lonlat": lonlat(seg["start"]), "end_lonlat": lonlat(seg["end"])}
+                    for seg in irregular["segments"]]
+        return ok(epsg=epsg, standoff_m=float(standoff_m), footprint=irregular["footprint"],
+                  segments=segments, segment_count=len(segments),
+                  occlusion=complex_["occlusion"])
 
     # -- vehicle ---------------------------------------------------------
 
