@@ -4936,6 +4936,38 @@ class Api:
             obstacle_avoidance_profile=str(opts.get("obstacle_profile", "standard")),
         )
 
+    def _fixed_wing_block(self, plan: Any, opts: dict[str, Any]) -> dict[str, Any]:
+        """The fixed-wing part of a plan: its turn radius and where it lands.
+
+        The landing point and direction are the operator's (landing_lonlat,
+        landing_heading_deg) when given, else the connected vehicle's home and heading
+        -- a plane is set down pointing along its runway.
+        """
+        from mission.fixed_wing import (
+            DEFAULT_APPROACH_ALTITUDE_M, DEFAULT_TURN_RADIUS_M, landing_pattern)
+
+        meta = (getattr(plan, "flight_recipe", None) or {}).get("metadata") or {}
+        radius = float(meta.get("fixed_wing_turn_radius_m") or DEFAULT_TURN_RADIUS_M)
+        approach = float(opts.get("landing_approach_altitude_m") or DEFAULT_APPROACH_ALTITUDE_M)
+        landing = None
+        point = opts.get("landing_lonlat")
+        heading = opts.get("landing_heading_deg")
+        client = self._session._drone_client
+        tel = None
+        if client is not None and (point is None or heading is None):
+            try:
+                tel = client.get_telemetry()
+            except Exception:  # noqa: BLE001 - no telemetry means no default landing
+                tel = None
+        if point is None and tel is not None and getattr(tel, "home_set", False):
+            point = [float(tel.home_lon), float(tel.home_lat)]
+        if heading is None and tel is not None and point is not None:
+            heading = float(getattr(tel, "heading_deg", 0.0) or 0.0)
+        if point is not None and heading is not None:
+            landing = landing_pattern(float(point[1]), float(point[0]), float(heading),
+                                      turn_radius_m=radius, approach_altitude_m=approach)
+        return {"turn_radius_m": radius, "landing": landing, "passes": meta.get("fixed_wing")}
+
     def _terrain_kwargs(self, opts: dict[str, Any]) -> dict[str, Any]:
         if not self._session.terrain_source_path:
             return {}
@@ -5271,6 +5303,17 @@ class Api:
             "wind_gust_m_s": float(opts.get("wind_gust_m_s", 0.0)),
             "constraints": constraints,
         }
+        # A fixed-wing is planned as one (mission/fixed_wing.py): its passes ordered and
+        # extended for its turn radius, and its mission ending in a landing sequence.
+        # Without the option, the connected vehicle decides.
+        from mission.fixed_wing import FIXED_WING, normalise_vehicle_class
+
+        vehicle_class = normalise_vehicle_class(
+            opts.get("vehicle_class") or getattr(self._session._drone_client, "vehicle_class", None))
+        if vehicle_class == FIXED_WING:
+            kwargs["vehicle_class"] = FIXED_WING
+            if self._given(opts, "turn_radius_m"):
+                kwargs["fixed_wing_turn_radius_m"] = float(opts["turn_radius_m"])
         # Left blank, the gimbal and dwell come from the template: an orbit looks at its
         # subject and a roof inspection stops at each point. Sending -90 and 0 for every
         # template made every structure mission a set of nadir photographs.
@@ -5346,7 +5389,21 @@ class Api:
                 )
 
         plan = MissionPlanner().generate(**kwargs)
-        adopted = self._adopt_plan(plan, kwargs["mode"], warnings, options=opts)
+        extra = None
+        if vehicle_class == FIXED_WING:
+            extra = {"fixed_wing": self._fixed_wing_block(plan, opts)}
+            if extra["fixed_wing"]["landing"] is None:
+                warnings.append(
+                    "No landing is placed yet: no landing point was given and no vehicle "
+                    "reported a home position. It is placed at the vehicle's home, along "
+                    "its heading, when the mission is uploaded.")
+            tight = int((extra["fixed_wing"].get("passes") or {}).get("tight_turns") or 0)
+            if tight:
+                warnings.append(
+                    f"{tight} turn(s) between passes are tighter than the "
+                    f"{extra['fixed_wing']['turn_radius_m']:g} m turn radius allows; the "
+                    "aircraft flies a loop to make each one.")
+        adopted = self._adopt_plan(plan, kwargs["mode"], warnings, extra=extra, options=opts)
         adopted["summary"]["template"] = kwargs["mode"]
 
         # The recipe carries the resolved terrain model under `metadata`; reading it
@@ -5631,6 +5688,26 @@ class Api:
             return fail(f"The {self._session.vehicle.driver!r} driver does not support mission upload.")
 
         plan = self._session.mission_plan_dict
+        # A plan is made for one kind of aircraft. A multirotor plan sent to a plane has
+        # turns it cannot make and ends in an RTL that circles home forever; a fixed-wing
+        # plan sent to a multirotor carries a landing sequence it does not fly.
+        flying = str(getattr(client, "vehicle_class", "multirotor") or "multirotor")
+        planned_for = exporters.plan_vehicle_class(plan)
+        if flying != planned_for:
+            names = {"fixed_wing": "a fixed-wing", "multirotor": "a multirotor"}
+            return fail(f"This mission was planned for {names[planned_for]}, and the connected "
+                        f"vehicle is {names[flying]}. Plan it again for this vehicle "
+                        f"(vehicle_class={flying!r}); nothing was uploaded.")
+        if planned_for == "fixed_wing" and not (plan.get("fixed_wing") or {}).get("landing"):
+            # Placed now, from the home the vehicle reports, and kept on the plan so
+            # preflight and the fence check the landing that is actually flown.
+            block = (plan.get("fixed_wing") or {})
+            placed = self._fixed_wing_block(self._session.mission_plan, {})
+            if placed["landing"] is None:
+                return fail("A fixed-wing mission ends in a landing, and the vehicle has not "
+                            "reported a home position to land at. Wait for its home, or "
+                            "plan with landing_lonlat and landing_heading_deg.")
+            plan["fixed_wing"] = {**block, "landing": placed["landing"]}
         # The items are written for the flight stack on the other end: PX4 refuses
         # commands ArduPilot needs (CONDITION_YAW) and carries a heading where ArduPilot
         # ignores one.
@@ -5692,6 +5769,19 @@ class Api:
             report["return_altitude"] = _command_payload(result, 0)
             if not report["return_altitude"]["success"]:
                 problems.append("return altitude: " + report["return_altitude"]["message"])
+        fw_setter = getattr(client, "set_fixed_wing_return", None)
+        if planned_for == "fixed_wing" and autopilot == "ardupilot" and fw_setter is not None:
+            # ArduPlane will not arm with the landing sequence on board until its RTL is
+            # told to use it; the plan's RTH action says how: "land" goes straight to the
+            # landing, anything else returns home first.
+            action = str((plan.get("safety_constraints") or {}).get("rth_action")
+                         or "return_home").lower()
+            altitude = float(rth if rth is not None else 80.0)
+            result = run("set_fixed_wing_return", lambda: fw_setter(
+                altitude, land_after_return=action not in {"land", "land_in_place"}))
+            report["return"] = _command_payload(result, 0)
+            if not report["return"]["success"]:
+                problems.append("return settings: " + report["return"]["message"])
         for key, entries, method, clear in (
                 ("fence", fence, "upload_geofence", "clear_geofence"),
                 ("rally", rally, "upload_rally_points", "clear_rally_points")):

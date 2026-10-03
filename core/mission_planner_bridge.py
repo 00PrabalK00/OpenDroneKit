@@ -449,6 +449,9 @@ class MissionPlannerDroneClient:
         # MAV_AUTOPILOT of the vehicle, from its HEARTBEAT. Not every autopilot is
         # ArduPilot; PX4 differs in the ways listed at _PX4_MODE_NAMES.
         self._autopilot = 0
+        # MAV_TYPE from the same HEARTBEAT: a fixed-wing (1) cannot land in place or
+        # hover, and is sent the landing sequence instead (see land()).
+        self._mav_type = 0
 
     def _px4(self) -> bool:
         return self._autopilot == MAV_AUTOPILOT_PX4
@@ -457,6 +460,13 @@ class MissionPlannerDroneClient:
     def autopilot(self) -> str:
         """The flight stack on the other end, as the mission builder names it."""
         return "px4" if self._px4() else "ardupilot"
+
+    @property
+    def vehicle_class(self) -> str:
+        """"fixed_wing" or "multirotor", from the vehicle's HEARTBEAT type."""
+        from mission.fixed_wing import vehicle_class_from_mav_type
+
+        return vehicle_class_from_mav_type(self._mav_type)
 
     # ── DroneClient protocol ─────────────────────────────────────────────────
 
@@ -489,6 +499,7 @@ class MissionPlannerDroneClient:
                     recovery_action="Set the MAVLINK20=1 environment variable and restart.",
                 )
             self._autopilot = int(getattr(hb, "autopilot", 0) or 0)
+            self._mav_type = int(getattr(hb, "type", 0) or 0)
             self._connected = True
             self._uri = connection_uri
             self._send_gcs_heartbeat()
@@ -1270,8 +1281,52 @@ class MissionPlannerDroneClient:
                                   name="takeoff")
 
     def land(self) -> CommandResult:
-        """Land at the current position. MAV_CMD_NAV_LAND = 21."""
+        """Land at the current position. MAV_CMD_NAV_LAND = 21.
+
+        A fixed-wing cannot land where it is: ArduPlane answers NAV_LAND "unsupported"
+        (Plane-4.5.7 SITL), and the Land button did nothing to a plane circling home. A
+        plane lands by flying its mission's landing sequence, which MAV_CMD_DO_LAND_START
+        (189) jumps to -- the sequence every fixed-wing plan uploaded from here ends with.
+        """
+        if self.vehicle_class == "fixed_wing" and not self._px4():
+            result = self._command_long(189, name="land")
+            if not result.success:
+                result.message += (" A fixed-wing lands by flying a landing sequence "
+                                   "(DO_LAND_START) in its mission, and the vehicle refused "
+                                   "to start one: upload a fixed-wing plan, which ends in one.")
+            return result
         return self._command_long(21, name="land")
+
+    def _write_param(self, param_id: str, value: float, timeout_s: float = 2.0) -> float | None:
+        """PARAM_SET, retried; the value the vehicle echoes in PARAM_VALUE, or None."""
+        conn = self._ensure()
+        from pymavlink import mavutil
+
+        held = None
+        for _ in range(3):
+            while True:
+                try:
+                    self._param_queue.get_nowait()
+                except queue.Empty:
+                    break
+            conn.mav.param_set_send(conn.target_system, conn.target_component,
+                                    param_id.encode("ascii"), float(value),
+                                    mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                try:
+                    msg = self._param_queue.get(timeout=max(0.05, deadline - time.monotonic()))
+                except queue.Empty:
+                    break
+                echoed = getattr(msg, "param_id", "")
+                if isinstance(echoed, bytes):
+                    echoed = echoed.decode("ascii", "replace")
+                if str(echoed).strip(_NUL) == param_id:
+                    held = float(msg.param_value)
+                    break
+            if held is not None:
+                break
+        return held
 
     def set_return_altitude(self, altitude_m: float, timeout_s: float = 2.0) -> CommandResult:
         """PX4's RTL_RETURN_ALT, written with PARAM_SET and confirmed by its PARAM_VALUE.
@@ -1282,37 +1337,11 @@ class MissionPlannerDroneClient:
         if not self._px4():
             return CommandResult(False, name, "Setting the return altitude is implemented "
                                  "for PX4 (RTL_RETURN_ALT) only.")
+        wanted = float(altitude_m)
         try:
-            conn = self._ensure()
+            held = self._write_param("RTL_RETURN_ALT", wanted, timeout_s)
         except AppError as exc:
             return CommandResult(False, name, exc.user_message)
-        from pymavlink import mavutil
-
-        wanted = float(altitude_m)
-        held = None
-        for _ in range(3):
-            while True:
-                try:
-                    self._param_queue.get_nowait()
-                except queue.Empty:
-                    break
-            conn.mav.param_set_send(conn.target_system, conn.target_component,
-                                    b"RTL_RETURN_ALT", wanted,
-                                    mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
-            deadline = time.monotonic() + timeout_s
-            while time.monotonic() < deadline:
-                try:
-                    msg = self._param_queue.get(timeout=max(0.05, deadline - time.monotonic()))
-                except queue.Empty:
-                    break
-                param_id = getattr(msg, "param_id", "")
-                if isinstance(param_id, bytes):
-                    param_id = param_id.decode("ascii", "replace")
-                if str(param_id).strip(_NUL) == "RTL_RETURN_ALT":
-                    held = float(msg.param_value)
-                    break
-            if held is not None:
-                break
         if held is None:
             return CommandResult(False, name, "The vehicle did not confirm RTL_RETURN_ALT.",
                                  ack=ACK_NONE)
@@ -1321,6 +1350,48 @@ class MissionPlannerDroneClient:
                                  f"{held:g} m.", ack=ACK_DENIED)
         return CommandResult(True, name, f"Return altitude {held:g} m on the vehicle.",
                              ack=ACK_ACCEPTED)
+
+    def set_fixed_wing_return(self, altitude_m: float, land_after_return: bool = True,
+                              timeout_s: float = 2.0) -> CommandResult:
+        """ArduPlane's RTL: its altitude and that it ends in a landing.
+
+        ArduPlane refuses to arm with a DO_LAND_START in its mission while RTL_AUTOLAND
+        is 0 ("Arm: DO_LAND_START set and RTL_AUTOLAND disabled", Plane-4.5.7 SITL), and
+        every fixed-wing plan from here ends in one. RTL_AUTOLAND 1 returns home and
+        then flies the landing sequence -- what RTH means for a multirotor; 2 goes
+        straight to the landing sequence. The return altitude is the plan's: left alone,
+        the plane came home at its default 100 m. Plane 4.5 calls it RTL_ALTITUDE
+        (metres); earlier releases ALT_HOLD_RTL (centimetres), which is the fallback.
+        """
+        name = "set_fixed_wing_return"
+        if self._px4() or self.vehicle_class != "fixed_wing":
+            return CommandResult(False, name, "Only an ArduPilot fixed-wing has RTL_AUTOLAND "
+                                 "and an RTL altitude to set.")
+        autoland = 1.0 if land_after_return else 2.0
+        try:
+            held_autoland = self._write_param("RTL_AUTOLAND", autoland, timeout_s)
+            altitude_param, wanted_alt = "RTL_ALTITUDE", float(altitude_m)
+            held_alt = self._write_param(altitude_param, wanted_alt, timeout_s)
+            if held_alt is None:
+                altitude_param, wanted_alt = "ALT_HOLD_RTL", round(float(altitude_m) * 100.0)
+                held_alt = self._write_param(altitude_param, wanted_alt, timeout_s)
+        except AppError as exc:
+            return CommandResult(False, name, exc.user_message)
+        wrong = []
+        if held_autoland is None or abs(held_autoland - autoland) > 0.5:
+            wrong.append(f"RTL_AUTOLAND asked {autoland:g}, vehicle holds {held_autoland}")
+        if held_alt is None:
+            wrong.append("the vehicle has neither RTL_ALTITUDE nor ALT_HOLD_RTL")
+        elif abs(held_alt - wanted_alt) > 0.5:
+            wrong.append(f"{altitude_param} asked {wanted_alt:g}, vehicle holds {held_alt:g}")
+        if wrong:
+            return CommandResult(False, name, "The vehicle did not take its return settings: "
+                                 + "; ".join(wrong), ack=ACK_DENIED)
+        return CommandResult(True, name,
+                             f"RTL at {float(altitude_m):g} m ({altitude_param}), then "
+                             + ("home and the landing sequence" if land_after_return
+                                else "straight to the landing sequence")
+                             + f" (RTL_AUTOLAND {int(autoland)}).", ack=ACK_ACCEPTED)
 
     def goto(self, latitude: float, longitude: float, altitude_m: float) -> CommandResult:
         """Fly to a position in GUIDED mode, as the vehicle confirms it.
@@ -1602,6 +1673,17 @@ class MissionPlannerDroneClient:
                 return CommandResult(False, "start_mission",
                                      f"The vehicle is in {mode}, which it will not arm in, "
                                      f"and refused LOITER: {held.message}")
+        if not was_armed and self.vehicle_class == "fixed_wing" and not self._px4():
+            # A plane that has landed is still "in landing sequence" -- its mission stopped
+            # at NAV_LAND -- and ArduPlane refuses to arm in it ("Arm: In landing
+            # sequence", Plane-4.5.7 SITL): the second mission of a session could never
+            # start. Pointing the mission back at its first item clears that, and is
+            # acknowledged (MAV_CMD_DO_SET_MISSION_CURRENT = 224, seq 1, no reset).
+            rewound = self._command_long(224, 1.0, 0.0, name="start_mission")
+            if not rewound.success:
+                rewound.message = ("Could not set the mission back to its first item before "
+                                   "arming: " + rewound.message)
+                return rewound
         arm = self._command_long(400, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, name="arm")
         if not arm.success:
             return arm
