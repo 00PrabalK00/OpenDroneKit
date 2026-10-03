@@ -1851,8 +1851,12 @@ PLATFORM = [
     F("ex.mission_formats", "Mission export formats", "core", "Export",
       "QGC .plan, QGC WPL, DJI WPML KMZ, Litchi CSV, KML and GeoJSON, each carrying the "
       "planned yaw, gimbal pitch, dwell and speed; WPL leaving sequence 0 for home; one "
-      "exclusion polygon per no-fly zone; Litchi split at its 99-waypoint limit.",
+      "exclusion polygon per no-fly zone; Litchi split at its 99-waypoint limit; each "
+      "file holding every element its published spec requires (Litchi action codes and "
+      "32 s stays, .plan firmwareType from the target autopilot defaulting to ArduPilot, "
+      "WPML executeHeightMode and the template/wayline required elements).",
       "verified", ["tests/test_exporters.py::test_every_registered_format_writes_a_file",
+                   "tests/test_mission_export_specs.py",
                    "tests/test_exporters.py::test_dji_kmz_has_the_required_wpml_members",
                    "tests/test_mission_exports_carry_the_plan.py::TestFileStructure",
                    "tests/test_mission_exports_carry_the_plan.py::TestTheCameraPoseReachesTheFile",
@@ -1861,7 +1865,11 @@ PLATFORM = [
       "Verified by parsing the written files after planning through the Api. Loading "
       "into QGroundControl, Mission Planner, DJI Pilot 2 and Litchi themselves has not "
       "been done here; the DJI drone enum (77/0, payload 66, Mavic 3 Enterprise) and "
-      "Litchi altitudemode 0 follow the published format descriptions."),
+      "Litchi altitudemode 0 follow the published format descriptions. Spec sources: "
+      "litchiutilities.com/docs/litchiCsv.php and flylitchi.com/help; QGC plan format docs "
+      "plus QGC's own loader key checks; DJI Cloud-API WPML reference. An AMSL plan is "
+      "written absolute to DJI only when PROJ's EGM96 grid is installed; otherwise it "
+      "stays relative to the take-off point."),
     F("ex.model_formats", "3D export formats", "core", "Export",
       "OBJ, PLY, LAS/LAZ, GLB and GLTF.",
       "implemented", ["tests/test_model_formats.py::TestMeshFormats",

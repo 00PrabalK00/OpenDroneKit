@@ -35,6 +35,7 @@ from .detection import (
     _run_onnx_segmentation,
     _run_onnx_yolo,
     grade_corrosion_severity,
+    non_defect_labels,
 )
 from .models import get_model_spec, load_registry, model_identity, model_status
 
@@ -205,8 +206,14 @@ def crack_presence(
     )
 
 
-def run_registered_model(image_bgr: np.ndarray, model_key: str) -> ModelRunResult:
-    """Run one installed model on one image and return what it said, with provenance."""
+def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
+                         score_threshold: float | None = None) -> ModelRunResult:
+    """Run one installed model on one image and return what it said, with provenance.
+
+    ``score_threshold`` overrides the registry's detector threshold (the pre-label path
+    passes the registry's measured pre-label threshold). Boxes for labels the registry
+    marks as non-defects (CODEBRIM "Background") are returned apart from the detections.
+    """
     spec, path, row = _installed(model_key)
     kind = spec.kind
     scope = str(row.get("description") or spec.description or "")
@@ -215,8 +222,12 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str) -> ModelRunResul
 
     if kind in DETECTION_KINDS:
         hits = _run_onnx_yolo(
-            image_bgr, path, spec.labels, float(spec.score_threshold),
+            image_bgr, path, spec.labels,
+            float(spec.score_threshold if score_threshold is None else score_threshold),
             float(spec.iou_threshold), int(spec.input_size))
+        not_defects = non_defect_labels(model_key)
+        non_defect_hits = [hit for hit in hits if hit.label in not_defects]
+        hits = [hit for hit in hits if hit.label not in not_defects]
         overlay = _overlay_by_masks(image_bgr, _hits_to_masks((h, w), hits))
         for hit in hits:
             x1, y1, x2, y2 = hit.bbox_xyxy
@@ -224,6 +235,7 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str) -> ModelRunResul
         return ModelRunResult(model_key, kind, used, _identity(model_key), scope, {
             "detections": [hit.to_dict() for hit in hits],
             "detection_count": len(hits),
+            "non_defect_detections": [hit.to_dict() for hit in non_defect_hits],
             "confidence_kind": "detector_score",
         }, overlay)
 

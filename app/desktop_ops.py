@@ -860,7 +860,10 @@ def prelabel_image(project_root: str | Path, project_id: str, image_path: str,
     if not target.is_file():
         raise ValueError(f"No such image: {image_path}")
     try:
-        result = run_registered_model(load_image(target), model_key)
+        # Pre-labels go to review before any report, so they use the registry's
+        # measured pre-label threshold where one is declared.
+        result = run_registered_model(load_image(target), model_key,
+                                      score_threshold=spec.prelabel_score_threshold)
     except ModelRunRefused as exc:
         raise ValueError(str(exc)) from exc
     created = findings_from_detections(
