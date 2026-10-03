@@ -2080,7 +2080,7 @@ PLATFORM = [
                    "test_a_detector_plugin_runs_through_the_project"],
       "examples/plugins/odk-strip-template (mission template) and odk-csv-exporter "
       "(exporter + report section) are installable packages."),
-    F("plugins.listing", "Plugins listed in Environment Capabilities", "plugins", "SDK",
+    F("plugins.listing", "Plugins listed by the capabilities API (not yet in the dialog)", "plugins", "SDK",
       "capabilities()['plugins'] and list_plugins report the API level, each loaded plugin "
       "(kind, name, version, package) and each failure with its reason, from the real host.",
       "verified", ["tests/test_plugin_api.py::TestTheApplicationListsPlugins"],
