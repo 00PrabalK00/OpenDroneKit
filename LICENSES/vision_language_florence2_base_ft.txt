@@ -1,0 +1,50 @@
+vision_language_florence2_base_ft -- licence of the model weights
+===================================================================
+
+Files        : vision_language_florence2_base_ft__vision_encoder_int8.onnx (93,746,478 bytes)
+               vision_language_florence2_base_ft__embed_tokens_int8.onnx (39,390,433 bytes)
+               vision_language_florence2_base_ft__encoder_model_int8.onnx (43,651,493 bytes)
+               vision_language_florence2_base_ft__decoder_model_merged_int8.onnx (98,177,697 bytes)
+               plus the tokenizer and config JSON files with the same key prefix
+               (digests in models/model_registry.json and WEIGHTS_SHA256SUMS.txt)
+Model        : Florence-2-base-ft (0.23B parameters), Microsoft
+Original     : https://huggingface.co/microsoft/Florence-2-base-ft (revision f6c1a258)
+ONNX graphs  : https://huggingface.co/onnx-community/Florence-2-base-ft
+               (revision e88a44eaf3791a35eae0c5a47b3dbcd36e67eb6f, onnx/*_int8.onnx,
+               redistributed byte for byte, only renamed; tokenizer and configs likewise)
+Licence      : MIT (text below, from microsoft/Florence-2-base-ft/LICENSE)
+Copyright    : (c) Microsoft Corporation.
+
+The OpenDroneKit code is also MIT, but this file is the licence of the weights, with
+Microsoft's copyright notice, which must travel with them.
+
+Training data note: FLD-5B (126M images, 5.4B annotations) was not released; its terms
+are unknown. OpenDroneKit redistributes no training data.
+
+Citation:
+  Xiao et al., "Florence-2: Advancing a Unified Representation for a Variety of Vision
+  Tasks", CVPR 2024, arXiv:2311.06242.
+
+---------------------------------------------------------------------------------------
+
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE
