@@ -108,12 +108,13 @@ and the licence file at that commit. In PowerShell, from inside
 `odm_data_aukerman-master/`:
 
 ```
-Get-Content <path to>ukerman.sha256 | ForEach-Object { $h, $p = $_ -split ' \*'; if ((Get-FileHash $p).Hash -ne $h) { "MISMATCH $p" } }
+Get-Content <path to>\aukerman.sha256 | ForEach-Object { $h, $p = $_ -split ' \*'; if ((Get-FileHash $p).Hash -ne $h) { "MISMATCH $p" } }
 ```
 
 No output means every file matches. (In Git Bash: `sha256sum -c <path to>/aukerman.sha256`.)
 If a file mismatches, mention it in your feedback.
- To keep the run inside 30 minutes, copy the **first 20 images** of
+
+To keep the run inside 30 minutes, copy the **first 20 images** of
 `odm_data_aukerman-master/images/` into a folder of their own (for example
 `aukerman20/`). Use all 77 if you have time to spare.
 
@@ -226,8 +227,8 @@ Open an issue on GitHub: <https://github.com/00PrabalK00/OpenDroneKit/issues/new
   issue.
 
 Useful things to attach: the version (the installer's file name, or
-`git rev-parse --short HEAD` for a source install), Windows version, CPU/GPU, the exact message from the bottom right, and
-the startup error log if startup failed (`logs/startup-error.log` under the data folder;
+`git rev-parse --short HEAD` for a source install), Windows version, CPU/GPU, the exact
+message from the bottom right, and the startup error log if startup failed (`logs/startup-error.log` under the data folder;
 for a source install that is `final_toolkit_outputs/logs/`).
 
 ## Privacy
@@ -237,6 +238,5 @@ analytics, and sends nothing about you or your data anywhere. The UI is served o
 127.0.0.1 only. The things that do use the network are ones you ask for: online
 basemap tiles (which the map fetches from the tile provider while you browse it),
 downloading model weights, the installer's update check if you switch it on (it is off
-by default),
-and anything you configure yourself, such as a cloud reconstruction endpoint. Your projects, images and reports stay in the local data
-folder. Nothing you do in the beta reaches us unless you put it in an issue.
+by default), and anything you configure yourself, such as a cloud reconstruction
+endpoint. Your projects, images and reports stay in the local data folder. Nothing you do in the beta reaches us unless you put it in an issue.

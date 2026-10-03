@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing. The test script is in [docs/BETA_TESTING.md](https://github.com/00PrabalK00/OpenDroneKit/blob/main/docs/BETA_TESTING.md).
+        Thanks for testing. The test script is in [docs/BETA_TESTING.md](https://github.com/00PrabalK00/OpenDroneKit/blob/v0.1.0-beta/docs/BETA_TESTING.md).
         One clear problem is better filed as a **Bug report**; this form is for the run as a whole.
         Please remove anything private (site coordinates, imagery, tokens) before posting. Security problems go through SECURITY.md.
   - type: input
