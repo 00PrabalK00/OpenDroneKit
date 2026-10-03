@@ -35,7 +35,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.depth import infer_onnx  # noqa: E402
+from core.depth import infer_onnx_network  # noqa: E402
 from core.detection import load_image  # noqa: E402
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -81,9 +81,11 @@ def run_parity(fp32: Path, int8: Path, images: list[Path], seed: int = 0) -> dic
     for path in images:
         img = load_image(path)
         t0 = time.perf_counter()
-        a = infer_onnx(img, fp32)
+        # Compared at the network's resolution: the upsample is the same deterministic
+        # bicubic for both, and full-resolution float maps do not fit on a busy machine.
+        a = infer_onnx_network(img, fp32)
         t1 = time.perf_counter()
-        b = infer_onnx(img, int8)
+        b = infer_onnx_network(img, int8)
         t2 = time.perf_counter()
         t_fp32 += t1 - t0
         t_int8 += t2 - t1
@@ -91,7 +93,7 @@ def run_parity(fp32: Path, int8: Path, images: list[Path], seed: int = 0) -> dic
     rho = np.array([r["spearman_rho"] for r in rows])
     rel = np.array([r["absrel_aligned"] for r in rows])
     return {
-        "measurement": "PARITY (int8 vs fp32 ONNX), not accuracy",
+        "measurement": "PARITY (int8 vs fp32 ONNX, raw network-resolution maps), not accuracy",
         "n_images": len(rows),
         "spearman_rho_mean": float(rho.mean()), "spearman_rho_min": float(rho.min()),
         "absrel_aligned_mean": float(rel.mean()), "absrel_aligned_max": float(rel.max()),
@@ -127,12 +129,26 @@ def sparse_depths(recon: Any, image: Any) -> tuple[np.ndarray, np.ndarray, np.nd
     return np.asarray(xs), np.asarray(ys), np.asarray(zs)
 
 
-def sfm_agreement_image(pred_inv: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray,
+def sample_network_map(net: np.ndarray, x: np.ndarray, y: np.ndarray,
+                       photo_hw: tuple[int, int]) -> np.ndarray:
+    """Bilinear sample of a network-resolution map at photo pixel coordinates.
+
+    Equivalent, up to interpolation order, to upsampling the map to the photo and
+    reading the pixel, without allocating a full-resolution float map.
+    """
+    from scipy.ndimage import map_coordinates
+
+    nh, nw = net.shape
+    ph, pw = photo_hw
+    xn = (np.asarray(x, np.float64) + 0.5) * nw / pw - 0.5
+    yn = (np.asarray(y, np.float64) + 0.5) * nh / ph - 0.5
+    return map_coordinates(net.astype(np.float64), [yn, xn], order=1, mode="nearest")
+
+
+def sfm_agreement_image(p: np.ndarray, z: np.ndarray,
                         rng: np.random.Generator) -> dict[str, Any] | None:
-    h, w = pred_inv.shape
-    xi = np.clip(np.round(x).astype(int), 0, w - 1)
-    yi = np.clip(np.round(y).astype(int), 0, h - 1)
-    p = pred_inv[yi, xi].astype(np.float64)
+    """p: predicted relative inverse depth at each point; z: SfM camera-frame depth."""
+    p = np.asarray(p, np.float64)
     if p.size < 20:
         return None
     order = rng.permutation(p.size)
@@ -175,15 +191,16 @@ def run_sfm(model: Path, sparse_dir: Path, image_dir: Path, *, max_images: int |
         if not path.is_file():
             continue
         bgr = load_image(path)
+        photo_hw = bgr.shape[:2]
         cam = recon.cameras[im.camera_id]
-        if (bgr.shape[1], bgr.shape[0]) != (cam.width, cam.height):
-            # Points are in the reconstruction's pixel grid; rescale to the photo's.
-            sx, sy = bgr.shape[1] / cam.width, bgr.shape[0] / cam.height
-        else:
-            sx = sy = 1.0
+        # Points are in the reconstruction's pixel grid; rescale to the photo's.
+        sx, sy = photo_hw[1] / cam.width, photo_hw[0] / cam.height
         x, y, z = sparse_depths(recon, im)
-        pred = infer_onnx(bgr, model)
-        row = sfm_agreement_image(pred, x * sx, y * sy, z, rng)
+        net = infer_onnx_network(bgr, model)
+        del bgr
+        if z.size == 0:
+            continue
+        row = sfm_agreement_image(sample_network_map(net, x * sx, y * sy, photo_hw), z, rng)
         if row is not None:
             rows.append({"image": im.name, **row})
     absrel = np.array([r["absrel"] for r in rows]) if rows else np.array([np.nan])

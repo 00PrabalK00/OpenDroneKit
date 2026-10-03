@@ -74,9 +74,14 @@ def preprocess(image_bgr: np.ndarray, short_side: int = SHORT_SIDE) -> np.ndarra
         raise ValueError("expected an HxWx3 BGR image")
     h, w = image_bgr.shape[:2]
     nh, nw = network_size(h, w, short_side)
-    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    resized = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_CUBIC)
-    normed = (resized - _MEAN) / _STD
+    # Resize first, then convert: a 20 MP photo as float32 is ~240 MB, the network
+    # input ~3 MB. Bicubic on uint8 differs from bicubic on float only by rounding to
+    # one grey level, which the network does not resolve.
+    if image_bgr.dtype != np.uint8:
+        image_bgr = np.clip(image_bgr, 0, 255).astype(np.uint8)
+    resized = cv2.resize(image_bgr, (nw, nh), interpolation=cv2.INTER_CUBIC)
+    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    normed = (rgb - _MEAN) / _STD
     return np.ascontiguousarray(normed.transpose(2, 0, 1)[None], dtype=np.float32)
 
 
@@ -112,13 +117,21 @@ def infer_onnx(image_bgr: np.ndarray, onnx_path: str | Path) -> np.ndarray:
     verifies the file against the registry first.
     """
     h, w = image_bgr.shape[:2]
+    out = infer_onnx_network(image_bgr, onnx_path)
+    # Bicubic back to the photo's own pixel grid, as the publisher's infer_image does.
+    return cv2.resize(out, (w, h), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+
+
+def infer_onnx_network(image_bgr: np.ndarray, onnx_path: str | Path) -> np.ndarray:
+    """Raw relative inverse depth at the network's own resolution (no upsample).
+
+    For measurement on large photos, where a full-resolution float map is wasted memory.
+    """
     blob = preprocess(image_bgr)
     sess = _session(Path(onnx_path))
     name = sess.get_inputs()[0].name
     out = np.asarray(sess.run(None, {name: blob})[0], dtype=np.float32)
-    out = out.reshape(out.shape[-2], out.shape[-1])
-    # Bicubic back to the photo's own pixel grid, as the publisher's infer_image does.
-    return cv2.resize(out, (w, h), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+    return out.reshape(out.shape[-2], out.shape[-1])
 
 
 def normalise_for_display(inv_depth: np.ndarray) -> np.ndarray:
