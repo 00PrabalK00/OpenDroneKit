@@ -220,6 +220,16 @@ def run_registered_model(image_bgr: np.ndarray, model_key: str, *,
     used = f"onnx:{path.name}"
     h, w = image_bgr.shape[:2]
 
+    if kind == "onnx_relative_depth":
+        # Image-level result with an overlay. The array itself is not in `output`: it is
+        # unitless relative inverse depth, saved by the Api as .npy beside a JSON that
+        # says so. Nothing here carries a metric field (tests/test_relative_depth.py).
+        from .depth import relative_depth
+
+        depth = relative_depth(image_bgr, model_key)
+        return ModelRunResult(model_key, kind, depth.model_used, depth.model_sha256, scope,
+                              depth.summary(), depth.overlay)
+
     if kind in DETECTION_KINDS:
         hits = _run_onnx_yolo(
             image_bgr, path, spec.labels,
