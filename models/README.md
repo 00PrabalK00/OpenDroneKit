@@ -70,9 +70,26 @@ Runtime code resolves weights through `model_registry.json` relative to this fol
 
 ## Supported Model Runtime (Current Build)
 
-Current model-backed inference path is ONNX via OpenCV DNN (`onnx_yolo` kind).
+Every installed model is an ONNX file. The registry `kind` says how it is read:
+`onnx_yolo` / `onnx_detection` (detectors), `onnx_segmentation`,
+`onnx_segmentation_multiclass`, `onnx_classification` and `onnx_shared_semantic`.
+`pytorch_checkpoint` entries are legacy and awaiting weights.
 
-If a model key is registered but the file is missing, the toolkit automatically falls back to classical heuristics.
+If a model key is registered but its file is missing, nothing falls back silently and
+nothing heuristic is ever presented as a model's answer:
+
+- **Solar, metal (corrosion) and corrosion-severity analysis refuse.** The result row
+  says `model_used=refused` with the reason, and the report and the finished-job
+  message name it. There is no heuristic for these questions.
+- **Crack and structural detection** can still run their classical image rules, but the
+  result is labelled `model_used=heuristic` (or `onnx_fallback_heuristic` when the model
+  failed at inference), and heuristic regions are **never** turned into findings, scored,
+  or put in a report: they stay in the run summary as screening output.
+- A file whose sha256 does not match the registry is reported as a mismatch by the
+  identity check (`Api.verify_models`), never as verified.
+
+Nine of the fifteen registry entries are `installed` (weights measured, recorded by
+sha256); the other six are `awaiting_weights`.
 
 ## Provenance
 

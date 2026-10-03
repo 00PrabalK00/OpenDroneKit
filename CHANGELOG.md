@@ -2,17 +2,90 @@
 
 All notable changes to OpenDroneKit are recorded here.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). OpenDroneKit
-has not made a tagged release yet, so everything is under **Unreleased** until the first
-version is cut; the project intends to use [Semantic Versioning](https://semver.org/)
-from then on.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions
+follow [Semantic Versioning](https://semver.org/). The Python package carries the PEP 440
+form of the same number (`0.1.0b0` is `v0.1.0-beta`).
 
 ## [Unreleased]
 
-The largest round of work so far: every area of the application was audited for features
-that were broken, unreachable from the UI, or producing fabricated output, and each was
-fixed or made to refuse with a reason. Feature status in `docs/FEATURES.md` is computed
-from passing tests, as before.
+Work continuing towards 1.0, not in v0.1.0-beta: the new user interface (`ui/v1`), the
+drone SITL campaign (see *Known limitations* below), GPU dense reconstruction, and the
+standards-based report layouts.
+
+## [v0.1.0-beta] - 2026-10-02
+
+The first public beta. Version 1.0 is still being built; this release exists so people
+outside the project can try it and say what breaks. Feature status in `docs/FEATURES.md`
+is computed from passing tests, as before, and covers 180 specified capabilities.
+
+### Summary
+
+- **Fix rounds.** Every area of the application (missions, flight, analysis,
+  reconstruction, AI, reports, cockpit, launch, platform) was audited for features that
+  were broken, unreachable from the UI, or producing fabricated output, over several
+  rounds. Each was fixed or now refuses with a stated reason;
+  the details are under *Added*, *Changed*, *Fixed* and *Removed* below.
+- **Data round.** The shipped code was run against real, openly licensed data rather
+  than fixtures. Thermal: DJI R-JPEG, FLIR JPEG and TLinear TIFF decoded to Celsius, and
+  per-module PV temperatures on real module outlines. Multispectral: the MicaSense chain
+  (captures, reflectance, band orthomosaic, NDVI/NDRE/GNDVI) runs from the app, and a
+  calibration panel is only trusted for its own camera and flight. Reconstruction: a
+  geotag fit corrected onto thinly marked control (Bellus: 31.90 m geotag check, 1.57 m
+  leave-one-out after correction), and the facade-from-model mission reachable from the
+  app. Detectors: measured on external data (`tools/eval_external_detectors.py`,
+  `docs/holdout/external_*.json`), which found and fixed a YOLO decoding fault (CODEBRIM
+  defect mAP50 0.182 to 0.304 with letterbox input and per-class NMS). Bridge H20T crack
+  outputs on unlabelled imagery are labelled unvalidated false positives, not findings.
+- **Exporters.** QGC `.plan` and `.waypoints`, DJI WPML `.kmz`, Litchi CSV, KML and
+  GeoJSON were checked element by element against each format's published
+  specification. Fixed: `.plan` declared PX4 on ArduPilot missions and zeroed params 5-7
+  (so the camera never fired); DJI WPML lacked required elements and dropped every photo
+  under distance-triggered capture; Litchi photo intervals sat on the wrong waypoints.
+  Planned mapping missions now carry distance-triggered capture into all three flight
+  formats. Loading the files into QGroundControl, DJI Pilot 2 and Litchi themselves has
+  not been done.
+- **Drone SITL.** In this beta, CI flies the production planner, exporter and MAVLink
+  client against ArduPilot Copter-4.5.7 in a container (two suites: flight lifecycle and
+  mission upload round trip), and the MAVLink bridge now asks the vehicle for
+  `HOME_POSITION`. The wider SITL campaign is *not* in this beta; see below.
+- **Version.** The package, the HTTP service, the Helm chart and `CITATION.cff` carry
+  the version, and the application shows it as `v0.1.0-beta`.
+
+### Known limitations
+
+- **No real-hardware flight yet. Do not fly real aircraft with this beta.** Flight code
+  is verified against file specifications, a MAVLink peer and ArduPilot Copter SITL only.
+- **The drone SITL campaign is not merged into this beta.** On branch
+  `fix6/drone-campaign` it flies 44 ArduCopter 4.5.7 tests, failsafes (link loss,
+  battery, GPS, geofence, preflight override), 12 PX4 v1.15.4 tests and ArduPlane 4.5.7
+  fixed-wing missions in SITL, with the fixes they forced. That work is still being
+  finished and reviewed, so none of those fixes or PX4/ArduPlane support should be
+  assumed here.
+- **Dense 3D needs a CUDA build** of COLMAP. The pycolmap wheels are CPU-only, so
+  without one reconstruction is sparse, raster resolution is reduced to what the sparse
+  cloud supports, and the run says so.
+- **DJI is export-only.** Missions are written as DJI WPML `.kmz` (and Litchi CSV) for
+  DJI's own apps to fly; there is no DJI flight driver. DJI R-JPEG thermal decoding needs
+  the DJI Thermal SDK, which is not bundled.
+- **The new UI is not in this beta.** It ships with the classic shell and the cockpit
+  (`--ui cockpit`); the redesigned interface is on `ui/v1` and comes later.
+- **The installer is unsigned.** Windows SmartScreen will warn; check the installer's
+  SHA-256 against the release page before running it.
+- **Model metrics and weaknesses.** Nine models are installed; each registry entry
+  states its measured metric and weak classes, and an empty result is not proof of
+  absence. Among them: `structural_multiclass_detector` reaches mAP50 0.417, with Crack
+  its weakest class at 0.124; `crack_segmentation` trades recall for precision at its
+  shipped 0.85 threshold, so thin and faint cracks are missed; the
+  `solar_thermal_anomaly_classifier` recalls only 0.367 of Soiling; `rail_obstacle_detector`
+  misses about one obstacle in four; `shared_semantic_landcover` is usable for vegetation
+  and building only (two of six classes); `corrosion_severity_segmentation` was trained
+  on 440 images from one source. No model has been measured on Indian infrastructure
+  imagery from a drone. Measured on external road-damage data, the shipped crack models
+  are weak (structural Crack class mAP50 0.050 on an RDD2022 subset), and there is no
+  road-damage or pothole model.
+- Crack and structural detection fall back to a labelled classical heuristic when their
+  model is absent; heuristic regions are never turned into findings or reports. Solar,
+  metal and corrosion-severity analysis refuse instead.
 
 ### Added
 

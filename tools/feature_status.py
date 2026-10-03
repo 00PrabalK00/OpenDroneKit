@@ -281,11 +281,18 @@ def evidence_base(extra_reports=()) -> str:
     # would say "without the trained model weights" over a run that used them.
     from core.models import extra_weights_root
 
+    # Only REGISTERED weights count. Globbing every *.onnx also counted an unmeasured
+    # re-export parked beside the real ones, and printed "10 trained models" over a
+    # registry that installs 9.
+    registry = json.loads(
+        (REPO_ROOT / "models" / "model_registry.json").read_text(encoding="utf-8"))
     found: dict[str, Path] = {}
-    for root in (REPO_ROOT / "models", extra_weights_root()):
-        if root is not None and root.is_dir():
-            for path in root.rglob("*.onnx"):
-                found.setdefault(path.relative_to(root).as_posix(), path)
+    for entry in registry.get("models", {}).values():
+        relative = str(entry.get("path") or "")
+        for root in (REPO_ROOT / "models", extra_weights_root()):
+            if relative and root is not None and (root / relative).is_file():
+                found.setdefault(relative, root / relative)
+                break
     weights = sorted(found.values())
     if not weights:
         return (
@@ -294,7 +301,10 @@ def evidence_base(extra_reports=()) -> str:
             "here: the code exists and nothing present can prove it runs. This is the "
             "number continuous integration reaches, and the one a fresh clone reproduces."
         )
-    size_gb = sum(path.stat().st_size for path in weights) / 1e9
+    # An ONNX model over 2 GB keeps its tensors in a sibling .onnx.data file.
+    size_gb = sum(
+        path.stat().st_size + (sidecar.stat().st_size if (sidecar := path.with_name(path.name + ".data")).is_file() else 0)
+        for path in weights) / 1e9
     line = (
         f"Computed **with {len(weights)} trained models installed** ({size_gb:.1f} GB, not "
         "in the repository). Continuous integration has no weights and so reaches a lower "

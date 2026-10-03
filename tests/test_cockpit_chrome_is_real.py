@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from app.api import Api, app_version
+from app.api import Api, app_version, display_version
 from app.session import AppSession
 from app.store import ProjectStore
 from core.annotations import create_annotation
@@ -79,8 +79,9 @@ def driven(tmp_path, monkeypatch):
 
 
 def test_the_frame_reports_the_real_version_and_storage(driven) -> None:
-    assert app_version() == "0.1.0"  # the package's own number, not a literal
-    assert driven["version"] == f"v{app_version()}"
+    assert app_version() == "0.1.0b0"  # the package's own number, not a literal
+    assert display_version() == "0.1.0-beta"
+    assert driven["version"] == f"v{display_version()}"
     assert "v1.0" not in driven["status"]
     assert driven["data_root"] in driven["storageTitle"]
     assert "local-first" not in driven["nav"]
@@ -127,5 +128,5 @@ def test_the_home_system_status_names_the_real_storage_and_version(tmp_path, mon
     assert "error" not in result, result
     data_root = str(api.get_state()["data_paths"]["data_root"])
     assert data_root in result["system"], result
-    assert f"v{app_version()}" in result["system"]
+    assert f"v{display_version()}" in result["system"]
     assert "local-first" not in result["system"]

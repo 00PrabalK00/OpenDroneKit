@@ -1131,7 +1131,7 @@
     'help.about': () => modal('About OpenDroneKit',
       `<div class="info">
         <div><span>Purpose</span><b>Offline drone inspection &amp; geospatial toolkit</b></div>
-        <div><span>Planning</span><b>16 mission templates with geofence, no-fly, terrain and wind</b></div>
+        <div><span>Planning</span><b>22 mission templates with geofence, no-fly, terrain and wind</b></div>
         <div><span>Reconstruction</span><b>COLMAP SfM with georeferenced GeoTIFF output</b></div>
         <div><span>Export</span><b>QGC .plan, WPL, DJI WPML, Litchi, KML, GeoJSON</b></div>
       </div>`),

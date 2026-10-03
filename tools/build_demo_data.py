@@ -84,7 +84,7 @@ def _headline(description: str) -> str:
 
 
 def capability_counts() -> dict[str, int]:
-    """The COMPUTED status of all 167 capabilities, from the generated status document.
+    """The COMPUTED status of every registered capability, from the generated status document.
 
     Not the claimed status in docs/features/registry.py. Claims are a floor -- most rows
     claim `implemented` and are computed as `verified` once the tests they name pass --

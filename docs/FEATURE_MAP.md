@@ -64,10 +64,12 @@ item in the whole inventory and is a different application, not a feature.
 
 ## 4. Mission types
 
-We generate **15 templates today**: `grid`, `double_grid`, `corridor`, `facade`,
-`tower_mapping`, `solar_inspection`, `orbit`, `panorama`, `bubble_360`, `waypoints`,
-`linear_inspection`, `lateral_capture`, `roof_inspection`, `magnetic_mapping`,
-`linked_mission`.
+We generate **22 templates today** (`mission.planner.available_templates()`, derived
+from the planner's alias table): `box_inspection`, `bubble_360`, `closed_loop`,
+`corridor`, `dome_inspection`, `double_grid`, `facade`, `facade_mapping`, `grid`,
+`lateral_capture`, `linear_inspection`, `linked_mission`, `magnetic_mapping`,
+`multi_facade`, `orbit`, `panorama`, `roof_inspection`, `smart_adaptive`,
+`solar_inspection`, `tower_mapping`, `waypoints`, `wind_turbine`.
 
 | Market mission | ODK template | State |
 |---|---|---|
@@ -282,9 +284,9 @@ trajectory handling and 360 image projection.
 
 | Market feature | ODK name | State |
 |---|---|---|
-| DJI aircraft families | `fl.abstraction`, `sdk.*` | partial — the abstraction layer exists and is SITL verified; the DJI SDK matrix is not certified per airframe |
+| DJI aircraft families | `fl.abstraction`, `sdk.*` | partial — DJI is export-only: missions are written as DJI WPML `.kmz` (and Litchi CSV) for DJI's own apps to fly. There is no DJI flight driver; the abstraction layer's SITL verification is against ArduPilot, not DJI |
 | Camera/payload profiles | `mp.camera_db`, `mp.payload_db` | registered |
-| Subscription tiers | — | out of scope: this project is offline-first and unlicensed |
+| Subscription tiers | — | out of scope: this project is offline-first and MIT-licensed |
 
 ---
 

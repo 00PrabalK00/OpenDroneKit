@@ -995,8 +995,9 @@ VISION = [
       "0.5769, pixel accuracy 0.8497, and it recovers 0.788 of severe pixels rather "
       "than declining to use its worst grade. Errors are almost all one step on the "
       "scale: 124,241 of the missed severe pixels are called 'poor'. "
-      "REFUSES RATHER THAN GUESSES: every other detector here degrades to a heuristic "
-      "when its model is absent, and this one does not, because colour and texture "
+      "REFUSES RATHER THAN GUESSES: crack and structural detection can still run a "
+      "labelled classical heuristic when their model is absent (never turned into "
+      "findings); this one, like solar and metal detection, refuses, because colour and texture "
       "rules can find rust but nothing outside the corpus separates poor from severe. "
       "440 images from one source means these figures are a first indication, and it "
       "has not been tested on Indian infrastructure imagery."),

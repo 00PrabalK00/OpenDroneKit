@@ -91,6 +91,24 @@ def app_version() -> str:
     return match.group(1) if match else "unknown"
 
 
+def display_version(version: str | None = None) -> str:
+    """The version as the release is named: PEP 440 ``0.1.0b0`` reads ``0.1.0-beta``.
+
+    The package carries the PEP 440 number pip and tooling expect; the tag, the installer
+    and the UI use the human name. A ``b0`` pre-release is the first beta and is shown
+    without a number; a later ``bN`` keeps it (``0.1.0-beta.2``). Alpha and rc likewise.
+    """
+    import re
+
+    raw = app_version() if version is None else version
+    match = re.fullmatch(r"(\d+(?:\.\d+)*)(a|b|rc)(\d+)", raw)
+    if not match:
+        return raw
+    base, kind, number = match.groups()
+    name = {"a": "alpha", "b": "beta", "rc": "rc"}[kind]
+    return f"{base}-{name}" if number == "0" else f"{base}-{name}.{number}"
+
+
 def _data_paths() -> dict[str, str]:
     """Where this install keeps its state (core/paths.py), for the UI to show."""
     from core.paths import describe
@@ -717,7 +735,7 @@ class Api:
             jobs=self._jobs.active(),
             display_epsg=self._session.display_epsg,
             data_paths=_data_paths(),
-            version=app_version(),
+            version=display_version(),
         )
 
     # -- layers ----------------------------------------------------------

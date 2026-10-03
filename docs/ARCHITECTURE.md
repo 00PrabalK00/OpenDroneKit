@@ -42,7 +42,7 @@ engine can be used as an independent library (`mp.engine.independent`).
 
 ## The feature registry
 
-`docs/features/registry.py` lists all 167 specified capabilities. Each row carries a
+`docs/features/registry.py` lists all 180 specified capabilities. Each row carries a
 *claimed* status and a list of tests.
 
 **Status is computed, never asserted.** `tools/feature_status.py` runs the tests and

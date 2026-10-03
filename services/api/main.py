@@ -41,7 +41,7 @@ from .routers import (
     sharing, tiles,
 )
 
-VERSION = "0.1.0"
+VERSION = "0.1.0b0"  # PEP 440; released as v0.1.0-beta
 
 
 @asynccontextmanager
@@ -142,12 +142,14 @@ app.include_router(tiles.router)
 @app.get("/health", tags=["system"])
 def health() -> dict[str, Any]:
     """What this deployment can actually do, including where it falls short."""
-    from mission.planner import MissionPlanner  # noqa: PLC0415
+    from mission.planner import available_templates  # noqa: PLC0415
 
+    # The planner's own alias table, not a number. MissionPlanner has no
+    # available_templates method, so the old hasattr() guard always reported a
+    # hard-coded 15 while the planner accepted 22.
     capabilities: dict[str, Any] = {"mission_templates": 0}
     try:
-        capabilities["mission_templates"] = len(MissionPlanner().available_templates()) \
-            if hasattr(MissionPlanner, "available_templates") else 15
+        capabilities["mission_templates"] = len(available_templates())
     except Exception:
         pass
 

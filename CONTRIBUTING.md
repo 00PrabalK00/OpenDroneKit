@@ -202,7 +202,7 @@ SITL junit reports and runs `tools/feature_status.py --strict`. All four must be
 
 ## The feature registry: done is computed, not claimed
 
-`docs/features/registry.py` lists every specified capability (168 rows today). Each row
+`docs/features/registry.py` lists every specified capability (180 rows today). Each row
 has acceptance `criteria`, a `claimed` status, and the `tests` that prove it.
 `tools/feature_status.py` runs the suite and gives each row the **lower** of what it
 claims and what the evidence supports:

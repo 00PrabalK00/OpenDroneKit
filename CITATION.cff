@@ -11,6 +11,8 @@ authors:
     family-names: Khare
     alias: 00PrabalK00
 license: MIT
+version: "0.1.0-beta"
+date-released: "2026-10-02"
 repository-code: "https://github.com/00PrabalK00/OpenDroneKit"
 url: "https://opendronekit.com"
 keywords:
