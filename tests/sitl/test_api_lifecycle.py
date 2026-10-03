@@ -43,7 +43,10 @@ def test_connect_upload_fly_override_and_return_through_the_api(
         assert connected["vehicle"]["connected"], connected
         telemetry = _wait(api, "a 3D fix and home", lambda t: t.get("gps_fix", 0) >= 3
                           and t.get("home_set"), 60.0)
-        assert telemetry["stale"] is False and telemetry["is_simulated"] is False
+        # SITL is a simulator and says so (it answers for SIM_SPEEDUP): its telemetry
+        # and its flight log are marked SIMULATED, never presented as an aircraft's.
+        assert telemetry["stale"] is False and telemetry["is_simulated"] is True
+        assert connected["flight_log"]["simulated"] is True
 
         api._session.mission_plan = sitl_mission.plan
         api._session.mission_plan_dict = _plan_to_dict(sitl_mission.plan)
@@ -82,7 +85,7 @@ def test_connect_upload_fly_override_and_return_through_the_api(
         _wait(api, "landing and disarm", lambda t: not t.get("armed"), 180.0)
 
         exported = api.export_flight_log()
-        assert exported["ok"] and exported["simulated"] is False
+        assert exported["ok"] and exported["simulated"] is True
         assert exported["summary"]["positioned_samples"] > 0
         session = api.flight_session()["session"]
         assert any(c["command"] == "return_to_home" and c["success"] for c in session["commands"])
