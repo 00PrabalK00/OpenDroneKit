@@ -100,8 +100,12 @@ def test_it_counts_weights_the_tests_find_through_the_override(tmp_path, monkeyp
     """
     import feature_status
 
+    import json
+
     checkout = tmp_path / "checkout"
     (checkout / "models").mkdir(parents=True)
+    (checkout / "models" / "model_registry.json").write_text(
+        json.dumps({"models": {"crack": {"path": "crack/model.onnx"}}}), encoding="utf-8")
     weights = tmp_path / "weights" / "crack"
     weights.mkdir(parents=True)
     (weights / "model.onnx").write_bytes(b"x" * 2048)
@@ -109,3 +113,24 @@ def test_it_counts_weights_the_tests_find_through_the_override(tmp_path, monkeyp
     monkeypatch.setenv("ODK_MODEL_WEIGHTS_DIR", str(tmp_path / "weights"))
     line = feature_status.evidence_base()
     assert "with 1 trained models installed" in line
+
+
+def test_an_unregistered_onnx_is_not_counted_as_a_model(tmp_path, monkeypatch):
+    """An unmeasured re-export parked beside the real weights printed "10 trained
+    models" over a registry that installs 9."""
+    import json
+
+    import feature_status
+
+    checkout = tmp_path / "checkout"
+    (checkout / "models").mkdir(parents=True)
+    (checkout / "models" / "model_registry.json").write_text(
+        json.dumps({"models": {"crack": {"path": "crack/model.onnx"}}}), encoding="utf-8")
+    weights = tmp_path / "weights"
+    (weights / "crack").mkdir(parents=True)
+    (weights / "crack" / "model.onnx").write_bytes(b"x" * 2048)
+    (weights / "_reexport_not_registered").mkdir()
+    (weights / "_reexport_not_registered" / "model.onnx").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(feature_status, "REPO_ROOT", checkout)
+    monkeypatch.setenv("ODK_MODEL_WEIGHTS_DIR", str(weights))
+    assert "with 1 trained models installed" in feature_status.evidence_base()

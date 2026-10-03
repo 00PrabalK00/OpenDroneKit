@@ -284,8 +284,9 @@ def evidence_base(extra_reports=()) -> str:
     # Only REGISTERED weights count. Globbing every *.onnx also counted an unmeasured
     # re-export parked beside the real ones, and printed "10 trained models" over a
     # registry that installs 9.
-    registry = json.loads(
-        (REPO_ROOT / "models" / "model_registry.json").read_text(encoding="utf-8"))
+    registry_file = REPO_ROOT / "models" / "model_registry.json"
+    registry = (json.loads(registry_file.read_text(encoding="utf-8"))
+                if registry_file.is_file() else {})
     found: dict[str, Path] = {}
     for entry in registry.get("models", {}).values():
         relative = str(entry.get("path") or "")
