@@ -50,6 +50,10 @@ class CameraProfile:
     # "manufacturer" for published specifications, "user" for operator-entered ones.
     source: str = "manufacturer"
     notes: str = ""
+    # Thermal sensitivity from the manufacturer's datasheet, in mK, as an upper bound
+    # ("< 50 mK" is stored as 50), with the page it was read from. None when unpublished.
+    netd_mk: float | None = None
+    netd_source: str = ""
 
     def __post_init__(self) -> None:
         self.validate()
@@ -118,11 +122,21 @@ class CameraProfile:
             "horizontal_fov_deg": round(self.horizontal_fov_deg, 1),
             "vertical_fov_deg": round(self.vertical_fov_deg, 1),
             "thermal": self.thermal, "source": self.source, "notes": self.notes,
+            "netd_mk": self.netd_mk, "netd_source": self.netd_source,
         }
 
 
-def _profile(key, name, sw, sh, focal, iw, ih, thermal=False, notes=""):
-    return CameraProfile(key, name, sw, sh, focal, iw, ih, thermal, "manufacturer", notes)
+def _profile(key, name, sw, sh, focal, iw, ih, thermal=False, notes="", netd_mk=None,
+             netd_source=""):
+    return CameraProfile(key, name, sw, sh, focal, iw, ih, thermal, "manufacturer", notes,
+                         netd_mk, netd_source)
+
+
+_DJI_M3E_SPECS = "DJI Mavic 3 Enterprise series specs, https://enterprise.dji.com/mavic-3-enterprise/specs (NETD ≤50 mK @ f/1.0)"
+_DJI_M30_SPECS = "DJI Matrice 30 series specs, https://enterprise.dji.com/matrice-30/specs (NETD ≤50 mK @ f/1.0)"
+_DJI_H20_SPECS = "DJI Zenmuse H20 series specs, https://www.dji.com/zenmuse-h20-series/specs (NETD ≤50 mK @ f/1.0)"
+_FLIR_VUE_SPECS = "FLIR Vue Pro R product page, https://www.flir.com/products/vue-pro-r/ (thermal sensitivity < 50 mK)"
+_FLIR_DUO_SPECS = "FLIR Duo Pro R product page, https://www.flir.com/products/duo-pro-r/ (thermal sensitivity < 50 mK)"
 
 
 # Manufacturer-published geometry for cameras commonly used in survey and inspection.
@@ -144,7 +158,8 @@ BUILT_IN: dict[str, CameraProfile] = {
                  6.4, 4.8, 4.4, 4000, 3000),
         _profile("mavic3t_thermal", "DJI Mavic 3 Thermal (radiometric)",
                  7.68, 6.14, 9.1, 640, 512, thermal=True,
-                 notes="Radiometric; temperature per pixel, not just an image."),
+                 notes="Radiometric; temperature per pixel, not just an image.",
+                 netd_mk=50, netd_source=_DJI_M3E_SPECS),
         _profile("m30t_wide", "DJI Matrice 30T (wide)",
                  6.4, 4.8, 4.4, 4000, 3000,
                  notes="1/2-inch sensor; focal length 4.4 mm (24 mm equivalent) as the "
@@ -153,12 +168,21 @@ BUILT_IN: dict[str, CameraProfile] = {
                  35.9, 24.0, 35.0, 8192, 5460,
                  notes="Full-frame survey payload; the highest GSD of this set."),
         _profile("zenmuse_h20t_thermal", "DJI Zenmuse H20T (thermal)",
-                 7.68, 6.14, 13.5, 640, 512, thermal=True),
+                 7.68, 6.14, 13.5, 640, 512, thermal=True,
+                 netd_mk=50, netd_source=_DJI_H20_SPECS),
+        _profile("m30t_thermal", "DJI Matrice 30T (thermal)",
+                 7.68, 6.14, 9.1, 640, 512, thermal=True,
+                 netd_mk=50, netd_source=_DJI_M30_SPECS),
+        _profile("flir_duo_pro_r_640_13mm", "FLIR Duo Pro R 640 (13 mm, thermal)",
+                 10.88, 8.70, 13.0, 640, 512, thermal=True,
+                 notes="17 µm VOx microbolometer, 45° x 37° with the 13 mm lens.",
+                 netd_mk=50, netd_source=_FLIR_DUO_SPECS),
         _profile("evo2pro", "Autel EVO II Pro",
                  13.2, 8.8, 10.57, 5472, 3648),
         _profile("flir_vue_pro_r_640", "FLIR Vue Pro R 640 (13 mm)",
                  10.88, 8.70, 13.0, 640, 512, thermal=True,
-                 notes="Radiometric; common fixed payload on custom airframes."),
+                 notes="Radiometric; common fixed payload on custom airframes.",
+                 netd_mk=50, netd_source=_FLIR_VUE_SPECS),
         # Kept because existing plans and tests reference it. It is a generic 1-inch
         # sensor, not any particular camera, and is labelled as such.
         CameraProfile("custom", "Generic 1-inch sensor", 13.2, 8.8, 10.0, 4000, 3000,
@@ -199,6 +223,9 @@ def load_user_profiles(path: Path | None = None) -> dict[str, CameraProfile]:
                 image_h_px=int(entry["image_h_px"]),
                 thermal=bool(entry.get("thermal", False)),
                 source="user", notes=entry.get("notes", ""),
+                netd_mk=(float(entry["netd_mk"]) if entry.get("netd_mk") not in (None, "")
+                         else None),
+                netd_source=str(entry.get("netd_source") or ""),
             )
         except (KeyError, TypeError, ValueError):
             # One malformed entry must not hide the rest of an operator's fleet.
