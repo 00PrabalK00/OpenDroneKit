@@ -25,7 +25,7 @@ supports (13.1 here).
 ## Prebuilt binaries tested
 
 Download URLs and sha256 (verified against the GitHub release asset digests). The
-binaries live outside the repository, under `E:/Shit was cluittering/Projects/odk-tools/`
+binaries live outside the repository, under `../odk-tools/`
 on the development machine; none are committed.
 
 | Archive | URL | sha256 | Built with | sm_120 in binary | Result on RTX 5060 |
@@ -109,7 +109,7 @@ python tools/dense_benchmark.py <images> <out> --engine colmap|openmvs|sparse \
     --colmap <colmap-4.0.4/bin/colmap.exe> [--openmvs <openmvs dir>]
 ```
 
-Evidence: `E:/Shit was cluittering/Projects/odk-testdata/_outputs/dense-gpu/`
+Evidence: `../odk-testdata/_outputs/dense-gpu/`
 (`<run>/summary.json`, `<run>.log`, products under `<run>/`).
 
 RESULTS_TABLE
