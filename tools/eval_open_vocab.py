@@ -47,7 +47,7 @@ DEFAULT_TEXT_THRESHOLD = 0.25
 
 
 def testdata() -> Path:
-    return Path(os.environ.get("ODK_TESTDATA_DIR", "E:/Shit was cluittering/Projects/odk-testdata"))
+    return Path(os.environ.get("ODK_TESTDATA_DIR", "../odk-testdata"))
 
 
 def thermal_items() -> list[tuple[Path, dict[str, list[list[float]]]]]:
@@ -174,7 +174,7 @@ def main() -> int:
                     help="keep images already in <out>/<set>__<tag>.jsonl and run the rest")
     args = ap.parse_args()
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
-    weights = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "E:/Shit was cluittering/Projects/odk-weights"))
+    weights = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "../odk-weights"))
 
     if args.model == "gdino":
         from core.open_vocab import GroundingDinoOnnx

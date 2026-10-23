@@ -30,8 +30,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-WEIGHTS = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "E:/Shit was cluittering/Projects/odk-weights"))
-TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "E:/Shit was cluittering/Projects/odk-testdata"))
+WEIGHTS = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "../odk-weights"))
+TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "../odk-testdata"))
 
 
 def sample_images() -> list[tuple[Path, str]]:
