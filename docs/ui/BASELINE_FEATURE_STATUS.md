@@ -10,9 +10,9 @@ of done includes: `tools/feature_status.py` shows no feature lower than in this 
 - Command, from the repository root, the same way round 1 ran it:
 
   ```
-  set ODK_MODEL_WEIGHTS_DIR=E:/Shit was cluittering/Projects/OpenDroneKit/models
-  set ODK_MODELS_DIR=E:/Shit was cluittering/Projects/OpenDroneKit/models
-  C:/Users/Prabal/miniconda3/envs/odk/python.exe tools/feature_status.py --json
+  set ODK_MODEL_WEIGHTS_DIR=models
+  set ODK_MODELS_DIR=models
+  python tools/feature_status.py --json
   ```
 
 - Full pytest run on this laptop (Windows 11, trained weights installed), 2026-10-02 01:10 to 01:41 EDT (30 min).
