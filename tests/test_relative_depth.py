@@ -39,7 +39,7 @@ from core.model_runner import ModelRunRefused, run_registered_model
 from core.models import get_model_spec, resolve_model_path
 
 KEY = DEFAULT_DEPTH_MODEL
-TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "") or "E:/Shit was cluittering/Projects/odk-testdata")
+TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "") or "../odk-testdata")
 B1_WIDE = TESTDATA / "bridge_inspection_h20t_boga_cayi" / "B1_Wide"
 
 # Any key naming a metric quantity. "relative" results must never carry one.
