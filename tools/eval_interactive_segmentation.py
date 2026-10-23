@@ -49,7 +49,7 @@ sys.path.insert(0, str(REPO))
 
 from core import interactive_segmentation as S  # noqa: E402
 
-WEIGHTS = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "E:/Shit was cluittering/Projects/odk-weights"))
+WEIGHTS = Path(os.environ.get("ODK_MODEL_WEIGHTS_DIR", "../odk-weights"))
 SAM_DIR = WEIGHTS / S.SAM21_KEY
 EFF_DIR = WEIGHTS / S.EFFICIENTSAM_KEY
 
