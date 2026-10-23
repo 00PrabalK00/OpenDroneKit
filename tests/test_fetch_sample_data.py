@@ -19,7 +19,7 @@ import pytest
 
 from tools import fetch_sample_data as fsd
 
-TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "E:/Shit was cluittering/Projects/odk-testdata"))
+TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "../odk-testdata"))
 
 
 def test_every_fetchable_dataset_has_a_pinned_manifest_and_a_licence():

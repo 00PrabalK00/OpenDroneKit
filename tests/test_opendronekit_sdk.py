@@ -21,7 +21,7 @@ import opendronekit.plugins as plugins_module
 from opendronekit.plugins import PluginHost, PluginKind, PluginRegistry, PluginSpec
 
 AOI = [[-82.2265, 41.3055], [-82.2225, 41.3055], [-82.2225, 41.3080], [-82.2265, 41.3080]]
-TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "E:/Shit was cluittering/Projects/odk-testdata"))
+TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "../odk-testdata"))
 RDD_IMAGE = TESTDATA / "road_damage_rdd2022_subset" / "China_Drone" / "train" / "images" / "China_Drone_000011.jpg"
 
 

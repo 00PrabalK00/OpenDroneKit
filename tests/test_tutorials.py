@@ -26,7 +26,7 @@ from tools import run_tutorial
 
 REPO = Path(__file__).resolve().parents[1]
 TUTORIALS = REPO / "docs" / "tutorials"
-TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "E:/Shit was cluittering/Projects/odk-testdata"))
+TESTDATA = Path(os.environ.get("ODK_TESTDATA_DIR", "../odk-testdata"))
 ALL = sorted(TUTORIALS.glob("[0-9][0-9]-*.md"))
 
 
